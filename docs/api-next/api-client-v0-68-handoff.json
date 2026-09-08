@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.0",
+  "releaseType": "testnet-reward-sponsor-readiness",
+  "sourceBranch": "feat/reward-qualification-policy-terms",
+  "wireContract": "Authenticated testnet bonus asset catalog and current activity policy preview; new reward legs freeze qualification policies into immutable terms and disclose them in sponsor and participant reads. Legacy legs explicitly disclose null without changing commitments. Optional expected policy versions reject stale creation reviews and are not sponsor policy selection.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.0.tgz",
+    "sha256": "1fbcb42833ef240870e36b8100933565f543db9bd39f1c883baceb36758f3370",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@4b2d386b06b381455e6db943476ccad8332167f58368d051f90c777a301625af",
+    "openapiSha256": "4b2d386b06b381455e6db943476ccad8332167f58368d051f90c777a301625af",
+    "clientSha256": "12d382f340d6709a3c56eb9ecf7c217f16515b0ddbd4368de87a65beabbc3480"
+  },
+  "verification": {
+    "status": "Local API check, baseline freshness, additive OpenAPI comparison and secret-boundary audit passed. Ordinary suites passed with documented scheduling. All three pre-reboot PostgreSQL timeouts were resolved by complete-file reruns after restart. Required remote CI, publication, deployment and live transaction acceptance remain pending.",
+    "unitTests": 3599,
+    "nodeTests": 20,
+    "workerTests": 180,
+    "localScheduling": "Unit timeout 30000ms; Worker HTTP, self, HNS verifier and video-source suites used maxWorkers=1 and no file parallelism. Assertions and suite membership were unchanged.",
+    "clientAdoption": "0.68.0 is required for changed leg/projection responses because older clients validate closed objects; funding-effect responses and existing request bodies retain their shapes.",
+    "postgresEvidence": "The pre-rebase run exercised 527 tests across 82 files: 524 passed and three timed out; 31 completion markers verified. Those broad raw logs were lost at reboot and these counts are retained from session tool outputs. Post-reboot logs preserve 41 passing tests across six complete files, covering every timeout, both rewards files and the upstream HNS repair, plus 30 passing composed Worker tests. No assertions or per-test limits changed.",
+    "postgresFixture": "Disposable PostgreSQL 17, max_locks_per_transaction=512, 3 GiB tmpfs data directory, max_wal_size=128MB, fsync enabled. No deployed database was used.",
+    "integration": "Rebased onto d2bfe4f0; the only differences from tested pre-rebase source a0c92765 are upstream HNS code/tests and one documentation file. Fresh API check, OpenAPI and secret-boundary audits pass; the upstream HNS PostgreSQL file passes."
+  },
+  "sourceCommit": "58f3e0935b0ee78d34f83bbd8a52dd7a75cfe09e"
+}

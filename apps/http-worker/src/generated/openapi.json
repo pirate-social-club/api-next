@@ -134016,6 +134016,34 @@
                       }
                     ]
                   },
+                  "expected_qualification_policy_versions": {
+                    "type": "object",
+                    "properties": {
+                      "study": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      },
+                      "karaoke": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "persona_id": {
                     "type": "string"
                   },
@@ -134286,6 +134314,30 @@
                               "pattern": "^0x[0-9a-f]{64}$"
                             }
                           ]
+                        },
+                        "qualification_policies": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                }
+                              ],
+                              "minItems": 1,
+                              "items": {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 2
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -134305,7 +134357,8 @@
                         "empty_pool_policy",
                         "fallback_payout_persona_id",
                         "funded_atomic",
-                        "leg_terms_hash"
+                        "leg_terms_hash",
+                        "qualification_policies"
                       ],
                       "additionalProperties": false
                     },
@@ -134467,7 +134520,200 @@
                     "funding",
                     "replayed"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -134641,6 +134887,30 @@
                               "pattern": "^0x[0-9a-f]{64}$"
                             }
                           ]
+                        },
+                        "qualification_policies": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                }
+                              ],
+                              "minItems": 1,
+                              "items": {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 2
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -134660,7 +134930,8 @@
                         "empty_pool_policy",
                         "fallback_payout_persona_id",
                         "funded_atomic",
-                        "leg_terms_hash"
+                        "leg_terms_hash",
+                        "qualification_policies"
                       ],
                       "additionalProperties": false
                     },
@@ -134822,7 +135093,200 @@
                     "funding",
                     "replayed"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -136391,6 +136855,30 @@
                                 "funder_fallback"
                               ]
                             },
+                            "qualification_policies": {
+                              "anyOf": [
+                                {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "$ref": "#/$defs/Union_"
+                                    }
+                                  ],
+                                  "minItems": 1,
+                                  "items": {
+                                    "$ref": "#/$defs/Union_"
+                                  },
+                                  "allOf": [
+                                    {
+                                      "maxItems": 2
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "allocation_rule": {
                               "type": "string",
                               "enum": [
@@ -136691,6 +137179,7 @@
                             "eligible_activities",
                             "min_score_bps",
                             "empty_pool_policy",
+                            "qualification_policies",
                             "allocation_rule",
                             "ticket_custody",
                             "winnings_basis",
@@ -136708,7 +137197,200 @@
                   "required": [
                     "pool"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -136829,6 +137511,570 @@
         "x-errors": [
           "BadRequest",
           "InternalError"
+        ]
+      }
+    },
+    "/rewards/qualification-policies": {
+      "get": {
+        "operationId": "get_rewardsQualificationPolicies",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "policies": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "$ref": "#/$defs/Union_"
+                        }
+                      ],
+                      "minItems": 1,
+                      "items": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "allOf": [
+                        {
+                          "maxItems": 2
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "policies"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "NotFound",
+          "InternalError",
+          "ProviderUnavailable"
         ]
       }
     },
@@ -137256,6 +138502,376 @@
           "BadRequest",
           "NotFound",
           "InternalError"
+        ]
+      }
+    },
+    "/rewards/bonus-assets": {
+      "get": {
+        "operationId": "get_rewardsBonusAssets",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "pattern": "^0x[0-9a-f]{40}$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "pattern": "^(?:[1-9]|[1-4][0-9]|50)$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "chain_id": {
+                            "type": "number",
+                            "enum": [
+                              84532
+                            ]
+                          },
+                          "token_address": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "pattern": "^0x[0-9a-f]{40}$"
+                              }
+                            ]
+                          },
+                          "token_decimals": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 77
+                              }
+                            ]
+                          },
+                          "token_symbol": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 32
+                              }
+                            ]
+                          },
+                          "asset_policy_version": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "chain_id",
+                          "token_address",
+                          "token_decimals",
+                          "token_symbol",
+                          "asset_policy_version"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "allOf": [
+                        {
+                          "maxItems": 50
+                        }
+                      ]
+                    },
+                    "next_cursor": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^0x[0-9a-f]{40}$"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "next_cursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "InternalError",
+          "ProviderUnavailable"
         ]
       }
     },
@@ -137753,6 +139369,34 @@
                       }
                     ]
                   },
+                  "expected_qualification_policy_versions": {
+                    "type": "object",
+                    "properties": {
+                      "study": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      },
+                      "karaoke": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "persona_id": {
                     "type": "string"
                   },
@@ -137988,6 +139632,30 @@
                               "pattern": "^0x[0-9a-f]{64}$"
                             }
                           ]
+                        },
+                        "qualification_policies": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                }
+                              ],
+                              "minItems": 1,
+                              "items": {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 2
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -138005,7 +139673,8 @@
                         "max_claims",
                         "funded_atomic",
                         "fulfilled_atomic",
-                        "leg_terms_hash"
+                        "leg_terms_hash",
+                        "qualification_policies"
                       ],
                       "additionalProperties": false
                     },
@@ -138170,7 +139839,200 @@
                     "funding",
                     "replayed"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -138318,6 +140180,30 @@
                               "pattern": "^0x[0-9a-f]{64}$"
                             }
                           ]
+                        },
+                        "qualification_policies": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                }
+                              ],
+                              "minItems": 1,
+                              "items": {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 2
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -138335,7 +140221,8 @@
                         "max_claims",
                         "funded_atomic",
                         "fulfilled_atomic",
-                        "leg_terms_hash"
+                        "leg_terms_hash",
+                        "qualification_policies"
                       ],
                       "additionalProperties": false
                     },
@@ -138500,7 +140387,200 @@
                     "funding",
                     "replayed"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -139913,6 +141993,30 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "qualification_policies": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "prefixItems": [
+                                  {
+                                    "$ref": "#/$defs/Union_"
+                                  }
+                                ],
+                                "minItems": 1,
+                                "items": {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                "allOf": [
+                                  {
+                                    "maxItems": 2
+                                  }
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "object": {
                             "type": "string",
                             "enum": [
@@ -140118,6 +142222,7 @@
                           }
                         },
                         "required": [
+                          "qualification_policies",
                           "object",
                           "offer_id",
                           "leg_id",
@@ -140146,7 +142251,200 @@
                     "object",
                     "items"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "study"
+                              ]
+                            },
+                            "policy": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "study_session_first_pass_v2"
+                                  ]
+                                },
+                                "qualification_policy_version_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "required_correct_bps": {
+                                  "type": "number",
+                                  "enum": [
+                                    7000
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "qualification_policy_version_id",
+                                "required_correct_bps"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activity": {
+                              "type": "string",
+                              "enum": [
+                                "karaoke"
+                              ]
+                            },
+                            "policy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v1"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "karaoke_qualification_v2"
+                                      ]
+                                    },
+                                    "qualification_policy_version_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "minimum_scored_line_count": {
+                                      "type": "number",
+                                      "enum": [
+                                        5
+                                      ]
+                                    },
+                                    "minimum_coverage_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        8500
+                                      ]
+                                    },
+                                    "minimum_final_score_bps": {
+                                      "type": "number",
+                                      "enum": [
+                                        7000
+                                      ]
+                                    },
+                                    "eligible_playback_kinds": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      ],
+                                      "minItems": 1,
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "full_mix",
+                                          "instrumental"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "qualification_policy_version_id",
+                                    "minimum_scored_line_count",
+                                    "minimum_coverage_bps",
+                                    "minimum_final_score_bps",
+                                    "eligible_playback_kinds"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "activity",
+                            "policy"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }

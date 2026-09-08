@@ -3246,6 +3246,35 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION freeze_reward_leg_qualification_terms() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE activities TEXT[];
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.qualification_policies IS DISTINCT FROM OLD.qualification_policies THEN
+      RAISE EXCEPTION 'reward qualification terms are immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.leg_terms_hash IS NULL OR NEW.leg_terms_hash !~ '^0x[0-9a-f]{64}$' THEN
+    RAISE EXCEPTION 'reward base terms hash must be canonical';
+  END IF;
+  activities := CASE WHEN NEW.kind = 'megapot_pool' THEN NEW.eligible_activities
+    ELSE ARRAY['study', 'karaoke']::TEXT[] END;
+  PERFORM activity_key FROM activity_registry WHERE activity_key = ANY(activities)
+    ORDER BY activity_key FOR SHARE;
+  NEW.qualification_policies := reward_current_qualification_policies(activities);
+  IF NEW.qualification_policies IS NULL THEN
+    RAISE EXCEPTION 'reward qualification policy unavailable';
+  END IF;
+  NEW.leg_terms_hash := '0x' || encode(sha256(convert_to(
+    jsonb_build_array('reward_qualification_terms_v1', NEW.leg_terms_hash,
+      NEW.qualification_policies)::TEXT, 'UTF8')), 'hex');
+  RETURN NEW;
+END
+$_$;
+
 CREATE FUNCTION gates_v2_active_binding_projection_guard() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -9151,6 +9180,33 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_bound_asset_claim_leg() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM song_reward_bundle_claims claim
+    JOIN activity_qualifications q ON q.qualification_id = claim.qualification_id
+    WHERE claim.account_id = NEW.account_id AND claim.offer_id = NEW.offer_id
+      AND reward_leg_accepts_qualification(NEW.leg_id, q.activity_key, q.qualification_policy_version_id)) THEN
+    RAISE EXCEPTION 'reward qualification version does not match frozen leg terms';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_bound_pool_share() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM activity_qualifications q
+    WHERE q.qualification_id = NEW.qualification_id
+      AND reward_leg_accepts_qualification(NEW.pool_leg_id, q.activity_key, q.qualification_policy_version_id)) THEN
+    RAISE EXCEPTION 'reward qualification version does not match frozen leg terms';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_chain_effect() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11692,7 +11748,8 @@ BEGIN
      AND decided_at < offer.ends_at
      AND NEW.qualified_at >= offer.starts_at
      AND NEW.qualified_at < offer.ends_at
-     AND leg.kind = 'asset_bonus' AND leg.status = 'active'
+     AND leg.kind = 'asset_bonus'
+     AND reward_leg_accepts_qualification(leg.leg_id, NEW.activity_key, NEW.qualification_policy_version_id) AND leg.status = 'active'
      AND NEW.qualified_at >= leg.participation_starts_at
      AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
      AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
@@ -11887,6 +11944,7 @@ BEGIN
     FOR asset_leg IN
       SELECT leg.* FROM song_reward_offer_legs leg
        WHERE leg.offer_id = candidate.offer_id AND leg.kind = 'asset_bonus'
+     AND reward_leg_accepts_qualification(leg.leg_id, NEW.activity_key, NEW.qualification_policy_version_id)
          AND leg.status = 'active' AND NEW.qualified_at >= leg.participation_starts_at
          AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
          AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
@@ -11933,6 +11991,7 @@ BEGIN
   FOR asset_leg IN
     SELECT leg.* FROM song_reward_offer_legs leg
      WHERE leg.offer_id = candidate.offer_id AND leg.kind = 'asset_bonus'
+     AND reward_leg_accepts_qualification(leg.leg_id, NEW.activity_key, NEW.qualification_policy_version_id)
        AND leg.status = 'active' AND NEW.qualified_at >= leg.participation_starts_at
        AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
        AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
@@ -12013,6 +12072,7 @@ BEGIN
      AND NEW.qualified_at >= offer.starts_at
      AND NEW.qualified_at < offer.ends_at
      AND leg.kind = 'megapot_pool'
+     AND reward_leg_accepts_qualification(leg.leg_id, NEW.activity_key, NEW.qualification_policy_version_id)
      AND leg.status = 'active'
      AND NEW.qualified_at >= leg.participation_starts_at
      AND NEW.activity_key = ANY(leg.eligible_activities)
@@ -13689,6 +13749,23 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reward_current_qualification_policies(activities text[]) RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT CASE WHEN count(*) = cardinality(activities) THEN
+    jsonb_agg(jsonb_build_object('activity', registry.activity_key, 'policy',
+      policy.policy_document || jsonb_build_object('kind', policy.policy_kind,
+        'qualification_policy_version_id', policy.qualification_policy_version_id))
+      ORDER BY registry.activity_key)
+    ELSE NULL END
+  FROM activity_registry registry
+  JOIN qualification_policy_versions policy
+    ON policy.qualification_policy_version_id = registry.current_policy_version_id
+   AND policy.activity_key = registry.activity_key
+  WHERE registry.activity_key = ANY(activities) AND registry.status = 'active'
+    AND registry.activity_key IN ('study', 'karaoke')
+$$;
+
 CREATE FUNCTION reward_distinct_nonempty_text_array(candidate text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -13728,6 +13805,16 @@ BEGIN
   END IF;
   RETURN false;
 END
+$$;
+
+CREATE FUNCTION reward_leg_accepts_qualification(leg_id_input text, activity_input text, version_input text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT coalesce((SELECT leg.qualification_policies IS NULL OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(leg.qualification_policies) entry
+    WHERE entry->>'activity' = activity_input
+      AND entry->'policy'->>'qualification_policy_version_id' = version_input)
+    FROM song_reward_offer_legs leg WHERE leg.leg_id = leg_id_input), false)
 $$;
 
 CREATE FUNCTION schedule_hns_root_health_renewals_v1(input_limit integer, input_renew_when_remaining_seconds integer, input_heartbeat_freshness_seconds integer) RETURNS TABLE(eligible_roots integer, enqueued_roots integer, successful_tick_at timestamp with time zone)
@@ -26713,8 +26800,10 @@ CREATE TABLE song_reward_offer_legs (
     owner_policy_kind text DEFAULT 'legacy_pre_policy'::text NOT NULL,
     owner_policy_revision bigint,
     owner_policy_hash text,
+    qualification_policies jsonb,
     CONSTRAINT song_reward_leg_budget_conservation CHECK (((((reserved_atomic + spent_atomic) + fulfilled_atomic) + refunded_atomic) <= funded_atomic)),
     CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND ((max_claims >= 1) AND (max_claims <= '9007199254740991'::bigint)) AND (token_symbol IS NOT NULL) AND (btrim(token_symbol) <> ''::text) AND (token_symbol = btrim(token_symbol)) AND (octet_length(token_symbol) <= 32) AND (asset_policy_version IS NOT NULL) AND (btrim(asset_policy_version) <> ''::text) AND (asset_policy_version = btrim(asset_policy_version)) AND (octet_length(asset_policy_version) <= 128) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (token_symbol IS NULL) AND (asset_policy_version IS NULL) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
+    CONSTRAINT song_reward_leg_qualification_shape CHECK (((qualification_policies IS NULL) OR ((jsonb_typeof(qualification_policies) = 'array'::text) AND ((jsonb_array_length(qualification_policies) >= 1) AND (jsonb_array_length(qualification_policies) <= 2))))),
     CONSTRAINT song_reward_leg_terminal_shape CHECK ((((status = ANY (ARRAY['draft'::text, 'funding'::text, 'active'::text, 'paused'::text, 'operational_hold'::text])) AND (participation_ends_at IS NULL)) OR ((status = ANY (ARRAY['exhausted'::text, 'ended'::text])) AND (participation_ends_at IS NOT NULL)))),
     CONSTRAINT song_reward_leg_time_order CHECK (((participation_ends_at IS NULL) OR (participation_ends_at > participation_starts_at))),
     CONSTRAINT song_reward_offer_leg_policy_evidence CHECK ((((owner_policy_kind = 'frozen_policy'::text) AND (owner_policy_revision IS NOT NULL) AND (owner_policy_hash IS NOT NULL)) OR ((owner_policy_kind = 'legacy_pre_policy'::text) AND (owner_policy_revision IS NULL) AND (owner_policy_hash IS NULL)))),
@@ -30353,6 +30442,8 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
+CREATE TRIGGER aaa_song_reward_leg_qualification_terms BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION freeze_reward_leg_qualification_terms();
+
 CREATE TRIGGER account_language_preferences_delete_guard BEFORE DELETE ON account_language_preferences FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER account_language_preferences_update_guard BEFORE UPDATE ON account_language_preferences FOR EACH ROW EXECUTE FUNCTION guard_account_language_preferences_update();
@@ -31073,6 +31164,8 @@ CREATE CONSTRAINT TRIGGER megapot_pool_drawing_transition_pair AFTER UPDATE ON m
 
 CREATE TRIGGER megapot_pool_drawings_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_pool_drawings FOR EACH ROW EXECUTE FUNCTION guard_megapot_pool_drawing();
 
+CREATE TRIGGER megapot_pool_share_qualification_binding BEFORE INSERT ON megapot_pool_shares FOR EACH ROW EXECUTE FUNCTION guard_reward_bound_pool_share();
+
 CREATE TRIGGER megapot_pool_shares_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_pool_shares FOR EACH ROW EXECUTE FUNCTION guard_megapot_pool_share();
 
 CREATE TRIGGER megapot_purchase_receipt_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_purchase_receipt_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
@@ -31250,6 +31343,8 @@ CREATE TRIGGER song_owner_policy_revisions_append_only BEFORE DELETE OR UPDATE O
 CREATE CONSTRAINT TRIGGER song_reward_asset_leg_accounting AFTER UPDATE ON song_reward_offer_legs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting();
 
 CREATE CONSTRAINT TRIGGER song_reward_bundle_claim_leg_accounting AFTER INSERT ON song_reward_bundle_claim_legs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting();
+
+CREATE TRIGGER song_reward_bundle_claim_leg_qualification_binding BEFORE INSERT ON song_reward_bundle_claim_legs FOR EACH ROW EXECUTE FUNCTION guard_reward_bound_asset_claim_leg();
 
 CREATE TRIGGER song_reward_bundle_claim_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_bundle_claim_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_bundle_claim_leg();
 

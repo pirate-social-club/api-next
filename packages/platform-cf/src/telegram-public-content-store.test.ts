@@ -5,6 +5,7 @@ import { makeTelegramPublicContentStore } from "./telegram-public-content-store.
 
 test("song discovery excludes expired and exhausted bonuses despite stale active projections", async () => {
   const bonus: PublicSongAssetBonusProjection = {
+    qualificationPolicies: null,
     offerId: "current",
     legId: "leg",
     communityId: "community",

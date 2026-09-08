@@ -7,6 +7,10 @@ import type {
   RewardProjectionStore,
   SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
+import {
+  SongRewardOfferRejected,
+  SongRewardOfferStorageFailed,
+} from "@pirate/application/rewards/song-reward-offers";
 import { Effect } from "effect";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
@@ -32,6 +36,7 @@ const leg: MegapotPoolLeg = {
   emptyPoolPolicy: "no_purchase",
   fallbackPayoutPersonaId: null,
   fundedAtomic: 0n,
+  qualificationPolicies: null,
   legTermsHash: hash("b"),
   ownerPolicyKind: "frozen_policy",
   ownerPolicyRevision: 1,
@@ -52,6 +57,7 @@ const assetLeg: AssetBonusLeg = {
   maxClaims: 10,
   fundedAtomic: 0n,
   fulfilledAtomic: 0n,
+  qualificationPolicies: null,
   legTermsHash: hash("c"),
   ownerPolicyKind: "frozen_policy",
   ownerPolicyRevision: 1,
@@ -99,9 +105,30 @@ const unexpected = (): never => {
   throw new Error("unexpected fake call");
 };
 
-function fixture(fundingIntent: RewardFundingIntent = intent) {
+function fixture(
+  fundingIntent: RewardFundingIntent = intent,
+  options: {
+    catalog?: SongRewardOfferStore["listAdmittedAssets"];
+    policies?: SongRewardOfferStore["qualificationPolicies"];
+    production?: boolean;
+  } = {},
+) {
   const ids = ["open-action", "open-offer", "leg-action", "pool-leg", "observe-action"];
   const store: SongRewardOfferStore = {
+    listAdmittedAssets: options.catalog ?? (() => Effect.succeed({ items: [], nextCursor: null })),
+    qualificationPolicies:
+      options.policies ??
+      (() =>
+        Effect.succeed([
+          {
+            activity: "study",
+            policy: {
+              kind: "study_session_first_pass_v2",
+              qualification_policy_version_id: "study_session_first_pass_v2@1",
+              required_correct_bps: 7000,
+            },
+          },
+        ])),
     openOffer: (input) =>
       Effect.succeed({
         replayed: false,
@@ -137,6 +164,7 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
           legId: assetLeg.legId,
           communityId: "community_1",
           postId: "post_1",
+          qualificationPolicies: null,
           offerStatus: "active",
           legStatus: "active",
           chainId: assetLeg.chainId,
@@ -159,6 +187,7 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
         legId: leg.legId,
         communityId: "community_1",
         postId: "post_1",
+        qualificationPolicies: null,
         offerStatus: "active",
         legStatus: "active",
         chainId: 84_532,
@@ -230,6 +259,9 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
       }),
   };
   const handlers = makeSongRewardOfferHandlers({
+    rewardCatalogAuthority: options.production
+      ? null
+      : { environment: "test", attestationId: "attestation_1" },
     clock: { now: Effect.succeed(Date.parse(now)) },
     ids: {
       next: Effect.sync(() => {
@@ -265,6 +297,123 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
 }
 
 describe("song reward offer HTTP handlers", () => {
+  test("serves bounded authenticated asset discovery and distinguishes unavailable storage", async () => {
+    const asset = {
+      chain_id: 84_532,
+      token_address: address("b"),
+      token_decimals: 18,
+      token_symbol: "BONUS",
+      asset_policy_version: "bonus-v1",
+    } as const;
+    const calls: Parameters<SongRewardOfferStore["listAdmittedAssets"]>[0][] = [];
+    const worker = fixture(intent, {
+      catalog: (input) => {
+        calls.push(input);
+        return Effect.succeed({ items: [asset], nextCursor: asset.token_address });
+      },
+    });
+    const response = await worker.request(`/rewards/bonus-assets?limit=1&cursor=${address("a")}`, {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ items: [asset], next_cursor: asset.token_address });
+    expect(calls).toEqual([
+      { environment: "test", attestationId: "attestation_1", cursor: address("a"), limit: 1 },
+    ]);
+    expect(
+      (
+        await worker.request("/rewards/bonus-assets?limit=51", {
+          headers: { authorization: "Bearer test" },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await worker.request("/rewards/bonus-assets?cursor=invalid", {
+          headers: { authorization: "Bearer test" },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await fixture(intent, { production: true, catalog: unexpected }).request(
+          "/rewards/bonus-assets",
+          { headers: { authorization: "Bearer test" } },
+        )
+      ).status,
+    ).toBe(502);
+    expect(
+      (
+        await fixture(intent, {
+          catalog: () => Effect.fail(new SongRewardOfferStorageFailed({ reason: "unavailable" })),
+        }).request("/rewards/bonus-assets", { headers: { authorization: "Bearer test" } })
+      ).status,
+    ).toBe(502);
+    expect(
+      await (
+        await fixture().request("/rewards/bonus-assets", {
+          headers: { authorization: "Bearer test" },
+        })
+      ).json(),
+    ).toEqual({ items: [], next_cursor: null });
+    const anonymous = createHttpWorker({
+      config: { corsOrigin: "https://app.pirate.test" },
+      authenticate: unexpected,
+      authorize: unexpected,
+      handlers: { ListAdmittedRewardAssets: unexpected },
+    });
+    expect((await anonymous.request("/rewards/bonus-assets")).status).toBe(401);
+    const disabled = createHttpWorker({
+      config: { corsOrigin: "https://app.pirate.test" },
+      handlers: {},
+    });
+    expect(
+      (
+        await disabled.request("/rewards/bonus-assets", {
+          headers: { authorization: "Bearer test" },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await fixture(intent, {
+          policies: () =>
+            Effect.fail(
+              new SongRewardOfferRejected({ reason: "qualification-policy-unavailable" }),
+            ),
+        }).request("/rewards/qualification-policies", { headers: { authorization: "Bearer test" } })
+      ).status,
+    ).toBe(502);
+  });
+
+  test("serves qualification policy previews without caching", async () => {
+    const response = await fixture().request("/rewards/qualification-policies", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toMatchObject({
+      policies: [
+        {
+          activity: "study",
+          policy: {
+            kind: "study_session_first_pass_v2",
+            required_correct_bps: 7_000,
+            qualification_policy_version_id: "study_session_first_pass_v2@1",
+          },
+        },
+      ],
+    });
+    const anonymous = createHttpWorker({
+      config: { corsOrigin: "https://app.pirate.test" },
+      authenticate: unexpected,
+      authorize: unexpected,
+      handlers: { GetRewardQualificationPolicies: unexpected },
+    });
+    expect((await anonymous.request("/rewards/qualification-policies")).status).toBe(401);
+  });
+
   test("opens an offer then returns Fund with USDC custody instructions", async () => {
     const worker = fixture();
     const headers = { authorization: "Bearer test", "content-type": "application/json" };

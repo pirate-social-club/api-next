@@ -1250,6 +1250,13 @@ export async function createProductionHttpWorker(
             });
             const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
             return makeSongRewardOfferHandlers({
+              rewardCatalogAuthority:
+                config.API_NEXT_ENV === "production"
+                  ? null
+                  : {
+                      environment: config.API_NEXT_ENV === "staging" ? "staging" : "test",
+                      attestationId: config.MEGAPOT_ATTESTATION_ID,
+                    },
               clock: { now: Effect.sync(() => Date.now()) },
               ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
               store: makeControlPlaneSongRewardOfferStore(controlPlane),

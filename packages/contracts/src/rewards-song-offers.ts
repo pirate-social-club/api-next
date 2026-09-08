@@ -11,6 +11,11 @@ import {
   RetryableConflict,
 } from "./errors.ts";
 import { PersonaIdV1 } from "./personas.ts";
+import {
+  KaraokeQualificationPolicyV1,
+  KaraokeQualificationPolicyV2,
+  StudyQualificationPolicyV1,
+} from "./rewards-qualification.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const Address = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u));
@@ -75,6 +80,30 @@ export const MegapotFundingStatusV1 = Schema.Literals([
 ]);
 export const RewardActivityV1 = Schema.Literals(["study", "karaoke"]);
 
+export const RewardQualificationPoliciesV1 = Schema.NonEmptyArray(
+  Schema.Union([
+    Schema.Struct({ activity: Schema.Literal("study"), policy: StudyQualificationPolicyV1 }),
+    Schema.Struct({
+      activity: Schema.Literal("karaoke"),
+      policy: Schema.Union([KaraokeQualificationPolicyV1, KaraokeQualificationPolicyV2]),
+    }),
+  ]),
+).check(
+  Schema.isMaxLength(2),
+  Schema.makeFilter((policies) =>
+    new Set(policies.map((entry) => entry.activity)).size === policies.length
+      ? undefined
+      : "Duplicate activity policy",
+  ),
+);
+export type RewardQualificationPoliciesV1 = Schema.Schema.Type<
+  typeof RewardQualificationPoliciesV1
+>;
+const ExpectedQualificationPolicyVersions = Schema.Struct({
+  study: Schema.optionalKey(Identifier),
+  karaoke: Schema.optionalKey(Identifier),
+});
+
 export const SongRewardOfferV1 = Schema.Struct({
   object: Schema.Literal("song_reward_offer"),
   offer_id: Identifier,
@@ -106,6 +135,7 @@ export const MegapotPoolLegV1 = Schema.Struct({
   fallback_payout_persona_id: Schema.NullOr(PersonaIdV1),
   funded_atomic: NonNegativeAtomicAmount,
   leg_terms_hash: Bytes32,
+  qualification_policies: Schema.NullOr(RewardQualificationPoliciesV1),
 });
 export type MegapotPoolLegV1 = Schema.Schema.Type<typeof MegapotPoolLegV1>;
 
@@ -143,6 +173,7 @@ export const AssetBonusLegV1 = Schema.Struct({
   funded_atomic: NonNegativeAtomicAmount,
   fulfilled_atomic: NonNegativeAtomicAmount,
   leg_terms_hash: Bytes32,
+  qualification_policies: Schema.NullOr(RewardQualificationPoliciesV1),
 });
 export type AssetBonusLegV1 = Schema.Schema.Type<typeof AssetBonusLegV1>;
 
@@ -250,6 +281,7 @@ export const SongMegapotPoolProjectionV1 = Schema.Struct({
   eligible_activities: Schema.NonEmptyArray(RewardActivityV1).check(Schema.isMaxLength(2)),
   min_score_bps: ScoreBps,
   empty_pool_policy: Schema.Literals(["no_purchase", "funder_fallback"]),
+  qualification_policies: Schema.NullOr(RewardQualificationPoliciesV1),
   allocation_rule: Schema.Literal("equal_v1"),
   ticket_custody: Schema.Literal("pirate"),
   winnings_basis: Schema.Literal("net_of_referral_win_share"),
@@ -291,6 +323,7 @@ export const RewardCreditStateV1 = Schema.Literals([
 ]);
 
 export const SongAssetBonusProjectionV1 = Schema.Struct({
+  qualification_policies: Schema.NullOr(RewardQualificationPoliciesV1),
   object: Schema.Literal("song_asset_bonus_projection"),
   offer_id: Identifier,
   leg_id: Identifier,
@@ -381,6 +414,9 @@ export const AddMegapotPoolLeg = endpoint({
     path: OfferPath,
     body: Schema.Struct({
       idempotency_key: Identifier,
+      expected_qualification_policy_versions: Schema.optionalKey(
+        ExpectedQualificationPolicyVersions,
+      ),
       persona_id: PersonaIdV1,
       funding_amount_atomic: AtomicAmount,
       max_ticket_price_atomic: AtomicAmount,
@@ -409,6 +445,9 @@ export const AddAssetBonusLeg = endpoint({
     path: OfferPath,
     body: Schema.Struct({
       idempotency_key: Identifier,
+      expected_qualification_policy_versions: Schema.optionalKey(
+        ExpectedQualificationPolicyVersions,
+      ),
       persona_id: PersonaIdV1,
       funding_amount_atomic: AtomicAmount,
       chain_id: Schema.Literal(84_532),
@@ -531,4 +570,40 @@ export const ListMyRewardCredits = endpoint({
     next_cursor: Schema.NullOr(Identifier),
   }),
   errors: [AuthError, BadRequest, NotFound, InternalError],
+});
+
+/** Current server policy preview. Creation freezes and returns the actual policies. */
+export const GetRewardQualificationPolicies = endpoint({
+  method: "GET",
+  path: "/rewards/qualification-policies",
+  auth: Auth.user(),
+  response: Schema.Struct({ policies: RewardQualificationPoliciesV1 }),
+  errors: [...CommonErrors, ProviderUnavailable],
+});
+
+/** Metadata only. Creation rechecks the exact active whitelist tuple. */
+export const AdmittedRewardAssetV1 = Schema.Struct({
+  chain_id: Schema.Literal(84_532),
+  token_address: Address,
+  token_decimals: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 77 })),
+  token_symbol: TokenSymbol,
+  asset_policy_version: AssetPolicyVersion,
+});
+export type AdmittedRewardAssetV1 = Schema.Schema.Type<typeof AdmittedRewardAssetV1>;
+
+export const ListAdmittedRewardAssets = endpoint({
+  method: "GET",
+  path: "/rewards/bonus-assets",
+  auth: Auth.user(),
+  request: {
+    query: Schema.Struct({
+      cursor: Schema.optional(Address),
+      limit: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[1-9]|[1-4][0-9]|50)$/u))),
+    }),
+  },
+  response: Schema.Struct({
+    items: Schema.Array(AdmittedRewardAssetV1).check(Schema.isMaxLength(50)),
+    next_cursor: Schema.NullOr(Address),
+  }),
+  errors: [AuthError, BadRequest, InternalError, ProviderUnavailable],
 });

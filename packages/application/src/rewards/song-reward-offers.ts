@@ -1,3 +1,4 @@
+import type { AdmittedRewardAssetV1, RewardQualificationPoliciesV1 } from "@pirate/contracts";
 import { Data, Effect } from "effect";
 import { Clock, IdGen } from "../ports.ts";
 import { canonicalBodyHash } from "../use-cases/content/common.ts";
@@ -19,6 +20,8 @@ export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOf
 
 export class SongRewardOfferRejected extends Data.TaggedError("SongRewardOfferRejected")<{
   readonly reason:
+    | "qualification-policy-changed"
+    | "qualification-policy-unavailable"
     | "fallback-policy-unavailable"
     | "idempotency-conflict"
     | "invalid-input"
@@ -70,6 +73,7 @@ export type MegapotPoolLeg = Readonly<
     fallbackPayoutPersonaId: string | null;
     fundedAtomic: bigint;
     legTermsHash: string;
+    qualificationPolicies: RewardQualificationPoliciesV1 | null;
   } & SongOwnerPolicyEvidence
 >;
 
@@ -90,6 +94,7 @@ export type AssetBonusLeg = Readonly<
     fundedAtomic: bigint;
     fulfilledAtomic: bigint;
     legTermsHash: string;
+    qualificationPolicies: RewardQualificationPoliciesV1 | null;
   } & SongOwnerPolicyEvidence
 >;
 
@@ -108,6 +113,22 @@ export type ScarceRewardPolicyV1 = Readonly<{
 }>;
 
 export interface SongRewardOfferStore {
+  readonly listAdmittedAssets: (input: {
+    readonly environment: "test" | "staging";
+    readonly attestationId: string;
+    readonly cursor: string | null;
+    readonly limit: number;
+  }) => Effect.Effect<
+    {
+      readonly items: readonly AdmittedRewardAssetV1[];
+      readonly nextCursor: string | null;
+    },
+    SongRewardOfferFailure
+  >;
+  readonly qualificationPolicies: () => Effect.Effect<
+    RewardQualificationPoliciesV1,
+    SongRewardOfferFailure
+  >;
   readonly openOffer: (input: {
     readonly actionId: string;
     readonly offerId: string;
@@ -128,6 +149,9 @@ export interface SongRewardOfferStore {
     SongRewardOfferFailure
   >;
   readonly addMegapotPoolLeg: (input: {
+    readonly expectedQualificationPolicyVersions?: Readonly<
+      Partial<Record<"study" | "karaoke", string>>
+    >;
     readonly actionId: string;
     readonly legId: string;
     readonly offerId: string;
@@ -148,6 +172,9 @@ export interface SongRewardOfferStore {
     readonly referralDisclosedAt: string | null;
   }) => Effect.Effect<Readonly<{ leg: MegapotPoolLeg; replayed: boolean }>, SongRewardOfferFailure>;
   readonly addAssetBonusLeg: (input: {
+    readonly expectedQualificationPolicyVersions?: Readonly<
+      Partial<Record<"study" | "karaoke", string>>
+    >;
     readonly actionId: string;
     readonly legId: string;
     readonly offerId: string;
@@ -218,6 +245,9 @@ export interface SongRewardOfferService {
     Clock | IdGen
   >;
   readonly addMegapotPoolLeg: (input: {
+    readonly expectedQualificationPolicyVersions?: Readonly<
+      Partial<Record<"study" | "karaoke", string>>
+    >;
     readonly accountId: string;
     readonly personaId: string;
     readonly offerId: string;
@@ -241,6 +271,9 @@ export interface SongRewardOfferService {
     Clock | IdGen
   >;
   readonly addAssetBonusLeg: (input: {
+    readonly expectedQualificationPolicyVersions?: Readonly<
+      Partial<Record<"study" | "karaoke", string>>
+    >;
     readonly accountId: string;
     readonly personaId: string;
     readonly offerId: string;
@@ -382,6 +415,9 @@ export function makeSongRewardOfferService(input: {
       max_ticket_price_atomic: request.maxTicketPriceAtomic.toString(),
       entry_cutoff_seconds: request.entryCutoffSeconds,
       eligible_activities: activities,
+      ...(request.expectedQualificationPolicyVersions === undefined
+        ? {}
+        : { expected_qualification_policy_versions: request.expectedQualificationPolicyVersions }),
       min_score_bps: request.minScoreBps,
       empty_pool_policy: request.emptyPoolPolicy,
       fallback_payout_persona_id: request.fallbackPayoutPersonaId,
@@ -408,6 +444,9 @@ export function makeSongRewardOfferService(input: {
       idempotencyKey: request.idempotencyKey,
       requestHash,
       legTermsHash: `0x${termsDigest}`,
+      ...(request.expectedQualificationPolicyVersions === undefined
+        ? {}
+        : { expectedQualificationPolicyVersions: request.expectedQualificationPolicyVersions }),
       createdAt,
       maxTicketPriceAtomic: request.maxTicketPriceAtomic,
       entryCutoffSeconds: request.entryCutoffSeconds,
@@ -499,6 +538,9 @@ export function makeSongRewardOfferService(input: {
       token_decimals: request.tokenDecimals,
       token_symbol: request.tokenSymbol,
       asset_policy_version: request.assetPolicyVersion,
+      ...(request.expectedQualificationPolicyVersions === undefined
+        ? {}
+        : { expected_qualification_policy_versions: request.expectedQualificationPolicyVersions }),
       amount_per_claim_atomic: request.amountPerClaimAtomic.toString(),
       max_claims: request.maxClaims,
     };
@@ -519,6 +561,9 @@ export function makeSongRewardOfferService(input: {
       idempotencyKey: request.idempotencyKey,
       requestHash,
       legTermsHash: `0x${termsDigest}`,
+      ...(request.expectedQualificationPolicyVersions === undefined
+        ? {}
+        : { expectedQualificationPolicyVersions: request.expectedQualificationPolicyVersions }),
       createdAt,
       chainId: request.chainId,
       tokenAddress: request.tokenAddress,

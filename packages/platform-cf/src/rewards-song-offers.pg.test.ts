@@ -2,6 +2,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
+  loadPostgresMigrations,
+  runPostgresMigrations,
+} from "../../../scripts/postgres-migrations.ts";
+import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
@@ -39,7 +43,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 20;
+const testCount = 22;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -430,6 +434,135 @@ async function seedTicketReviewCandidate(
 }
 
 suite("Postgres 17 Megapot rewards persistence", () => {
+  test("lists only admitted bonus metadata with deterministic pages and no money effects", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      await seedMegapotAuthority(admin);
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const input = {
+        environment: "staging",
+        attestationId: "megapot-base-sepolia-v2",
+        cursor: null,
+        limit: 1,
+      } as const;
+      expect(await Effect.runPromise(store.listAdmittedAssets(input))).toEqual({
+        items: [],
+        nextCursor: null,
+      });
+      for (const [token, environment, chain] of [
+        [address("b"), "staging", 84532],
+        [address("c"), "staging", 84532],
+        [address("d"), "test", 84532],
+        [address("e"), "production", 8453],
+      ] as const) {
+        await admin.query(
+          `INSERT INTO reward_asset_whitelist
+          (chain_id,token_address,decimals,symbol,asset_kind,environment,status,policy_version,activated_at,plain_erc20_verified_at)
+          VALUES ($1,$2,18,'BONUS','bonus_asset',$3,'active','bonus-v1',statement_timestamp(),statement_timestamp())`,
+          [chain, token, environment],
+        );
+      }
+      const first = await Effect.runPromise(store.listAdmittedAssets(input));
+      expect(first).toEqual({
+        items: [
+          {
+            chain_id: 84532,
+            token_address: address("b"),
+            token_decimals: 18,
+            token_symbol: "BONUS",
+            asset_policy_version: "bonus-v1",
+          },
+        ],
+        nextCursor: address("b"),
+      });
+      expect(
+        await Effect.runPromise(store.listAdmittedAssets({ ...input, cursor: first.nextCursor })),
+      ).toEqual({
+        items: [
+          {
+            chain_id: 84532,
+            token_address: address("c"),
+            token_decimals: 18,
+            token_symbol: "BONUS",
+            asset_policy_version: "bonus-v1",
+          },
+        ],
+        nextCursor: null,
+      });
+      await admin.query(
+        "UPDATE reward_asset_whitelist SET status='retired',retired_at=clock_timestamp() WHERE token_address=$1",
+        [address("b")],
+      );
+      expect(
+        (await Effect.runPromise(store.listAdmittedAssets(input))).items.map(
+          (asset) => asset.token_address,
+        ),
+      ).toEqual([address("c")]);
+      await expect(
+        Effect.runPromise(store.listAdmittedAssets({ ...input, environment: "test" })),
+      ).rejects.toMatchObject({ reason: "unavailable" });
+      await expect(
+        Effect.runPromise(store.listAdmittedAssets({ ...input, attestationId: "missing" })),
+      ).rejects.toMatchObject({ reason: "unavailable" });
+      const counts =
+        await admin.query(`SELECT (SELECT count(*)::int FROM song_reward_offers) AS offers,
+        (SELECT count(*)::int FROM song_reward_leg_funding_effects) AS funding,
+        (SELECT count(*)::int FROM reward_ledger_credits) AS credits`);
+      expect(counts.rows[0]).toEqual({ offers: 0, funding: 0, credits: 0 });
+    });
+    completedTestCount += 1;
+  });
+
+  test("migrates funded legacy legs without changing their commitments", async () => {
+    if (connectionString === undefined) throw new Error("test URL missing");
+    const schema = `reward_policy_upgrade_${process.pid}`;
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    try {
+      const migrations = await loadPostgresMigrations();
+      const migration = migrations.find(
+        (entry) => entry.version === "0134_reward_qualification_terms.sql",
+      );
+      if (migration === undefined) throw new Error("reward migration missing");
+      await runPostgresMigrations({
+        connectionString: connectionForSchema(connectionString, schema),
+        migrations: migrations.filter((entry) => entry.version < migration.version),
+      });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      const identity = await seedSong(admin, "legacy-qualification", address("d"));
+      await seedMegapotAuthority(admin);
+      const seeded = await seedActivePoolLeg(admin, identity, {
+        suffix: "legacy-qualification",
+        fallback: false,
+      });
+      const before = await admin.query(
+        "SELECT leg_terms_hash, funded_atomic, status FROM song_reward_offer_legs WHERE leg_id=$1",
+        [seeded.legId],
+      );
+      await runPostgresMigrations({
+        connectionString: connectionForSchema(connectionString, schema),
+        migrations,
+      });
+      const after = await admin.query(
+        "SELECT leg_terms_hash, funded_atomic, status, qualification_policies FROM song_reward_offer_legs WHERE leg_id=$1",
+        [seeded.legId],
+      );
+      expect(after.rows).toEqual([{ ...before.rows[0], qualification_policies: null }]);
+      const legacy = await admin.query(
+        "SELECT reward_leg_accepts_qualification($1, 'study', 'historical-policy') AS admitted",
+        [seeded.legId],
+      );
+      expect(legacy.rows[0]?.admitted).toBe(true);
+    } finally {
+      await admin.query("SET search_path TO public");
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+    completedTestCount += 1;
+  }, 60_000);
+
   test("opens an offer and one future-drawing pool leg with exact action replay", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "offer-command", address("d"));
@@ -495,6 +628,16 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       expect(opened).toMatchObject({ replayed: false, offer: { audioRevision: 3 } });
       expect(openReplay).toEqual({ ...opened, replayed: true });
 
+      const policies = await Effect.runPromise(store.qualificationPolicies());
+      expect(policies.map((entry) => entry.activity).sort()).toEqual(["karaoke", "study"]);
+      const studyPolicy = policies.find((entry) => entry.activity === "study");
+      if (studyPolicy === undefined) throw new Error("study policy missing");
+      expect(studyPolicy.policy.required_correct_bps).toBe(7_000);
+      expect(policies.find((entry) => entry.activity === "karaoke")?.policy).toMatchObject({
+        minimum_coverage_bps: 8_500,
+        minimum_final_score_bps: 7_000,
+        minimum_scored_line_count: 5,
+      });
       const legInput = {
         actionId: "reward-action-leg-command",
         legId: "reward-leg-command",
@@ -508,6 +651,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         maxTicketPriceAtomic: 20_000n,
         entryCutoffSeconds: 300,
         eligibleActivities: ["study"] as const,
+        expectedQualificationPolicyVersions: {
+          study: studyPolicy.policy.qualification_policy_version_id,
+        },
         minScoreBps: 7_000,
         emptyPoolPolicy: "no_purchase" as const,
         fallbackPayoutPersonaId: null,
@@ -515,7 +661,35 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         referralPolicyHash: null,
         referralDisclosedAt: null,
       };
+      await expect(
+        Effect.runPromise(
+          store.addMegapotPoolLeg({
+            ...legInput,
+            expectedQualificationPolicyVersions: { study: "stale-reviewed-policy" },
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "qualification-policy-changed" });
+      await expect(
+        Effect.runPromise(
+          store.addMegapotPoolLeg({ ...legInput, legTermsHash: "not-a-canonical-hash" }),
+        ),
+      ).rejects.toMatchObject({ reason: "constraint" });
       const added = await Effect.runPromise(store.addMegapotPoolLeg(legInput));
+      expect(added.leg.qualificationPolicies).toEqual([studyPolicy]);
+      expect(added.leg.legTermsHash).not.toBe(legInput.legTermsHash);
+      await expect(
+        admin.query(
+          "UPDATE song_reward_offer_legs SET qualification_policies = NULL WHERE leg_id = $1",
+          [added.leg.legId],
+        ),
+      ).rejects.toThrow("reward qualification terms are immutable");
+      const admission = await admin.query(
+        `SELECT reward_leg_accepts_qualification($1, 'study', $2) AS matching,
+          reward_leg_accepts_qualification($1, 'study', 'another-policy') AS changed,
+          reward_leg_accepts_qualification($1, 'karaoke', $2) AS other_activity`,
+        [added.leg.legId, studyPolicy.policy.qualification_policy_version_id],
+      );
+      expect(admission.rows[0]).toEqual({ matching: true, changed: false, other_activity: false });
       const legReplay = await Effect.runPromise(
         store.addMegapotPoolLeg({
           ...legInput,
@@ -593,6 +767,24 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         added.leg.legId,
       ]);
       expect(activated.rows).toEqual([{ funded_atomic: "20000", status: "active" }]);
+      await admin.query(`INSERT INTO qualification_policy_versions
+        (qualification_policy_version_id, activity_key, policy_kind, policy_document)
+        VALUES ('study_session_first_pass_v2@reviewed-next', 'study', 'study_session_first_pass_v2', '{"required_correct_bps":7000}')`);
+      await admin.query(
+        `UPDATE activity_registry SET current_policy_version_id = 'study_session_first_pass_v2@reviewed-next' WHERE activity_key = 'study'`,
+      );
+      const replayAfterPolicyChange = await Effect.runPromise(store.addMegapotPoolLeg(legInput));
+      expect(replayAfterPolicyChange.replayed).toBe(true);
+      expect(replayAfterPolicyChange.leg.qualificationPolicies).toEqual(
+        added.leg.qualificationPolicies,
+      );
+      expect(replayAfterPolicyChange.leg.legTermsHash).toBe(added.leg.legTermsHash);
+      expect(
+        (await Effect.runPromise(store.qualificationPolicies())).find(
+          (entry) => entry.activity === "study",
+        )?.policy.qualification_policy_version_id,
+      ).toBe("study_session_first_pass_v2@reviewed-next");
+
       const rows = await admin.query<{ readonly action_count: number }>(
         `SELECT count(*)::integer AS action_count FROM song_reward_offer_actions
           WHERE offer_id=$1`,
@@ -1138,6 +1330,33 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         ),
       ).rejects.toMatchObject({ _tag: "SongRewardOfferRejected", reason: "not-found" });
 
+      const catalogInput = {
+        environment: "staging",
+        attestationId: "megapot-base-sepolia-v2",
+        cursor: null,
+        limit: 25,
+      } as const;
+      expect(
+        (await Effect.runPromise(store.listAdmittedAssets(catalogInput))).items[0]?.token_address,
+      ).toBe(token);
+      await admin.query(
+        `INSERT INTO reward_asset_whitelist
+        (chain_id,token_address,decimals,symbol,asset_kind,environment,status,policy_version,activated_at,plain_erc20_verified_at)
+        VALUES (84532,$1,18,'BONUS','bonus_asset','staging','active','bonus-v1',statement_timestamp(),statement_timestamp())`,
+        [address("c")],
+      );
+      expect(
+        (await Effect.runPromise(store.listAdmittedAssets(catalogInput))).items.some(
+          (asset) => asset.token_address === address("c"),
+        ),
+      ).toBe(true);
+      await admin.query(
+        "UPDATE reward_asset_whitelist SET status='retired',retired_at=clock_timestamp() WHERE token_address=$1",
+        [address("c")],
+      );
+      await expect(
+        Effect.runPromise(store.addAssetBonusLeg({ ...legInput, tokenAddress: address("c") })),
+      ).rejects.toMatchObject({ reason: "not-found" });
       const added = await Effect.runPromise(store.addAssetBonusLeg(legInput));
       expect(added).toMatchObject({
         replayed: false,

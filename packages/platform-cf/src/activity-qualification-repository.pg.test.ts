@@ -964,6 +964,76 @@ suite("Postgres 17 activity qualification repository", () => {
     });
   });
 
+  test("does not admit a qualification whose version differs from either frozen reward type", async () => {
+    for (const kind of ["megapot_pool", "asset_bonus"] as const) {
+      await withSchema(async ({ admin, scopedConnection }) => {
+        const identity = await seedAccountSong(admin, `bound-version-${kind}`);
+        await seedVeryRewardEvidence(admin, identity.accountId, `bound-version-${kind}`);
+        await admin.query(`INSERT INTO qualification_policy_versions
+          (qualification_policy_version_id,activity_key,policy_kind,policy_document)
+          VALUES ('study_session_first_pass_v2@next','study','study_session_first_pass_v2','{"required_correct_bps":7000}')`);
+        await admin.query(
+          "UPDATE activity_registry SET current_policy_version_id='study_session_first_pass_v2@next' WHERE activity_key='study'",
+        );
+        const reward =
+          kind === "megapot_pool"
+            ? await seedOpenMegapotPool(admin, identity, `bound-version-${kind}`)
+            : await seedOpenAssetBonus(admin, identity, `bound-version-${kind}`);
+        await admin.query(
+          "UPDATE activity_registry SET current_policy_version_id='study_session_first_pass_v2@1' WHERE activity_key='study'",
+        );
+        const service = makeActivityQualificationService(
+          makeControlPlaneActivityQualificationStore(
+            makeDirectPostgresControlPlaneLayer(scopedConnection),
+          ),
+        );
+        const source = sourceFor(identity);
+        const session = await Effect.runPromise(
+          provideServices(
+            ["session-bound", "item-bound"],
+            source,
+            "2026-08-25T15:00:00.000Z",
+          )(
+            service.startStudySession({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "start-bound",
+              personaId: identity.personaId,
+              postId: identity.postId,
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+        const result = await Effect.runPromise(
+          provideServices(
+            ["answer-bound", "qualification-bound"],
+            source,
+            "2026-08-25T15:01:00.000Z",
+          )(
+            service.submitStudyAnswer({
+              accountId: identity.accountId,
+              answer: { kind: "text_response", text: "Sail away" },
+              attemptNumber: 1,
+              communityId: identity.communityId,
+              idempotencyKey: "answer-bound",
+              sessionId: session.session_id,
+              sessionItemId: session.items[0]?.session_item_id ?? "missing",
+            }),
+          ),
+        );
+        expect(result.session.qualification).not.toBeNull();
+        const counts = await admin.query(
+          `SELECT
+          (SELECT count(*)::int FROM megapot_pool_shares WHERE pool_leg_id=$1) AS shares,
+          (SELECT count(*)::int FROM song_reward_bundle_claims WHERE offer_id=$2) AS claims,
+          (SELECT count(*)::int FROM reward_ledger_credits) AS credits`,
+          [reward.legId, reward.offerId],
+        );
+        expect(counts.rows[0]).toEqual({ shares: 0, claims: 0, credits: 0 });
+      });
+    }
+  });
+
   test("projects Study qualification into one Very-gated Megapot share per account", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const identity = await seedAccountSong(admin, "pool-share");

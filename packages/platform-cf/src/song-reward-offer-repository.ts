@@ -9,8 +9,13 @@ import {
   SongRewardOfferStorageFailed,
   type SongRewardOfferStore,
 } from "@pirate/application";
+import { AdmittedRewardAssetV1 } from "@pirate/contracts";
 import { VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE } from "@pirate/domain";
-import { Effect, type Layer } from "effect";
+import { Effect, type Layer, Schema } from "effect";
+import {
+  decodeCurrentRewardQualificationPolicies,
+  decodeRewardQualificationPolicies,
+} from "./reward-qualification-policy.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -111,7 +116,7 @@ const LEG_SELECT = `
          leg.entry_cutoff_seconds, leg.participation_starts_drawing_id,
          leg.eligible_activities, leg.min_score_bps, leg.empty_pool_policy,
          leg.fallback_payout_persona_id, leg.funded_atomic, leg.leg_terms_hash,
-         leg.owner_policy_kind, leg.owner_policy_revision, leg.owner_policy_hash
+         leg.owner_policy_kind, leg.owner_policy_revision, leg.owner_policy_hash, leg.qualification_policies
     FROM song_reward_offer_legs leg
     JOIN megapot_deployment_attestations attestation
       ON attestation.attestation_id=leg.attestation_id`;
@@ -122,7 +127,7 @@ const ASSET_LEG_SELECT = `
          leg.asset_policy_version, attestation.custody_address,
          leg.amount_per_claim_atomic, leg.max_claims, leg.funded_atomic,
          leg.fulfilled_atomic, leg.leg_terms_hash,
-         leg.owner_policy_kind, leg.owner_policy_revision, leg.owner_policy_hash
+         leg.owner_policy_kind, leg.owner_policy_revision, leg.owner_policy_hash, leg.qualification_policies
     FROM song_reward_offer_legs leg
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
@@ -179,6 +184,7 @@ function legFromRow(row: Row): MegapotPoolLeg {
     fundedAtomic: bigint(row, "funded_atomic"),
     legTermsHash: text(row, "leg_terms_hash"),
     ...ownerPolicyEvidence(row),
+    qualificationPolicies: decodeRewardQualificationPolicies(row.qualification_policies),
   };
 }
 
@@ -208,6 +214,7 @@ function assetLegFromRow(row: Row): AssetBonusLeg {
     fulfilledAtomic: bigint(row, "fulfilled_atomic"),
     legTermsHash: text(row, "leg_terms_hash"),
     ...ownerPolicyEvidence(row),
+    qualificationPolicies: decodeRewardQualificationPolicies(row.qualification_policies),
   };
 }
 
@@ -274,8 +281,98 @@ const lockAction = (
     readonly: false,
   });
 
+const lockQualificationPolicies = Effect.fn("SongRewardOffer.lockQualificationPolicies")(function* (
+  transaction: ControlPlaneTransaction,
+  activities: readonly string[],
+  expected?: Readonly<Partial<Record<"study" | "karaoke", string>>>,
+) {
+  yield* transaction.execute({
+    label: "song-reward-offer.qualification.lock",
+    text: "SELECT activity_key FROM activity_registry WHERE activity_key=ANY($1::text[]) ORDER BY activity_key FOR SHARE",
+    values: [activities],
+    readonly: false,
+  });
+  const result = yield* transaction.execute<Row>({
+    label: "song-reward-offer.qualification.current",
+    text: "SELECT reward_current_qualification_policies($1::text[]) AS policies",
+    values: [activities],
+    readonly: false,
+  });
+  const policies = yield* Effect.try({
+    try: () => decodeCurrentRewardQualificationPolicies(result.rows[0]?.policies),
+    catch: () => rejected("qualification-policy-unavailable"),
+  });
+  if (
+    expected !== undefined &&
+    (Object.keys(expected).length !== policies.length ||
+      policies.some(
+        (entry) => expected[entry.activity] !== entry.policy.qualification_policy_version_id,
+      ))
+  ) {
+    return yield* rejected("qualification-policy-changed");
+  }
+});
+
 export function makeControlPlaneSongRewardOfferRepository() {
   return {
+    listAdmittedAssets: (input: Parameters<SongRewardOfferStore["listAdmittedAssets"]>[0]) =>
+      Effect.gen(function* () {
+        if (
+          !Number.isInteger(input.limit) ||
+          input.limit < 1 ||
+          input.limit > 50 ||
+          !["test", "staging"].includes(input.environment) ||
+          (input.cursor !== null && !/^0x[0-9a-f]{40}$/u.test(input.cursor))
+        ) {
+          return yield* rejected("invalid-input");
+        }
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "song-reward-offer.admitted-assets",
+          text: `WITH authority AS (
+            SELECT chain_id, environment FROM megapot_deployment_attestations
+            WHERE attestation_id=$1 AND environment=$2 AND chain_id=84532 AND status='active'
+          ), page AS (
+            SELECT asset.chain_id, asset.token_address, asset.decimals AS token_decimals,
+              asset.symbol AS token_symbol, asset.policy_version AS asset_policy_version
+            FROM reward_asset_whitelist asset JOIN authority
+              ON authority.chain_id=asset.chain_id AND authority.environment=asset.environment
+            WHERE asset.asset_kind='bonus_asset' AND asset.status='active'
+              AND asset.plain_erc20_verified_at IS NOT NULL
+              AND ($3::text IS NULL OR asset.token_address > $3)
+            ORDER BY asset.token_address LIMIT $4
+          ) SELECT EXISTS (SELECT 1 FROM authority) AS available,
+            coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY token_address) FROM page), '[]'::jsonb) AS items`,
+          values: [input.attestationId, input.environment, input.cursor, input.limit + 1],
+          readonly: true,
+        });
+        const row = result.rows[0];
+        if (row?.available !== true) return yield* storage("unavailable");
+        const items = yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(Schema.Array(AdmittedRewardAssetV1))(row.items),
+          catch: () => storage("invalid-row"),
+        });
+        const page = items.slice(0, input.limit);
+        return {
+          items: page,
+          nextCursor: items.length > input.limit ? (page.at(-1)?.token_address ?? null) : null,
+        };
+      }).pipe(mapped),
+
+    qualificationPolicies: () =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "song-reward-offer.qualification.preview",
+          text: "SELECT reward_current_qualification_policies(ARRAY['study','karaoke']) AS policies",
+          values: [],
+          readonly: true,
+        });
+        return yield* Effect.try({
+          try: () => decodeCurrentRewardQualificationPolicies(result.rows[0]?.policies),
+          catch: () => rejected("qualification-policy-unavailable"),
+        });
+      }).pipe(mapped),
     openOffer: (input: Parameters<SongRewardOfferStore["openOffer"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -530,6 +627,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
             ) {
               return yield* rejected("persona-ineligible");
             }
+            yield* lockQualificationPolicies(
+              transaction,
+              input.eligibleActivities,
+              input.expectedQualificationPolicyVersions,
+            );
             yield* transaction.execute({
               label: "song-reward-offer.leg.create",
               text: `INSERT INTO song_reward_offer_legs (
@@ -700,6 +802,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
             ) {
               return yield* rejected("owner-only");
             }
+            yield* lockQualificationPolicies(
+              transaction,
+              ["study", "karaoke"],
+              input.expectedQualificationPolicyVersions,
+            );
             yield* transaction.execute({
               label: "song-reward-offer.asset-leg.create",
               text: `INSERT INTO song_reward_offer_legs (
@@ -844,6 +951,8 @@ export const makeControlPlaneSongRewardOfferStore = (
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(layer)(effect));
   return {
+    listAdmittedAssets: (input) => provide(repository.listAdmittedAssets(input)),
+    qualificationPolicies: () => provide(repository.qualificationPolicies()),
     openOffer: (input) => provide(repository.openOffer(input)),
     addMegapotPoolLeg: (input) => provide(repository.addMegapotPoolLeg(input)),
     addAssetBonusLeg: (input) => provide(repository.addAssetBonusLeg(input)),
