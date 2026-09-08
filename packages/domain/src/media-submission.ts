@@ -272,7 +272,7 @@ export type MediaOutboxPayload =
     }>
   | Readonly<{
       kind: "decision_wakeup";
-      trigger: "terms" | "lyrics";
+      trigger: "terms" | "lyrics" | "reference";
       submission_id: string;
       operation_id: string;
       creation_revision: number;
@@ -1238,7 +1238,7 @@ export function transitionMediaSubmission(
         boundReference: command.reference,
         analysis,
         status: "processing",
-        phase: "analysis",
+        phase: current.terms === null ? "analysis" : "decision",
         action: null,
         decision: null,
         decisionRevision: 0,

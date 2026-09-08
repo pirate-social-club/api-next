@@ -1,6 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { HnsOwnerTransport } from "@pirate/platform-cf/namespace-ownership-provider-registry";
+import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Effect } from "effect";
+import { createMediaSubmissionState } from "../../../packages/domain/src/media-submission.ts";
 import { makeHttpWorkerTestBindings as bindings } from "./composition.test-fixtures.ts";
 import type { HttpWorkerBindings } from "./composition.ts";
 
@@ -11,9 +13,11 @@ mock.module("cloudflare:workers", () => ({
   DurableObject: class DurableObject {},
 }));
 
-const { createProductionHttpWorker, makeProductionIdentityRegistrationRateLimiter } = await import(
-  "./composition.ts"
-);
+const {
+  createProductionHttpWorker,
+  makeProductionIdentityRegistrationRateLimiter,
+  makeProductionMediaSubmissionServices,
+} = await import("./composition.ts");
 
 function withVeryOauth(bindings: HttpWorkerBindings): HttpWorkerBindings {
   return {
@@ -232,6 +236,50 @@ describe("HTTP production composition", () => {
     );
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+  });
+
+  test("default media composition constructs a real reference resolver without a test override", async () => {
+    const configured = await bindings();
+    const runtime = makeHyperdriveControlPlaneLayer({
+      connectionString: "postgres://test.invalid/reference-composition",
+    });
+    const personaStore = { findOwned: () => Effect.succeed(null) };
+    expect(makeProductionMediaSubmissionServices(configured, runtime, personaStore)).toBeNull();
+    const services = makeProductionMediaSubmissionServices(
+      {
+        ...configured,
+        MEDIA_UPLOADS_ENABLED: "true",
+        MEDIA_INGRESS_R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+        MEDIA_INGRESS_R2_BUCKET_NAME: "fixture",
+        MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "fixture",
+        MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "fixture",
+        MEDIA_INGRESS: { head: async () => null, get: async () => null },
+        MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null, put: async () => null },
+      },
+      runtime,
+      personaStore,
+    );
+    if (services?.referenceResolver === undefined) throw new Error("production resolver missing");
+    const submission = createMediaSubmissionState({
+      event: "submission_reserved",
+      actorId: "account",
+      personaId: "persona",
+      expectedCreationRevision: 0,
+      submissionId: "submission",
+      operationId: "operation",
+      communityId: "community",
+      title: "Fixture",
+      songType: "original",
+      reservationId: "reservation",
+    });
+    await expect(
+      services.referenceResolver.resolve({
+        actorUserId: "account",
+        submission,
+        referenceRequestRef: "request",
+        upstreamAssetId: "source",
+      }),
+    ).rejects.toMatchObject({ details: { reason_code: "reference_request_invalid" } });
   });
 
   test("fails closed before route construction when a provider setting is absent", async () => {
