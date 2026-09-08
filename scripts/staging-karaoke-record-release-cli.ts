@@ -14,6 +14,7 @@ import {
 } from "./staging-karaoke-journal-manifest.ts";
 import { prepareKaraokeRecording } from "./staging-karaoke-recording-context.ts";
 import { loadKaraokeReleaseConfiguration } from "./staging-karaoke-release-config.ts";
+import { assertKaraokeRepositoryRoot } from "./staging-karaoke-repository-root.ts";
 
 /** Consumes only a signature-verified journal reading. Successful exit, stdout,
  * caller booleans and an old release entry cannot satisfy this attestation. */
@@ -61,6 +62,7 @@ export async function verifyKaraokeReleaseAttestation(input: {
 }
 
 export async function runKaraokeReleaseCli(configPath: string, assertionPath: string) {
+  assertKaraokeRepositoryRoot();
   const { config, live, challenge, started } = await prepareKaraokeRecording(
     configPath,
     assertionPath,

@@ -3,6 +3,7 @@ import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconc
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 import { KaraokeReleaseFailure } from "./staging-karaoke-release-failure.ts";
 import type { KaraokeReleaseSurfaces } from "./staging-karaoke-release-operation.ts";
+import { assertKaraokeRepositoryRoot } from "./staging-karaoke-repository-root.ts";
 import {
   compileApprovedStagingPrivileges,
   verifyApprovedStagingRuntime,
@@ -48,9 +49,9 @@ export function makeKaraokeDatabaseRelease(configuration: {
 }) {
   const input = structuredClone(configuration);
   // The stdin bundle has no scripts/ module directory. The release CLI is
-  // invoked from its api-next checkout; Git objects still undergo the exact
+  // required to run from its api-next checkout; Git objects still undergo the exact
   // approved SHA, manifest and baseline validation, independent of HEAD.
-  const repositoryRoot = process.cwd();
+  const repositoryRoot = assertKaraokeRepositoryRoot();
   const bound = async () => {
     const binding = await collectStagingProviderBinding();
     if (

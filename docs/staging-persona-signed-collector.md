@@ -855,3 +855,21 @@ suite's scheduling priority. All 16 claim tests and 81 assertions passed
 locally with this correction; their concurrency, interruption and durability
 assertions are unchanged. A fresh remote run is required; the failed check is
 not reclassified as a pass.
+
+### Release handoff clarifications — 2026-09-08
+
+A database release can commit the reviewed grants and CONNECT, then lose the
+process before independent readback or receipt persistence. A missing receipt
+therefore does not prove that no grant occurred: runtime grants may already be
+present. Recovery remains unresolved without the required authenticated effect
+evidence, preserves the state actually reached, and never compensates or retries
+grant restoration based on missing evidence.
+
+The parent release CLI and database factory assert that their working directory
+is the api-next Git checkout root with the pinned reset commit available. They
+refuse a subdirectory, unrelated checkout or missing approved history before
+provider access; they never discover or substitute another root. The bundled
+stdin entrypoint uses this same assertion because it has no scripts directory.
+The full immutable manifest, baseline and migration checksum validation remains
+mandatory when compiling the approved grant vocabulary; checkout identity alone
+does not grant authority or replace those pins.
