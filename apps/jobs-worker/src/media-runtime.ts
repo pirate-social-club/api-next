@@ -31,6 +31,7 @@ import {
   type MediaWorkflowSweepResult,
   sweepMissingMediaWorkflows,
 } from "./media-workflow-sweep.ts";
+import { dispatchSongSourceRecordings } from "./song-source-recording-dispatch.ts";
 import {
   dispatchEligibleVideoAnalysisOutbox,
   makeVideoAnalysisOutboxDispatchSource,
@@ -41,6 +42,7 @@ export type MediaJobsBindings = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_ENABLED?: string;
   readonly VIDEO_DELIVERY_ENABLED?: string;
+  readonly SONG_SOURCE_RECORDING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
   readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
   readonly VIDEO_WORKFLOW_NAME?: string;
@@ -134,7 +136,7 @@ export function makeMediaMaintenance(
             wakeups: makeVideoPublicationWakeupStore(runtime),
           });
         }
-        const [song, video, enrichment] = await Promise.all([
+        const [song, video, enrichment, sourceRecording] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
@@ -142,11 +144,16 @@ export function makeMediaMaintenance(
           enrichmentSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
             : dispatchVideoEnrichment(enrichmentSource, queue),
+          env.SONG_SOURCE_RECORDING_ENABLED === "true"
+            ? dispatchSongSourceRecordings(runtime, {
+                send: (message) => queue.send(message as unknown as { readonly outbox_id: string }),
+              })
+            : Promise.resolve({ selected: 0, sent: 0, failed: 0 }),
         ]);
         return Object.freeze({
-          selected: song.selected + video.selected + enrichment.selected,
-          sent: song.sent + video.sent + enrichment.sent,
-          failed: song.failed + video.failed + enrichment.failed,
+          selected: song.selected + video.selected + enrichment.selected + sourceRecording.selected,
+          sent: song.sent + video.sent + enrichment.sent + sourceRecording.sent,
+          failed: song.failed + video.failed + enrichment.failed + sourceRecording.failed,
         });
       },
       sweep: () => sweepMissingMediaWorkflows({ store, workflow }),

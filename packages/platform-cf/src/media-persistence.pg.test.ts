@@ -19,6 +19,7 @@ import type {
   MediaTransformProbeInput,
   MediaTransformService,
 } from "../../application/src/media/transform.ts";
+import type { MediaIdentificationOutcome } from "../../application/src/media-identification-provider.ts";
 import type {
   PublicationDecision,
   SongTerms,
@@ -37,6 +38,7 @@ import {
   createActivePersonaFixture,
 } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+import { makeSongSourceRecordingRepository } from "./song-source-recording-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -47,7 +49,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 42;
+const testCount = 43;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -278,6 +280,7 @@ async function createThroughDecision(
   initialLyrics?: string,
   stopBeforeAnalysis = false,
   fixture = { submission, operation, reservation },
+  selectedTerms?: SongTerms,
 ): Promise<void> {
   const { submission, operation, reservation } = fixture;
   const key = (value: string) =>
@@ -334,7 +337,7 @@ async function createThroughDecision(
       store.bindTerms({
         ...selectedCommand(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
         expectedCreationRevision: 1,
-        terms: termsFor(personaFor(connection)),
+        terms: selectedTerms ?? termsFor(personaFor(connection)),
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
@@ -2329,12 +2332,46 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("resolves a published source using retained database evidence and rejects inaccessible sources", async () => {
     await withCurrentSchema(async (admin, connection) => {
-      await createThroughDecision(connection);
+      await createThroughDecision(
+        connection,
+        decision,
+        analysis,
+        false,
+        undefined,
+        false,
+        { submission, operation, reservation },
+        {
+          ...termsFor(personaFor(connection)),
+          licensePreset: "commercial-remix",
+          commercialRemixShareBps: 1234,
+        },
+      );
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
-      const processing = makeMediaProcessingStore(runtime);
+      const processing = makeMediaProcessingStore(runtime, { songSourceCatalogBucketId: "8891" });
       const retainMatch = async (submissionId: string, operationId: string) => {
         const authority = await processing.loadAuthority(submissionId, operationId);
         if (authority === null) throw new Error("missing reference fixture");
+        const retainedMatch: MediaIdentificationOutcome = {
+          outcome: "retained_reference_match",
+          context: {
+            version: "media-identification-attempt-context-v1",
+            operationId,
+            audioRevision: 1,
+            analysisRevision: 1,
+            canonicalAudioSha256: audioSha256,
+            requestId: `request-${submissionId}`,
+            adapterRevision: "acr_adapter_1",
+          },
+          evidence: {
+            version: "media-identification-match-evidence-v1",
+            provider: "acrcloud",
+            matchKind: "custom",
+            providerMatchId: "same-recording",
+            title: "Fixture",
+            artists: ["Fixture artist"],
+            score: 99,
+          },
+        };
         const claim = await processing.startAttempt({
           authority,
           stage: "acr_primary",
@@ -2349,35 +2386,99 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         expect(
           await processing.completeAttempt(claim.lease, {
             kind: "acr",
-            value: {
-              outcome: "retained_reference_match",
-              context: {
-                version: "media-identification-attempt-context-v1",
-                operationId,
-                audioRevision: 1,
-                analysisRevision: 1,
-                canonicalAudioSha256: audioSha256,
-                requestId: `request-${submissionId}`,
-                adapterRevision: "acr_adapter_1",
-              },
-              evidence: {
-                version: "media-identification-match-evidence-v1",
-                provider: "acrcloud",
-                matchKind: "music",
-                providerMatchId: "same-recording",
-                title: "Fixture",
-                artists: ["Fixture artist"],
-                score: 99,
-              },
-            },
+            value: retainedMatch,
           }),
         ).toBe(true);
-        return authority;
+        return { authority, retainedMatch };
       };
       // This fixture exercises persisted resolver facts, not source establishment:
       // current ACR policy cannot bootstrap an allowed source from a retained match.
-      const sourceAuthority = await retainMatch(submission, operation);
-      expect(await processing.commitPublication(sourceAuthority)).toBe("committed");
+      const source = await retainMatch(submission, operation);
+      const sampleClaim = await processing.startAttempt({
+        authority: source.authority,
+        stage: "sample_primary",
+        attemptId: `source-sample-${submission}`,
+        workerId: "reference-test",
+        inputRevision: 1,
+        inputHash: audioSha256,
+        policyRevision: "sample-policy-v1",
+        adapterRevision: "transform-port-v1",
+      });
+      if (sampleClaim.kind !== "run") throw new Error("source sample fixture did not claim");
+      expect(
+        await processing.completeAttempt(sampleClaim.lease, {
+          kind: "sample",
+          value: {
+            status: "completed",
+            attempt: {
+              version: "media-transform-attempt-v1",
+              runtimeFence: { submittedAtMs: 1, runtimeDeadlineMs: 2 },
+              providerJobId: "source-sample-job",
+            },
+            context: {
+              version: "media-transform-attempt-context-v1",
+              operationId: operation,
+              audioRevision: 1,
+              analysisRevision: 1,
+              canonicalAudioSha256: audioSha256,
+              requestId: `source-sample-${submission}`,
+              adapterRevision: "transform-port-v1",
+            },
+            artifact: {
+              version: "media-transform-sample-artifact-v1",
+              objectKey: "sample.mp3",
+              contentType: "audio/mpeg",
+              byteLength: 1,
+              offsetMs: 42_000,
+              durationMs: 12_000,
+              variant: "primary",
+              retainedObjectVerification: "required",
+            },
+          },
+        }),
+      ).toBe(true);
+      expect(await processing.commitPublication(source.authority)).toBe("committed");
+      const sourceRecordings = makeSongSourceRecordingRepository(runtime);
+      const eligible = await sourceRecordings.listEligible(10);
+      expect(eligible).toHaveLength(1);
+      const registrationId = eligible[0];
+      if (registrationId === undefined) throw new Error("missing automatic source registration");
+      const uploadClaim = await sourceRecordings.claim(registrationId, "source-worker", 60);
+      if (uploadClaim === null) throw new Error("missing source upload claim");
+      expect(
+        await sourceRecordings.acceptProviderFile({
+          registrationId: uploadClaim.registrationId,
+          workerId: "source-worker",
+          claimFence: uploadClaim.claimFence,
+          file: {
+            providerFileId: "20",
+            providerMatchId: "same-recording",
+            bucketId: uploadClaim.bucketId,
+            opaqueTitle: uploadClaim.opaqueTitle,
+            state: "ready",
+            registrationId: uploadClaim.registrationId,
+            assetId: uploadClaim.assetId,
+            canonicalAudioSha256: uploadClaim.canonicalAudioSha256,
+          },
+          evidenceDigest: "c".repeat(64),
+        }),
+      ).toBe(true);
+      await admin.query(
+        "UPDATE song_source_recording_outbox SET next_eligible_at=clock_timestamp()-interval '1 second' WHERE registration_id=$1",
+        [registrationId],
+      );
+      const verificationClaim = await sourceRecordings.claim(registrationId, "source-worker", 60);
+      if (verificationClaim === null) throw new Error("missing source verification claim");
+      expect(
+        await sourceRecordings.markReady({
+          registrationId: verificationClaim.registrationId,
+          workerId: "source-worker",
+          claimFence: verificationClaim.claimFence,
+          providerFileId: "20",
+          providerMatchId: "same-recording",
+          identificationEvidence: source.retainedMatch,
+        }),
+      ).toBe(true);
       const derivative = {
         submission: "reference_derivative",
         operation: "reference_derivative_operation",
@@ -2432,8 +2533,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       };
       expect(await resolver.resolve(input)).toMatchObject({
         assetId: `media-post-${operation}`,
-        inheritedLicensePreset: "non-commercial",
-        upstreamCommercialRevShareBps: null,
+        inheritedLicensePreset: "commercial-remix",
+        upstreamCommercialRevShareBps: 1234,
         evidenceAudioSha256: audioSha256,
       });
       await expect(
@@ -2553,6 +2654,46 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (await processing.loadAuthority(derivative.submission, derivative.operation))?.status,
       ).toBe("published");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("keeps publication successful when source enrollment evidence is unavailable", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(
+        connection,
+        decision,
+        analysis,
+        false,
+        undefined,
+        false,
+        { submission, operation, reservation },
+        {
+          ...termsFor(personaFor(connection)),
+          licensePreset: "commercial-remix",
+          commercialRemixShareBps: 1234,
+        },
+      );
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+        songSourceCatalogBucketId: "8891",
+      });
+      const authority = await processing.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing publication authority");
+      expect(await processing.commitPublication(authority)).toBe("committed");
+      expect(
+        (
+          await admin.query(
+            "SELECT registration_id FROM song_source_recording_registrations WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([]);
+      expect(
+        (
+          await admin.query("SELECT status FROM media_post_submissions WHERE submission_id=$1", [
+            submission,
+          ])
+        ).rows,
+      ).toEqual([{ status: "published" }]);
     });
     completedTestCount += 1;
   }, 40_000);

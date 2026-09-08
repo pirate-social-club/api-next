@@ -89,6 +89,7 @@ export type MediaProcessingStoreOptions = Readonly<{
   readonly workflowCandidateLimit?: number;
   readonly now?: () => number;
   readonly dataRegistrationChainId?: bigint;
+  readonly songSourceCatalogBucketId?: string;
 }>;
 
 const validId = (value: unknown): value is string =>
@@ -256,6 +257,9 @@ export function makeMediaProcessingStore(
     ...(options.dataRegistrationChainId === undefined
       ? {}
       : { dataRegistrationChainId: options.dataRegistrationChainId }),
+    ...(options.songSourceCatalogBucketId === undefined
+      ? {}
+      : { songSourceCatalogBucketId: options.songSourceCatalogBucketId }),
   });
   const outbox = makeControlPlaneMediaOutboxRepository();
   const attemptLeaseSeconds = options.attemptLeaseSeconds ?? 300;

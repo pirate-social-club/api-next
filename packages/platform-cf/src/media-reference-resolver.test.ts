@@ -101,7 +101,7 @@ function attempt(which: "source" | "current", match = "recording") {
         evidence: {
           version: "media-identification-match-evidence-v1",
           provider: "acrcloud",
-          matchKind: "music",
+          matchKind: "custom",
           providerMatchId: match,
         },
       },
@@ -127,9 +127,11 @@ function fixture(
     const rows =
       statement.label === "media-reference.source"
         ? (options.sources ?? [source])
-        : statement.values?.[0] === "current"
-          ? (options.current ?? [attempt("current")])
-          : (options.upstream ?? [attempt("source")]);
+        : statement.label === "media-reference.source-recording-authority"
+          ? (options.upstream ?? [{ identification_evidence: attempt("source").result.value }])
+          : statement.values?.[0] === "current"
+            ? (options.current ?? [attempt("current")])
+            : [];
     return Effect.succeed({ rows: rows as readonly never[], rowCount: rows.length });
   };
   return {
@@ -161,17 +163,17 @@ describe("production song reference resolver", () => {
     expect(f.statements[0]?.text).toContain("can_account_view_content_rating_v1");
     expect(f.statements[0]?.text).toContain("m.status='member'");
   });
-  test("preserves explicit zero and uses null for non-commercial inherited shares", async () => {
+  test("preserves explicit zero and refuses a non-remix source", async () => {
     expect(
       await fixture({ sources: [{ ...source, commercial_remix_share_bps: 0 }] }).resolver.resolve(
         input,
       ),
     ).toMatchObject({ upstreamCommercialRevShareBps: 0 });
-    expect(
-      await fixture({
+    await expect(
+      fixture({
         sources: [{ ...source, license_preset: "non-commercial", commercial_remix_share_bps: 0 }],
       }).resolver.resolve(input),
-    ).toMatchObject({ upstreamCommercialRevShareBps: null, inheritedCommercialRevShareBps: null });
+    ).rejects.toMatchObject({ details: { reason_code: "reference_source_terms_unavailable" } });
   });
   test("rejects absent, hidden, ambiguous or off-platform sources without disclosing identity", async () => {
     for (const sources of [[], [source, source]])
@@ -182,8 +184,11 @@ describe("production song reference resolver", () => {
   test("rejects unrelated, missing and contradictory recording evidence", async () => {
     for (const upstream of [
       [],
-      [attempt("source", "different")],
-      [attempt("source"), attempt("source", "different")],
+      [{ identification_evidence: attempt("source", "different").result.value }],
+      [
+        { identification_evidence: attempt("source").result.value },
+        { identification_evidence: attempt("source", "different").result.value },
+      ],
     ])
       await expect(fixture({ upstream }).resolver.resolve(input)).rejects.toMatchObject({
         details: { reason_code: "reference_recording_unverified" },

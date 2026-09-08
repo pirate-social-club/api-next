@@ -10071,6 +10071,43 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_source_recording_registration() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(NEW.registration_id,NEW.community_id,NEW.actor_user_id,NEW.author_persona_id,
+         NEW.asset_id,NEW.submission_id,NEW.operation_id,NEW.audio_revision,
+         NEW.analysis_revision,NEW.publication_revision,NEW.terms_revision,
+         NEW.canonical_audio_sha256,NEW.immutable_audio_ref,NEW.verification_sample,
+         NEW.provider,NEW.bucket_id,NEW.opaque_title,NEW.license_preset,
+         NEW.commercial_remix_share_bps,NEW.created_at)
+     IS DISTINCT FROM
+     ROW(OLD.registration_id,OLD.community_id,OLD.actor_user_id,OLD.author_persona_id,
+         OLD.asset_id,OLD.submission_id,OLD.operation_id,OLD.audio_revision,
+         OLD.analysis_revision,OLD.publication_revision,OLD.terms_revision,
+         OLD.canonical_audio_sha256,OLD.immutable_audio_ref,OLD.verification_sample,
+         OLD.provider,OLD.bucket_id,OLD.opaque_title,OLD.license_preset,
+         OLD.commercial_remix_share_bps,OLD.created_at)
+  THEN RAISE EXCEPTION 'song source recording identity is immutable'; END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'song source recording transition did not advance';
+  END IF;
+  IF OLD.state = 'pending_upload' AND NEW.state NOT IN
+      ('provider_outcome_unknown','provider_processing','failed') THEN
+    RAISE EXCEPTION 'invalid song source pending transition';
+  ELSIF OLD.state = 'provider_outcome_unknown' AND NEW.state NOT IN
+      ('provider_processing','failed') THEN
+    RAISE EXCEPTION 'invalid song source reconciliation transition';
+  ELSIF OLD.state = 'provider_processing' AND NEW.state NOT IN
+      ('provider_processing','ready','failed') THEN
+    RAISE EXCEPTION 'invalid song source processing transition';
+  ELSIF OLD.state IN ('ready','failed','deleted') AND NEW.state <> OLD.state THEN
+    RAISE EXCEPTION 'terminal song source recording state is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_song_streak_day_activity() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -26852,6 +26889,91 @@ CREATE TABLE song_reward_offers (
     CONSTRAINT song_reward_offers_terms_hash_check CHECK ((terms_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE song_source_recording_attempts (
+    attempt_id text NOT NULL,
+    registration_id text NOT NULL,
+    claim_fence bigint NOT NULL,
+    event text NOT NULL,
+    evidence_ref text NOT NULL,
+    evidence jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_source_recording_attempts_attempt_id_check CHECK (((attempt_id <> ''::text) AND (length(attempt_id) <= 1024))),
+    CONSTRAINT song_source_recording_attempts_claim_fence_check CHECK ((claim_fence > 0)),
+    CONSTRAINT song_source_recording_attempts_event_check CHECK ((event = ANY (ARRAY['provider_file_accepted'::text, 'provider_outcome_unknown'::text, 'authority_ready'::text, 'authority_failed'::text]))),
+    CONSTRAINT song_source_recording_attempts_evidence_ref_check CHECK ((evidence_ref <> ''::text))
+);
+
+CREATE TABLE song_source_recording_outbox (
+    outbox_id text NOT NULL,
+    registration_id text NOT NULL,
+    effect_identity text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    delivery_attempts integer DEFAULT 0 NOT NULL,
+    claim_owner text,
+    claim_fence bigint DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    next_eligible_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_source_recording_outbox_check CHECK (((state = 'running'::text) = ((claim_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT song_source_recording_outbox_claim_fence_check CHECK ((claim_fence >= 0)),
+    CONSTRAINT song_source_recording_outbox_delivery_attempts_check CHECK ((delivery_attempts >= 0)),
+    CONSTRAINT song_source_recording_outbox_effect_identity_check CHECK ((effect_identity <> ''::text)),
+    CONSTRAINT song_source_recording_outbox_outbox_id_check CHECK (((outbox_id <> ''::text) AND (length(outbox_id) <= 768))),
+    CONSTRAINT song_source_recording_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text])))
+);
+
+CREATE TABLE song_source_recording_registrations (
+    registration_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    author_persona_id text NOT NULL,
+    asset_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    audio_revision integer NOT NULL,
+    analysis_revision integer NOT NULL,
+    publication_revision integer NOT NULL,
+    terms_revision integer NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    immutable_audio_ref text NOT NULL,
+    verification_sample jsonb NOT NULL,
+    provider text NOT NULL,
+    bucket_id text NOT NULL,
+    opaque_title text NOT NULL,
+    license_preset text NOT NULL,
+    commercial_remix_share_bps integer NOT NULL,
+    state text DEFAULT 'pending_upload'::text NOT NULL,
+    provider_file_id text,
+    provider_match_id text,
+    upload_evidence_digest text,
+    identification_evidence jsonb,
+    failure_code text,
+    failure_evidence_ref text,
+    ready_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_source_recording_registra_commercial_remix_share_bps_check CHECK (((commercial_remix_share_bps >= 0) AND (commercial_remix_share_bps <= 10000))),
+    CONSTRAINT song_source_recording_registration_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT song_source_recording_registration_upload_evidence_digest_check CHECK (((upload_evidence_digest IS NULL) OR (upload_evidence_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT song_source_recording_registrations_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT song_source_recording_registrations_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT song_source_recording_registrations_bucket_id_check CHECK ((bucket_id ~ '^[1-9][0-9]*$'::text)),
+    CONSTRAINT song_source_recording_registrations_check CHECK (((state = 'ready'::text) = (ready_at IS NOT NULL))),
+    CONSTRAINT song_source_recording_registrations_check1 CHECK (((state <> ALL (ARRAY['provider_processing'::text, 'ready'::text])) OR ((provider_file_id IS NOT NULL) AND (provider_match_id IS NOT NULL)))),
+    CONSTRAINT song_source_recording_registrations_check2 CHECK (((failure_code IS NULL) = (failure_evidence_ref IS NULL))),
+    CONSTRAINT song_source_recording_registrations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['catalog_configuration_invalid'::text, 'catalog_upload_rejected'::text, 'catalog_record_ambiguous'::text, 'catalog_record_invalid'::text, 'catalog_processing_failed'::text, 'verification_rejected'::text, 'verification_mismatch'::text])))),
+    CONSTRAINT song_source_recording_registrations_immutable_audio_ref_check CHECK ((immutable_audio_ref <> ''::text)),
+    CONSTRAINT song_source_recording_registrations_license_preset_check CHECK ((license_preset = 'commercial-remix'::text)),
+    CONSTRAINT song_source_recording_registrations_opaque_title_check CHECK (((opaque_title <> ''::text) AND (length(opaque_title) <= 512))),
+    CONSTRAINT song_source_recording_registrations_provider_check CHECK ((provider = 'acrcloud'::text)),
+    CONSTRAINT song_source_recording_registrations_publication_revision_check CHECK ((publication_revision > 0)),
+    CONSTRAINT song_source_recording_registrations_registration_id_check CHECK (((registration_id <> ''::text) AND (length(registration_id) <= 512))),
+    CONSTRAINT song_source_recording_registrations_state_check CHECK ((state = ANY (ARRAY['pending_upload'::text, 'provider_outcome_unknown'::text, 'provider_processing'::text, 'ready'::text, 'failed'::text, 'deletion_pending'::text, 'deleted'::text]))),
+    CONSTRAINT song_source_recording_registrations_terms_revision_check CHECK ((terms_revision > 0)),
+    CONSTRAINT song_source_recording_registrations_verification_sample_check CHECK (((jsonb_typeof(verification_sample) = 'object'::text) AND (verification_sample ?& ARRAY['objectKey'::text, 'contentType'::text, 'byteLength'::text]) AND ((verification_sample ->> 'contentType'::text) = ANY (ARRAY['audio/mpeg'::text, 'audio/wav'::text])) AND (((verification_sample ->> 'byteLength'::text))::bigint > 0)))
+);
+
 CREATE TABLE song_streak_day_activities (
     account_id text NOT NULL,
     community_id text NOT NULL,
@@ -29785,6 +29907,27 @@ ALTER TABLE ONLY song_reward_offer_legs
 ALTER TABLE ONLY song_reward_offers
     ADD CONSTRAINT song_reward_offers_pkey PRIMARY KEY (offer_id);
 
+ALTER TABLE ONLY song_source_recording_attempts
+    ADD CONSTRAINT song_source_recording_attempts_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY song_source_recording_outbox
+    ADD CONSTRAINT song_source_recording_outbox_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY song_source_recording_outbox
+    ADD CONSTRAINT song_source_recording_outbox_pkey PRIMARY KEY (outbox_id);
+
+ALTER TABLE ONLY song_source_recording_outbox
+    ADD CONSTRAINT song_source_recording_outbox_registration_id_key UNIQUE (registration_id);
+
+ALTER TABLE ONLY song_source_recording_registrations
+    ADD CONSTRAINT song_source_recording_registrations_asset_id_key UNIQUE (asset_id);
+
+ALTER TABLE ONLY song_source_recording_registrations
+    ADD CONSTRAINT song_source_recording_registrations_opaque_title_key UNIQUE (opaque_title);
+
+ALTER TABLE ONLY song_source_recording_registrations
+    ADD CONSTRAINT song_source_recording_registrations_pkey PRIMARY KEY (registration_id);
+
 ALTER TABLE ONLY song_streak_day_activities
     ADD CONSTRAINT song_streak_day_activities_pkey PRIMARY KEY (account_id, post_id, streak_day, activity_key);
 
@@ -30401,6 +30544,10 @@ CREATE INDEX song_reward_offer_legs_active_idx ON song_reward_offer_legs USING b
 CREATE UNIQUE INDEX song_reward_offer_one_open_pool_leg_uidx ON song_reward_offer_legs USING btree (offer_id) WHERE ((kind = 'megapot_pool'::text) AND (participation_ends_at IS NULL));
 
 CREATE UNIQUE INDEX song_reward_offers_one_nonterminal_per_post_uidx ON song_reward_offers USING btree (community_id, post_id) WHERE (status = ANY (ARRAY['draft'::text, 'active'::text, 'paused'::text, 'operational_hold'::text]));
+
+CREATE INDEX song_source_recording_outbox_eligible_idx ON song_source_recording_outbox USING btree (next_eligible_at, created_at, outbox_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text]));
+
+CREATE UNIQUE INDEX song_source_recording_provider_identity_uq ON song_source_recording_registrations USING btree (provider, bucket_id, provider_match_id) WHERE (provider_match_id IS NOT NULL);
 
 CREATE INDEX song_streak_days_recompute_idx ON song_streak_days USING btree (account_id, post_id, streak_day);
 
@@ -31359,6 +31506,8 @@ CREATE TRIGGER song_reward_offer_asset_legs_asset_guard BEFORE INSERT OR UPDATE 
 CREATE TRIGGER song_reward_offer_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_leg();
 
 CREATE TRIGGER song_reward_offers_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offers FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer();
+
+CREATE TRIGGER song_source_recording_registration_guard BEFORE UPDATE ON song_source_recording_registrations FOR EACH ROW EXECUTE FUNCTION guard_song_source_recording_registration();
 
 CREATE TRIGGER song_streak_day_activities_change_guard BEFORE DELETE OR UPDATE ON song_streak_day_activities FOR EACH ROW EXECUTE FUNCTION guard_song_streak_day_activity();
 
@@ -33626,6 +33775,18 @@ ALTER TABLE ONLY song_reward_offers
 
 ALTER TABLE ONLY song_reward_offers
     ADD CONSTRAINT song_reward_offers_created_by_account_id_fkey FOREIGN KEY (created_by_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_source_recording_attempts
+    ADD CONSTRAINT song_source_recording_attempts_registration_id_fkey FOREIGN KEY (registration_id) REFERENCES song_source_recording_registrations(registration_id);
+
+ALTER TABLE ONLY song_source_recording_outbox
+    ADD CONSTRAINT song_source_recording_outbox_registration_id_fkey FOREIGN KEY (registration_id) REFERENCES song_source_recording_registrations(registration_id);
+
+ALTER TABLE ONLY song_source_recording_registrations
+    ADD CONSTRAINT song_source_recording_registr_community_id_actor_user_id_s_fkey FOREIGN KEY (community_id, actor_user_id, submission_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id);
+
+ALTER TABLE ONLY song_source_recording_registrations
+    ADD CONSTRAINT song_source_recording_registrations_community_id_asset_id_fkey FOREIGN KEY (community_id, asset_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY song_streak_day_activities
     ADD CONSTRAINT song_streak_day_activities_account_id_post_id_streak_day_fkey FOREIGN KEY (account_id, post_id, streak_day) REFERENCES song_streak_days(account_id, post_id, streak_day);

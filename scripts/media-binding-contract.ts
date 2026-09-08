@@ -3,6 +3,7 @@ import type { MediaProcessorRuntimeEnv } from "../apps/media-processor-worker/sr
 export const MEDIA_BINDING_KINDS = {
   CONTROL_PLANE: "platform",
   MEDIA_PROCESSING_ENABLED: "var",
+  SONG_SOURCE_RECORDING_ENABLED: "var",
   VIDEO_ANALYSIS_ENABLED: "var",
   VIDEO_DELIVERY_ENABLED: "var",
   VIDEO_STREAM_API_TOKEN: "secret",
@@ -18,6 +19,9 @@ export const MEDIA_BINDING_KINDS = {
   ACRCLOUD_IDENTIFY_HOST: "var",
   ACRCLOUD_ACCESS_KEY: "secret",
   ACRCLOUD_ACCESS_SECRET: "secret",
+  ACRCLOUD_CONSOLE_ORIGIN: "var",
+  ACRCLOUD_CONSOLE_TOKEN: "secret",
+  ACRCLOUD_SOURCE_BUCKET_ID: "var",
   ELEVENLABS_API_KEY: "secret",
   OPENAI_API_KEY: "secret",
   OPENAI_MODERATION_ENABLED: "var",

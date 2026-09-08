@@ -69,6 +69,9 @@
         "VIDEO_DELIVERY_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
     "DATA_REGISTRATION_ENABLED": "false",
+    "SONG_SOURCE_RECORDING_ENABLED": "false",
+    "ACRCLOUD_CONSOLE_ORIGIN": "",
+    "ACRCLOUD_SOURCE_BUCKET_ID": "",
     "DATA_REGISTRATION_CHAIN_ID": "1315",
     "ACRCLOUD_IDENTIFY_HOST": ""
   },
@@ -149,6 +152,9 @@
         "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
         "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
         "DATA_REGISTRATION_ENABLED": "true",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "ACRCLOUD_CONSOLE_ORIGIN": "",
+        "ACRCLOUD_SOURCE_BUCKET_ID": "",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
       },
@@ -232,6 +238,9 @@
         "VIDEO_DELIVERY_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
         "DATA_REGISTRATION_ENABLED": "false",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "ACRCLOUD_CONSOLE_ORIGIN": "",
+        "ACRCLOUD_SOURCE_BUCKET_ID": "",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "ACRCLOUD_IDENTIFY_HOST": ""
       },
