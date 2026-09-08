@@ -1,4 +1,4 @@
-# Video master renderer spike — checkpoints 1 through 5
+# Video master renderer spike — checkpoints 1 through 7
 
 Status: five bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
@@ -337,6 +337,147 @@ Sources retrieved 2026-09-02:
 - https://developers.cloudflare.com/containers/concepts/architecture/
 - https://developers.cloudflare.com/containers/platform/limits/
 - https://developers.cloudflare.com/durable-objects/api/container/
+
+## Checkpoint 7: immutable image, attributable limits, measured overlap
+
+This checkpoint narrows checkpoint 6's claims and replaces its weakest evidence.
+It is still local Docker evidence on the development host. It is not independent
+review, a Cloudflare Container selection, a deployment, a production budget, or
+live proof. No credential, provider request, R2 object, Stream input, DATA
+operation, or production media was used.
+
+### Corrections to checkpoint 6
+
+Checkpoint 6 reported that the container "enforced the observed cgroup and
+filesystem envelope". It did not establish that. It read the configured limits
+from `/sys/fs/cgroup` and observed that two processes existed at one instant and
+eventually succeeded. Reading a limit is not enforcing it, and coexistence at a
+single observation point is not overlap. Four specific claims are corrected here:
+
+- the configured limits are now exercised to rejection rather than only read;
+- concurrency is now measured across an interval rather than sampled once;
+- the accepted canonical-replacement recipe now runs inside the image, which
+  checkpoint 6 never did; and
+- the read-only root denial is now attributed to the mount rather than assumed.
+
+The two 64-PID failures from checkpoint 6 are also no longer unexplained. That
+checkpoint removed the failed containers, so the cause was recorded as unknown
+and deliberately not labelled an out-of-memory kill. It is now reproduced with
+its state retained, and the cause is established below.
+
+### Immutable image inputs
+
+The Dockerfile no longer installs a rolling distribution package. The base image
+stays digest-pinned, package indexes come from the fixed snapshot
+`20260901T000000Z` on `snapshot.debian.org` rather than a mutable mirror, and
+FFmpeg is pinned to exactly `7:7.1.5-0+deb13u1`. The build asserts the installed
+version equals the pinned version and writes both facts into
+`/etc/renderer-image-facts`, so an upstream change fails the build instead of
+silently changing the renderer under test. The harness re-reads those facts from
+a running container and rejects any drift from the recorded pin.
+
+Two limits remain. Docker image ids are not bit-reproducible across builds even
+with identical inputs: two builds in this checkpoint produced
+`sha256:0428b576...` and `sha256:a36544cb...`. The recorded id therefore proves
+which image a given run used, not that a future rebuild reproduces it
+bit-for-bit. Reproducibility here rests on the pinned inputs and the asserted
+package version, not on a stable image digest. `snapshot.debian.org` is also an
+external dependency of the build, though not of the render.
+
+### The accepted recipe inside the image
+
+Checkpoint 6 rendered `testsrc2` and a sine tone inside the container. That is
+not the canonical-replacement recipe. The accepted recipe from checkpoint 2 now
+runs inside the pinned image, executed from the same
+`scripts/video-master-renderer-ffmpeg-evidence.ts` module the host evidence uses,
+with the repository mounted read-only so the container cannot alter the recipe it
+is proving.
+
+Inside the image the recipe reproduced every checkpoint-2 fact exactly: the same
+56 selected video packets, the same source and master packet manifest digest
+`576eb4d3516f91149df6fefcfc211b8d3487a41d5e15864ee22d5d641d8a36d7`, matching
+copied payloads, 89,600 target and 90,112 padded samples per channel, 512 zero
+padding samples, 1,024 priming samples per channel, 89 AAC packets for 88 padded
+frames, a 48,000-Hz movie timescale, and 1866.667 ms on both tracks. The master
+SHA-256 was `faa814234d417083f980deaf1f1bf9ef8a7bf9cc87b44f6279101abb90e6270b`.
+
+That digest is identical to the host result, which is a stronger observation than
+intended: the host runs Ubuntu FFmpeg `6.1.1-3ubuntu5` and the image runs Debian
+`7.1.5-0+deb13u1`, so this fixed template produced a byte-identical master across
+two FFmpeg major versions. That is one fixture on two builds, not a general
+cross-version guarantee, and it does not remove the need to pin the executable.
+
+### Measured sustained overlap
+
+Concurrency is now sampled every 100 ms from `/proc`. A sample counts as overlap
+only when both encoders are in a live process state and both accumulated CPU time
+since the previous sample, so two processes that merely exist together are not
+counted. The final run recorded 19 samples, 19 with both live, and 18 consecutive
+busy samples, giving 1,920 ms of measured overlap across a render pair that each
+produced exactly 4,000 ms of output. Earlier runs in this checkpoint measured
+2,360 ms and 2,270 ms. The validator rejects any run with fewer than two
+consecutive busy samples or less than two sampling intervals of overlap, so a
+single-instant observation can no longer pass as concurrency.
+
+The same run peaked at 88 PIDs and 134,049,792 bytes against the 384 MiB ceiling.
+
+### Attributable limit rejection
+
+Three drills now exceed a deliberately reduced ceiling and keep the failed
+container so the rejection can be attributed. A drill that merely succeeds proves
+nothing about a limit, and a discarded container cannot be diagnosed.
+
+Memory: allocating 600 MiB against a 128 MiB ceiling reached the ceiling 37
+times, recorded one `oom` and one `oom_kill` in `memory.events`, killed the
+allocation with exit 137, and left `OOMKilled` true in the retained container
+state. The memory limit is enforced, not merely configured.
+
+Processes: 40 background forks against a 16 PID ceiling recorded one
+`pids.events max` event, peaked at exactly 16, kept `memory.events oom_kill` at
+zero and `OOMKilled` false, and retained the `Cannot fork` diagnostic.
+
+Concurrent renders at 64 PIDs: this reproduces checkpoint 6's unexplained
+failure. One of the two renders exits 245 while the other completes; which one
+fails varies between runs. The retained container carries the FFmpeg diagnostic
+`pthread_create() failed: Resource temporarily unavailable`, `pids.peak` reaches
+exactly 64, `pids.events` records one ceiling event, `memory.events oom_kill` is
+zero and `OOMKilled` is false. The checkpoint-6 failures were PID exhaustion
+during thread creation, and specifically not out-of-memory kills.
+
+This also explains why raising the ceiling to 128 fixed it, without the earlier
+inference from "it worked afterwards". The successful two-render workload peaks
+at 88 PIDs, so a 64 ceiling cannot admit it and any production ceiling for two
+concurrent renders of this profile must exceed 88. That number is specific to
+this profile and its explicit one-filter-thread, two-general-thread topology.
+
+### Read-only root attribution
+
+Checkpoint 6 concluded the root filesystem was read-only from a failed write at
+`/`. An unprivileged user's write to `/` fails whether the mount is read-only or
+merely not writable by that user, so that observation did not separate the two.
+The probe now also writes into `$HOME`, which is owned by the container user
+`bun` with mode 700, so a permission denial there is impossible. Both writes
+failed as `Read-only file system`, and `/proc/self/mountinfo` reports the root
+mount options as `ro,relatime`. The denial comes from the mount.
+
+### Verification
+
+The focused container-policy suite now holds 31 tests, including negative cases
+that reject a drifted package pin, a non-digest image id, a diverged packet
+manifest, soundtrack sample accounting that does not add up, single-instant
+concurrency, a drill that never reached its ceiling, a PID failure that also ran
+out of memory, a failure with no retained diagnostic, and a permission denial
+presented as a read-only mount. All 60 renderer tests passed, and the complete
+`bun run check` passed with exit 0.
+
+### Still open after this checkpoint
+
+Durable recovery is unproven and is the next checkpoint. Nothing here shows that
+a crash or a lost render response cannot produce a second accepted master through
+persisted database state and object bytes; the compare-and-set model from
+checkpoint 4 remains an isolated in-memory model. Cloudflare Container selection,
+cold starts, fleet contention, remote bindings, production budgets, and every
+provider and live path also remain unproven, as does phase-two device evidence.
 
 ## Still unverified
 
