@@ -37,9 +37,67 @@ test("absence evidence must follow the matching stop and drained writes", () => 
 });
 test("existing output and sealed identities cannot be abandoned", () => {
   expect(assessRecoveryAdmission({ ...baseline, output: { kind: "present" } })).toBe(
-    "recover_existing_output",
+    "pending_output_resolution",
   );
   for (const state of ["sealed", "accepted"] as const) {
     expect(assessRecoveryAdmission({ ...baseline, state })).toBe("integrity_recovery_only");
+  }
+});
+
+const verifiedOutput = {
+  ...attempt,
+  kind: "verified_output" as const,
+  objectIdentity: "immutable-attempt-a-output-v1",
+  sha256: "a".repeat(64),
+  byteLength: 1024,
+  immutable: true,
+  writeCompleted: true,
+  integrityVerified: true,
+  renderInputVerified: true,
+  probeVerified: true,
+};
+
+test("verified completed output can recover without confirmed termination", () => {
+  for (const stop of [{ kind: "unconfirmed" }, { kind: "lease_expired" }] as const) {
+    expect(assessRecoveryAdmission({ ...baseline, stop, output: verifiedOutput })).toBe(
+      "recover_existing_output",
+    );
+    expect(assessRecoveryAdmission({ ...baseline, stop, output: { kind: "present" } })).toBe(
+      "pending_output_resolution",
+    );
+  }
+});
+
+test("foreign, partial, mutable, and unverified output remains unresolved", () => {
+  for (const changes of [
+    { attemptId: "attempt-b" },
+    { generation: 1 },
+    { objectIdentity: " " },
+    { sha256: "invalid" },
+    { byteLength: 0 },
+    { byteLength: -1 },
+    { byteLength: 1.5 },
+    { byteLength: Number.NaN },
+    { byteLength: Number.MAX_SAFE_INTEGER + 1 },
+    { immutable: false },
+    { writeCompleted: false },
+    { integrityVerified: false },
+    { renderInputVerified: false },
+    { probeVerified: false },
+  ]) {
+    expect(
+      assessRecoveryAdmission({
+        ...baseline,
+        output: { ...verifiedOutput, ...changes },
+      }),
+    ).toBe("pending_output_resolution");
+  }
+});
+
+test("verified output never bypasses sealed or accepted integrity recovery", () => {
+  for (const state of ["sealed", "accepted"] as const) {
+    expect(assessRecoveryAdmission({ ...baseline, state, output: verifiedOutput })).toBe(
+      "integrity_recovery_only",
+    );
   }
 });

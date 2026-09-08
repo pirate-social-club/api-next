@@ -622,7 +622,7 @@ absence evidence must identify that same attempt and generation and follow the
 same stop receipt. An empty listing, unknown lookup, stale generation, foreign
 attempt, or unresolved write cannot authorize abandonment.
 
-Existing output routes to recovery. Sealed and accepted identities route to
+Verified completed output routes to recovery. Sealed and accepted identities route to
 integrity recovery. Only a started attempt with both matching proofs becomes
 eligible for an atomic abandonment transaction, which must recheck current
 attempt state and winner identity. Eligibility is not permission to invoke a
@@ -636,26 +636,23 @@ this proposal can become a runtime contract. Database generation fencing alone
 prevents stale acceptance but does not stop an old worker consuming resources
 or writing an object. No provider is asserted to supply these guarantees.
 
-One asymmetry in the model is deliberate to name rather than leave for a
-reviewer to find. Absence is bound tightly: it must carry the attempt id, the
-generation, and the same stop receipt. Presence is bound by nothing at all, so
-`present` is accepted from any source, for any generation, and regardless of
-whether the worker is confirmed stopped. Feeding an unconfirmed or merely
-lease-expired stop alongside `present` returns `recover_existing_output`, and a
-prior generation's object cannot be distinguished from this attempt's because
-the `present` variant carries no identity.
+Presence-binding correction: the unqualified `present` variant now returns
+`pending_output_resolution`. Recovery requires `verified_output` carrying
+the matching attempt and generation, a nonempty immutable object identity,
+a SHA-256, and a positive safe-integer byte length. Completed-write,
+immutability, integrity, frozen-render-input, and probe verification must all
+be established. Foreign, stale, partial, mutable, or unverified output remains
+unresolved and cannot authorize either recovery or abandonment.
 
-This is not a replacement loophole. `present` never reaches
-`eligible_for_atomic_abandonment`, so the no-rerender invariant holds on every
-path. The risk runs the other way: recovery can be pointed at an object that is
-still being written or belongs to a different attempt. The local harness is
-protected here because sealing re-verifies the hash, but a remote adapter
-reading a listing has no such check, and the model already treats a remote
-`listing_empty` as untrustworthy while treating `present` as fully trustworthy.
-Before this becomes a runtime contract the owner should decide whether presence
-must carry the same attempt, generation, and integrity binding as absence.
+Confirmed termination is unnecessary for an already verified completed
+immutable output. Recovery may proceed while the worker response is uncertain,
+but acceptance still requires the atomic winner-selection fence. Sealed and
+accepted states retain their integrity-only route. These verification flags
+are trusted evidence inputs to this isolated model, not verification performed
+by the model; a future adapter must establish them against actual bytes and
+the frozen attempt record, never from caller assertions or listing metadata.
 
-Four local tests with 13 assertions exercise the admission model. These are
+Seven local tests with 33 assertions exercise the admission model. These are
 policy fixtures, not distributed termination or remote object-store evidence.
 The PostgreSQL recovery harness and public runtime remain unchanged.
 
