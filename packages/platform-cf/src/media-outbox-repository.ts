@@ -80,7 +80,7 @@ const payloadFor = (value: unknown, kind: EventType): MediaOutboxPayload | null 
       (object.lyrics_revision !== null &&
         (!Number.isSafeInteger(object.lyrics_revision) ||
           (object.lyrics_revision as number) < 1)) ||
-      !["terms", "lyrics"].includes(String(object.trigger)))
+      !["terms", "lyrics", "reference"].includes(String(object.trigger)))
   )
     return null;
   if (

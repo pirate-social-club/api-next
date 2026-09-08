@@ -267,7 +267,11 @@ export interface MediaUploadStore {
   ) => Promise<CommitOutcome>;
   readonly bindReference: (
     input: MediaCommandBase &
-      Readonly<{ expectedCreationRevision: number; reference: BoundReference }>,
+      Readonly<{
+        expectedCreationRevision: number;
+        reference: BoundReference;
+        outbox?: MediaOutboxWrite;
+      }>,
   ) => Promise<CommitOutcome>;
   readonly retry: (
     input: MediaCommandBase & Readonly<{ expectedCreationRevision: number }>,
@@ -1585,6 +1589,16 @@ export async function bindMediaReference(
         responseSha256: response.sha256,
         expectedCreationRevision: body.expected_creation_revision,
         reference,
+        outbox: outbox(context.view.state, context.requestHash, {
+          kind: "decision_wakeup",
+          trigger: "reference",
+          lyrics_revision: state.lyrics?.lyricsRevision ?? null,
+          submission_id: state.submissionId,
+          operation_id: state.operationId,
+          creation_revision: state.creationRevision,
+          workflow_revision: state.workflowRevision,
+          workflow_instance_id: `media-${state.operationId}-r${state.workflowRevision}`,
+        }),
       }),
       response,
     );
