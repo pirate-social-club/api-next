@@ -434,6 +434,20 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                 ? yield* Effect.fail(storageFailure())
                 : ({ kind: "replay", value } as const);
             }
+            const attached = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.check-attached-root",
+              text: `SELECT EXISTS (
+                       SELECT 1 FROM community_canonical_route_bindings
+                        WHERE family='hns' AND root_label=$1
+                          AND route_lifecycle_status='active'
+                     ) AS attached`,
+              values: [input.request.root_label],
+              readonly: false,
+            });
+            const attachedRow = oneRow(attached);
+            if (attachedRow === undefined) return yield* Effect.fail(storageFailure());
+            if (attachedRow?.attached === true) return { kind: "ownership_conflict" } as const;
+
             const admission = yield* transaction.execute<Row>({
               label: "hns.community-root-import.admit",
               text: "SELECT admit_hns_community_root_import_v1($1,$2,$3) AS admitted",
@@ -475,8 +489,6 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               text: `SELECT (
                        $1='pirate'
                        OR EXISTS (SELECT 1 FROM hns_dns_zone_activation_current WHERE canonical_root=$1)
-                       OR EXISTS (SELECT 1 FROM community_canonical_route_bindings
-                                   WHERE family='hns' AND root_label=$1 AND route_lifecycle_status='active')
                        OR EXISTS (SELECT 1 FROM community_handle_sale_namespace_activation_current
                                    WHERE family='hns' AND canonical_root=$1)
                        OR EXISTS (SELECT 1 FROM hns_root_import_sessions

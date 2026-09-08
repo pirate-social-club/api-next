@@ -48,6 +48,8 @@ function wireFailure(error: unknown): Error {
     });
   if (tagged.reason === "conflict")
     return new Conflict({ message: "HNS root import conflicts with durable state" });
+  if (tagged.reason === "ownership_conflict")
+    return new Conflict({ message: "This HNS name is already attached to another community" });
   if (tagged.reason === "ownership_misconfigured")
     return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")
