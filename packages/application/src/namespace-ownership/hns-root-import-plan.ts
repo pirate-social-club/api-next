@@ -166,6 +166,32 @@ function dsResourceRecord(record: HnsRootDelegationDsV1): HnsRootResourceRecordV
   };
 }
 
+function currentAuthorityMatches(
+  records: readonly HnsRootResourceRecordV1[],
+  dsRecords: readonly HnsRootDelegationDsV1[],
+): boolean {
+  const nameservers = records
+    .filter((record) => record.type === "NS")
+    .map((record) => record.ns)
+    .sort();
+  if (canonicalJson(nameservers) !== canonicalJson([...HNS_ROOT_IMPORT_NAMESERVERS].sort())) {
+    return false;
+  }
+  const currentDs = records
+    .filter((record) => record.type === "DS")
+    .map((record) => ({
+      key_tag: record.keyTag,
+      algorithm: record.algorithm,
+      digest_type: record.digestType,
+      digest: typeof record.digest === "string" ? record.digest.toLowerCase() : record.digest,
+    }))
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  const wantedDs = dsRecords
+    .map((record) => ({ ...record }))
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  return canonicalJson(currentDs) === canonicalJson(wantedDs);
+}
+
 /**
  * Builds the one complete Handshake resource replacement shown to the owner.
  * Unrelated records remain byte-for-byte JSON-equivalent and in their original
@@ -181,22 +207,28 @@ export function buildHnsRootImportPublishPlanV1(
   const challenge = validateChallenge(input.challenge_txt_value);
   const dsRecords = validateDsRecords(input.ds_records);
   const currentRecords = validateHnsRootResourceRecordsV1(input.current_records);
+  const retainAuthority = currentAuthorityMatches(currentRecords, dsRecords);
   const preservedRecords: HnsRootResourceRecordV1[] = [];
   const removedConflicts: HnsRootResourceRecordV1[] = [];
   const unknownTypes = new Set<string>();
   for (const record of currentRecords) {
-    if (record.type === "NS" || record.type === "DS" || isPirateVerificationTxt(record)) {
+    if (
+      isPirateVerificationTxt(record) ||
+      (!retainAuthority && (record.type === "NS" || record.type === "DS"))
+    ) {
       removedConflicts.push(cloneRecord(record));
       continue;
     }
     preservedRecords.push(cloneRecord(record));
     if (!evaluatedRecordTypes.has(record.type)) unknownTypes.add(record.type);
   }
-  const addedRecords: HnsRootResourceRecordV1[] = [
-    ...HNS_ROOT_IMPORT_NAMESERVERS.map((ns) => ({ type: "NS", ns })),
-    { type: "TXT", txt: [challenge] },
-    ...dsRecords.map(dsResourceRecord),
-  ];
+  const addedRecords: HnsRootResourceRecordV1[] = retainAuthority
+    ? [{ type: "TXT", txt: [challenge] }]
+    : [
+        ...HNS_ROOT_IMPORT_NAMESERVERS.map((ns) => ({ type: "NS", ns })),
+        { type: "TXT", txt: [challenge] },
+        ...dsRecords.map(dsResourceRecord),
+      ];
   return Object.freeze({
     version: HNS_ROOT_IMPORT_PUBLISH_PLAN_VERSION,
     replacement_semantics: "complete_resource",

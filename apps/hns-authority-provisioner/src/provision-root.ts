@@ -47,6 +47,7 @@ export type HnsAuthorityProvisionPorts = Readonly<{
   readonly ensure_zone: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
+    readonly current_records: readonly HnsRootResourceRecordV1[];
     readonly mutation_lease?: HnsZoneMutationLease;
   }) => Promise<HnsAuthorityZoneResult>;
 }>;
@@ -163,6 +164,7 @@ export async function provisionHnsAuthorityRootV1(
     zone = await ports.ensure_zone({
       root_label: request.root_label,
       challenge_txt_value: request.challenge_txt_value,
+      current_records: currentRecords,
     });
   } catch (error) {
     if (error instanceof HnsAuthorityProvisionError) throw error;

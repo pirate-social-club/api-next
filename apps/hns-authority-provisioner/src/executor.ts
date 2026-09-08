@@ -107,7 +107,11 @@ async function runObservation(input: {
         }
         const result = await observeHnsRootReadinessV1({
           operation_kind: claim.operation_kind,
-          observation_attempt: { job_id: claim.observation_job_id, lease_fence: claim.lease_fence },
+          observation_attempt: {
+            job_id: claim.observation_job_id,
+            executor_id: input.executor_id,
+            lease_fence: claim.lease_fence,
+          },
           request,
           publish_plan_bytes: claim.publish_plan_bytes,
           provision_result_bytes: claim.provision_result_bytes,

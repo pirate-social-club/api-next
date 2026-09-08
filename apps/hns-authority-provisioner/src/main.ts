@@ -1,5 +1,9 @@
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import type {
+  HnsRootDelegationDsV1,
+  HnsRootResourceRecordV1,
+} from "@pirate/application/namespace-ownership";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
 import { makeHsdRootResourceInspector } from "./hsd.ts";
 import {
@@ -10,6 +14,7 @@ import { makePostgresHnsRootObservationQueue } from "./observation-queue.ts";
 import {
   makePowerDnsRootInspector,
   makePowerDnsRootProvisioner,
+  makePowerDnsRootReconciler,
   makePowerDnsRootTeardown,
   type PowerDnsRootProvisionConfig,
 } from "./powerdns.ts";
@@ -144,6 +149,7 @@ async function main(serve: boolean): Promise<void> {
   const ensureZone = (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
+    readonly current_records: readonly HnsRootResourceRecordV1[];
     readonly mutation_lease?: HnsZoneMutationLease;
   }) =>
     withHnsRootZoneMutation(connectionString, input, false, (signal) =>
@@ -155,6 +161,20 @@ async function main(serve: boolean): Promise<void> {
       )(input),
     );
   const inspectZone = makePowerDnsRootInspector(powerDnsConfig);
+  const reconcileZone = (input: {
+    readonly root_label: string;
+    readonly challenge_txt_value: string;
+    readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+    readonly mutation_lease?: HnsZoneMutationLease;
+  }) =>
+    withHnsRootZoneMutation(connectionString, input, false, (signal) =>
+      makePowerDnsRootReconciler(powerDnsConfig, (url, init) =>
+        fetch(url, {
+          ...init,
+          signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+        }),
+      )(input),
+    );
   const teardownZone = (input: {
     readonly root_label: string;
     readonly challenge_txt_value?: string;
@@ -200,6 +220,7 @@ async function main(serve: boolean): Promise<void> {
       queue: makePostgresHnsRootObservationQueue(connectionString),
       observe: {
         inspect_current_resource: inspectCurrentResource,
+        reconcile_zone: reconcileZone,
         inspect_zone: inspectZone,
         observe_live: observeLive,
       },
