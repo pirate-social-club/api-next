@@ -45,6 +45,12 @@ CREATE TABLE media_song_video_render_attempts (
   plan_id TEXT NOT NULL REFERENCES media_song_video_render_plans (plan_id) ON DELETE RESTRICT,
   generation INTEGER NOT NULL CHECK (generation >= 1),
   state TEXT NOT NULL CHECK (state IN ('started', 'sealed', 'accepted', 'loser', 'abandoned')),
+  -- The dispatch binding, recorded before the renderer executes. The output a
+  -- master may be sealed from is resolved through these, not chosen later by a
+  -- caller, so another attempt's output cannot be presented as this one's.
+  dispatch_output_key TEXT NOT NULL CHECK (btrim(dispatch_output_key) <> ''),
+  dispatch_renderer_identity TEXT NOT NULL CHECK (btrim(dispatch_renderer_identity) <> ''),
+  dispatch_renderer_policy_revision INTEGER NOT NULL CHECK (dispatch_renderer_policy_revision >= 0),
   disposition TEXT CHECK (disposition IS NULL OR btrim(disposition) <> ''),
   started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(started_at)),
   -- Attempt identity is persisted before dispatch, so a stopped worker is always
@@ -52,7 +58,10 @@ CREATE TABLE media_song_video_render_attempts (
   UNIQUE (plan_id, generation),
   -- Composite targets: a master binds attempt, plan and generation together.
   UNIQUE (attempt_id, plan_id),
-  UNIQUE (attempt_id, plan_id, generation)
+  UNIQUE (attempt_id, plan_id, generation),
+  -- One attempt owns one output address, so two attempts cannot be dispatched
+  -- to the same object and then have their masters crossed.
+  UNIQUE (dispatch_output_key)
 );
 CREATE INDEX media_song_video_render_attempts_plan_idx
   ON media_song_video_render_attempts (plan_id, state);
@@ -86,6 +95,8 @@ CREATE TABLE media_song_video_masters (
   -- The attempt, its plan and its generation are one binding, not three lookups.
   FOREIGN KEY (attempt_id, plan_id, attempt_generation)
     REFERENCES media_song_video_render_attempts (attempt_id, plan_id, generation) ON DELETE RESTRICT,
+  -- The sealed output must be the one this attempt was dispatched to.
+  FOREIGN KEY (verified_object_key) REFERENCES media_song_video_render_attempts (dispatch_output_key) ON DELETE RESTRICT,
   -- The plan and the submission whose source this master may use.
   FOREIGN KEY (plan_id, plan_submission_id)
     REFERENCES media_song_video_render_plans (plan_id, submission_id) ON DELETE RESTRICT,

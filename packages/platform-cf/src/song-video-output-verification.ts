@@ -4,8 +4,8 @@
  * Sealing a master must not rest on a caller's word about what was produced.
  * This module reads the completed output's actual bytes, computes its digest and
  * length itself, and checks the probe's measured facts against the frozen
- * interval. A caller-supplied verification flag cannot satisfy any of it: no
- * boolean is accepted as evidence anywhere here.
+ * interval. The master's digest and length are measured here, never supplied by
+ * a caller, and no boolean is accepted as evidence anywhere.
  *
  * What this function alone does not establish, stated plainly because an earlier
  * revision overclaimed it: it receives no song identity, no clip start, no
@@ -28,6 +28,13 @@ export type SongVideoOutputStore = {
   readonly read: (
     objectKey: string,
   ) => Promise<{ readonly bytes: Uint8Array; readonly objectVersion: string } | null>;
+  /**
+   * Retrieves an exact recorded version. Downstream consumers resolve a sealed
+   * master through this, so the verified bytes remain addressable after later
+   * writes to the same key. A store without it cannot preserve verified bytes,
+   * and verification refuses rather than pretending a mutable read is immutable.
+   */
+  readonly readVersion: (objectKey: string, objectVersion: string) => Promise<Uint8Array | null>;
 };
 
 /** Measured facts a probe reports about the bytes it was given. */
@@ -73,7 +80,9 @@ type OutputVerificationFailure =
   | { readonly kind: "output_audio_not_canonical"; readonly sampleRateHz: number }
   | { readonly kind: "output_audio_track_invalid"; readonly channels: number }
   | { readonly kind: "output_has_no_video_track" }
-  | { readonly kind: "output_is_the_source"; readonly sha256: string };
+  | { readonly kind: "output_is_the_source"; readonly sha256: string }
+  | { readonly kind: "output_version_not_addressable"; readonly objectVersion: string }
+  | { readonly kind: "output_version_bytes_differ"; readonly objectVersion: string };
 
 export type OutputVerification =
   | { readonly verified: true; readonly output: VerifiedOutput }
@@ -179,6 +188,18 @@ export async function verifyRenderedOutput(input: {
         },
       };
     }
+  }
+  // The recorded version must be independently retrievable and identical, or the
+  // identity is not immutable and nothing downstream could resolve these bytes.
+  const byVersion = await input.store.readVersion(input.objectKey, objectVersion);
+  if (byVersion === null) {
+    return {
+      verified: false,
+      failure: { kind: "output_version_not_addressable", objectVersion },
+    };
+  }
+  if ((await sha256Hex(byVersion)) !== masterSha256) {
+    return { verified: false, failure: { kind: "output_version_bytes_differ", objectVersion } };
   }
   return {
     verified: true,

@@ -27,6 +27,10 @@ const storeOf = (map: Record<string, Uint8Array>): SongVideoOutputStore => ({
     const bytes = map[key];
     return bytes === undefined ? null : { bytes, objectVersion: `v-${key}` };
   },
+  readVersion: async (key, version) => {
+    const bytes = map[key];
+    return bytes !== undefined && version === `v-${key}` ? bytes : null;
+  },
 });
 
 const proberOf = (facts: SongVideoProbeFacts | null): SongVideoOutputProbe => ({
@@ -180,5 +184,27 @@ describe("rendered output verification", () => {
     const result = await verify();
     if (!result.verified) throw new Error("expected verification");
     expect(result.output.objectVersion).toBe("v-master-1");
+  });
+
+  test("refuses output whose recorded version is not independently retrievable", async () => {
+    expect(
+      await verify({
+        store: {
+          read: async () => ({ bytes: master, objectVersion: "v-master-1" }),
+          readVersion: async () => null,
+        },
+      }),
+    ).toMatchObject({ verified: false, failure: { kind: "output_version_not_addressable" } });
+  });
+
+  test("refuses when the recorded version resolves to different bytes", async () => {
+    expect(
+      await verify({
+        store: {
+          read: async () => ({ bytes: master, objectVersion: "v-master-1" }),
+          readVersion: async () => bytesOf("different-bytes-entirely"),
+        },
+      }),
+    ).toMatchObject({ verified: false, failure: { kind: "output_version_bytes_differ" } });
   });
 });

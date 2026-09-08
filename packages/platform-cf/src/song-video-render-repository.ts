@@ -5,13 +5,16 @@
  * discharge. Sealing binds a master to the source object PostgreSQL holds for
  * this plan's submission, and refuses when it cannot.
  *
- * The evidence is narrow and should be described that way. This reads stored
- * digest metadata, not object bytes: it establishes that the claimed digest
- * matches what the database recorded when the source was sealed for this
- * submission, not that those bytes exist or still hash to that value. The
- * master's own digest and byte length are likewise accepted as claims, because
- * no output object is verified here. Output verification is separate work and
- * nothing below asserts it happened.
+ * The evidence is narrow and should be described that way. The source binding
+ * reads stored digest metadata, not source bytes: it establishes that the
+ * claimed digest matches what the database recorded when the source was sealed
+ * for this submission, not that those bytes exist or still hash to that value.
+ *
+ * The master is different. Its digest, byte length and measured facts come from
+ * the rendered output's actual bytes, resolved through the dispatch binding
+ * recorded before execution, so none of them is a caller claim. The prober
+ * behind those measured facts remains a port, so this establishes binding and
+ * hashing rather than real media verification.
  *
  * U.2, U.4, U.5 and U.6 remain open gates. No default is supplied for any of
  * them; the byte ceiling that applied is recorded per master so a later ratified
@@ -76,18 +79,22 @@ export type PersistedAttempt = {
   readonly generation: number;
 };
 
+/** Recorded before the renderer executes; sealing resolves the output through it. */
+export type RenderDispatch = {
+  readonly outputObjectKey: string;
+  readonly rendererIdentity: string;
+  readonly rendererPolicyRevision: number;
+};
+
 export type SealRequest = {
   readonly masterRevisionId: string;
   readonly attempt: PersistedAttempt;
   readonly sourceImmutableRef: string;
   /** A claim about which source was used, checked here against stored bytes. */
   readonly claimedSourceSha256: string;
-  /** The completed output to verify. Its digest and length are measured, never supplied. */
-  readonly outputObjectKey: string;
+
   /** U.6's configured ceiling. Supplied by the caller; never defaulted here. */
   readonly masterCeilingBytes: number;
-  readonly rendererIdentity: string;
-  readonly rendererPolicyRevision: number;
   readonly decisionClipStartSamples: number;
   readonly decisionClipDurationSamples: number;
 };
@@ -116,29 +123,40 @@ export async function persistRenderPlan(client: Client, plan: PersistedPlan): Pr
  * Records attempt identity before the renderer is dispatched, so a worker that
  * stops is always attributable to a known attempt.
  */
-export async function startRenderAttempt(client: Client, attempt: PersistedAttempt): Promise<void> {
+export async function startRenderAttempt(
+  client: Client,
+  attempt: PersistedAttempt,
+  dispatch: RenderDispatch,
+): Promise<void> {
   await client.query(
-    `INSERT INTO media_song_video_render_attempts (attempt_id, plan_id, generation, state)
-     VALUES ($1,$2,$3,'started')`,
-    [attempt.attemptId, attempt.planId, attempt.generation],
+    `INSERT INTO media_song_video_render_attempts
+       (attempt_id, plan_id, generation, state, dispatch_output_key,
+        dispatch_renderer_identity, dispatch_renderer_policy_revision)
+     VALUES ($1,$2,$3,'started',$4,$5,$6)`,
+    [
+      attempt.attemptId,
+      attempt.planId,
+      attempt.generation,
+      dispatch.outputObjectKey,
+      dispatch.rendererIdentity,
+      dispatch.rendererPolicyRevision,
+    ],
   );
 }
 
 /**
- * Seals a master only after establishing the source binding against the stored
- * sealed object. The claimed digest is compared with the digest PostgreSQL holds
- * for that immutable reference; an absent object or a mismatch refuses the seal
- * and leaves the attempt untouched.
- */
-/**
  * Verifies the rendered output and seals a master in one operation.
  *
- * Verification is not a caller obligation: there is no path to a master row that
- * skips it. The frozen work is loaded from persistence first, the output is
- * verified against that work rather than against caller-supplied facts, and the
- * measured identity and facts are persisted with the master. The object version
- * read at verification is re-read before commit, so the bytes that were verified
- * are the bytes that get sealed.
+ * This function is the verification boundary. The frozen work and the dispatch
+ * binding are loaded from persistence, the output is resolved through that
+ * binding rather than chosen by the caller, and the measured identity and facts
+ * are persisted with the master.
+ *
+ * The schema's required verified columns make an unverified master unrecordable,
+ * which is a guarantee that the metadata exists. It is not a guarantee that
+ * verification occurred: only this path establishes that, so a future writer
+ * reaching the tables directly would bypass it. Keep insertion of masters to
+ * this function.
  */
 export async function verifyAndSealMaster(
   client: Client,
@@ -158,9 +176,13 @@ export async function verifyAndSealMaster(
       clip_duration_samples: string;
       generation: number;
       state: string;
+      dispatch_output_key: string;
+      dispatch_renderer_identity: string;
+      dispatch_renderer_policy_revision: number;
     }>(
       `SELECT p.submission_id, p.clip_start_samples, p.clip_duration_samples,
-              a.generation, a.state
+              a.generation, a.state, a.dispatch_output_key,
+              a.dispatch_renderer_identity, a.dispatch_renderer_policy_revision
          FROM media_song_video_render_plans p
          JOIN media_song_video_render_attempts a
            ON a.plan_id = p.plan_id AND a.attempt_id = $2
@@ -215,7 +237,7 @@ export async function verifyAndSealMaster(
       const identicalReplay =
         priorMaster !== undefined &&
         priorMaster.master_revision_id === request.masterRevisionId &&
-        priorMaster.verified_object_key === request.outputObjectKey;
+        priorMaster.verified_object_key === boundRow.dispatch_output_key;
       await client.query(identicalReplay ? "COMMIT" : "ROLLBACK");
       return identicalReplay
         ? { sealed: true, masterRevisionId: priorMaster.master_revision_id }
@@ -269,7 +291,7 @@ export async function verifyAndSealMaster(
     const verification = await verifyRenderedOutput({
       store: dependencies.store,
       prober: dependencies.prober,
-      objectKey: request.outputObjectKey,
+      objectKey: boundRow.dispatch_output_key,
       planClipDurationSamples: Number(boundRow.clip_duration_samples),
       sourceSha256: row.canonical_sha256,
       masterCeilingBytes: request.masterCeilingBytes,
@@ -282,14 +304,18 @@ export async function verifyAndSealMaster(
       };
     }
     const verified = verification.output;
-    // Re-read the object version before committing, so the bytes that were
-    // verified are the bytes being sealed rather than whatever is there now.
-    const reread = await dependencies.store.read(request.outputObjectKey);
-    if (reread === null || reread.objectVersion !== verified.objectVersion) {
+    // Re-resolve the exact verified version before committing. Reading the key
+    // again would only see whatever is current; reading the version proves the
+    // identity being sealed still resolves to the bytes that were verified.
+    const reread = await dependencies.store.readVersion(
+      boundRow.dispatch_output_key,
+      verified.objectVersion,
+    );
+    if (reread === null) {
       await client.query("ROLLBACK");
       return {
         sealed: false,
-        failure: { kind: "output_changed_during_seal", objectKey: request.outputObjectKey },
+        failure: { kind: "output_changed_during_seal", objectKey: boundRow.dispatch_output_key },
       };
     }
     await client.query(
@@ -314,8 +340,8 @@ export async function verifyAndSealMaster(
         verified.masterSha256,
         verified.masterByteLength,
         request.masterCeilingBytes,
-        request.rendererIdentity,
-        request.rendererPolicyRevision,
+        boundRow.dispatch_renderer_identity,
+        boundRow.dispatch_renderer_policy_revision,
         request.decisionClipStartSamples,
         request.decisionClipDurationSamples,
         verified.objectKey,
