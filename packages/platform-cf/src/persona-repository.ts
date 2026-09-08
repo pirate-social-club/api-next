@@ -260,7 +260,7 @@ export function makeControlPlanePersonaRepository() {
               }
               if (replay.rows.length !== 0) return yield* Effect.die("duplicate persona replay");
 
-              // Spec 014 section 10.2: a further persona outside onboarding is
+              // Spec 014 section 11.2: a further persona outside onboarding is
               // born bound to a target community and requires an active
               // membership there. Membership stays an independent account fact.
               const membership = yield* transaction.execute<{
@@ -601,7 +601,7 @@ export function makeControlPlanePersonaWalletRepository() {
                   reason: "first-persona-required",
                 });
               }
-              // Spec 014 section 10.3: retirement never changes the binding,
+              // Spec 014 section 11.3: retirement never changes the binding,
               // but a current role or activity presentation must be
               // atomically re-designated to another active persona bound to
               // the same community, or the retirement is rejected.

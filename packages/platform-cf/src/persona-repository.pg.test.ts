@@ -872,7 +872,7 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       const repository = makeControlPlanePersonaRepository();
 
       // Without an active membership the creation is a closed conflict and
-      // nothing is written (spec 014 section 10.2).
+      // nothing is written (spec 014 section 11.2).
       const denied = await runExit(
         connection,
         repository.create({
