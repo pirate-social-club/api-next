@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.1",
+  "sourceBranch": "fix/hns-regeneration-admission-feedback",
+  "wireContract": "Community HNS preparation reports its existing rolling daily limit as rate_limited with a retry_after_seconds detail and Retry-After header. Other admission conflicts retain their concurrency protection.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.1.tgz",
+    "sha256": "1466be083b99956a23ea3acc74c6287860f6a66cf4a7da633c13df279a9aef2e"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.1",
+    "sourceIdentifier": "api-next-contracts@184dfe1695e4671602c2cf339c8f02befef53961141642d9fc58ff9c19420543",
+    "openapiSha256": "184dfe1695e4671602c2cf339c8f02befef53961141642d9fc58ff9c19420543",
+    "clientSha256": "974bc19a81d4bcd0c99d67531556b53530af7cf30c5f6d00c7c984ac439e98cd"
+  },
+  "verification": {
+    "status": "Focused real-handler and repository PostgreSQL regressions passed; full gates and release pending."
+  }
+}

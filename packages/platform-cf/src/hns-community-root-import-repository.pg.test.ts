@@ -231,7 +231,7 @@ suite("community HNS root-import repositories", () => {
         kind: "created",
         value: { root_label: "dankmemes", attachment_revision: 1 },
       });
-      if (prepared.kind === "conflict" || prepared.kind === "not_found")
+      if (prepared.kind !== "created" && prepared.kind !== "replay")
         throw new Error("expected preparation");
       // A verifier failure leaves only this preparation. Reloading the form
       // supplies a fresh key; both tabs must recover one retained identity.
@@ -869,7 +869,10 @@ suite("community HNS root-import repositories", () => {
       const third = await request("rate-actor");
       const fourth = await request("rate-actor");
       const raced = await Promise.all([prepare(third), prepare(fourth)]);
-      expect(raced.map((x) => x.kind).sort()).toEqual(["conflict", "created"]);
+      expect(raced.map((x) => x.kind).sort()).toEqual(["created", "rate_limited"]);
+      const limited = raced.find((outcome) => outcome.kind === "rate_limited");
+      expect(limited?.retry_after_seconds).toBeGreaterThan(86_390);
+      expect(limited?.retry_after_seconds).toBeLessThanOrEqual(86_400);
       expect((await prepare(first)).kind).toBe("replay");
       const rootA = await request("root-actor-a", "rootrace");
       const rootB = await request("root-actor-b", "rootrace");
@@ -914,7 +917,27 @@ suite("community HNS root-import repositories", () => {
       ).toEqual([{ held: false }]);
       expect((await prepare(overflow)).kind).toBe("created");
       // Releasing infrastructure capacity does not refund the actor's daily admission.
-      expect(await prepare(await request("rate-actor"))).toEqual({ kind: "conflict" });
+      const retry = await request("rate-actor");
+      expect(await prepare(retry)).toMatchObject({ kind: "rate_limited" });
+      // Crossing the rolling deadline restores this same request, without refresh
+      // or a new idempotency key. Free one global slot as well.
+      await admin.query(
+        "ALTER TABLE hns_community_root_import_preparations DISABLE TRIGGER hns_community_root_import_preparations_change_guard",
+      );
+      try {
+        await admin.query(
+          `UPDATE hns_community_root_import_preparations
+           SET created_at=clock_timestamp()-interval '25 hours',expires_at=clock_timestamp()-interval '1 hour'
+           WHERE root_import_session_id IN ($1,$2)`,
+          [first.root_import_session_id, overflow.root_import_session_id],
+        );
+      } finally {
+        await admin.query(
+          "ALTER TABLE hns_community_root_import_preparations ENABLE TRIGGER hns_community_root_import_preparations_change_guard",
+        );
+      }
+      expect((await prepare(retry)).kind).toBe("created");
+      expect((await prepare(retry)).kind).toBe("replay");
     });
   });
 });

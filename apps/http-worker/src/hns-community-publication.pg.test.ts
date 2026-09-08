@@ -32,7 +32,7 @@ const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
   throw new Error("Postgres required");
 const pgTest = url ? test : test.skip;
-pgTest.each(["complete", "revoked", "expired"] as const)(
+pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
   "real handlers and durable publication continuation: %s",
   async (scenario) => {
     const schema = `hns_continuation_${randomUUID().replaceAll("-", "")}`;
@@ -138,6 +138,65 @@ pgTest.each(["complete", "revoked", "expired"] as const)(
           headers: { authorization: "test-account", "content-type": "application/json" },
           ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
         });
+      if (scenario === "limited") {
+        for (let n = 0; n < 3; n++) {
+          const target = `community_${randomUUID()}`;
+          await admin.query(
+            "INSERT INTO communities(community_id,display_name,status,created_by_user_id,route_authority_version,created_at,updated_at) VALUES($1,'Quota fixture','active',$2,'optional_route_v2',clock_timestamp(),clock_timestamp())",
+            [target, actor],
+          );
+          await admin.query(
+            "INSERT INTO community_route_authority_grants(grant_id,community_id,principal_user_id,authority,source_kind,status,granted_at,granted_by_user_id) VALUES($1,$2,$3,'manage_routes','creator_owner','active',clock_timestamp(),$3)",
+            [`quota-grant-${n}`, target, actor],
+          );
+          expect(
+            (
+              await Effect.runPromise(
+                store.prepare({
+                  request: {
+                    actor_id: actor,
+                    community_id: target,
+                    root_label: `quota${n}`,
+                    idempotency_key: `quota-${n}`,
+                  },
+                  attachment_intent_id: `quota-attachment-${n}`,
+                  ceremony_intent_id: `quota-ceremony-${n}`,
+                  root_import_session_id: `quota-import-${n}`,
+                  provision_job_id: `quota-provision-${n}`,
+                  request_sha256: "a".repeat(64),
+                }),
+              )
+            ).kind,
+          ).toBe("created");
+        }
+        const body = { root_label: "harbor", idempotency_key: "retry-after-limit" };
+        const limited = await call(base, body);
+        expect(limited.status).toBe(429);
+        const rejection = (await limited.json()) as {
+          error: { code: string; details: { retry_after_seconds: number } };
+        };
+        expect(rejection.error.code).toBe("rate_limited");
+        const retryAfter = rejection.error.details.retry_after_seconds;
+        expect(retryAfter).toBeGreaterThan(86_390);
+        expect(retryAfter).toBeLessThanOrEqual(86_400);
+        expect(limited.headers.get("retry-after")).toBe(String(retryAfter));
+        expect(observations).toEqual([]);
+        await admin.query(
+          "ALTER TABLE hns_community_root_import_preparations DISABLE TRIGGER hns_community_root_import_preparations_change_guard",
+        );
+        try {
+          await admin.query(
+            "UPDATE hns_community_root_import_preparations SET created_at=clock_timestamp()-interval '25 hours' WHERE root_import_session_id='quota-import-0'",
+          );
+        } finally {
+          await admin.query(
+            "ALTER TABLE hns_community_root_import_preparations ENABLE TRIGGER hns_community_root_import_preparations_change_guard",
+          );
+        }
+        expect((await call(base, body)).status).toBe(202);
+        expect((await call(base, body)).status).toBe(200);
+        return;
+      }
       const start = await call(base, { root_label: "harbor", idempotency_key: "start" });
       expect(start.status).toBe(202);
       const starting = (await start.json()) as {
