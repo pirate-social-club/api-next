@@ -175,7 +175,7 @@ closed without creating manual review or changing the provider's decision.
 
 Default HTTP composition supplies the real resolver. Successful binding also
 writes a reference-triggered decision_wakeup in the same transaction. Migration
-0131 admits that trigger in the closed outbox payload union. Missing or invalid
+0132 admits that trigger in the closed outbox payload union. Missing or invalid
 wakeups roll back binding, and command replay returns the saved response without
 creating another event. Deploy the migration before the Worker repair.
 
@@ -200,7 +200,7 @@ The terminal resumption regression now drives the persisted reference wakeup
 through the real processing workflow and publication store, with every provider
 access rejected by the test. Binding copies the unchanged accepted terms to the
 new creation snapshot while retaining the original terms pointer. Migration
-0132 resumes retained analysis at decision when terms are present; without terms
-it stays at analysis. Both 0131 and 0132 must precede the Worker release. The
+0133 resumes retained analysis at decision when terms are present; without terms
+it stays at analysis. Both 0132 and 0133 must precede the Worker release. The
 outbox decoder also admits the reference trigger. This proves conditional
 resumption, not establishment of an eligible first source or live acceptance.
