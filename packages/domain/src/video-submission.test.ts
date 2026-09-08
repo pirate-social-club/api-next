@@ -6,6 +6,8 @@ import {
   decideOriginalAudioVideo,
   type OriginalAudioVerification,
   publishOriginalVideo,
+  resolveSongVideoPolicyAuthority,
+  SONG_VIDEO_SAMPLE_RATE_HZ,
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   VIDEO_INGEST_POLICY_V1,
   type VideoSubmissionState,
@@ -269,5 +271,30 @@ describe("original-audio video policy", () => {
       extractionPolicyRevision: "audio-extraction-v1",
       retentionPolicyRevision: 1,
     });
+  });
+});
+
+describe("song-video identities and unresolved policy gates", () => {
+  const song = {
+    songPostId: "post-song-1",
+    audioRevision: 1,
+    songAssetId: "asset-song-1",
+    songDurationSamples: 180 * SONG_VIDEO_SAMPLE_RATE_HZ,
+  } as const;
+
+  test("canonical timing is expressed in integer 48 kHz samples", () => {
+    expect(SONG_VIDEO_SAMPLE_RATE_HZ).toBe(48_000);
+    expect(Number.isSafeInteger(song.songDurationSamples)).toBe(true);
+  });
+
+  test("unconfigured operational policy is unavailable authority, not permission", () => {
+    const authority = resolveSongVideoPolicyAuthority(undefined);
+    expect(authority.available).toBe(false);
+    if (authority.available) throw new Error("expected unavailable authority");
+    expect(authority.missing).toEqual(["U.5", "U.6"]);
+  });
+
+  test("the ratified ingest policy still carries no master byte ceiling", () => {
+    expect("masterMaxBytes" in VIDEO_INGEST_POLICY_V1).toBe(false);
   });
 });

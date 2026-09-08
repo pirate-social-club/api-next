@@ -517,3 +517,108 @@ export function publishOriginalVideo(
     },
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Spec 013 Gate A: song-reference canonical replacement
+ *
+ * Three identities are modelled separately and must not be collapsed: the
+ * render plan frozen at reservation, one execution attempt of that plan, and
+ * the master revision sealed only after verification. D.1 turns on that
+ * separation, so nothing here lets a plan stand in for a verified master.
+ * ------------------------------------------------------------------ */
+
+/** Canonical song timing is decided in integer samples at this rate. */
+export const SONG_VIDEO_SAMPLE_RATE_HZ = 48_000;
+
+/**
+ * The immutable song reference frozen at reservation. Durations are
+ * server-probed sample counts; a client value never establishes any of them.
+ */
+export type CanonicalSongReference = Readonly<{
+  songPostId: string;
+  audioRevision: number;
+  songAssetId: string;
+  songDurationSamples: number;
+}>;
+
+/**
+ * The author's intent, frozen at reservation. A plan, not a result: it asserts
+ * nothing about a recording, which does not exist yet.
+ */
+export type SongVideoRenderPlan = Readonly<{
+  planId: string;
+  song: CanonicalSongReference;
+  clipStartSamples: number;
+  clipDurationSamples: number;
+}>;
+
+/** One execution of a plan. Distinct from both the plan and any master. */
+export type SongVideoRenderAttempt = Readonly<{
+  attemptId: string;
+  planId: string;
+  generation: number;
+}>;
+
+/** The render decision actually applied, known only once a render completed. */
+export type SongVideoRenderDecision = Readonly<{
+  clipStartSamples: number;
+  clipDurationSamples: number;
+  rendererPolicyRevision: number;
+  rendererIdentity: string;
+}>;
+
+/**
+ * A master revision sealed after verification. It binds the verified source,
+ * the complete render decision applied and the renderer policy; none of those
+ * may be claimed at reservation time.
+ */
+export type AcceptedMasterRevision = Readonly<{
+  masterRevisionId: string;
+  planId: string;
+  attemptId: string;
+  verifiedSourceSha256: string;
+  masterSha256: string;
+  masterByteLength: number;
+  decision: SongVideoRenderDecision;
+}>;
+
+/**
+ * Operational values the specification deliberately left unresolved: U.5's
+ * source-overrun disposition and U.6's master byte ceiling. Neither carries a
+ * default here, because a default would silently resolve a ratification gate.
+ */
+export type SongVideoOperationalPolicy = Readonly<{
+  sourceOverrunDisposition: "reject_overrun" | "allow_configured_overrun";
+  masterMaxBytes: number;
+}>;
+
+export type SongVideoPolicyAuthority =
+  | Readonly<{ available: true; policy: SongVideoOperationalPolicy }>
+  | Readonly<{ available: false; missing: readonly ("U.5" | "U.6")[] }>;
+
+/**
+ * Resolves configured operational policy. Absent configuration yields
+ * unavailable authority, never a permissive fallback: a caller that cannot read
+ * the policy must refuse the operation rather than proceed on an assumption.
+ */
+export function resolveSongVideoPolicyAuthority(
+  configured: Partial<SongVideoOperationalPolicy> | null | undefined,
+): SongVideoPolicyAuthority {
+  const missing: ("U.5" | "U.6")[] = [];
+  const disposition = configured?.sourceOverrunDisposition;
+  const masterMaxBytes = configured?.masterMaxBytes;
+  if (disposition !== "reject_overrun" && disposition !== "allow_configured_overrun") {
+    missing.push("U.5");
+  }
+  if (
+    masterMaxBytes === undefined ||
+    !Number.isSafeInteger(masterMaxBytes) ||
+    masterMaxBytes <= 0
+  ) {
+    missing.push("U.6");
+  }
+  if (disposition === undefined || masterMaxBytes === undefined || missing.length > 0) {
+    return { available: false, missing };
+  }
+  return { available: true, policy: { sourceOverrunDisposition: disposition, masterMaxBytes } };
+}
