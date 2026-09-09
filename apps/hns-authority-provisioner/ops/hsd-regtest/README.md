@@ -22,9 +22,28 @@ docker build -t pirate-hsd-regtest:local apps/hns-authority-provisioner/ops/hsd-
 docker run -d --name pirate-hsd-regtest --network host pirate-hsd-regtest:local
 ```
 
-Then drive the sequence with `scripts/hsd-regtest-progression.ts`, which funds a
-wallet, acquires a name through its auction, publishes a replacement resource,
-and reports the current and safe views at each step.
+Then run `HSD_REGTEST_NAME=<unused-name> bun scripts/hsd-regtest-progression.ts --execute`.
+The script requires loopback endpoints and the regtest genesis before any
+mutation. It funds a wallet, acquires a name through its auction, publishes a
+replacement resource, and asserts convergence through the production observer.
+It then invalidates the inclusion block, verifies that the current resource
+disappears, rebroadcasts the exact retained transaction bytes, and asserts
+current/safe convergence again. Use an unused name for each run on a retained
+node. This mutates only the disposable regtest chain.
+
+September 9 continuation receipt: t03resumec included at 598; safe still absent
+at 603 and converged at 608. Reorg, exact-transaction rebroadcast, re-inclusion,
+and safe convergence passed. Transaction:
+ad373e2200ef0ca0d1a994ef4dd3ac4644d0f0a3b84fdf416081c662da9f104d.
+The observer resource digest (canonical JSON, distinct from encoded-resource
+and plan-document hashes) was
+e8111987b8a6913317a3e7080d090cdb8d34bc1d637dc7e23c11fbc2986133ef.
+Two preceding attempts reached reorg successfully but failed an assertion that
+the wallet resend RPC would list the orphaned transaction. Exact raw rebroadcast
+avoids creating a second spend of the wallet's pending credit. This proves
+observer reorg/republication behavior, not a production recovery action or the
+still-unwired lifecycle service loop. Wall-clock slow-block deadline behavior
+remains separate coverage.
 
 ## What it established
 
@@ -33,8 +52,8 @@ incident's signature exactly. At the inclusion block the current view returns
 the complete resource and the safe view returns null. The safe view converges
 within ten blocks on regtest, having still been null at five.
 
-Running the production observer against the same node then found two defects
-that made a safe observation impossible in any environment:
+Running the new branch's production observer implementation against the same
+node then found two defects that made its safe observation impossible:
 
 - `getblockbyheight` was requested with `verbose` false, so hsd returned the raw
   block as a hex string and the observer rejected it as an invalid response.
@@ -47,4 +66,6 @@ Either defect alone means no operation can ever establish finality: the
 operation waits in `waiting_safe_commitment` until its finality deadline
 exhausts and it enters recovery. The unit test did not catch this because its
 fake answered whichever call the code made and supplied the field name the code
-read.
+read. These defects were in the new branch code, not the deployed provisioner;
+the deployment's separate safe-only observation defect remains the incident
+attribution recorded in the task.
