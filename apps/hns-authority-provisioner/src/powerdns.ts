@@ -559,8 +559,12 @@ export function makePowerDnsRootTeardown(
     if (response.status !== 404 && !response.ok) {
       throw new Error("PowerDNS zone teardown failed");
     }
-    if (input.challenge_txt_value !== undefined && (await inspect()) !== null)
-      throw new Error("PowerDNS zone remains after teardown");
+    // Read back on both variants. A 2xx from the API is not confirmation that
+    // the zone is gone, and quota is released on a completed teardown: an
+    // unverified delete would release a reservation whose infrastructure may
+    // still be serving. An ambiguous delete throws, the job retries, and the
+    // reservation stays held for reconciliation.
+    if ((await inspect()) !== null) throw new Error("PowerDNS zone remains after teardown");
   };
 }
 

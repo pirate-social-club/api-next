@@ -3,6 +3,7 @@ import {
   type HnsChainObservationResultV1,
   type HnsChainObservationViewV1,
   type HnsRetainedAuthorityReferenceV1,
+  hnsRetainedAuthorityFromPlanDocumentV1,
 } from "@pirate/application/namespace-ownership";
 import type {
   HnsRootObservationFinalizeInput,
@@ -85,49 +86,6 @@ async function plannedBytesMatchDigest(
   return (await sha256(bytes)) === digest;
 }
 
-/** Describe the authority an exposed plan asserts, for the reference test. */
-function retainedAuthorityFromPlanBytes(bytes: Uint8Array): HnsRetainedAuthorityReferenceV1 {
-  const plan = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-  const records = Array.isArray(plan.replacement_records) ? plan.replacement_records : [];
-  const nsNames: string[] = [];
-  const ds: { key_tag: number; algorithm: number; digest_type: number; digest: string }[] = [];
-  let challenge: string | null = null;
-  for (const entry of records) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    const type = typeof record.type === "string" ? record.type.toUpperCase() : "";
-    if (type === "NS" && typeof record.ns === "string") nsNames.push(record.ns);
-    if (type === "DS") {
-      const keyTag = record.keyTag ?? record.key_tag;
-      const digestType = record.digestType ?? record.digest_type;
-      if (
-        typeof keyTag === "number" &&
-        typeof record.algorithm === "number" &&
-        typeof digestType === "number" &&
-        typeof record.digest === "string"
-      ) {
-        ds.push({
-          key_tag: keyTag,
-          algorithm: record.algorithm,
-          digest_type: digestType,
-          digest: record.digest,
-        });
-      }
-    }
-    if (type === "TXT" && Array.isArray(record.txt)) {
-      for (const value of record.txt) {
-        if (typeof value === "string" && value.startsWith("pirate-verification="))
-          challenge = value;
-      }
-    }
-  }
-  return {
-    ns_names: nsNames,
-    ds,
-    challenge_txt_value: challenge,
-  };
-}
-
 async function resolveTeardownRetention(
   input: Readonly<{
     readonly retention: HnsTeardownRetentionPorts;
@@ -153,7 +111,7 @@ async function resolveTeardownRetention(
     };
   } else {
     try {
-      authority = retainedAuthorityFromPlanBytes(input.publish_plan_bytes);
+      authority = hnsRetainedAuthorityFromPlanDocumentV1(input.publish_plan_bytes);
     } catch {
       return { decision: "retain", reason: "unknown_plan_provenance_retained" };
     }
@@ -217,7 +175,10 @@ async function runObservation(input: {
       // Partial provisioning legitimately carries no plan. Both fields null is
       // valid; hashing empty bytes and comparing that digest with an empty
       // string made that case indistinguishable from tampering.
-      if (!plannedBytesMatchDigest(claim.publish_plan_bytes, claim.publish_plan_sha256)) {
+      // `plannedBytesMatchDigest` is async: without the await this negated a
+      // pending promise, which is always false, so the tamper check never
+      // fired and a corrupted plan reached the deletion path unchallenged.
+      if (!(await plannedBytesMatchDigest(claim.publish_plan_bytes, claim.publish_plan_sha256))) {
         throw new HnsRootReadinessObservationError("invalid_request");
       }
       const retention = await resolveTeardownRetention({

@@ -10,6 +10,7 @@ import {
   type HnsRootImportReorgInvalidationV1,
 } from "@pirate/domain";
 import type { LifecycleTransactionClient } from "./lifecycle-transition.ts";
+import type { HnsRetentionReviewerResultV1 } from "./retention-reviewer.ts";
 
 /**
  * One leased lifecycle job: claim, observe, decide, commit, finalize.
@@ -94,6 +95,17 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
     outcome: "completed" | "failed" | "retry",
     failureCode: string | null,
   ) => Promise<Readonly<{ readonly outcome: string }>>;
+  /**
+   * Handles a claimed `retention_review` job. Reviews produce durable evidence
+   * and their own schedule rather than a lifecycle transition, so they are
+   * dispatched here instead of being pushed through the evidence reducer,
+   * which has no event for them and would silently complete the job having
+   * inspected nothing.
+   */
+  readonly review?: (
+    job: HnsLifecycleClaimV1,
+    executorId: string,
+  ) => Promise<HnsRetentionReviewerResultV1>;
   readonly now_epoch_ms: () => number;
 }>;
 
@@ -190,6 +202,11 @@ export async function runHnsRootImportLifecycleJobOnce(
 ): Promise<HnsLifecycleExecutorResultV1> {
   const job = await ports.claim(executorId, leaseSeconds);
   if (job === null) return { claimed: false, outcome: "idle", reason: "no_due_job" };
+
+  if (job.job_kind === "retention_review" && ports.review !== undefined) {
+    const reviewed = await ports.review(job, executorId);
+    return { claimed: true, outcome: reviewed.outcome, reason: reviewed.reason };
+  }
 
   const identity = await ports.identity(job.root_import_session_id);
   if (identity === null) {

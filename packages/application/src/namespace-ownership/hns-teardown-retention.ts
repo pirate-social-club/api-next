@@ -92,6 +92,54 @@ export function hnsObservationReferencesAuthorityV1(
   return false;
 }
 
+/**
+ * Describe the authority an exposed plan asserts, for the reference test.
+ *
+ * A plan document that cannot be parsed, or that carries no replacement
+ * records, yields an authority with no references. Callers that must
+ * distinguish "the plan asserts nothing" from "the plan could not be read"
+ * catch the throw and treat it as unknown provenance, which retains.
+ */
+export function hnsRetainedAuthorityFromPlanDocumentV1(
+  bytes: Uint8Array,
+): HnsRetainedAuthorityReferenceV1 {
+  const plan = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+  const records = Array.isArray(plan.replacement_records) ? plan.replacement_records : [];
+  const nsNames: string[] = [];
+  const ds: { key_tag: number; algorithm: number; digest_type: number; digest: string }[] = [];
+  let challenge: string | null = null;
+  for (const entry of records) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type.toUpperCase() : "";
+    if (type === "NS" && typeof record.ns === "string") nsNames.push(record.ns);
+    if (type === "DS") {
+      const keyTag = record.keyTag ?? record.key_tag;
+      const digestType = record.digestType ?? record.digest_type;
+      if (
+        typeof keyTag === "number" &&
+        typeof record.algorithm === "number" &&
+        typeof digestType === "number" &&
+        typeof record.digest === "string"
+      ) {
+        ds.push({
+          key_tag: keyTag,
+          algorithm: record.algorithm,
+          digest_type: digestType,
+          digest: record.digest,
+        });
+      }
+    }
+    if (type === "TXT" && Array.isArray(record.txt)) {
+      for (const value of record.txt) {
+        if (typeof value === "string" && value.startsWith("pirate-verification="))
+          challenge = value;
+      }
+    }
+  }
+  return { ns_names: nsNames, ds, challenge_txt_value: challenge };
+}
+
 export type HnsTeardownRetentionDecisionV1 = Readonly<{
   readonly decision: "retain" | "retire_eligible";
   readonly reason:

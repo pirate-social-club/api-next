@@ -565,7 +565,13 @@ export function decideHnsRootImportLifecycleV1(
           ]);
         }
         return withState(state, { phase: "activated", pending_reason: null }, "activated", [
-          { kind: "retention_review", due_at_epoch_ms: nowEpochMs },
+          // The initial review of an operation's authority follows the policy's
+          // first-review cadence, the same one a terminal decision uses. There
+          // is one initial cadence in the system, not one per scheduling site.
+          {
+            kind: "retention_review",
+            due_at_epoch_ms: nowEpochMs + policy.retention_review.first_seconds * 1_000,
+          },
         ]);
       }
       if (state.phase === "activated") return replay("activation_replayed");

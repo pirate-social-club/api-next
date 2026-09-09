@@ -1,9 +1,14 @@
+import {
+  type HnsRetainedAuthorityReferenceV1,
+  hnsRetainedAuthorityFromPlanDocumentV1,
+} from "@pirate/application/namespace-ownership";
 import { Client } from "pg";
 import type {
   HnsLifecycleClaimV1,
   HnsLifecycleEvidenceV1,
   HnsLifecycleExecutorPortsV1,
 } from "./lifecycle-executor.ts";
+import type { HnsRetentionReviewerPortsV1 } from "./retention-reviewer.ts";
 
 /**
  * The lifecycle runner's ports, backed by the control-plane database.
@@ -153,6 +158,100 @@ export function makePostgresHnsRootImportLifecycleQueue(
         }
         return { outcome: row.outcome };
       }),
+    now_epoch_ms: () => Date.now(),
+  };
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The retention reviewer's ports.
+ *
+ * `authority` is the one place the lifecycle reaches into the legacy session
+ * tables, and deliberately so: what the retained plan asserts on the name lives
+ * inside the plan document those tables hold, and there is no lifecycle-side
+ * copy of it. Every failure to establish it — no plan, an unreadable plan, a
+ * digest that does not match the stored bytes — returns a null authority, which
+ * the reviewer records as unknown provenance and retains. Nothing here infers
+ * an absent reference from a missing plan.
+ */
+export function makePostgresHnsRetentionReviewerPorts(
+  connectionString: string,
+  observeChain: HnsRetentionReviewerPortsV1["observe_chain"],
+  finalize: HnsRetentionReviewerPortsV1["finalize"],
+): HnsRetentionReviewerPortsV1 {
+  if (connectionString.trim() !== connectionString || connectionString.length === 0) {
+    throw new Error("HNS retention reviewer configuration is invalid");
+  }
+  return {
+    authority: (rootImportSessionId) =>
+      withClient(connectionString, async (client) => {
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT lifecycle.root_label, lifecycle.generation,
+                  session.publish_plan_bytes, session.publish_plan_sha256
+             FROM hns_root_import_lifecycle AS lifecycle
+             LEFT JOIN hns_root_import_sessions AS session
+               ON session.root_import_session_id = lifecycle.root_import_session_id
+            WHERE lifecycle.root_import_session_id = $1`,
+          [rootImportSessionId],
+        );
+        const row = result.rows[0];
+        if (result.rows.length !== 1 || row === undefined) return null;
+        const generation = safePositiveInteger(row.generation);
+        if (typeof row.root_label !== "string" || generation === null) {
+          throw new Error("HNS retention reviewer read an invalid operation identity");
+        }
+        let authority: HnsRetainedAuthorityReferenceV1 | null = null;
+        const planBytes =
+          row.publish_plan_bytes instanceof Uint8Array ? row.publish_plan_bytes : null;
+        const planDigest =
+          typeof row.publish_plan_sha256 === "string" ? row.publish_plan_sha256 : null;
+        if (planBytes !== null && planDigest !== null) {
+          try {
+            if ((await sha256Hex(planBytes)) === planDigest) {
+              authority = hnsRetainedAuthorityFromPlanDocumentV1(planBytes);
+            }
+          } catch {
+            authority = null;
+          }
+        }
+        return { root_label: row.root_label, generation, authority };
+      }),
+    observe_chain: observeChain,
+    record: (input) =>
+      withClient(connectionString, async (client) => {
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT * FROM record_hns_root_import_retention_review_v1(
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [
+            input.root_import_session_id,
+            input.lifecycle_job_id,
+            input.executor_id,
+            input.lease_fence,
+            input.expected_generation,
+            input.reason,
+            input.evidence_ref,
+            input.current_observed_at_epoch_ms === null
+              ? null
+              : new Date(input.current_observed_at_epoch_ms),
+            input.safe_observed_at_epoch_ms === null
+              ? null
+              : new Date(input.safe_observed_at_epoch_ms),
+            input.current_resource_sha256,
+            input.safe_resource_sha256,
+            new Date(input.next_review_at_epoch_ms),
+          ],
+        );
+        const row = result.rows[0];
+        if (result.rows.length !== 1 || row === undefined || typeof row.outcome !== "string") {
+          throw new Error("HNS retention review writer returned no result");
+        }
+        return { outcome: row.outcome };
+      }),
+    finalize,
     now_epoch_ms: () => Date.now(),
   };
 }

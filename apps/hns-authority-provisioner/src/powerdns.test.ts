@@ -274,7 +274,7 @@ describe("PowerDNS managed HNS root rrsets", () => {
     ]);
   });
 
-  test("idempotently deletes one exact abandoned root zone", async () => {
+  test("idempotently deletes one exact abandoned root zone and confirms it is gone", async () => {
     const calls: string[] = [];
     const teardown = makePowerDnsRootTeardown(
       {
@@ -283,12 +283,49 @@ describe("PowerDNS managed HNS root rrsets", () => {
         server_id: "localhost",
       },
       async (url, init) => {
-        calls.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
-        return new Response(null, { status: 204 });
+        const method = init?.method ?? "GET";
+        calls.push(`${method} ${new URL(String(url)).pathname}`);
+        // A real authority answers the read-back for a deleted zone with 404.
+        return method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : new Response(JSON.stringify({ error: "Not Found" }), { status: 404 });
       },
     );
     await teardown({ root_label: "newroot" });
-    expect(calls).toEqual(["DELETE /api/v1/servers/localhost/zones/newroot."]);
+    expect(calls).toEqual([
+      "DELETE /api/v1/servers/localhost/zones/newroot.",
+      "GET /api/v1/servers/localhost/zones/newroot.",
+    ]);
+  });
+
+  test("a zone still present after the delete is an ambiguous teardown, not a completed one", async () => {
+    // Quota is released on a completed teardown, so a 2xx that did not
+    // actually remove the zone must not be reported as success: the
+    // reservation has to stay held for reconciliation.
+    const teardown = makePowerDnsRootTeardown(
+      {
+        api_url: "http://powerdns.test:8081",
+        api_key: "secret-not-logged",
+        server_id: "localhost",
+      },
+      async (_url, init) =>
+        (init?.method ?? "GET") === "DELETE"
+          ? new Response(null, { status: 204 })
+          : new Response(
+              JSON.stringify({
+                name: "newroot.",
+                kind: "Native",
+                serial: 1,
+                dnssec: true,
+                rrsets: [],
+                account: "",
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+    );
+    await expect(teardown({ root_label: "newroot" })).rejects.toThrow(
+      "PowerDNS zone remains after teardown",
+    );
   });
 });
 

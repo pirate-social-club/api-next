@@ -10,6 +10,7 @@ import { makeHsdRootResourceObserver } from "./hsd.ts";
 import { makeHnsLifecycleObservePort } from "./lifecycle-evidence.ts";
 import { runHnsRootImportLifecycleJobOnce } from "./lifecycle-executor.ts";
 import {
+  makePostgresHnsRetentionReviewerPorts,
   makePostgresHnsRootImportLifecycleQueue,
   nextHnsLifecycleJobDueEpochMs,
 } from "./lifecycle-queue.ts";
@@ -27,6 +28,7 @@ import {
 } from "./powerdns.ts";
 import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
+import { runHnsRetentionReviewOnce } from "./retention-reviewer.ts";
 import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
@@ -366,13 +368,26 @@ async function main(serve: boolean): Promise<void> {
       observe_chain: (rootLabel: string, view: "current" | "safe") => observeChain(rootLabel, view),
     }),
   );
+  // Retention reviews are dispatched from the same claim as every other
+  // lifecycle job, and reuse the runner's finalizer for the paths where the
+  // fenced writer never ran.
+  const reviewerPorts = makePostgresHnsRetentionReviewerPorts(
+    connectionString,
+    (rootLabel: string, view: "current" | "safe") => observeChain(rootLabel, view),
+    lifecyclePorts.finalize,
+  );
+  const lifecycleWithReview = {
+    ...lifecyclePorts,
+    review: (job: Parameters<typeof runHnsRetentionReviewOnce>[0], reviewExecutorId: string) =>
+      runHnsRetentionReviewOnce(job, reviewExecutorId, reviewerPorts),
+  } as const;
 
   const runners: HnsExecutorRunnersV1 = {
     lifecycle: async () => {
       const result = await runHnsRootImportLifecycleJobOnce(
         executorId,
         HNS_LIFECYCLE_LEASE_SECONDS,
-        lifecyclePorts,
+        lifecycleWithReview,
       );
       return { claimed: result.claimed, outcome: result.outcome, detail: result };
     },

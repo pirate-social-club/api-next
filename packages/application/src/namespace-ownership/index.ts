@@ -458,6 +458,7 @@ export {
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
 export * from "./hns-resource-codec.ts";
+export * from "./hns-retention-review.ts";
 export * from "./hns-root-import.ts";
 export * from "./hns-root-import-lifecycle-projection.ts";
 export * from "./hns-root-import-lifecycle-service.ts";
