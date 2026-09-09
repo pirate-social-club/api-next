@@ -20,6 +20,13 @@ const suite = connectionString ? describe : describe.skip;
 
 const quote = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
+/**
+ * Each case builds its own schema and applies every migration, which is well
+ * past bun's five-second default. The budget is explicit so the suite fails on
+ * a real hang rather than on the migration set having grown.
+ */
+const SCHEMA_BUDGET_MS = 120_000;
+
 async function withSchema<A>(prefix: string, use: (admin: Client) => Promise<A>): Promise<A> {
   const schema = `${prefix}_${randomUUID().replaceAll("-", "")}`;
   const admin = new Client({ connectionString });
@@ -54,126 +61,144 @@ const preparationCompleted = (eventId: string) =>
   }) as const;
 
 suite("HNS lifecycle transition helper against PostgreSQL", () => {
-  test("rolls the transition back with the transaction that contained it", async () => {
-    await withSchema("hns_lifecycle_rollback", async (admin) => {
-      await seedPreparing(admin, "session-rollback");
-      await admin.query("BEGIN");
-      const applied = await commitLifecycleEventInTransaction(
-        admin,
-        "session-rollback",
-        preparationCompleted("evt-rollback"),
-      );
-      expect(applied).toMatchObject({ applied: true });
-      await admin.query("ROLLBACK");
+  test(
+    "rolls the transition back with the transaction that contained it",
+    async () => {
+      await withSchema("hns_lifecycle_rollback", async (admin) => {
+        await seedPreparing(admin, "session-rollback");
+        await admin.query("BEGIN");
+        const applied = await commitLifecycleEventInTransaction(
+          admin,
+          "session-rollback",
+          preparationCompleted("evt-rollback"),
+        );
+        expect(applied).toMatchObject({ applied: true });
+        await admin.query("ROLLBACK");
 
-      // The transition is not a separate commit: rolling back the surrounding
-      // work must leave the lifecycle exactly where it was.
-      const after = await admin.query(
-        "SELECT phase, revision FROM hns_root_import_lifecycle WHERE root_import_session_id='session-rollback'",
-      );
-      expect(after.rows[0]).toEqual({ phase: "preparing", revision: "1" });
-      const history = await admin.query(
-        "SELECT count(*)::int AS entries FROM hns_root_import_lifecycle_history WHERE root_import_session_id='session-rollback'",
-      );
-      expect(history.rows[0]).toEqual({ entries: 0 });
-    });
-  });
+        // The transition is not a separate commit: rolling back the surrounding
+        // work must leave the lifecycle exactly where it was.
+        const after = await admin.query(
+          "SELECT phase, revision FROM hns_root_import_lifecycle WHERE root_import_session_id='session-rollback'",
+        );
+        expect(after.rows[0]).toEqual({ phase: "preparing", revision: "1" });
+        const history = await admin.query(
+          "SELECT count(*)::int AS entries FROM hns_root_import_lifecycle_history WHERE root_import_session_id='session-rollback'",
+        );
+        expect(history.rows[0]).toEqual({ entries: 0 });
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-  test("establishes exposure and the publication deadline exactly once across replays", async () => {
-    await withSchema("hns_lifecycle_replay", async (admin) => {
-      await seedPreparing(admin, "session-replay");
-      await admin.query("BEGIN");
-      expect(
-        await commitLifecycleEventInTransaction(
+  test(
+    "establishes exposure and the publication deadline exactly once across replays",
+    async () => {
+      await withSchema("hns_lifecycle_replay", async (admin) => {
+        await seedPreparing(admin, "session-replay");
+        await admin.query("BEGIN");
+        expect(
+          await commitLifecycleEventInTransaction(
+            admin,
+            "session-replay",
+            preparationCompleted("evt-once"),
+          ),
+        ).toMatchObject({ applied: true });
+        await admin.query("COMMIT");
+        const first = await admin.query(
+          `SELECT phase, plan_exposed_at, publication_deadline_at
+           FROM hns_root_import_lifecycle WHERE root_import_session_id='session-replay'`,
+        );
+        expect(first.rows[0]?.phase).toBe("awaiting_publication");
+        expect(first.rows[0]?.plan_exposed_at).not.toBeNull();
+        expect(first.rows[0]?.publication_deadline_at).not.toBeNull();
+
+        await admin.query("BEGIN");
+        const replayed = await commitLifecycleEventInTransaction(
           admin,
           "session-replay",
           preparationCompleted("evt-once"),
-        ),
-      ).toMatchObject({ applied: true });
-      await admin.query("COMMIT");
-      const first = await admin.query(
-        `SELECT phase, plan_exposed_at, publication_deadline_at
-           FROM hns_root_import_lifecycle WHERE root_import_session_id='session-replay'`,
-      );
-      expect(first.rows[0]?.phase).toBe("awaiting_publication");
-      expect(first.rows[0]?.plan_exposed_at).not.toBeNull();
-      expect(first.rows[0]?.publication_deadline_at).not.toBeNull();
-
-      await admin.query("BEGIN");
-      const replayed = await commitLifecycleEventInTransaction(
-        admin,
-        "session-replay",
-        preparationCompleted("evt-once"),
-      );
-      await admin.query("COMMIT");
-      expect(replayed.applied).toBe(false);
-
-      const second = await admin.query(
-        `SELECT phase, plan_exposed_at, publication_deadline_at
-           FROM hns_root_import_lifecycle WHERE root_import_session_id='session-replay'`,
-      );
-      // A replay preserves the deadlines: re-exposing must never extend the
-      // owner's publication window or move its start.
-      expect(second.rows[0]).toEqual(first.rows[0]);
-      const jobs = await admin.query(
-        "SELECT count(*)::int AS queued FROM hns_root_import_lifecycle_jobs WHERE root_import_session_id='session-replay'",
-      );
-      expect(jobs.rows[0]?.queued).toBeLessThanOrEqual(1);
-    });
-  });
-
-  test("serializes concurrent transitions on one operation", async () => {
-    await withSchema("hns_lifecycle_concurrent", async (admin) => {
-      await seedPreparing(admin, "session-concurrent");
-      const searchPath = (await admin.query("SHOW search_path")).rows[0]?.search_path as string;
-      const other = new Client({ connectionString });
-      await other.connect();
-      try {
-        await other.query(`SET search_path TO ${searchPath}`);
-        await admin.query("BEGIN");
-        await commitLifecycleEventInTransaction(
-          admin,
-          "session-concurrent",
-          preparationCompleted("evt-a"),
-        );
-        await other.query("BEGIN");
-        // The second caller blocks on the row lock until the first commits,
-        // then decides against the state the first produced.
-        const contended = commitLifecycleEventInTransaction(
-          other,
-          "session-concurrent",
-          preparationCompleted("evt-b"),
         );
         await admin.query("COMMIT");
-        const second = await contended;
-        await other.query("COMMIT");
+        expect(replayed.applied).toBe(false);
 
-        // Only one transition happened; the second saw awaiting_publication.
-        expect(second.applied).toBe(false);
-        const phases = await admin.query(
-          `SELECT phase, revision FROM hns_root_import_lifecycle
-            WHERE root_import_session_id='session-concurrent'`,
+        const second = await admin.query(
+          `SELECT phase, plan_exposed_at, publication_deadline_at
+           FROM hns_root_import_lifecycle WHERE root_import_session_id='session-replay'`,
         );
-        expect(phases.rows[0]).toMatchObject({ phase: "awaiting_publication" });
-      } finally {
-        await other.end().catch(() => undefined);
-      }
-    });
-  });
+        // A replay preserves the deadlines: re-exposing must never extend the
+        // owner's publication window or move its start.
+        expect(second.rows[0]).toEqual(first.rows[0]);
+        const jobs = await admin.query(
+          "SELECT count(*)::int AS queued FROM hns_root_import_lifecycle_jobs WHERE root_import_session_id='session-replay'",
+        );
+        expect(jobs.rows[0]?.queued).toBeLessThanOrEqual(1);
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-  test("reports lifecycle_absent instead of inventing a phase", async () => {
-    await withSchema("hns_lifecycle_absent", async (admin) => {
-      await admin.query("BEGIN");
-      const result = await commitLifecycleEventInTransaction(
-        admin,
-        "session-that-predates-this",
-        preparationCompleted("evt-absent"),
-      );
-      await admin.query("COMMIT");
+  test(
+    "serializes concurrent transitions on one operation",
+    async () => {
+      await withSchema("hns_lifecycle_concurrent", async (admin) => {
+        await seedPreparing(admin, "session-concurrent");
+        const searchPath = (await admin.query("SHOW search_path")).rows[0]?.search_path as string;
+        const other = new Client({ connectionString });
+        await other.connect();
+        try {
+          await other.query(`SET search_path TO ${searchPath}`);
+          await admin.query("BEGIN");
+          await commitLifecycleEventInTransaction(
+            admin,
+            "session-concurrent",
+            preparationCompleted("evt-a"),
+          );
+          await other.query("BEGIN");
+          // The second caller blocks on the row lock until the first commits,
+          // then decides against the state the first produced.
+          const contended = commitLifecycleEventInTransaction(
+            other,
+            "session-concurrent",
+            preparationCompleted("evt-b"),
+          );
+          await admin.query("COMMIT");
+          const second = await contended;
+          await other.query("COMMIT");
 
-      expect(result).toEqual({ applied: false, reason: "lifecycle_absent" });
-      const rows = await admin.query("SELECT count(*)::int AS rows FROM hns_root_import_lifecycle");
-      expect(rows.rows[0]).toEqual({ rows: 0 });
-    });
-  });
+          // Only one transition happened; the second saw awaiting_publication.
+          expect(second.applied).toBe(false);
+          const phases = await admin.query(
+            `SELECT phase, revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='session-concurrent'`,
+          );
+          expect(phases.rows[0]).toMatchObject({ phase: "awaiting_publication" });
+        } finally {
+          await other.end().catch(() => undefined);
+        }
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
+
+  test(
+    "reports lifecycle_absent instead of inventing a phase",
+    async () => {
+      await withSchema("hns_lifecycle_absent", async (admin) => {
+        await admin.query("BEGIN");
+        const result = await commitLifecycleEventInTransaction(
+          admin,
+          "session-that-predates-this",
+          preparationCompleted("evt-absent"),
+        );
+        await admin.query("COMMIT");
+
+        expect(result).toEqual({ applied: false, reason: "lifecycle_absent" });
+        const rows = await admin.query(
+          "SELECT count(*)::int AS rows FROM hns_root_import_lifecycle",
+        );
+        expect(rows.rows[0]).toEqual({ rows: 0 });
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 });

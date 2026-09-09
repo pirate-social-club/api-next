@@ -7,6 +7,12 @@ import type {
 import { Client } from "pg";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
 import { makeHsdRootResourceObserver } from "./hsd.ts";
+import { makeHnsLifecycleObservePort } from "./lifecycle-evidence.ts";
+import { runHnsRootImportLifecycleJobOnce } from "./lifecycle-executor.ts";
+import {
+  makePostgresHnsRootImportLifecycleQueue,
+  nextHnsLifecycleJobDueEpochMs,
+} from "./lifecycle-queue.ts";
 import {
   type HnsRootReadinessAuthorityEndpointV1,
   makeLiveHnsRootReadinessObserverV1,
@@ -21,6 +27,7 @@ import {
 } from "./powerdns.ts";
 import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
+import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
 // Handshake publication is block-bound: the legacy bounded 20-attempt
@@ -58,21 +65,12 @@ export function nextHnsExecutorWaitMs(
   return Math.min(untilDue, HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS);
 }
 
-async function nextLifecycleJobDueMs(connectionString: string): Promise<number | null> {
-  const client = new Client({ connectionString });
-  await client.connect();
-  try {
-    const result = await client.query<{ due_at: Date | null }>(
-      `SELECT MIN(due_at) AS due_at FROM hns_root_import_lifecycle_jobs
-        WHERE state = 'queued'
-           OR (state = 'leased' AND lease_expires_at <= clock_timestamp())`,
-    );
-    const dueAt = result.rows[0]?.due_at;
-    return dueAt === null || dueAt === undefined ? null : dueAt.getTime();
-  } finally {
-    await client.end();
-  }
-}
+/**
+ * How long a lifecycle job's lease is held. Long enough for a chain read and
+ * the transaction that applies it, short enough that a crashed executor's job
+ * is reclaimable within one recovery sweep of its expiry.
+ */
+export const HNS_LIFECYCLE_LEASE_SECONDS = 60;
 
 function required(name: string): string {
   const value = process.env[name];
@@ -358,8 +356,45 @@ async function main(serve: boolean): Promise<void> {
     },
   } as const;
 
+  // The lifecycle runner's production ports: the same observer the composed
+  // path proved, the persisted due-job claim, and the operation's own row for
+  // identity. This is the dispatch that was missing — the runner existed and
+  // was proven, but nothing in the service loop called it.
+  const lifecyclePorts = makePostgresHnsRootImportLifecycleQueue(
+    connectionString,
+    makeHnsLifecycleObservePort({
+      observe_chain: (rootLabel: string, view: "current" | "safe") => observeChain(rootLabel, view),
+    }),
+  );
+
+  const runners: HnsExecutorRunnersV1 = {
+    lifecycle: async () => {
+      const result = await runHnsRootImportLifecycleJobOnce(
+        executorId,
+        HNS_LIFECYCLE_LEASE_SECONDS,
+        lifecyclePorts,
+      );
+      return { claimed: result.claimed, outcome: result.outcome, detail: result };
+    },
+    provisioning: async () => {
+      const result = await runHnsAuthorityProvisionExecutorOnce({
+        ...execution,
+        only: "provisioning",
+      });
+      return { claimed: result.outcome !== "idle", outcome: result.outcome, detail: result };
+    },
+    observation: async () => {
+      const result = await runHnsAuthorityProvisionExecutorOnce({
+        ...execution,
+        only: "observation",
+      });
+      return { claimed: result.outcome !== "idle", outcome: result.outcome, detail: result };
+    },
+  };
+
   let stopping = false;
   let observationRetrySpacing = false;
+  let cursor = 0;
   const stop = () => {
     stopping = true;
   };
@@ -369,18 +404,30 @@ async function main(serve: boolean): Promise<void> {
   }
   try {
     do {
-      const result = await runHnsAuthorityProvisionExecutorOnce(execution);
-      if (!serve || result.outcome !== "idle") console.log(JSON.stringify(result));
+      const round = await runHnsExecutorRoundV1(cursor, runners);
+      cursor = round.next_cursor;
+      for (const turn of round.turns) {
+        if (!serve || turn.result.claimed || turn.result.outcome === "error") {
+          console.log(JSON.stringify({ executor_class: turn.executor_class, ...turn.result }));
+        }
+      }
       // Due-job scheduling replaces the global retry sleep: keep claiming
       // while any job class has work — a waiting root never blocks
       // unrelated provisioning or renewal — and wait only when idle, for
       // the earliest persisted due time, bounded by the recovery sweep.
       // Cron remains the recovery sweep of last resort.
-      const observationRetry = result.outcome === "retry" && "observation_job_id" in result;
-      if (serve && result.outcome === "idle" && !stopping) {
+      const observationRetry = round.turns.some(
+        (turn) =>
+          turn.executor_class === "observation" &&
+          turn.result.outcome === "retry" &&
+          typeof turn.result.detail === "object" &&
+          turn.result.detail !== null &&
+          "observation_job_id" in turn.result.detail,
+      );
+      if (serve && round.idle && !stopping) {
         const waitMs = nextHnsExecutorWaitMs({
           now_epoch_ms: Date.now(),
-          next_lifecycle_due_epoch_ms: await nextLifecycleJobDueMs(connectionString).catch(
+          next_lifecycle_due_epoch_ms: await nextHnsLifecycleJobDueEpochMs(connectionString).catch(
             () => null,
           ),
           observation_retry_spacing: observationRetrySpacing,

@@ -354,25 +354,36 @@ export async function runHnsAuthorityProvisionExecutorOnce(input: {
     readonly retention?: HnsTeardownRetentionPorts;
     readonly config: HnsRootReadinessObservationConfig;
   }>;
+  /**
+   * Restrict this call to one job class, so the service loop can give each
+   * class its own turn. Omitted keeps the original behaviour — provisioning
+   * first, observation only when provisioning is idle — which is what the
+   * one-shot invocation and the existing callers expect.
+   */
+  readonly only?: "provisioning" | "observation";
 }): Promise<HnsAuthorityProvisionExecutorResult> {
-  const claim = await input.queue.claim(input.executor_id, 60);
-  if (claim === null) {
-    return input.observation === undefined
-      ? { outcome: "idle" }
+  const observation = input.observation;
+  const runObservationTurn = (): Promise<HnsAuthorityProvisionExecutorResult> =>
+    observation === undefined
+      ? Promise.resolve({ outcome: "idle" } as const)
       : runObservation({
           executor_id: input.executor_id,
-          queue: input.observation.queue,
-          observe: input.observation.observe,
-          teardown_zone: input.observation.teardown_zone,
+          queue: observation.queue,
+          observe: observation.observe,
+          teardown_zone: observation.teardown_zone,
           retention:
-            input.observation.retention ??
+            observation.retention ??
             ({
               observe_chain: () => Promise.reject(new Error("retention evidence unavailable")),
               // No ports supplied means no recorded authorization exists.
               retirement_authorization: () => Promise.resolve(null),
             } as const satisfies HnsTeardownRetentionPorts),
-          observation_config: input.observation.config,
+          observation_config: observation.config,
         });
+  if (input.only === "observation") return runObservationTurn();
+  const claim = await input.queue.claim(input.executor_id, 60);
+  if (claim === null) {
+    return input.only === "provisioning" ? { outcome: "idle" } : runObservationTurn();
   }
   const base = {
     provision_job_id: claim.provision_job_id,

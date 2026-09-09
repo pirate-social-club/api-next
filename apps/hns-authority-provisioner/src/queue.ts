@@ -59,6 +59,28 @@ function bytes(value: unknown): Uint8Array | null {
   return value instanceof Uint8Array ? new Uint8Array(value) : null;
 }
 
+/**
+ * The encoded-resource digest the exposed plan asserts.
+ *
+ * The plan document carries it separately from its own digest, because they
+ * hash different things: the plan hash identifies the document, this one
+ * identifies the wire bytes the owner is asked to publish. Qualification
+ * compares against the latter, so it is what the lifecycle row records. A plan
+ * that does not carry it in the expected shape yields null and leaves the
+ * operation without a digest, which makes observations non-qualifying rather
+ * than qualifying against a guess.
+ */
+function encodedResourceDigestFromPlanBytes(planBytes: Uint8Array): string | null {
+  try {
+    const plan: unknown = JSON.parse(new TextDecoder().decode(planBytes));
+    if (typeof plan !== "object" || plan === null) return null;
+    const digest = (plan as Record<string, unknown>).encoded_resource_sha256;
+    return typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest) ? digest : null;
+  } catch {
+    return null;
+  }
+}
+
 async function withClient<A>(
   connectionString: string,
   use: (client: Client) => Promise<A>,
@@ -158,6 +180,16 @@ export function makePostgresHnsAuthorityProvisionQueue(
           // the plan to the owner is still exposure, so the window starts here
           // rather than at any later acknowledgement.
           if (completed && sessionId !== null && row.outcome === "completed") {
+            // The digest the operation will be judged against is recorded in
+            // the same transaction that exposes the plan. Write-once in SQL:
+            // a replayed finalize passes the same value and changes nothing.
+            const planDigest = encodedResourceDigestFromPlanBytes(input.publish_plan_bytes);
+            if (planDigest !== null) {
+              await client.query("SELECT set_hns_root_import_lifecycle_plan_digest_v1($1,$2)", [
+                sessionId,
+                planDigest,
+              ]);
+            }
             await commitLifecycleEventInTransaction(client, sessionId, {
               event: "preparation_completed",
               event_id: `preparation_completed:${input.provision_job_id}:${input.publish_plan_sha256}`,

@@ -17,6 +17,14 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString ? describe : describe.skip;
+
+/**
+ * Each case builds its own schema and applies every migration, which is well
+ * past bun's five-second default. The budget is explicit so the suite fails on
+ * a real hang rather than on the migration set having grown.
+ */
+const SCHEMA_BUDGET_MS = 120_000;
+
 const quote = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const SESSION = "session-retention";
 const FRESHNESS = 1_800;
@@ -87,113 +95,145 @@ const authorization = async (admin: Client) =>
   ).rows;
 
 suite("HNS retirement authorization (migration 0140)", () => {
-  test("no review means no authorization, which the gate reads as retain", async () => {
-    await withSchema("hns_retention_none", async (admin) => {
-      expect(await authorization(admin)).toEqual([]);
-    });
-  });
-
-  test("a retain decision never authorizes deletion", async () => {
-    await withSchema("hns_retention_retain", async (admin) => {
-      await recordReview(admin, { generation: 1, decision: "retain", evidenceRef: "retain-1" });
-      expect(await authorization(admin)).toEqual([]);
-    });
-  });
-
-  test("a recorded review of the current generation authorizes retirement", async () => {
-    await withSchema("hns_retention_ok", async (admin) => {
-      await recordReview(admin, {
-        generation: 1,
-        decision: "retire_authorized",
-        evidenceRef: "review-1",
+  test(
+    "no review means no authorization, which the gate reads as retain",
+    async () => {
+      await withSchema("hns_retention_none", async (admin) => {
+        expect(await authorization(admin)).toEqual([]);
       });
-      const rows = await authorization(admin);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        kind: "retention_review",
-        evidence_ref: "review-1",
-        authority_generation: "1",
-      });
-    });
-  });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-  test("a review of a superseded generation authorizes nothing", async () => {
-    await withSchema("hns_retention_generation", async (admin) => {
-      await recordReview(admin, {
-        generation: 1,
-        decision: "retire_authorized",
-        evidenceRef: "review-old",
+  test(
+    "a retain decision never authorizes deletion",
+    async () => {
+      await withSchema("hns_retention_retain", async (admin) => {
+        await recordReview(admin, { generation: 1, decision: "retain", evidenceRef: "retain-1" });
+        expect(await authorization(admin)).toEqual([]);
       });
-      // The operation is regenerated: it now holds different infrastructure,
-      // and nobody has inspected that.
-      await admin.query(
-        "UPDATE hns_root_import_lifecycle SET generation=2 WHERE root_import_session_id=$1",
-        [SESSION],
-      );
-      expect(await authorization(admin)).toEqual([]);
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-      await recordReview(admin, {
-        generation: 2,
-        decision: "retire_authorized",
-        evidenceRef: "review-new",
-      });
-      expect((await authorization(admin))[0]).toMatchObject({ evidence_ref: "review-new" });
-    });
-  });
-
-  test("evidence older than the freshness bound authorizes nothing", async () => {
-    await withSchema("hns_retention_stale", async (admin) => {
-      await recordReview(admin, {
-        generation: 1,
-        decision: "retire_authorized",
-        evidenceRef: "review-stale",
-        reviewedInterval: "-2 hours",
-      });
-      expect(await authorization(admin)).toEqual([]);
-    });
-  });
-
-  test("an explicit supersession authorizes retirement and is labelled as such", async () => {
-    await withSchema("hns_retention_superseded", async (admin) => {
-      await recordReview(admin, {
-        generation: 1,
-        decision: "superseded",
-        evidenceRef: "supersession-1",
-      });
-      expect((await authorization(admin))[0]).toMatchObject({ kind: "supersession" });
-    });
-  });
-
-  test("authorizing retirement without inspecting both views is refused by the database", async () => {
-    await withSchema("hns_retention_uninspected", async (admin) => {
-      await expect(
-        recordReview(admin, {
+  test(
+    "a recorded review of the current generation authorizes retirement",
+    async () => {
+      await withSchema("hns_retention_ok", async (admin) => {
+        await recordReview(admin, {
           generation: 1,
           decision: "retire_authorized",
-          evidenceRef: "review-uninspected",
-          inspected: false,
-        }),
-      ).rejects.toThrow();
-      expect(await authorization(admin)).toEqual([]);
-    });
-  });
+          evidenceRef: "review-1",
+        });
+        const rows = await authorization(admin);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          kind: "retention_review",
+          evidence_ref: "review-1",
+          authority_generation: "1",
+        });
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-  test("reviews are append-only", async () => {
-    await withSchema("hns_retention_immutable", async (admin) => {
-      await recordReview(admin, { generation: 1, decision: "retain", evidenceRef: "retain-2" });
-      await expect(
-        admin.query(
-          "UPDATE hns_root_import_retention_reviews SET decision='retire_authorized' WHERE root_import_session_id=$1",
+  test(
+    "a review of a superseded generation authorizes nothing",
+    async () => {
+      await withSchema("hns_retention_generation", async (admin) => {
+        await recordReview(admin, {
+          generation: 1,
+          decision: "retire_authorized",
+          evidenceRef: "review-old",
+        });
+        // The operation is regenerated: it now holds different infrastructure,
+        // and nobody has inspected that.
+        await admin.query(
+          "UPDATE hns_root_import_lifecycle SET generation=2 WHERE root_import_session_id=$1",
           [SESSION],
-        ),
-      ).rejects.toThrow();
-      await expect(
-        admin.query(
-          "DELETE FROM hns_root_import_retention_reviews WHERE root_import_session_id=$1",
-          [SESSION],
-        ),
-      ).rejects.toThrow();
-      expect(await authorization(admin)).toEqual([]);
-    });
-  });
+        );
+        expect(await authorization(admin)).toEqual([]);
+
+        await recordReview(admin, {
+          generation: 2,
+          decision: "retire_authorized",
+          evidenceRef: "review-new",
+        });
+        expect((await authorization(admin))[0]).toMatchObject({ evidence_ref: "review-new" });
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
+
+  test(
+    "evidence older than the freshness bound authorizes nothing",
+    async () => {
+      await withSchema("hns_retention_stale", async (admin) => {
+        await recordReview(admin, {
+          generation: 1,
+          decision: "retire_authorized",
+          evidenceRef: "review-stale",
+          reviewedInterval: "-2 hours",
+        });
+        expect(await authorization(admin)).toEqual([]);
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
+
+  test(
+    "an explicit supersession authorizes retirement and is labelled as such",
+    async () => {
+      await withSchema("hns_retention_superseded", async (admin) => {
+        await recordReview(admin, {
+          generation: 1,
+          decision: "superseded",
+          evidenceRef: "supersession-1",
+        });
+        expect((await authorization(admin))[0]).toMatchObject({ kind: "supersession" });
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
+
+  test(
+    "authorizing retirement without inspecting both views is refused by the database",
+    async () => {
+      await withSchema("hns_retention_uninspected", async (admin) => {
+        await expect(
+          recordReview(admin, {
+            generation: 1,
+            decision: "retire_authorized",
+            evidenceRef: "review-uninspected",
+            inspected: false,
+          }),
+        ).rejects.toThrow();
+        expect(await authorization(admin)).toEqual([]);
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
+
+  test(
+    "reviews are append-only",
+    async () => {
+      await withSchema("hns_retention_immutable", async (admin) => {
+        await recordReview(admin, { generation: 1, decision: "retain", evidenceRef: "retain-2" });
+        await expect(
+          admin.query(
+            "UPDATE hns_root_import_retention_reviews SET decision='retire_authorized' WHERE root_import_session_id=$1",
+            [SESSION],
+          ),
+        ).rejects.toThrow();
+        await expect(
+          admin.query(
+            "DELETE FROM hns_root_import_retention_reviews WHERE root_import_session_id=$1",
+            [SESSION],
+          ),
+        ).rejects.toThrow();
+        expect(await authorization(admin)).toEqual([]);
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 });

@@ -15,6 +15,14 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString ? describe : describe.skip;
+
+/**
+ * Each case builds its own schema and applies every migration, which is well
+ * past bun's five-second default. The budget is explicit so the suite fails on
+ * a real hang rather than on the migration set having grown.
+ */
+const SCHEMA_BUDGET_MS = 120_000;
+
 const quote = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const SESSION = "session-readiness";
 
@@ -88,107 +96,123 @@ async function commit(
 }
 
 suite("readiness patch semantics (migration 0139)", () => {
-  test("an omitted field preserves the stored readiness", async () => {
-    await withSchema("hns_readiness_omit", async (admin) => {
-      await seedReady(admin);
-      const before = await readiness(admin);
-      await commit(admin, "omit-1", "ready", { pending_reason: "unchanged" });
-      expect(await readiness(admin)).toEqual(before);
-    });
-  });
-
-  test("an explicit clear clears it, and the clear survives a reload", async () => {
-    await withSchema("hns_readiness_clear", async (admin) => {
-      await seedReady(admin);
-      expect(await readiness(admin)).not.toBeNull();
-      await commit(admin, "clear-1", "checking_publication", {
-        clear_readiness_observed_at: true,
-        pending_reason: "current_authority_conflict",
+  test(
+    "an omitted field preserves the stored readiness",
+    async () => {
+      await withSchema("hns_readiness_omit", async (admin) => {
+        await seedReady(admin);
+        const before = await readiness(admin);
+        await commit(admin, "omit-1", "ready", { pending_reason: "unchanged" });
+        expect(await readiness(admin)).toEqual(before);
       });
-      expect(await readiness(admin)).toBeNull();
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-      // Reload through a second connection: the clear is committed state, not
-      // an artefact of this session's view.
-      const reader = new Client({ connectionString });
-      await reader.connect();
-      try {
-        const searchPath = (await admin.query("SHOW search_path")).rows[0]?.search_path as string;
-        await reader.query(`SET search_path TO ${searchPath}`);
-        const reloaded = await reader.query(
-          "SELECT readiness_observed_at FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
-          [SESSION],
-        );
-        expect(reloaded.rows[0]?.readiness_observed_at).toBeNull();
-      } finally {
-        await reader.end().catch(() => undefined);
-      }
-    });
-  });
+  test(
+    "an explicit clear clears it, and the clear survives a reload",
+    async () => {
+      await withSchema("hns_readiness_clear", async (admin) => {
+        await seedReady(admin);
+        expect(await readiness(admin)).not.toBeNull();
+        await commit(admin, "clear-1", "checking_publication", {
+          clear_readiness_observed_at: true,
+          pending_reason: "current_authority_conflict",
+        });
+        expect(await readiness(admin)).toBeNull();
 
-  test("a timestamp sets it", async () => {
-    await withSchema("hns_readiness_set", async (admin) => {
-      await seedReady(admin);
-      await commit(admin, "clear-2", "checking_publication", {
-        clear_readiness_observed_at: true,
+        // Reload through a second connection: the clear is committed state, not
+        // an artefact of this session's view.
+        const reader = new Client({ connectionString });
+        await reader.connect();
+        try {
+          const searchPath = (await admin.query("SHOW search_path")).rows[0]?.search_path as string;
+          await reader.query(`SET search_path TO ${searchPath}`);
+          const reloaded = await reader.query(
+            "SELECT readiness_observed_at FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+            [SESSION],
+          );
+          expect(reloaded.rows[0]?.readiness_observed_at).toBeNull();
+        } finally {
+          await reader.end().catch(() => undefined);
+        }
       });
-      expect(await readiness(admin)).toBeNull();
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-      const observedAt = "2026-09-09T12:00:00.000Z";
-      await commit(admin, "set-1", "checking_authority", {
-        readiness_observed_at: observedAt,
+  test(
+    "a timestamp sets it",
+    async () => {
+      await withSchema("hns_readiness_set", async (admin) => {
+        await seedReady(admin);
+        await commit(admin, "clear-2", "checking_publication", {
+          clear_readiness_observed_at: true,
+        });
+        expect(await readiness(admin)).toBeNull();
+
+        const observedAt = "2026-09-09T12:00:00.000Z";
+        await commit(admin, "set-1", "checking_authority", {
+          readiness_observed_at: observedAt,
+        });
+        expect((await readiness(admin))?.toISOString()).toBe(observedAt);
       });
-      expect((await readiness(admin))?.toISOString()).toBe(observedAt);
-    });
-  });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 
-  test("a replayed or stale event cannot restore invalidated readiness", async () => {
-    await withSchema("hns_readiness_replay", async (admin) => {
-      await seedReady(admin);
-      const original = await readiness(admin);
-      expect(original).not.toBeNull();
+  test(
+    "a replayed or stale event cannot restore invalidated readiness",
+    async () => {
+      await withSchema("hns_readiness_replay", async (admin) => {
+        await seedReady(admin);
+        const original = await readiness(admin);
+        expect(original).not.toBeNull();
 
-      // The readiness observation that established the evidence, replayed
-      // after the invalidation. Its identity is already in history.
-      await commit(admin, "readiness-established", "ready", {
-        readiness_observed_at: original?.toISOString(),
-      });
-      await commit(admin, "clear-3", "checking_publication", {
-        clear_readiness_observed_at: true,
-      });
-      expect(await readiness(admin)).toBeNull();
+        // The readiness observation that established the evidence, replayed
+        // after the invalidation. Its identity is already in history.
+        await commit(admin, "readiness-established", "ready", {
+          readiness_observed_at: original?.toISOString(),
+        });
+        await commit(admin, "clear-3", "checking_publication", {
+          clear_readiness_observed_at: true,
+        });
+        expect(await readiness(admin)).toBeNull();
 
-      const staleRevision = 1;
-      // A duplicate delivery of the same event identity is recorded as a
-      // replay and changes nothing.
-      await admin.query(commitDecision, [
-        SESSION,
-        await revision(admin),
-        "readiness-established",
-        "readiness_observed",
-        "replay",
-        "event_identity_replayed",
-        null,
-        "{}",
-        "[]",
-      ]);
-      expect(await readiness(admin)).toBeNull();
-
-      // A stale revision is refused outright, so a late writer holding an old
-      // view cannot reinstate the evidence either.
-      await expect(
-        admin.query(commitDecision, [
+        const staleRevision = 1;
+        // A duplicate delivery of the same event identity is recorded as a
+        // replay and changes nothing.
+        await admin.query(commitDecision, [
           SESSION,
-          staleRevision,
-          "readiness-late",
+          await revision(admin),
+          "readiness-established",
           "readiness_observed",
-          "transition",
-          "test",
-          "ready",
-          JSON.stringify({ readiness_observed_at: original?.toISOString() }),
+          "replay",
+          "event_identity_replayed",
+          null,
+          "{}",
           "[]",
-        ]),
-      ).rejects.toThrow();
-      expect(await readiness(admin)).toBeNull();
-    });
-  });
+        ]);
+        expect(await readiness(admin)).toBeNull();
+
+        // A stale revision is refused outright, so a late writer holding an old
+        // view cannot reinstate the evidence either.
+        await expect(
+          admin.query(commitDecision, [
+            SESSION,
+            staleRevision,
+            "readiness-late",
+            "readiness_observed",
+            "transition",
+            "test",
+            "ready",
+            JSON.stringify({ readiness_observed_at: original?.toISOString() }),
+            "[]",
+          ]),
+        ).rejects.toThrow();
+        expect(await readiness(admin)).toBeNull();
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
 });

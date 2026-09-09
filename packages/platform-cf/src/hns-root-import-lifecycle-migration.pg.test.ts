@@ -11,6 +11,13 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString
 }
 const suite = connectionString ? describe : describe.skip;
 
+/**
+ * Each case builds its own schema and applies every migration, which is well
+ * past bun's five-second default. The budget is explicit so the suite fails on
+ * a real hang rather than on the migration set having grown.
+ */
+const SCHEMA_BUDGET_MS = 120_000;
+
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -220,45 +227,47 @@ async function backfill(admin: Client): Promise<void> {
 }
 
 suite("HNS root-import lifecycle migration matrix (T13)", () => {
-  test("maps every existing-session shape forward with conservative retention", async () => {
-    const schema = `hns_lifecycle_t13_${randomUUID().replaceAll("-", "")}`;
-    const admin = new Client({ connectionString });
-    await admin.connect();
-    try {
-      await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-      for (const migration of await loadPostgresMigrations()) {
-        await admin.query(migration.sql);
-      }
-      // Minimal FK-valid parents; replica role skips the heavier session FKs.
-      await admin.query("BEGIN");
-      await admin.query("SET LOCAL session_replication_role = replica");
-      await admin.query("INSERT INTO users (user_id) VALUES ('migration-actor')");
-      await admin.query(
-        `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+  test(
+    "maps every existing-session shape forward with conservative retention",
+    async () => {
+      const schema = `hns_lifecycle_t13_${randomUUID().replaceAll("-", "")}`;
+      const admin = new Client({ connectionString });
+      await admin.connect();
+      try {
+        await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+        await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+        for (const migration of await loadPostgresMigrations()) {
+          await admin.query(migration.sql);
+        }
+        // Minimal FK-valid parents; replica role skips the heavier session FKs.
+        await admin.query("BEGIN");
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query("INSERT INTO users (user_id) VALUES ('migration-actor')");
+        await admin.query(
+          `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
            canonical_route_binding_id,route_authority_version,route_slug,created_at,updated_at)
          VALUES ($1,'Lifecycle migration','active','migration-actor',
            NULL,'optional_route_v2',NULL,clock_timestamp(),clock_timestamp())`,
-        [communityId],
-      );
-      for (const shape of shapes) {
-        await seedShape(admin, shape);
-      }
-      await admin.query("COMMIT");
+          [communityId],
+        );
+        for (const shape of shapes) {
+          await seedShape(admin, shape);
+        }
+        await admin.query("COMMIT");
 
-      // A job leased during the rollout keeps executing under its existing
-      // envelope; the lifecycle migration must not disturb it.
-      await admin.query(
-        `UPDATE hns_authority_provision_jobs
+        // A job leased during the rollout keeps executing under its existing
+        // envelope; the lifecycle migration must not disturb it.
+        await admin.query(
+          `UPDATE hns_authority_provision_jobs
             SET state='leased', leased_by='rollout-executor',
                 lease_fence=3, lease_expires_at=clock_timestamp() + interval '1 minute'
           WHERE provision_job_id='provision-migration-preparing'`,
-      );
+        );
 
-      await backfill(admin);
+        await backfill(admin);
 
-      const mapped = await admin.query(
-        `SELECT lifecycle.root_import_session_id, lifecycle.phase, lifecycle.pending_reason,
+        const mapped = await admin.query(
+          `SELECT lifecycle.root_import_session_id, lifecycle.phase, lifecycle.pending_reason,
                 lifecycle.plan_exposed_at, lifecycle.publication_deadline_at,
                 lifecycle.readiness_observed_at,
                 provision.completed_at
@@ -268,67 +277,69 @@ suite("HNS root-import lifecycle migration matrix (T13)", () => {
                 (SELECT provision_job_id FROM hns_root_import_sessions s
                   WHERE s.root_import_session_id = lifecycle.root_import_session_id)
           ORDER BY lifecycle.root_import_session_id`,
-      );
-      const bySession = new Map(mapped.rows.map((row) => [row.root_import_session_id, row]));
-      expect(bySession.get("migration-preparing")).toMatchObject({
-        phase: "preparing",
-        pending_reason: "preparing_retained_authority",
-      });
-      const awaiting = bySession.get("migration-awaiting");
-      expect(awaiting?.phase).toBe("awaiting_publication");
-      expect(Number(awaiting?.publication_deadline_at - awaiting?.plan_exposed_at)).toBe(
-        1_209_600_000,
-      );
-      expect(Number(awaiting?.plan_exposed_at - awaiting?.completed_at)).toBe(0);
-      expect(bySession.get("migration-observing")).toMatchObject({
-        phase: "checking_publication",
-        pending_reason: "migration_fresh_current_read_required",
-      });
-      expect(bySession.get("migration-ready")?.phase).toBe("ready");
-      expect(bySession.get("migration-ready")?.readiness_observed_at).not.toBeNull();
-      expect(bySession.get("migration-activated")).toMatchObject({
-        phase: "activated",
-        readiness_observed_at: expect.anything(),
-      });
-      expect(bySession.get("migration-failed")).toMatchObject({
-        phase: "recovery_required",
-        pending_reason: "recovery_required_retained_authority",
-      });
-      expect(bySession.get("migration-expired")).toMatchObject({
-        phase: "recovery_required",
-        pending_reason: "recovery_required_retained_authority",
-      });
-      // The finality anchor is never backdated: fresh reads are required.
-      for (const row of mapped.rows) {
-        expect(row.first_current_observation_at ?? null).toBeNull();
-      }
-      // No lifecycle job was invented for leased rollout work.
-      const lifecycleJobs = await admin.query(
-        "SELECT count(*)::int AS count FROM hns_root_import_lifecycle_jobs",
-      );
-      expect(lifecycleJobs.rows[0].count).toBe(0);
-      const leasedEnvelope = await admin.query(
-        `SELECT state, leased_by, lease_fence FROM hns_authority_provision_jobs
+        );
+        const bySession = new Map(mapped.rows.map((row) => [row.root_import_session_id, row]));
+        expect(bySession.get("migration-preparing")).toMatchObject({
+          phase: "preparing",
+          pending_reason: "preparing_retained_authority",
+        });
+        const awaiting = bySession.get("migration-awaiting");
+        expect(awaiting?.phase).toBe("awaiting_publication");
+        expect(Number(awaiting?.publication_deadline_at - awaiting?.plan_exposed_at)).toBe(
+          1_209_600_000,
+        );
+        expect(Number(awaiting?.plan_exposed_at - awaiting?.completed_at)).toBe(0);
+        expect(bySession.get("migration-observing")).toMatchObject({
+          phase: "checking_publication",
+          pending_reason: "migration_fresh_current_read_required",
+        });
+        expect(bySession.get("migration-ready")?.phase).toBe("ready");
+        expect(bySession.get("migration-ready")?.readiness_observed_at).not.toBeNull();
+        expect(bySession.get("migration-activated")).toMatchObject({
+          phase: "activated",
+          readiness_observed_at: expect.anything(),
+        });
+        expect(bySession.get("migration-failed")).toMatchObject({
+          phase: "recovery_required",
+          pending_reason: "recovery_required_retained_authority",
+        });
+        expect(bySession.get("migration-expired")).toMatchObject({
+          phase: "recovery_required",
+          pending_reason: "recovery_required_retained_authority",
+        });
+        // The finality anchor is never backdated: fresh reads are required.
+        for (const row of mapped.rows) {
+          expect(row.first_current_observation_at ?? null).toBeNull();
+        }
+        // No lifecycle job was invented for leased rollout work.
+        const lifecycleJobs = await admin.query(
+          "SELECT count(*)::int AS count FROM hns_root_import_lifecycle_jobs",
+        );
+        expect(lifecycleJobs.rows[0].count).toBe(0);
+        const leasedEnvelope = await admin.query(
+          `SELECT state, leased_by, lease_fence FROM hns_authority_provision_jobs
           WHERE provision_job_id='provision-migration-preparing'`,
-      );
-      expect(leasedEnvelope.rows[0]).toMatchObject({
-        state: "leased",
-        leased_by: "rollout-executor",
-        lease_fence: "3",
-      });
+        );
+        expect(leasedEnvelope.rows[0]).toMatchObject({
+          state: "leased",
+          leased_by: "rollout-executor",
+          lease_fence: "3",
+        });
 
-      // The backfill is idempotent.
-      await backfill(admin);
-      const again = await admin.query(
-        "SELECT count(*)::int AS count FROM hns_root_import_lifecycle",
-      );
-      expect(again.rows[0].count).toBe(shapes.length);
-    } finally {
-      await admin.query("ROLLBACK").catch(() => undefined);
-      await admin
-        .query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`)
-        .catch(() => undefined);
-      await admin.end();
-    }
-  });
+        // The backfill is idempotent.
+        await backfill(admin);
+        const again = await admin.query(
+          "SELECT count(*)::int AS count FROM hns_root_import_lifecycle",
+        );
+        expect(again.rows[0].count).toBe(shapes.length);
+      } finally {
+        await admin.query("ROLLBACK").catch(() => undefined);
+        await admin
+          .query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`)
+          .catch(() => undefined);
+        await admin.end();
+      }
+    },
+    SCHEMA_BUDGET_MS,
+  );
 });
