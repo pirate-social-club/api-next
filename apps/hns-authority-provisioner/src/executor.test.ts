@@ -455,7 +455,11 @@ test("a retrying observation root never blocks unrelated provisioning work (T09)
               lease_fence: 1,
             };
           },
-          finalize: async () => ({ outcome: "retry" as const, root_import_session_id: "waiting-root", session_revision: 2 }),
+          finalize: async () => ({
+            outcome: "retry" as const,
+            root_import_session_id: "waiting-root",
+            session_revision: 2,
+          }),
         },
         observe: {
           observe_current_resource: observe as never,

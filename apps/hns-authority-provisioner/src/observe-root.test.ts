@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
+import { decodeHnsRootImportReadinessResultV1 } from "@pirate/application/namespace-ownership";
 import {
+  canonicalJson,
   decideHnsRootImportLifecycleBatchV1,
   decideHnsRootImportLifecycleV1,
   HNS_ROOT_IMPORT_POLICY_V1,
   initialHnsRootImportLifecycleStateV1,
 } from "@pirate/domain";
-import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
-import { decodeHnsRootImportReadinessResultV1 } from "@pirate/application/namespace-ownership";
-import { canonicalJson } from "@pirate/domain";
 import {
   HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
   HnsRootReadinessObservationError,
@@ -374,7 +374,11 @@ describe("HNS root readiness observation", () => {
     // Unauthorized late activation: activation is rejected outside ready.
     const unauthorized = decideHnsRootImportLifecycleV1(
       exhausted.next_state ?? initialHnsRootImportLifecycleStateV1(1),
-      { event_id: "late-activation", occurred_at_epoch_ms: finalityDeadline, event: "activation_requested" },
+      {
+        event_id: "late-activation",
+        occurred_at_epoch_ms: finalityDeadline,
+        event: "activation_requested",
+      },
     );
     expect(unauthorized.outcome).toEqual({
       kind: "rejection",
@@ -409,9 +413,9 @@ describe("HNS root readiness observation", () => {
   });
 
   test("holds more than twenty pending observations open with mismatch classification (T06)", async () => {
-    let current = {
+    let current: ReturnType<typeof initialHnsRootImportLifecycleStateV1> = {
       ...initialHnsRootImportLifecycleStateV1(1),
-      phase: "checking_publication" as const,
+      phase: "checking_publication",
       revision: 2,
       plan_exposed_at_epoch_ms: now - 86_400_000,
       publication_deadline_at_epoch_ms:

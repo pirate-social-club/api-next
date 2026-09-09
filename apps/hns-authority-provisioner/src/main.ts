@@ -1,10 +1,10 @@
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
-import { Client } from "pg";
 import type {
   HnsRootDelegationDsV1,
   HnsRootResourceRecordV1,
 } from "@pirate/application/namespace-ownership";
+import { Client } from "pg";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
 import { makeHsdRootResourceObserver } from "./hsd.ts";
 import {
@@ -40,11 +40,13 @@ export const HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS = 15_000;
  * work attempted, so its bounded 20-attempt fence still spans the signed
  * owner session.
  */
-export function nextHnsExecutorWaitMs(input: Readonly<{
-  readonly now_epoch_ms: number;
-  readonly next_lifecycle_due_epoch_ms: number | null;
-  readonly observation_retry_spacing: boolean;
-}>): number {
+export function nextHnsExecutorWaitMs(
+  input: Readonly<{
+    readonly now_epoch_ms: number;
+    readonly next_lifecycle_due_epoch_ms: number | null;
+    readonly observation_retry_spacing: boolean;
+  }>,
+): number {
   const ceiling = input.observation_retry_spacing
     ? HNS_ROOT_OBSERVATION_RETRY_DELAY_MS
     : HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS;
