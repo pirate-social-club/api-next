@@ -6,6 +6,7 @@ import {
   HNS_AUTHORITY_INVENTORY_VERSION,
   HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
   type HnsChainAuthorityRecord,
+  type HnsChainObservationResultV1,
   type HnsRootDelegationDsV1,
   type HnsRootImportPublishPlanV1,
   type HnsRootResourceRecordV1,
@@ -37,9 +38,8 @@ export type HnsRootReadinessObservationRequestV1 = Readonly<{
 }>;
 
 export type HnsRootReadinessObservationPorts = Readonly<{
-  readonly inspect_current_resource: (
-    rootLabel: string,
-  ) => Promise<readonly HnsRootResourceRecordV1[]>;
+  /** Typed current-view chain observation (anchor-bracketed, safe=false). */
+  readonly observe_current_resource: (rootLabel: string) => Promise<HnsChainObservationResultV1>;
   readonly inspect_zone: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
@@ -360,11 +360,20 @@ export async function observeHnsRootReadinessV1(input: {
   ) {
     throw new HnsRootReadinessObservationError("authority_mismatch");
   }
+  const observedChain = await input.ports.observe_current_resource(input.request.root_label);
+  if (observedChain.kind === "unavailable" || observedChain.kind === "finding") {
+    // Unavailable evidence preserves the phase. A name finding during
+    // readiness observation (root no longer active) is likewise not
+    // readiness evidence; classification into lifecycle outcomes belongs to
+    // the transition policy, not to this adapter.
+    throw new HnsRootReadinessObservationError("authority_unavailable");
+  }
+  if (observedChain.observation.view !== "current") {
+    throw new HnsRootReadinessObservationError("invalid_request");
+  }
   let chainRecords: readonly HnsRootResourceRecordV1[];
   try {
-    chainRecords = validateHnsRootResourceRecordsV1(
-      await input.ports.inspect_current_resource(input.request.root_label),
-    );
+    chainRecords = validateHnsRootResourceRecordsV1(observedChain.observation.records);
   } catch {
     throw new HnsRootReadinessObservationError("authority_unavailable");
   }

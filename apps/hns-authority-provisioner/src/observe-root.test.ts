@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
 import { decodeHnsRootImportReadinessResultV1 } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import {
@@ -17,6 +18,32 @@ const encoder = new TextEncoder();
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function observedCurrent(records: readonly unknown[]): HnsChainObservationResultV1 {
+  return {
+    kind: "observed",
+    observation: {
+      view: "current",
+      network: "main",
+      genesis_block_hash: `${"0".repeat(63)}1`,
+      anchor: {
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        height: 812_345,
+        best_block_hash: "aa".repeat(32),
+        median_time_past_epoch_seconds: 1_770_000_000,
+        header_time_epoch_seconds: 1_770_000_030,
+        confirmations: 1,
+      },
+      tip_height: 812_345,
+      update_inclusion_height: 800_000,
+      commitment: null,
+      observed_at_epoch_ms: 1_770_000_060_000,
+      records: structuredClone(records) as never,
+      resource_sha256: "1".repeat(64),
+    },
+  };
 }
 
 async function fixture() {
@@ -49,7 +76,7 @@ async function fixture() {
       expires_at: "2099-01-01T00:00:00.000Z",
     },
     {
-      inspect_current_resource: async () => [{ type: "TXT", txt: ["preserved"] }],
+      observe_current_resource: async () => observedCurrent([{ type: "TXT", txt: ["preserved"] }]),
       ensure_zone: async () => zone,
     },
   );
@@ -108,8 +135,8 @@ describe("HNS root readiness observation", () => {
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
       ports: {
-        inspect_current_resource: async () =>
-          [...state.plan.replacement_records].reverse() as never,
+        observe_current_resource: async () =>
+          observedCurrent([...state.plan.replacement_records].reverse()),
         reconcile_zone: async (input) => {
           expect(input).toEqual({
             root_label: "newroot",
@@ -170,7 +197,7 @@ describe("HNS root readiness observation", () => {
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
         ports: {
-          inspect_current_resource: async () => state.plan.replacement_records as never,
+          observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
           reconcile_zone: async () => {},
           inspect_zone: async () => ({ ...state.zone, created: false }),
           observe_live: async () => state.live,
@@ -206,7 +233,7 @@ describe("HNS root readiness observation", () => {
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
         ports: {
-          inspect_current_resource: async () => [{ type: "TXT", txt: ["old"] }],
+          observe_current_resource: async () => observedCurrent([{ type: "TXT", txt: ["old"] }]),
           reconcile_zone: async () => {
             reconciledZone = true;
           },
@@ -232,7 +259,7 @@ describe("HNS root readiness observation", () => {
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
       ports: {
-        inspect_current_resource: async () => state.plan.replacement_records as never,
+        observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
         reconcile_zone: async () => {},
         inspect_zone: async () => ({ ...state.zone, created: false }),
         observe_live: async () => state.live,
@@ -267,7 +294,7 @@ describe("HNS root readiness observation", () => {
     const state = await fixture();
     const request = { ...state.request, expires_at: "2026-09-07T06:00:00.000Z" };
     const ports = {
-      inspect_current_resource: async () => state.plan.replacement_records as never,
+      observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
       reconcile_zone: async () => {},
       inspect_zone: async () => ({ ...state.zone, created: false }),
       observe_live: async () => state.live,

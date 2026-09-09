@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
 import type { HnsRootObservationQueue } from "./observation-queue.ts";
@@ -10,6 +11,32 @@ import {
 import type { HnsAuthorityProvisionFinalizeInput, HnsAuthorityProvisionQueue } from "./queue.ts";
 
 const encoder = new TextEncoder();
+
+function observedCurrent(records: readonly unknown[] = []): HnsChainObservationResultV1 {
+  return {
+    kind: "observed",
+    observation: {
+      view: "current",
+      network: "main",
+      genesis_block_hash: `${"0".repeat(63)}1`,
+      anchor: {
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        height: 812_345,
+        best_block_hash: "aa".repeat(32),
+        median_time_past_epoch_seconds: 1_770_000_000,
+        header_time_epoch_seconds: 1_770_000_030,
+        confirmations: 1,
+      },
+      tip_height: 812_345,
+      update_inclusion_height: 800_000,
+      commitment: null,
+      observed_at_epoch_ms: 1_770_000_060_000,
+      records: structuredClone(records) as never,
+      resource_sha256: "1".repeat(64),
+    },
+  };
+}
 
 async function hash(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
@@ -62,7 +89,7 @@ describe("HNS authority provision executor", () => {
       executor_id: "executor-1",
       queue: state.queue,
       provision: {
-        inspect_current_resource: async () => [],
+        observe_current_resource: async () => observedCurrent(),
         ensure_zone: async () => ({
           created: true,
           dnssec: true,
@@ -92,9 +119,9 @@ describe("HNS authority provision executor", () => {
       executor_id: "executor-1",
       queue: state.queue,
       provision: {
-        inspect_current_resource: async () => {
+        observe_current_resource: async () => {
           mutated = true;
-          return [];
+          return observedCurrent();
         },
         ensure_zone: async () => {
           throw new Error("not used");
@@ -112,7 +139,7 @@ describe("HNS authority provision executor", () => {
       executor_id: "executor-1",
       queue: state.queue,
       provision: {
-        inspect_current_resource: async () => [],
+        observe_current_resource: async () => observedCurrent(),
         ensure_zone: async () => {
           throw new Error("temporary PowerDNS outage");
         },

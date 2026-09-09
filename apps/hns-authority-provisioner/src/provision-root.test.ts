@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import {
   decodeHnsAuthorityProvisionRequestV1,
@@ -16,6 +17,32 @@ const request = {
   expires_at: "2099-01-01T00:00:00.000Z",
 } as const;
 
+function observedCurrent(records: readonly unknown[]): Promise<HnsChainObservationResultV1> {
+  return Promise.resolve({
+    kind: "observed",
+    observation: {
+      view: "current",
+      network: "main",
+      genesis_block_hash: `${"0".repeat(63)}1`,
+      anchor: {
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        height: 812_345,
+        best_block_hash: "aa".repeat(32),
+        median_time_past_epoch_seconds: 1_770_000_000,
+        header_time_epoch_seconds: 1_770_000_030,
+        confirmations: 1,
+      },
+      tip_height: 812_345,
+      update_inclusion_height: 800_000,
+      commitment: null,
+      observed_at_epoch_ms: 1_770_000_060_000,
+      records: structuredClone(records) as never,
+      resource_sha256: `${"1".repeat(64)}`,
+    },
+  });
+}
+
 describe("HNS authority root provision operation", () => {
   test("inspects before mutation and returns a complete preserved wallet plan", async () => {
     const order: string[] = [];
@@ -26,12 +53,12 @@ describe("HNS authority root provision operation", () => {
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
     const output = await provisionHnsAuthorityRootV1(request, {
-      inspect_current_resource: async () => {
+      observe_current_resource: async () => {
         order.push("inspect");
-        return [
+        return observedCurrent([
           { type: "SYNTH4", address: "192.0.2.40" },
           { type: "NS", ns: "old.example." },
-        ];
+        ]);
       },
       ensure_zone: async () => {
         order.push("ensure");
@@ -62,6 +89,7 @@ describe("HNS authority root provision operation", () => {
       acknowledgement_required: true,
     });
     expect(output.publish_plan_sha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect(output.current_snapshot_sha256).toBe(`${"1".repeat(64)}`);
     expect(JSON.parse(new TextDecoder().decode(output.result_bytes))).toMatchObject({
       root_label: "newroot",
       zone_created: true,
@@ -84,7 +112,7 @@ describe("HNS authority root provision operation", () => {
     let mutated = false;
     await expect(
       provisionHnsAuthorityRootV1(request, {
-        inspect_current_resource: async () => [{ type: "txt", txt: ["invalid"] }],
+        observe_current_resource: async () => observedCurrent([{ type: "txt", txt: ["invalid"] }]),
         ensure_zone: async () => {
           mutated = true;
           throw new Error("not used");
@@ -92,5 +120,26 @@ describe("HNS authority root provision operation", () => {
       }),
     ).rejects.toThrow("root_unavailable");
     expect(mutated).toBe(false);
+  });
+
+  test("refuses unavailable current-view evidence before mutating authority state", async () => {
+    for (const result of [
+      { kind: "unavailable", classification: "transport_failure" },
+      { kind: "unavailable", classification: "chain_moving" },
+      { kind: "unavailable", classification: "node_stale" },
+      { kind: "finding", classification: "resource_absent" },
+    ] as const) {
+      let mutated = false;
+      await expect(
+        provisionHnsAuthorityRootV1(request, {
+          observe_current_resource: async () => result as HnsChainObservationResultV1,
+          ensure_zone: async () => {
+            mutated = true;
+            throw new Error("not used");
+          },
+        }),
+      ).rejects.toThrow("root_unavailable");
+      expect(mutated).toBe(false);
+    }
   });
 });

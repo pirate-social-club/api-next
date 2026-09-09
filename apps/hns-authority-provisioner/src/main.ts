@@ -5,7 +5,7 @@ import type {
   HnsRootResourceRecordV1,
 } from "@pirate/application/namespace-ownership";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
-import { makeHsdRootResourceInspector } from "./hsd.ts";
+import { makeHsdRootResourceObserver } from "./hsd.ts";
 import {
   type HnsRootReadinessAuthorityEndpointV1,
   makeLiveHnsRootReadinessObserverV1,
@@ -127,6 +127,14 @@ function tlsaAssociation(): Readonly<{ association: string; spki_sha256: string 
   };
 }
 
+function chainInteger(name: string, minimum: number, maximum: number): number {
+  const value = Number(required(name));
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error("HNS authority provisioner configuration is invalid");
+  }
+  return value;
+}
+
 async function main(serve: boolean): Promise<void> {
   const executorId = required("HNS_AUTHORITY_EXECUTOR_ID");
   const gatewayIpv4 = required("HNS_AUTHORITY_GATEWAY_IPV4");
@@ -136,10 +144,25 @@ async function main(serve: boolean): Promise<void> {
   }
   const connectionString = required("CONTROL_PLANE_POSTGRES_URL");
   const queue = makePostgresHnsAuthorityProvisionQueue(connectionString);
-  const inspectCurrentResource = makeHsdRootResourceInspector({
-    rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
-    authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
-  });
+  const observeCurrentResource = makeHsdRootResourceObserver(
+    {
+      rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
+      authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
+      chain_network: required("HNS_AUTHORITY_CHAIN_NETWORK"),
+      genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
+      // Handshake mainnet commits the Urkel tree every 36 blocks and HSD
+      // treats a commitment with more than 12 confirmations as safe.
+      tree_interval_blocks: chainInteger("HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", 1, 2_000),
+      safe_minimum_confirmations: chainInteger("HNS_AUTHORITY_SAFE_CONFIRMATIONS", 0, 1_000),
+      maximum_tip_age_seconds: chainInteger("HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", 60, 86_400),
+      maximum_future_tip_seconds: chainInteger(
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS",
+        0,
+        3_600,
+      ),
+    },
+    fetch,
+  );
   const powerDnsConfig: PowerDnsRootProvisionConfig = {
     api_url: required("HNS_AUTHORITY_PDNS_API_URL"),
     api_key: required("HNS_AUTHORITY_PDNS_API_KEY"),
@@ -219,13 +242,14 @@ async function main(serve: boolean): Promise<void> {
     executor_id: executorId,
     queue,
     provision: {
-      inspect_current_resource: inspectCurrentResource,
+      observe_current_resource: (rootLabel: string) => observeCurrentResource(rootLabel, "current"),
       ensure_zone: ensureZone,
     },
     observation: {
       queue: makePostgresHnsRootObservationQueue(connectionString),
       observe: {
-        inspect_current_resource: inspectCurrentResource,
+        observe_current_resource: (rootLabel: string) =>
+          observeCurrentResource(rootLabel, "current"),
         reconcile_zone: reconcileZone,
         inspect_zone: inspectZone,
         observe_live: observeLive,

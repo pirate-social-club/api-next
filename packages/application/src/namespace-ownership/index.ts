@@ -180,6 +180,7 @@ export {
   hnsRootIsPirateWritable,
   validateHnsAuthorityInventoryAtDatabaseTime,
 } from "./hns-authority-inventory.ts";
+export * from "./hns-chain-observation.ts";
 export type {
   HnsCommunityPublicationClaim,
   HnsCommunityPublicationQueue,

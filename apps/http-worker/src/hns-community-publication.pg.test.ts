@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-ownership";
+import type {
+  HnsChainObservationResultV1,
+  HnsRootResourceRecordV1,
+} from "@pirate/application/namespace-ownership";
 import {
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
@@ -27,6 +30,32 @@ import { attachmentObserverFixture } from "../../hns-owner-verifier/src/attachme
 import { handleRequest } from "../../hns-owner-verifier/src/index.ts";
 import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
+
+function observedCurrent(records: readonly unknown[] = []): HnsChainObservationResultV1 {
+  return {
+    kind: "observed",
+    observation: {
+      view: "current",
+      network: "main",
+      genesis_block_hash: `${"0".repeat(63)}1`,
+      anchor: {
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        height: 812_345,
+        best_block_hash: "aa".repeat(32),
+        median_time_past_epoch_seconds: 1_770_000_000,
+        header_time_epoch_seconds: 1_770_000_030,
+        confirmations: 1,
+      },
+      tip_height: 812_345,
+      update_inclusion_height: 800_000,
+      commitment: null,
+      observed_at_epoch_ms: 1_770_000_060_000,
+      records: structuredClone(records) as never,
+      resource_sha256: "1".repeat(64),
+    },
+  };
+}
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
@@ -231,7 +260,7 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
         executor_id: "test-executor",
         queue: makePostgresHnsAuthorityProvisionQueue(connection),
         provision: {
-          inspect_current_resource: async () => [],
+          observe_current_resource: async () => observedCurrent(),
           ensure_zone: async () => zoneResult,
         },
       });
@@ -332,7 +361,7 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
               executor_id: "replacement-executor",
               queue: makePostgresHnsAuthorityProvisionQueue(connection),
               provision: {
-                inspect_current_resource: async () => [],
+                observe_current_resource: async () => observedCurrent(),
                 ensure_zone: async () => zoneResult,
               },
             })
@@ -429,13 +458,15 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
         executor_id: "readiness-executor",
         queue: makePostgresHnsAuthorityProvisionQueue(connection),
         provision: {
-          inspect_current_resource: async () => ready.publish_plan.replacement_records,
+          observe_current_resource: async () =>
+            observedCurrent(ready.publish_plan.replacement_records),
           ensure_zone: async () => zoneResult,
         },
         observation: {
           queue: makePostgresHnsRootObservationQueue(connection),
           observe: {
-            inspect_current_resource: async () => ready.publish_plan.replacement_records,
+            observe_current_resource: async () =>
+              observedCurrent(ready.publish_plan.replacement_records),
             reconcile_zone: async () => {},
             inspect_zone: async () => ({ ...zoneResult, created: false }),
             observe_live: async () => ({
