@@ -20,7 +20,9 @@ export function makeHnsCommunityPublicationQueue(
   const provide = <A>(effect: Effect.Effect<A, unknown, ControlPlaneDb>) =>
     effect.pipe(
       Effect.provide(runtime),
-      Effect.mapError(() => new HnsCommunityRootImportStorageFailed()),
+      // Same reason as the root-import store: keep the control-plane error so
+      // the boundary can name the statement that failed.
+      Effect.mapError((error) => new HnsCommunityRootImportStorageFailed({ cause: error })),
     );
   return {
     enqueue: (input) =>
@@ -107,7 +109,7 @@ export function makeHnsCommunityPublicationQueue(
           });
           if (rows.rows.length === 0) return null;
           const decoded = Schema.decodeUnknownOption(Claim)(rows.rows[0]);
-          if (Option.isNone(decoded)) return yield* new HnsCommunityRootImportStorageFailed();
+          if (Option.isNone(decoded)) return yield* new HnsCommunityRootImportStorageFailed({});
           const { fence, authorized, ...input } = decoded.value;
           return { input, fence, authorized };
         }),

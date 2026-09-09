@@ -22,6 +22,11 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { binaryEndpointResponse } from "./binary-response.ts";
+import {
+  BOUNDARY_FAILURE_EVENT,
+  type BoundaryFailureDisposition,
+  boundaryFailureDiagnostic,
+} from "./failure-diagnostics.ts";
 import { routeTable } from "./generated/route-table.ts";
 import {
   disabledProductionHnsCommunityAppApiComposition,
@@ -559,6 +564,66 @@ const constrainedError = (endpoint: EndpointDefinition, error: unknown): unknown
   return new InternalError({ message: "Endpoint failed with an undeclared error" });
 };
 
+/**
+ * Retain the cause of a failure the client will only see as `internal_error`.
+ *
+ * Both opaque dispositions are recorded: an undeclared error, whose original is
+ * discarded by `constrainedError` and would otherwise exist nowhere, and an
+ * internal error raised by the handler itself, which reaches the client with no
+ * detail either. A declared error is not logged — its code and status already
+ * describe it on the wire.
+ */
+const retainBoundaryFailure = (
+  context: HttpContext,
+  binding: { readonly name: string; readonly path: string; readonly method: string },
+  error: unknown,
+  constrained: unknown,
+): void => {
+  // Reporting must never become the failure. Inspecting a thrown value runs
+  // whatever accessors it defines, and the request identifier and endpoint are
+  // worth keeping even when nothing else can be read, so a minimal record is
+  // written instead and the original error is still the one that propagates.
+  let identity: { readonly requestId: string; readonly disposition: BoundaryFailureDisposition };
+  try {
+    if (errorCodeAndStatus(constrained).code !== "internal_error") return;
+    identity = {
+      requestId: requestId(context),
+      disposition: constrained === error ? "passthrough" : "replaced",
+    };
+  } catch {
+    return;
+  }
+  try {
+    console.error(
+      BOUNDARY_FAILURE_EVENT,
+      boundaryFailureDiagnostic({
+        requestId: identity.requestId,
+        endpoint: binding.name,
+        // The declared route pattern, never the requested URL: a path parameter
+        // or query string is caller-controlled text.
+        route: binding.path,
+        method: binding.method,
+        disposition: identity.disposition,
+        error,
+      }),
+    );
+  } catch {
+    try {
+      console.error(BOUNDARY_FAILURE_EVENT, {
+        request_id: identity.requestId,
+        endpoint: binding.name,
+        route: binding.path,
+        method: binding.method,
+        disposition: identity.disposition,
+        error_name: "unreadable",
+        diagnostic_unavailable: true,
+      });
+    } catch {
+      // A logger that throws is not worth a third attempt.
+    }
+  }
+};
+
 const corsOrigin = (
   context: HttpContext,
   config: HttpWorkerConfig | undefined,
@@ -932,7 +997,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
           return json(context, decoded, status, noStore, headers);
         } catch (error) {
-          throw constrainedError(binding.endpoint, error);
+          const constrained = constrainedError(binding.endpoint, error);
+          retainBoundaryFailure(context, binding, error, constrained);
+          throw constrained;
         }
       });
     };

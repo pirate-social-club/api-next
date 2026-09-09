@@ -33,7 +33,12 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
-const storageFailure = (): HnsRootImportStorageFailed => new HnsRootImportStorageFailed();
+// `cause` is present when a control-plane error caused the failure and absent
+// when the repository itself rejected an impossible row or decode outcome.
+const storageFailure = (cause?: unknown): HnsRootImportStorageFailed =>
+  cause === undefined
+    ? new HnsRootImportStorageFailed({})
+    : new HnsRootImportStorageFailed({ cause });
 
 function oneRow<RowType>(result: ControlPlaneResult<RowType>): RowType | null | undefined {
   if (result.rows.length > 1) return undefined;
@@ -1365,7 +1370,15 @@ export function makeControlPlaneHnsRootImportStore(
   const repository = makeControlPlaneHnsRootImportRepository(options);
   const provide = <A>(
     effect: Effect.Effect<A, HnsRootImportStorageFailed | ControlPlaneError, ControlPlaneDb>,
-  ) => Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
+    // The community root-import store delegates activation here, so discarding
+    // the control-plane error at this line removed it before any outer wrapper
+    // could keep it.
+  ) =>
+    Effect.provide(runtime)(effect).pipe(
+      Effect.mapError((error) =>
+        error instanceof HnsRootImportStorageFailed ? error : storageFailure(error),
+      ),
+    );
   return {
     start: (input) => provide(repository.start(input)),
     get: (input) => provide(repository.get(input)),
