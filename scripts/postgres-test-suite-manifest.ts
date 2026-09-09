@@ -70,6 +70,7 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-reconstruct.pg.test.ts",
   "scripts/staging-persona-phased-reset.pg.test.ts",
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
+  "packages/platform-cf/src/hns-admission-privileges.pg.test.ts",
   "packages/platform-cf/src/video-reconciliation-operator.pg.test.ts",
   "packages/platform-cf/src/video-source-grants.pg.test.ts",
   "packages/platform-cf/src/video-safety-evidence.pg.test.ts",
