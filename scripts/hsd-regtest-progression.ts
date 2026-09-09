@@ -86,23 +86,27 @@ await wallet("sendreveal", [NAME]);
 await mine(12, address);
 console.log(`auction closed at height ${await height()}`);
 
-const update = (await wallet("sendupdate", [
-  NAME,
-  {
-    records: [
-      { type: "NS", ns: "ns1.pirate." },
-      { type: "NS", ns: "ns2.pirate." },
-      { type: "TXT", txt: [`pirate-verification=${NAME}`] },
-      {
-        type: "DS",
-        keyTag: 19_787,
-        algorithm: 13,
-        digestType: 2,
-        digest: "f07f6e6058d9023d0c2025edb531558423ff71064c159b987d0c5dbca12f9071",
-      },
-    ],
-  },
-])) as { readonly hash: string; readonly hex: string };
+const preparedResource = {
+  records: [
+    { type: "NS", ns: "ns1.pirate." },
+    { type: "NS", ns: "ns2.pirate." },
+    { type: "TXT", txt: [`pirate-verification=${NAME}`] },
+    {
+      type: "DS",
+      keyTag: 19_787,
+      algorithm: 13,
+      digestType: 2,
+      digest: "f07f6e6058d9023d0c2025edb531558423ff71064c159b987d0c5dbca12f9071",
+    },
+  ],
+};
+// Establish the expected wire digest before publication, independently of
+// whatever records the observer later returns.
+const encodedPlanDigest = (await preflightEncodeHnsResourceV1(preparedResource.records)).sha256;
+const update = (await wallet("sendupdate", [NAME, preparedResource])) as {
+  readonly hash: string;
+  readonly hex: string;
+};
 await mine(1, address);
 const inclusion = await height();
 console.log(`inclusion height ${inclusion}: ${JSON.stringify(await views())}`);
@@ -111,7 +115,6 @@ const initial = await observe(NAME, "current");
 assert.equal(initial.kind, "observed");
 if (initial.kind !== "observed") throw new Error("current observation unavailable");
 const expectedDigest = initial.observation.resource_sha256;
-const encodedPlanDigest = (await preflightEncodeHnsResourceV1(initial.observation.records)).sha256;
 assert.notEqual(expectedDigest, encodedPlanDigest);
 assert.ok(
   await hnsObservedResourceMatchesEncodedPlanV1(initial.observation.records, encodedPlanDigest),
