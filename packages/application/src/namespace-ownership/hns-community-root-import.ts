@@ -323,9 +323,27 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
   readonly retry_after_seconds?: number;
 }> {}
 
+/**
+ * The store could not complete a read or write.
+ *
+ * The port deliberately exposes one opaque storage failure so a use case cannot
+ * branch on database detail, but the underlying control-plane error names the
+ * statement, its SQLSTATE and the constraint it violated. That belongs in a log
+ * even though it must not reach a caller, so the originating failure is carried
+ * here as `cause`. Nothing reads it except diagnostics.
+ */
 export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
   "HnsCommunityRootImportStorageFailed",
-) {}
+)<{
+  readonly cause?: unknown;
+  /**
+   * Which invariant the store rejected, when no control-plane error caused the
+   * failure. It is built from the statement label of the query being handled
+   * plus the check that failed, so it names a branch without carrying any row
+   * value. Absent when `cause` explains the failure instead.
+   */
+  readonly reason?: string;
+}> {}
 
 function ownershipFailure(error: unknown) {
   return new HnsCommunityRootImportRejected({

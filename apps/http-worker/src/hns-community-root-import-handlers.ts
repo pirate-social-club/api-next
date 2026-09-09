@@ -30,10 +30,12 @@ function wireFailure(error: unknown): Error {
     readonly reason?: string;
     readonly retry_after_seconds?: number;
   };
+  // Preserve the originating failure while retaining the declared quota and
+  // ownership responses from the current production contract.
   if (tagged._tag === "HnsCommunityRootImportStorageFailed")
-    return new InternalError({ message: "HNS community root import failed" });
+    return new InternalError({ message: "HNS community root import failed", cause: error });
   if (tagged._tag !== "HnsCommunityRootImportRejected")
-    return new InternalError({ message: "HNS community root import failed" });
+    return new InternalError({ message: "HNS community root import failed", cause: error });
   if (tagged.reason === "not_found")
     return new NotFound({ message: "Community route authority was not found" });
   if (tagged.reason === "rate_limited" && tagged.retry_after_seconds !== undefined)
