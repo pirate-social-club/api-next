@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.4",
+  "sourceBranch": "fix/hns-root-import-lifecycle",
+  "wireContract": "Community HNS root-import session responses optionally project the coordinator-reviewed lifecycle block: phase, bounded pending reason, the applicable deadline with its kind, server time, accepted observation summary, next_check_at with a retry hint, and permitted actions. Older responses without the additive field remain valid.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.4.tgz",
+    "sha256": "55a1b662089214ea3a528d7dff1b8ef57d5d39001b1c4d5043e25b93db55bf44"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.4",
+    "sourceIdentifier": "api-next-contracts@609566b72a35ae66528a1fa1e0e32774d21a34a0e1849b57226a5601e459af72",
+    "openapiSha256": "609566b72a35ae66528a1fa1e0e32774d21a34a0e1849b57226a5601e459af72",
+    "clientSha256": "2da4ae50bd54266b686e3237858ada716a651a2f1f635b8123cd4c6b66b87d83"
+  },
+  "verification": {
+    "status": "Contract fixture suite (T12) passed for every phase and error class; handler emission wiring pending in this lane."
+  }
+}

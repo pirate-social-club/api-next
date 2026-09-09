@@ -127,6 +127,59 @@ const HnsRootImportPublishPlanV1 = Schema.Struct({
 });
 export type HnsRootImportPublishPlanV1 = Schema.Schema.Type<typeof HnsRootImportPublishPlanV1>;
 
+/** Spec 012 (2026-09-09 amendment) lifecycle projection; additive and optional. */
+export const HnsRootImportLifecycleProjectionV1 = Schema.Struct({
+  phase: Schema.Literals([
+    "preparing",
+    "awaiting_publication",
+    "checking_publication",
+    "waiting_safe_commitment",
+    "checking_authority",
+    "ready",
+    "activated",
+    "recovery_required",
+    "failed",
+  ]),
+  pending_reason: Schema.NullOr(
+    Schema.NonEmptyString.check(
+      Schema.makeFilter((value) =>
+        utf8Length(value) <= 256 ? undefined : "Expected a bounded pending reason",
+      ),
+    ),
+  ),
+  deadline: Schema.NullOr(
+    Schema.Struct({
+      kind: Schema.Literals(["publication", "finality"]),
+      at: CanonicalIsoInstant,
+    }),
+  ),
+  server_time: CanonicalIsoInstant,
+  next_check_at: Schema.NullOr(CanonicalIsoInstant),
+  retry_hint_seconds: Schema.NullOr(RetryAfterSeconds),
+  permitted_actions: Schema.Array(
+    Schema.Literals([
+      "poll",
+      "acknowledge",
+      "check_publication",
+      "refresh_readiness",
+      "activate",
+      "recover",
+    ]),
+  ),
+  observation: Schema.NullOr(
+    Schema.Struct({
+      view: Schema.Literals(["current", "safe"]),
+      resource_sha256: Sha256Hex,
+      tip_height: PositiveSafeInteger,
+      update_inclusion_height: Schema.NullOr(PositiveSafeInteger),
+      commitment_height: Schema.NullOr(PositiveSafeInteger),
+    }),
+  ),
+});
+export type HnsRootImportLifecycleProjectionV1 = Schema.Schema.Type<
+  typeof HnsRootImportLifecycleProjectionV1
+>;
+
 const HnsRootImportStartRequestV1 = Schema.Struct({
   ceremony_intent_id: OpaqueId,
   expected_revision: PositiveSafeInteger,
@@ -280,6 +333,7 @@ const HnsCommunityRootImportSessionBaseV1 = {
   revision: PositiveSafeInteger,
   expires_at: CanonicalIsoInstant,
   replayed: Schema.Boolean,
+  lifecycle: Schema.optional(HnsRootImportLifecycleProjectionV1),
 } as const;
 
 const HnsCommunityRootImportAwaitingOwnershipResponseV1 = Schema.Struct({

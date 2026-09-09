@@ -459,6 +459,7 @@ export {
 } from "./hns-private-driver.ts";
 export * from "./hns-resource-codec.ts";
 export * from "./hns-root-import.ts";
+export * from "./hns-root-import-lifecycle-projection.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,
   HnsRootImportNameProofMessageInput,
