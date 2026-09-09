@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { Client } from "pg";
 import type {
   HnsRootDelegationDsV1,
   HnsRootResourceRecordV1,
@@ -22,11 +23,54 @@ import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
-// Handshake publication is block-bound. Twenty 30-second retries exhausted a
-// live one-hour owner session before a normal wallet update could confirm.
-// Keep the existing bounded 20-attempt database fence, but spread it across
-// the session lifetime instead of collapsing it into roughly ten minutes.
+// Handshake publication is block-bound: the legacy bounded 20-attempt
+// observation fence spans a one-hour owner session only when attempts are
+// spaced by 180 seconds. The serve loop no longer sleeps globally; it waits
+// for the earliest persisted job due time (lifecycle jobs are scheduled by
+// due_at; the legacy observation class keeps its spacing) and keeps
+// claiming while any class has work, so one waiting root never blocks
+// unrelated provisioning or renewal.
 export const HNS_ROOT_OBSERVATION_RETRY_DELAY_MS = 180_000;
+export const HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS = 15_000;
+
+/**
+ * Waits until the next persisted job due time, bounded by the recovery
+ * sweep. An overdue job yields zero so the loop claims immediately; the
+ * legacy observation class keeps its attempt spacing when it was the last
+ * work attempted, so its bounded 20-attempt fence still spans the signed
+ * owner session.
+ */
+export function nextHnsExecutorWaitMs(input: Readonly<{
+  readonly now_epoch_ms: number;
+  readonly next_lifecycle_due_epoch_ms: number | null;
+  readonly observation_retry_spacing: boolean;
+}>): number {
+  const ceiling = input.observation_retry_spacing
+    ? HNS_ROOT_OBSERVATION_RETRY_DELAY_MS
+    : HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS;
+  if (input.next_lifecycle_due_epoch_ms === null) {
+    return Math.min(ceiling, HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS);
+  }
+  const untilDue = input.next_lifecycle_due_epoch_ms - input.now_epoch_ms;
+  if (untilDue <= 0) return 0;
+  return Math.min(untilDue, HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS);
+}
+
+async function nextLifecycleJobDueMs(connectionString: string): Promise<number | null> {
+  const client = new Client({ connectionString });
+  await client.connect();
+  try {
+    const result = await client.query<{ due_at: Date | null }>(
+      `SELECT MIN(due_at) AS due_at FROM hns_root_import_lifecycle_jobs
+        WHERE state = 'queued'
+           OR (state = 'leased' AND lease_expires_at <= clock_timestamp())`,
+    );
+    const dueAt = result.rows[0]?.due_at;
+    return dueAt === null || dueAt === undefined ? null : dueAt.getTime();
+  } finally {
+    await client.end();
+  }
+}
 
 function required(name: string): string {
   const value = process.env[name];
@@ -263,6 +307,7 @@ async function main(serve: boolean): Promise<void> {
   } as const;
 
   let stopping = false;
+  let observationRetrySpacing = false;
   const stop = () => {
     stopping = true;
   };
@@ -274,13 +319,24 @@ async function main(serve: boolean): Promise<void> {
     do {
       const result = await runHnsAuthorityProvisionExecutorOnce(execution);
       if (!serve || result.outcome !== "idle") console.log(JSON.stringify(result));
-      if (serve && (result.outcome === "idle" || result.outcome === "retry") && !stopping) {
-        const retryDelay =
-          result.outcome === "retry" && "observation_job_id" in result
-            ? HNS_ROOT_OBSERVATION_RETRY_DELAY_MS
-            : 2_000;
-        await Bun.sleep(retryDelay);
+      // Due-job scheduling replaces the global retry sleep: keep claiming
+      // while any job class has work — a waiting root never blocks
+      // unrelated provisioning or renewal — and wait only when idle, for
+      // the earliest persisted due time, bounded by the recovery sweep.
+      // Cron remains the recovery sweep of last resort.
+      const observationRetry = result.outcome === "retry" && "observation_job_id" in result;
+      if (serve && result.outcome === "idle" && !stopping) {
+        const waitMs = nextHnsExecutorWaitMs({
+          now_epoch_ms: Date.now(),
+          next_lifecycle_due_epoch_ms: await nextLifecycleJobDueMs(connectionString).catch(
+            () => null,
+          ),
+          observation_retry_spacing: observationRetrySpacing,
+        });
+        if (waitMs > 0) await Bun.sleep(waitMs);
+        observationRetrySpacing = false;
       }
+      observationRetrySpacing = observationRetry;
     } while (serve && !stopping);
   } finally {
     if (serve) {

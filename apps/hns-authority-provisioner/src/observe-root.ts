@@ -353,7 +353,12 @@ export async function observeHnsRootReadinessV1(input: {
     input.config.valid_for_seconds < 60 ||
     input.config.valid_for_seconds > 7 * 86_400 ||
     !Number.isFinite(now) ||
-    (input.operation_kind === "observe_root_v1" && now >= Date.parse(input.request.expires_at)) ||
+    // The retired single import/challenge expiry no longer gates the
+    // adapter: expiry, reservation retention, cleanup, and activation
+    // timing follow hns_root_import_policy_v1's separated clocks (spec 012,
+    // 2026-09-09 amendment). The request retains expires_at only as
+    // transport context; the bounded observation scheduling is owned by
+    // the persisted lifecycle deadlines.
     (await sha256(input.publish_plan_bytes)) !== input.request.publish_plan_sha256 ||
     (await sha256(input.provision_result_bytes)) !== input.request.provision_result_sha256
   ) {
@@ -384,7 +389,24 @@ export async function observeHnsRootReadinessV1(input: {
   } catch {
     throw new HnsRootReadinessObservationError("authority_unavailable");
   }
-  if (canonicalRecordMultiset(chainRecords) !== canonicalRecordMultiset(plan.replacement_records)) {
+  if (input.operation_kind === "renew_health_v1") {
+    // Renewal's authority-relevant comparison is independent from the
+    // original complete import resource (spec 012, renewal comparison):
+    // current control (NS/DS) must match; unrelated TXT drift is accepted
+    // and the original import challenge is never re-verified.
+    if (
+      normalizedHnsResourceMultisetKeyV1(
+        chainRecords.filter((record) => record.type === "NS" || record.type === "DS"),
+      ) !==
+      normalizedHnsResourceMultisetKeyV1(
+        plan.replacement_records.filter((record) => record.type === "NS" || record.type === "DS"),
+      )
+    ) {
+      throw new HnsRootReadinessObservationError("authority_mismatch");
+    }
+  } else if (
+    canonicalRecordMultiset(chainRecords) !== canonicalRecordMultiset(plan.replacement_records)
+  ) {
     throw new HnsRootReadinessObservationError("owner_update_pending");
   }
   const authorityRecords = chainAuthorityRecords(chainRecords);

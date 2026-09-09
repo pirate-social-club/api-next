@@ -361,3 +361,122 @@ test.each([false, true])(
     });
   },
 );
+
+test("a retrying observation root never blocks unrelated provisioning work (T09)", async () => {
+  const waitingRequest = encoder.encode(
+    canonicalJson({
+      version: "pirate-hns-root-readiness-observation-request-v1",
+      root_import_session_id: "waiting-root",
+      namespace_session_id: "namespace-session",
+      root_label: "waitingroot",
+      challenge_txt_value: "pirate-verification=challenge",
+      ownership_result_sha256: "a".repeat(64),
+      publish_plan_sha256: "0".repeat(64),
+      provision_result_sha256: "0".repeat(64),
+      expires_at: "2099-01-01T00:00:00.000Z",
+    }),
+  );
+  const planBytes = encoder.encode("retained-plan");
+  const provisionBytes = encoder.encode("retained-provision");
+  let observationClaims = 0;
+  let provisionClaims = 0;
+  const observe = async () => {
+    throw new Error("chain transport unavailable");
+  };
+  const runOnce = () =>
+    runHnsAuthorityProvisionExecutorOnce({
+      executor_id: "fairness-executor",
+      queue: {
+        claim: async () => {
+          provisionClaims += 1;
+          if (provisionClaims < 2) return null;
+          const request = encoder.encode(
+            canonicalJson({
+              version: HNS_AUTHORITY_PROVISION_REQUEST_VERSION,
+              root_import_session_id: "unrelated-root",
+              namespace_session_id: "namespace-session",
+              root_label: "unrelatedroot",
+              challenge_txt_value: "pirate-verification=challenge",
+              expires_at: "2099-01-01T00:00:00.000Z",
+            }),
+          );
+          return {
+            provision_job_id: "provision-unrelated",
+            root_import_session_id: "unrelated-root",
+            operation_kind: "provision_root_v1" as const,
+            request_bytes: request,
+            request_sha256: await hash(request),
+            lease_fence: 1,
+          };
+        },
+        finalize: async (input: HnsAuthorityProvisionFinalizeInput) => ({
+          outcome: input.outcome,
+          root_import_session_id: "unrelated-root",
+          session_revision: 3,
+        }),
+      },
+      provision: {
+        observe_current_resource: async () => observedCurrent(),
+        ensure_zone: async () => {
+          const zoneBytes = encoder.encode("unrelated-zone");
+          return {
+            created: true,
+            dnssec: true,
+            serial: 1,
+            ds_records: [
+              { key_tag: 1, algorithm: 13, digest_type: 2, digest: "a".repeat(64) },
+              { key_tag: 1, algorithm: 13, digest_type: 4, digest: "b".repeat(96) },
+            ],
+            managed_rrset_sha256: await hash(zoneBytes),
+            managed_zone_bytes: zoneBytes,
+            shared_tlsa_profile_sha256: "d".repeat(64),
+            gateway_ipv4: "192.0.2.10",
+            gateway_deployment_reference: "gateway-deployment-v1",
+            gateway_certificate_spki_sha256: "e".repeat(64),
+            ttl_seconds: 300,
+          };
+        },
+      },
+      observation: {
+        queue: {
+          claim: async () => {
+            observationClaims += 1;
+            if (observationClaims > 1) return null;
+            return {
+              observation_job_id: "observation-waiting",
+              root_import_session_id: "waiting-root",
+              operation_kind: "observe_root_v1" as const,
+              request_bytes: waitingRequest,
+              request_sha256: await hash(waitingRequest),
+              publish_plan_bytes: planBytes,
+              publish_plan_sha256: "0".repeat(64),
+              provision_result_bytes: provisionBytes,
+              provision_result_sha256: "0".repeat(64),
+              lease_fence: 1,
+            };
+          },
+          finalize: async () => ({ outcome: "retry" as const, root_import_session_id: "waiting-root", session_revision: 2 }),
+        },
+        observe: {
+          observe_current_resource: observe as never,
+          reconcile_zone: async () => {},
+          inspect_zone: async () => {
+            throw new Error("not reached");
+          },
+          observe_live: async () => {
+            throw new Error("not reached");
+          },
+        },
+        teardown_zone: async () => {},
+        config: { environment: "test", valid_for_seconds: 86_400 },
+      },
+    });
+  // First pass: the waiting root's observation retries (no sleep happens
+  // between passes in due-job scheduling).
+  const first = await runOnce();
+  expect(first).toMatchObject({ outcome: "retry", root_import_session_id: "waiting-root" });
+  // Second pass claims the unrelated root's provisioning immediately.
+  const second = await runOnce();
+  expect(second).toMatchObject({ outcome: "completed", provision_job_id: "provision-unrelated" });
+  expect(provisionClaims).toBe(2);
+});
