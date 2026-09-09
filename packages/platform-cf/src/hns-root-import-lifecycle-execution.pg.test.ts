@@ -240,6 +240,7 @@ suite("HNS lifecycle leased execution sequences", () => {
         expect(counts.rows[0]).toEqual({ history: 0, jobs: 1 });
       });
     },
+    SCHEMA_BUDGET_MS,
   );
 
   test(

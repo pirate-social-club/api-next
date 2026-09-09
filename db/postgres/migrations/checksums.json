@@ -142,6 +142,7 @@
     "0139_hns_lifecycle_readiness_invalidation.sql": "2aa962f9c7066d87c53ca63a70f5252985b31de8c6bcb95630c8126d3c9ca090",
     "0140_hns_retention_reviews.sql": "9aab02e9eaffea826ed9c564344b4c76d1053fed94356171ed8c5bef258bf23c",
     "0141_hns_lifecycle_execution_ownership.sql": "ee714304522f96e893e904f7b301332fa8e83ae61a3807c9d6fae220133a62e0",
-    "0142_hns_retention_reviewer.sql": "2b2c48f4415e033576f0a49e4cdf20197fb0303042c441e6528b66351a569869"
+    "0142_hns_retention_reviewer.sql": "2b2c48f4415e033576f0a49e4cdf20197fb0303042c441e6528b66351a569869",
+    "0143_hns_lifecycle_observation_evidence.sql": "6363eb1608bca212fd4af7e687681f92774050284e67bc2e2bb1ec7a672abf0a"
   }
 }

@@ -134,6 +134,26 @@ export function makePostgresHnsRootImportLifecycleQueue(
         };
       }),
     observe,
+    record_observation: async (client, rootImportSessionId, summary) => {
+      const result = await client.query<Record<string, unknown>>(
+        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7) AS outcome`,
+        [
+          rootImportSessionId,
+          summary.view,
+          summary.resource_sha256,
+          summary.tip_height,
+          summary.update_inclusion_height,
+          summary.commitment_height,
+          new Date(summary.observed_at_epoch_ms),
+        ],
+      );
+      if (result.rows[0]?.outcome !== "recorded") {
+        // Throwing rolls the decision back with it: a committed transition
+        // whose evidence was not persisted would project a phase the server
+        // cannot account for.
+        throw new Error("HNS lifecycle observation evidence was not recorded");
+      }
+    },
     withTransaction: (use) =>
       withClient(connectionString, async (client) => {
         await client.query("BEGIN");

@@ -17,14 +17,6 @@ import {
   type KaraokeSigningReaders,
 } from "./staging-karaoke-signing-collector.ts";
 
-/**
- * These build real temporary directories and run signing and journal work
- * against them, which is well past bun's five-second default when the machine
- * is busy. The budget is explicit so the suite fails on a real hang rather than
- * on load from another lane.
- */
-const KARAOKE_IO_BUDGET_MS = 60_000;
-
 const cleanup: (() => void)[] = [];
 afterEach(() => {
   for (const dispose of cleanup.splice(0)) dispose();
@@ -144,81 +136,43 @@ function fixture() {
   return { f, journal, append, readers, reads, collect, residual };
 }
 
-test(
-  "signed journal plus fresh observations reaches the actual verifier and preserves false quiescence",
-  async () => {
-    const { f, collect, reads } = fixture();
-    const port = await openAuthenticatedKaraokeEvidence(
-      f.trust,
-      f.assertion(),
-      {
-        async collect(challenge) {
-          expect((await collect(challenge)).executionAuthorized).toBe(false);
-        },
+test("signed journal plus fresh observations reaches the actual verifier and preserves false quiescence", async () => {
+  const { f, collect, reads } = fixture();
+  const port = await openAuthenticatedKaraokeEvidence(
+    f.trust,
+    f.assertion(),
+    {
+      async collect(challenge) {
+        expect((await collect(challenge)).executionAuthorized).toBe(false);
       },
-      f.now,
-      f.authenticationFetch,
-    );
-    const result = await verifyKaraokeReconciliation(port, f.now());
-    expect(result.resetAdmission).toBe("eligible");
-    expect(result.latestPasses.every((pass) => pass.quiescenceEstablished === false)).toBe(true);
-    expect(reads).toEqual({ inspections: 6, nonReuse: 6, fence: 1 });
-  },
-  KARAOKE_IO_BUDGET_MS,
-);
+    },
+    f.now,
+    f.authenticationFetch,
+  );
+  const result = await verifyKaraokeReconciliation(port, f.now());
+  expect(result.resetAdmission).toBe("eligible");
+  expect(result.latestPasses.every((pass) => pass.quiescenceEstablished === false)).toBe(true);
+  expect(reads).toEqual({ inspections: 6, nonReuse: 6, fence: 1 });
+});
 
-test(
-  "failed fresh observations cannot write a signed manifest",
-  async () => {
-    for (const kind of ["fence", "marker", "nonreuse"] as const) {
-      const { f, readers, collect } = fixture();
-      if (kind === "fence")
-        readers.observeMaintainedFence = async () => {
-          throw new Error("unavailable");
-        };
-      if (kind === "marker") {
-        const inspect = readers.inspect;
-        readers.inspect = async (target) => ({
-          ...((await inspect(target)) as object),
-          markerState: "absent",
-        });
-      }
-      if (kind === "nonreuse")
-        readers.verifyNonReuse = async () => {
-          throw new Error("reused");
-        };
-      await expect(
-        openAuthenticatedKaraokeEvidence(
-          f.trust,
-          f.assertion(),
-          {
-            async collect(challenge) {
-              await collect(challenge);
-            },
-          },
-          f.now,
-          f.authenticationFetch,
-        ),
-      ).rejects.toThrow();
-      expect(existsSync(join(f.directory, "manifest.signed.json"))).toBe(false);
+test("failed fresh observations cannot write a signed manifest", async () => {
+  for (const kind of ["fence", "marker", "nonreuse"] as const) {
+    const { f, readers, collect } = fixture();
+    if (kind === "fence")
+      readers.observeMaintainedFence = async () => {
+        throw new Error("unavailable");
+      };
+    if (kind === "marker") {
+      const inspect = readers.inspect;
+      readers.inspect = async (target) => ({
+        ...((await inspect(target)) as object),
+        markerState: "absent",
+      });
     }
-  },
-  KARAOKE_IO_BUDGET_MS,
-);
-
-test(
-  "a concurrent broken-fence journal event invalidates collection before signing",
-  async () => {
-    const { f, append, residual, readers, collect } = fixture();
-    const inspect = readers.inspect;
-    let changed = false;
-    readers.inspect = async (target) => {
-      if (!changed) {
-        changed = true;
-        append({ kind: "fence-broken", evidenceIds: [f.trust.residualDispositionId] }, [residual]);
-      }
-      return inspect(target);
-    };
+    if (kind === "nonreuse")
+      readers.verifyNonReuse = async () => {
+        throw new Error("reused");
+      };
     await expect(
       openAuthenticatedKaraokeEvidence(
         f.trust,
@@ -231,44 +185,66 @@ test(
         f.now,
         f.authenticationFetch,
       ),
-    ).rejects.toThrow("journal_changed");
+    ).rejects.toThrow();
     expect(existsSync(join(f.directory, "manifest.signed.json"))).toBe(false);
-  },
-  KARAOKE_IO_BUDGET_MS,
-);
+  }
+});
 
-test(
-  "a later failed collection preserves the last signed output rather than replacing it",
-  async () => {
-    const { f, readers, collect } = fixture();
-    const invoke = () =>
-      openAuthenticatedKaraokeEvidence(
-        f.trust,
-        f.assertion(),
-        {
-          async collect(challenge) {
-            await collect(challenge);
-          },
+test("a concurrent broken-fence journal event invalidates collection before signing", async () => {
+  const { f, append, residual, readers, collect } = fixture();
+  const inspect = readers.inspect;
+  let changed = false;
+  readers.inspect = async (target) => {
+    if (!changed) {
+      changed = true;
+      append({ kind: "fence-broken", evidenceIds: [f.trust.residualDispositionId] }, [residual]);
+    }
+    return inspect(target);
+  };
+  await expect(
+    openAuthenticatedKaraokeEvidence(
+      f.trust,
+      f.assertion(),
+      {
+        async collect(challenge) {
+          await collect(challenge);
         },
-        f.now,
-        f.authenticationFetch,
-      );
-    await invoke();
-    const before = readFileSync(join(f.directory, "manifest.signed.json"), "utf8");
-    readers.observeMaintainedFence = async () => ({
-      supporting: { fixture: true },
-      fence: {
-        verifiedAt: f.now(),
-        ingress: true,
-        producers: false,
-        databaseWrites: true,
-        reconnectDenied: true,
-        runtimeSessions: 0,
-        residualDispositionId: f.trust.residualDispositionId,
       },
-    });
-    await expect(invoke()).rejects.toThrow("fence_unproven");
-    expect(readFileSync(join(f.directory, "manifest.signed.json"), "utf8")).toBe(before);
-  },
-  KARAOKE_IO_BUDGET_MS,
-);
+      f.now,
+      f.authenticationFetch,
+    ),
+  ).rejects.toThrow("journal_changed");
+  expect(existsSync(join(f.directory, "manifest.signed.json"))).toBe(false);
+});
+
+test("a later failed collection preserves the last signed output rather than replacing it", async () => {
+  const { f, readers, collect } = fixture();
+  const invoke = () =>
+    openAuthenticatedKaraokeEvidence(
+      f.trust,
+      f.assertion(),
+      {
+        async collect(challenge) {
+          await collect(challenge);
+        },
+      },
+      f.now,
+      f.authenticationFetch,
+    );
+  await invoke();
+  const before = readFileSync(join(f.directory, "manifest.signed.json"), "utf8");
+  readers.observeMaintainedFence = async () => ({
+    supporting: { fixture: true },
+    fence: {
+      verifiedAt: f.now(),
+      ingress: true,
+      producers: false,
+      databaseWrites: true,
+      reconnectDenied: true,
+      runtimeSessions: 0,
+      residualDispositionId: f.trust.residualDispositionId,
+    },
+  });
+  await expect(invoke()).rejects.toThrow("fence_unproven");
+  expect(readFileSync(join(f.directory, "manifest.signed.json"), "utf8")).toBe(before);
+});

@@ -85,18 +85,30 @@ async function hnsLifecycleEvidenceFromObservationV1(
       result.observation.records,
       planEncodedResourceSha256,
     ));
+  // The three heights stay distinct: the node's tip, the block the UPDATE was
+  // included in, and the tree commitment a safe read resolved through.
+  const summary = {
+    view,
+    resource_sha256: result.observation.resource_sha256,
+    tip_height: result.observation.tip_height,
+    update_inclusion_height: result.observation.update_inclusion_height,
+    commitment_height: result.observation.commitment?.commitment_height ?? null,
+    observed_at_epoch_ms: result.observation.observed_at_epoch_ms,
+  } as const;
   return view === "current"
     ? {
         kind: "current_observation",
         qualifying,
         mismatch: !qualifying,
         resource_sha256: result.observation.resource_sha256,
+        summary,
         evidence_ref: ref,
       }
     : {
         kind: "safe_observation",
         qualifying,
         bracket_observed_at_epoch_ms: result.observation.observed_at_epoch_ms,
+        summary,
         evidence_ref: ref,
       };
 }

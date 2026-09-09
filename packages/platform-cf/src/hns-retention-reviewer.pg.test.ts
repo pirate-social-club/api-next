@@ -191,7 +191,7 @@ suite("the retention reviewer and the teardown it gates on PostgreSQL 17", () =>
       .query(`DROP DATABASE IF EXISTS ${quote(state.database)} WITH (FORCE)`)
       .catch(() => undefined);
     await cleanup.end().catch(() => undefined);
-  });
+  }, BUDGET_MS);
 
   async function seed(fixture: Fixture): Promise<void> {
     const client = state.client;

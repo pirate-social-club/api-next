@@ -47,6 +47,23 @@ type HnsLifecycleOperationIdentityV1 = Readonly<{
   readonly plan_encoded_resource_sha256: string | null;
 }>;
 
+/**
+ * The accepted observation, as the public projection needs it.
+ *
+ * Tip height, UPDATE inclusion height and commitment height are separate
+ * fields because they are separate facts; conflating them has already produced
+ * a defect on this lane, and a projection that reports the wrong one tells an
+ * owner their name is included when it is not.
+ */
+type HnsLifecycleObservationSummaryV1 = Readonly<{
+  readonly view: "current" | "safe";
+  readonly resource_sha256: string;
+  readonly tip_height: number;
+  readonly update_inclusion_height: number | null;
+  readonly commitment_height: number | null;
+  readonly observed_at_epoch_ms: number;
+}>;
+
 /** Evidence a provider read produced, already classified. */
 export type HnsLifecycleEvidenceV1 =
   | Readonly<{
@@ -54,12 +71,14 @@ export type HnsLifecycleEvidenceV1 =
       readonly qualifying: boolean;
       readonly mismatch: boolean;
       readonly resource_sha256: string | null;
+      readonly summary?: HnsLifecycleObservationSummaryV1;
       readonly evidence_ref: string;
     }>
   | Readonly<{
       readonly kind: "safe_observation";
       readonly qualifying: boolean;
       readonly bracket_observed_at_epoch_ms: number;
+      readonly summary?: HnsLifecycleObservationSummaryV1;
       readonly evidence_ref: string;
     }>
   | Readonly<{ readonly kind: "readiness_observed"; readonly evidence_ref: string }>
@@ -102,6 +121,16 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
    * which has no event for them and would silently complete the job having
    * inspected nothing.
    */
+  /**
+   * Persists the accepted observation summary inside the runner's own
+   * transaction. Optional so a caller that only decides — the composed-path
+   * harness — needs no store.
+   */
+  readonly record_observation?: (
+    client: LifecycleTransactionClient,
+    rootImportSessionId: string,
+    summary: HnsLifecycleObservationSummaryV1,
+  ) => Promise<void>;
   readonly review?: (
     job: HnsLifecycleClaimV1,
     executorId: string,
@@ -326,6 +355,18 @@ export async function runHnsRootImportLifecycleJobOnce(
       if (next !== null) state = { ...next, revision: state.revision + 1 };
       committed += 1;
       lastReason = decision.outcome.reason;
+    }
+    // The accepted observation is persisted with the decision that accepted
+    // it, so the public projection reports server evidence rather than the
+    // client's inference. Nothing is written when no decision was committed.
+    if (committed > 0 && ports.record_observation !== undefined) {
+      const summary =
+        evidence.kind === "current_observation" || evidence.kind === "safe_observation"
+          ? evidence.summary
+          : undefined;
+      if (summary !== undefined) {
+        await ports.record_observation(client, job.root_import_session_id, summary);
+      }
     }
     const outcome = evidence.kind === "provider_failure" ? "retry" : "completed";
     const finalized = await client.query<{ readonly outcome: string }>(

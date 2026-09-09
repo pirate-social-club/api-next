@@ -14,7 +14,12 @@ import {
   hnsCommunityRootImportNameProofMessage,
   hnsRootImportLifecyclePolicyDigest,
 } from "@pirate/application";
-import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
+import {
+  decodeStrictHnsJsonBytes,
+  type HnsRootImportLifecycleProjectionV1,
+  hnsRootImportLifecycleStateFromRowV1,
+  projectHnsRootImportLifecycleV1,
+} from "@pirate/application/namespace-ownership";
 import {
   HnsCommunityRootImportCurrentResponseV1,
   type HnsCommunityRootImportFailureReasonV1,
@@ -54,6 +59,8 @@ export type HnsCommunityRootImportRepositoryOptions = Readonly<{
   readonly environment: string;
   readonly provider_binding: CommunityCreationProviderBinding;
   readonly session_ttl_seconds?: number;
+  /** The server clock the lifecycle projection reports and measures against. */
+  readonly now_epoch_ms?: () => number;
 }>;
 
 function oneRow<T>(result: ControlPlaneResult<T>): T | null | undefined {
@@ -141,6 +148,37 @@ const sessionReadColumns = `session.*,
       AND observation.status='rejected'
     ORDER BY observation.created_at DESC LIMIT 1) AS ownership_response_bytes`;
 
+// The persisted lifecycle, read alongside the session so the public
+// projection reports server evidence rather than anything derived on the
+// client. Every column is aliased: the session row already carries `revision`,
+// `created_at` and `updated_at`, and silently reading the session's revision as
+// the lifecycle's would project a different operation's state.
+const lifecycleReadColumns = `
+  lifecycle.phase AS lifecycle_phase,
+  lifecycle.revision AS lifecycle_revision,
+  lifecycle.generation AS lifecycle_generation,
+  lifecycle.plan_exposed_at AS lifecycle_plan_exposed_at,
+  lifecycle.publication_deadline_at AS lifecycle_publication_deadline_at,
+  lifecycle.first_current_observation_at AS lifecycle_first_current_observation_at,
+  lifecycle.finality_deadline_at AS lifecycle_finality_deadline_at,
+  lifecycle.readiness_observed_at AS lifecycle_readiness_observed_at,
+  lifecycle.pending_reason AS lifecycle_pending_reason,
+  lifecycle.next_check_at AS lifecycle_next_check_at,
+  lifecycle.observation_count AS lifecycle_observation_count,
+  lifecycle.consecutive_operational_failures AS lifecycle_consecutive_operational_failures,
+  lifecycle.last_useful_error AS lifecycle_last_useful_error,
+  lifecycle.last_useful_error_at AS lifecycle_last_useful_error_at,
+  lifecycle.terminal_decided_at AS lifecycle_terminal_decided_at,
+  lifecycle.last_observation_view AS lifecycle_observation_view,
+  lifecycle.last_observation_resource_sha256 AS lifecycle_observation_resource_sha256,
+  lifecycle.last_observation_tip_height AS lifecycle_observation_tip_height,
+  lifecycle.last_observation_update_inclusion_height AS lifecycle_observation_inclusion_height,
+  lifecycle.last_observation_commitment_height AS lifecycle_observation_commitment_height,
+  lifecycle.last_observation_at AS lifecycle_observation_at`;
+
+const lifecycleReadJoin = `LEFT JOIN hns_root_import_lifecycle AS lifecycle
+  ON lifecycle.root_import_session_id=session.root_import_session_id`;
+
 const ownershipReadJoin = `LEFT JOIN community_route_attachment_namespace_sessions AS ownership
   ON ownership.namespace_session_id=session.namespace_session_id
  AND ownership.actor_id=session.actor_id AND ownership.community_id=session.community_id
@@ -226,10 +264,64 @@ function terminalFailureReason(row: Row): HnsCommunityRootImportFailureReasonV1 
   return "provider_unavailable";
 }
 
+/**
+ * Projects the persisted lifecycle, or nothing.
+ *
+ * A row with no lifecycle — a session that predates the machinery, or a write
+ * path that did not read it — emits no projection at all. That is deliberate:
+ * an omitted lifecycle says the server has nothing to report, while a
+ * synthesised one would say something the server never decided. Every field
+ * comes from the stored row; nothing is inferred from the session status.
+ */
+function lifecycleProjection(
+  row: Row,
+  serverNowEpochMs: number,
+): HnsRootImportLifecycleProjectionV1 | undefined {
+  if (typeof row.lifecycle_phase !== "string") return undefined;
+  const state = hnsRootImportLifecycleStateFromRowV1(
+    {
+      phase: row.lifecycle_phase,
+      revision: row.lifecycle_revision,
+      generation: row.lifecycle_generation,
+      plan_exposed_at: row.lifecycle_plan_exposed_at,
+      publication_deadline_at: row.lifecycle_publication_deadline_at,
+      first_current_observation_at: row.lifecycle_first_current_observation_at,
+      finality_deadline_at: row.lifecycle_finality_deadline_at,
+      readiness_observed_at: row.lifecycle_readiness_observed_at,
+      pending_reason: row.lifecycle_pending_reason,
+      next_check_at: row.lifecycle_next_check_at,
+      observation_count: row.lifecycle_observation_count,
+      consecutive_operational_failures: row.lifecycle_consecutive_operational_failures,
+      last_useful_error: row.lifecycle_last_useful_error,
+      last_useful_error_at: row.lifecycle_last_useful_error_at,
+      terminal_decided_at: row.lifecycle_terminal_decided_at,
+    },
+    [],
+  );
+  const tipHeight = integer(row.lifecycle_observation_tip_height);
+  const observation =
+    typeof row.lifecycle_observation_view === "string" &&
+    typeof row.lifecycle_observation_resource_sha256 === "string" &&
+    tipHeight !== null
+      ? {
+          view: row.lifecycle_observation_view as "current" | "safe",
+          resource_sha256: row.lifecycle_observation_resource_sha256,
+          tip_height: tipHeight,
+          update_inclusion_height: integer(row.lifecycle_observation_inclusion_height),
+          commitment_height: integer(row.lifecycle_observation_commitment_height),
+        }
+      : null;
+  return projectHnsRootImportLifecycleV1(state, {
+    server_now_epoch_ms: serverNowEpochMs,
+    observation,
+  });
+}
+
 function sessionResponse(
   row: Row,
   environment: string,
   replayed: boolean,
+  serverNowEpochMs: number,
 ): HnsCommunityRootImportSessionResponse | null {
   const actor_id = text(row, "actor_id");
   const community_id = text(row, "community_id");
@@ -276,6 +368,7 @@ function sessionResponse(
   } catch {
     return null;
   }
+  const lifecycle = lifecycleProjection(row, serverNowEpochMs);
   const base = {
     community_id,
     attachment_intent_id,
@@ -284,6 +377,7 @@ function sessionResponse(
     revision,
     expires_at,
     replayed,
+    ...(lifecycle === undefined ? {} : { lifecycle }),
   } as const;
   const candidate =
     status === "awaiting_ownership"
@@ -387,6 +481,9 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 604_800) {
     throw new TypeError("Community HNS root import session TTL is invalid");
   }
+  // Read once per response, so `server_time` and the retry hint the client
+  // derives from `next_check_at` are measured against the same instant.
+  const now = options.now_epoch_ms ?? (() => Date.now());
 
   return {
     prepare: (input: Parameters<HnsCommunityRootImportStartStore["prepare"]>[0]) =>
@@ -784,7 +881,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             if (existingRow === undefined)
               return yield* Effect.fail(invariantFailure("find-session.unexpected_row_count"));
             if (existingRow !== null) {
-              const response = sessionResponse(existingRow, options.environment, true);
+              const response = sessionResponse(existingRow, options.environment, true, now());
               return response !== null && existingRow.start_request_sha256 === input.request_sha256
                 ? ({ kind: "replay", session: response } as const)
                 : ({ kind: "conflict" } as const);
@@ -911,7 +1008,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             if (preparation.admission_kind === "name_signature") {
               // A retained pre-amendment preparation keeps its original proof gate.
-              const response = sessionResponse(row, options.environment, false);
+              const response = sessionResponse(row, options.environment, false, now());
               return response === null
                 ? yield* Effect.fail(invariantFailure("insert-session.undecodable_row"))
                 : ({ kind: "created", session: response } as const);
@@ -952,7 +1049,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             const retainedRow = oneRow(retained);
             const response = retainedRow
-              ? sessionResponse(retainedRow, options.environment, false)
+              ? sessionResponse(retainedRow, options.environment, false, now())
               : null;
             return response === null
               ? yield* Effect.fail(invariantFailure("read-provisional.undecodable_row"))
@@ -965,7 +1062,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "hns.community-root-import.get-current",
-          text: `SELECT ${sessionReadColumns},
+          text: `SELECT ${sessionReadColumns},${lifecycleReadColumns},
                         CASE WHEN route.route_binding_id IS NULL THEN NULL ELSE jsonb_build_object(
                           'status',route.route_lifecycle_status,
                           'canonical_route',jsonb_build_object('family',route.family,
@@ -991,6 +1088,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                       LIMIT 1
                    ) AS session ON true
                    ${ownershipReadJoin}
+                   ${lifecycleReadJoin}
                   WHERE target.community_id=$2 AND target.status='active'
                     AND target.route_authority_version='optional_route_v2'
                     AND EXISTS (SELECT 1 FROM community_route_authority_grants AS route_grant
@@ -1007,7 +1105,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const session =
           row.root_import_session_id === null
             ? null
-            : sessionResponse(row, options.environment, false);
+            : sessionResponse(row, options.environment, false, now());
         if (row.root_import_session_id !== null && session === null) {
           return yield* Effect.fail(invariantFailure("get-current.unexpected_outcome"));
         }
@@ -1024,8 +1122,10 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "hns.community-root-import.get",
-          text: `SELECT ${sessionReadColumns} FROM hns_root_import_sessions AS session
+          text: `SELECT ${sessionReadColumns},${lifecycleReadColumns}
+                   FROM hns_root_import_sessions AS session
                   ${ownershipReadJoin}
+                  ${lifecycleReadJoin}
                   WHERE session.actor_id=$1 AND session.community_id=$2
                     AND session.root_import_session_id=$3 AND session.origin_kind='community_attachment'`,
           values: [input.actor_id, input.community_id, input.root_import_session_id],
@@ -1034,7 +1134,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const row = oneRow(result);
         if (row === undefined)
           return yield* Effect.fail(invariantFailure("get.unexpected_row_count"));
-        return row === null ? null : sessionResponse(row, options.environment, false);
+        return row === null ? null : sessionResponse(row, options.environment, false, now());
       }),
     loadPollAuthority: (
       input: Parameters<HnsCommunityRootImportPollStore["loadPollAuthority"]>[0],
@@ -1043,7 +1143,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "hns.community-root-import.load-poll-authority",
-          text: `SELECT ${sessionReadColumns}, ownership.ceremony_intent_id,
+          text: `SELECT ${sessionReadColumns},${lifecycleReadColumns}, ownership.ceremony_intent_id,
                         provision.result_sha256 AS provision_result_sha256
                    FROM hns_root_import_sessions AS session
                    JOIN community_route_attachment_namespace_sessions AS ownership
@@ -1053,6 +1153,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                     AND ownership.attachment_intent_id=session.attachment_intent_id
                    LEFT JOIN hns_authority_provision_jobs AS provision
                      ON provision.provision_job_id=session.provision_job_id
+                  ${lifecycleReadJoin}
                   WHERE session.actor_id=$1 AND session.community_id=$2
                     AND session.root_import_session_id=$3
                     AND session.origin_kind='community_attachment'`,
@@ -1063,7 +1164,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         if (row === undefined)
           return yield* Effect.fail(invariantFailure("load-poll-authority.unexpected_row_count"));
         if (row === null) return null;
-        const session = sessionResponse(row, options.environment, false);
+        const session = sessionResponse(row, options.environment, false, now());
         const ceremonyIntentId = text(row, "ceremony_intent_id");
         const namespaceSessionId = text(row, "namespace_session_id");
         const ownershipRevision = integer(row.ownership_expected_revision);
@@ -1151,7 +1252,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             const session =
               row === null || row === undefined
                 ? null
-                : sessionResponse(row, options.environment, outcome.outcome === "replayed");
+                : sessionResponse(row, options.environment, outcome.outcome === "replayed", now());
             return session === null
               ? yield* Effect.fail(invariantFailure("load-provisioned-session.undecodable_row"))
               : ({ kind: outcome.outcome, session } as const);
@@ -1207,7 +1308,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             const session =
               row === null || row === undefined
                 ? null
-                : sessionResponse(row, options.environment, outcome.outcome === "replayed");
+                : sessionResponse(row, options.environment, outcome.outcome === "replayed", now());
             return session === null
               ? yield* Effect.fail(invariantFailure("load-observing-session.undecodable_row"))
               : ({ kind: outcome.outcome, session } as const);
