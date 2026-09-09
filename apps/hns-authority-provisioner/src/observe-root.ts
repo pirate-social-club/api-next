@@ -11,6 +11,7 @@ import {
   type HnsRootImportPublishPlanV1,
   type HnsRootResourceRecordV1,
   hnsAuthorityCapabilitySetDigest,
+  normalizedHnsResourceMultisetKeyV1,
   validateHnsRootResourceRecordsV1,
 } from "@pirate/application/namespace-ownership";
 import { canonicalJson, validCommunityRouteRoot } from "@pirate/domain";
@@ -204,11 +205,14 @@ function decodePlan(bytes: Uint8Array): HnsRootImportPublishPlanV1 {
       "added_records",
       "replacement_records",
       "preserved_unknown_record_types",
+      "encoded_resource_sha256",
       "acknowledgement_required",
     ]) ||
     value.version !== "pirate-hns-root-import-publish-plan-v1" ||
     value.replacement_semantics !== "complete_resource" ||
     value.acknowledgement_required !== true ||
+    typeof value.encoded_resource_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.encoded_resource_sha256) ||
     !Array.isArray(value.current_records) ||
     !Array.isArray(value.preserved_records) ||
     !Array.isArray(value.removed_conflicts) ||
@@ -227,7 +231,10 @@ function decodePlan(bytes: Uint8Array): HnsRootImportPublishPlanV1 {
 }
 
 function canonicalRecordMultiset(records: readonly HnsRootResourceRecordV1[]): string {
-  return canonicalJson(records.map((record) => canonicalJson(record)).sort());
+  // Comparison normalization: order, multiplicity, name case and trailing
+  // dot, address canonicalization, and digest case, so a harmless
+  // canonicalization is distinct from a changed resource.
+  return normalizedHnsResourceMultisetKeyV1(records);
 }
 
 function chainAuthorityRecords(

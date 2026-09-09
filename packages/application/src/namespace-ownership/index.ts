@@ -457,6 +457,7 @@ export {
   hnsPrivateDriverErrorStatus,
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
+export * from "./hns-resource-codec.ts";
 export * from "./hns-root-import.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,

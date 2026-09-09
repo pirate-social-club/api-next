@@ -1,4 +1,5 @@
 import { canonicalJson } from "@pirate/domain";
+import { preflightEncodeHnsResourceV1 } from "./hns-resource-codec.ts";
 
 export const HNS_ROOT_IMPORT_PUBLISH_PLAN_VERSION = "pirate-hns-root-import-publish-plan-v1";
 export const HNS_ROOT_IMPORT_NAMESERVERS = ["ns1.pirate.", "ns2.pirate."] as const;
@@ -32,13 +33,20 @@ export type HnsRootImportPublishPlanV1 = Readonly<{
   readonly added_records: readonly HnsRootResourceRecordV1[];
   readonly replacement_records: readonly HnsRootResourceRecordV1[];
   readonly preserved_unknown_record_types: readonly string[];
+  /**
+   * SHA-256 of the HSD wire encoding of `replacement_records` — distinct
+   * from the plan-document hash so the broadcast resource and the review
+   * document are verified independently.
+   */
+  readonly encoded_resource_sha256: string;
   readonly acknowledgement_required: true;
 }>;
 
 export type HnsRootImportPlanErrorReason =
   | "invalid_current_record"
   | "invalid_challenge"
-  | "invalid_ds_records";
+  | "invalid_ds_records"
+  | "resource_preflight_failed";
 
 export class HnsRootImportPlanError extends Error {
   override readonly name = "HnsRootImportPlanError";
@@ -196,14 +204,18 @@ function currentAuthorityMatches(
  * Builds the one complete Handshake resource replacement shown to the owner.
  * Unrelated records remain byte-for-byte JSON-equivalent and in their original
  * order. Only prior NS, DS, and Pirate challenge TXT records are replaced.
+ * The replacement resource is preflight-encoded with the HSD wire codec
+ * (real 512-byte consensus limit, exact round trip) before the plan is
+ * returned, and the plan carries the encoded-resource hash distinct from
+ * its document hash.
  */
-export function buildHnsRootImportPublishPlanV1(
+export async function buildHnsRootImportPublishPlanV1(
   input: Readonly<{
     readonly current_records: readonly HnsRootResourceRecordV1[];
     readonly challenge_txt_value: string;
     readonly ds_records: readonly HnsRootDelegationDsV1[];
   }>,
-): HnsRootImportPublishPlanV1 {
+): Promise<HnsRootImportPublishPlanV1> {
   const challenge = validateChallenge(input.challenge_txt_value);
   const dsRecords = validateDsRecords(input.ds_records);
   const currentRecords = validateHnsRootResourceRecordsV1(input.current_records);
@@ -229,6 +241,13 @@ export function buildHnsRootImportPublishPlanV1(
         { type: "TXT", txt: [challenge] },
         ...dsRecords.map(dsResourceRecord),
       ];
+  const replacementRecords = [...preservedRecords, ...addedRecords].map(cloneRecord);
+  let preflight: Awaited<ReturnType<typeof preflightEncodeHnsResourceV1>>;
+  try {
+    preflight = await preflightEncodeHnsResourceV1(replacementRecords);
+  } catch {
+    throw new HnsRootImportPlanError("resource_preflight_failed");
+  }
   return Object.freeze({
     version: HNS_ROOT_IMPORT_PUBLISH_PLAN_VERSION,
     replacement_semantics: "complete_resource",
@@ -236,8 +255,9 @@ export function buildHnsRootImportPublishPlanV1(
     preserved_records: preservedRecords.map(cloneRecord),
     removed_conflicts: removedConflicts.map(cloneRecord),
     added_records: addedRecords.map(cloneRecord),
-    replacement_records: [...preservedRecords, ...addedRecords].map(cloneRecord),
+    replacement_records: replacementRecords,
     preserved_unknown_record_types: [...unknownTypes].sort(),
+    encoded_resource_sha256: preflight.sha256,
     acknowledgement_required: true,
   });
 }

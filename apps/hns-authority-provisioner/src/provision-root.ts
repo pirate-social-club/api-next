@@ -168,6 +168,7 @@ export async function provisionHnsAuthorityRootV1(
     if (error instanceof HnsAuthorityProvisionError) throw error;
     throw new HnsAuthorityProvisionError("root_unavailable");
   }
+  const currentSnapshotSha256 = observed.observation.resource_sha256;
   let zone: HnsAuthorityZoneResult;
   try {
     zone = await ports.ensure_zone({
@@ -194,15 +195,34 @@ export async function provisionHnsAuthorityRootV1(
   ) {
     throw new HnsAuthorityProvisionError("invalid_authority_result");
   }
-  let plan: ReturnType<typeof buildHnsRootImportPublishPlanV1>;
+  let plan: Awaited<ReturnType<typeof buildHnsRootImportPublishPlanV1>>;
   try {
-    plan = buildHnsRootImportPublishPlanV1({
+    plan = await buildHnsRootImportPublishPlanV1({
       current_records: currentRecords,
       challenge_txt_value: request.challenge_txt_value,
       ds_records: zone.ds_records,
     });
   } catch {
     throw new HnsAuthorityProvisionError("invalid_authority_result");
+  }
+  // The current resource is rechecked before exposure; the plan is rebuilt
+  // and revalidated when the source snapshot changed. The retained
+  // provisional keys (final DS values) survive the rebuild.
+  const recheck = await ports.observe_current_resource(request.root_label);
+  if (recheck.kind !== "observed" || recheck.observation.view !== "current") {
+    throw new HnsAuthorityProvisionError("root_unavailable");
+  }
+  if (recheck.observation.resource_sha256 !== currentSnapshotSha256) {
+    try {
+      currentRecords = validateHnsRootResourceRecordsV1(recheck.observation.records);
+      plan = await buildHnsRootImportPublishPlanV1({
+        current_records: currentRecords,
+        challenge_txt_value: request.challenge_txt_value,
+        ds_records: zone.ds_records,
+      });
+    } catch {
+      throw new HnsAuthorityProvisionError("invalid_authority_result");
+    }
   }
   const publishPlanBytes = encoder.encode(canonicalJson(plan));
   const resultBytes = encoder.encode(
@@ -228,6 +248,6 @@ export async function provisionHnsAuthorityRootV1(
     publish_plan_sha256: await sha256(publishPlanBytes),
     result_bytes: resultBytes,
     result_sha256: await sha256(resultBytes),
-    current_snapshot_sha256: observed.observation.resource_sha256,
+    current_snapshot_sha256: recheck.observation.resource_sha256,
   };
 }

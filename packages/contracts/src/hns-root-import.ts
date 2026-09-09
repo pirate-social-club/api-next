@@ -120,6 +120,9 @@ const HnsRootImportPublishPlanV1 = Schema.Struct({
   added_records: Schema.Array(HnsResourceRecordV1),
   replacement_records: Schema.Array(HnsResourceRecordV1),
   preserved_unknown_record_types: Schema.Array(Schema.String),
+  // SHA-256 of the HSD wire encoding of replacement_records, distinct from
+  // the plan-document hash (spec 012, 2026-09-09 amendment).
+  encoded_resource_sha256: Sha256Hex,
   acknowledgement_required: Schema.Literal(true),
 });
 export type HnsRootImportPublishPlanV1 = Schema.Schema.Type<typeof HnsRootImportPublishPlanV1>;

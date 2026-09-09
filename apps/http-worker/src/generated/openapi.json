@@ -21092,6 +21092,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -21108,6 +21111,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -21727,6 +21731,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -21743,6 +21750,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -22732,6 +22740,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -22748,6 +22759,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -23781,6 +23793,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -23797,6 +23812,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -24416,6 +24432,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -24432,6 +24451,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -25264,6 +25284,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -25280,6 +25303,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -26793,6 +26817,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -26809,6 +26836,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -27472,6 +27500,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -27488,6 +27519,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -28691,6 +28723,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -28707,6 +28742,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -29740,6 +29776,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -29756,6 +29795,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -30833,6 +30873,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -30849,6 +30892,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -31512,6 +31556,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -31528,6 +31575,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -32404,6 +32452,9 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "type": "string"
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -32420,6 +32471,7 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
+                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
