@@ -586,6 +586,24 @@ suite("community HNS root-import repositories", () => {
         ).rows[0],
       ).toEqual({ origin_kind: "community_attachment" });
 
+      // The lifecycle is created in the same transaction as the session, so a
+      // crash between the two cannot leave a live session whose phase nothing
+      // can determine later. A replayed start does not create a second one.
+      const lifecycle = await admin.query(
+        `SELECT phase, revision, generation, policy_name, pending_reason
+           FROM hns_root_import_lifecycle
+          WHERE root_import_session_id='community-import-session'`,
+      );
+      expect(lifecycle.rows).toEqual([
+        {
+          phase: "preparing",
+          revision: "1",
+          generation: "1",
+          policy_name: "hns_root_import_lifecycle_v1",
+          pending_reason: "preparing_retained_authority",
+        },
+      ]);
+
       expect(await current()).toMatchObject({
         community_id: communityId,
         session: {

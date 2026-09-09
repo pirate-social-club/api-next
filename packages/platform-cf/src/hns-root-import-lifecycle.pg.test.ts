@@ -13,11 +13,6 @@ function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
-function connectionForSchema(raw: string, schema: string): string {
-  const separator = raw.includes("?") ? "&" : "?";
-  return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
-}
-
 const commitDecision = `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1(
   $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`;
 

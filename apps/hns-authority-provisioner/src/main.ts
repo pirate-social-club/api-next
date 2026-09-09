@@ -190,15 +190,6 @@ async function main(serve: boolean): Promise<void> {
   }
   const connectionString = required("CONTROL_PLANE_POSTGRES_URL");
   const queue = makePostgresHnsAuthorityProvisionQueue(connectionString);
-  async function withPgClient<A>(url: string, use: (client: Client) => Promise<A>): Promise<A> {
-    const client = new Client({ connectionString: url });
-    await client.connect();
-    try {
-      return await use(client);
-    } finally {
-      await client.end();
-    }
-  }
 
   const observeChain = makeHsdRootResourceObserver(
     {

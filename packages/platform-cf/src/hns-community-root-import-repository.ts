@@ -3,6 +3,7 @@ import {
   type ControlPlaneError,
   type ControlPlaneResult,
   type ControlPlaneTransaction,
+  HNS_ROOT_IMPORT_LIFECYCLE_POLICY_NAME_V1,
   type HnsCommunityRootImportActivationStore,
   type HnsCommunityRootImportDiscoveryStore,
   type HnsCommunityRootImportPollStore,
@@ -11,6 +12,7 @@ import {
   type HnsCommunityRootImportStartStore,
   HnsCommunityRootImportStorageFailed,
   hnsCommunityRootImportNameProofMessage,
+  hnsRootImportLifecyclePolicyDigest,
 } from "@pirate/application";
 import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
 import {
@@ -887,6 +889,26 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               return yield* Effect.fail(
                 invariantFailure("insert-session.missing_or_ambiguous_row"),
               );
+            // The lifecycle is created in the same transaction as the session
+            // it governs. Creating it afterwards would leave a crash window in
+            // which a live session has no lifecycle, and a session with no
+            // lifecycle is exactly the state whose phase cannot be inferred
+            // later without guessing.
+            yield* transaction.execute({
+              label: "hns.community-root-import.create-lifecycle",
+              text: `INSERT INTO hns_root_import_lifecycle (
+                       root_import_session_id, root_label, phase, revision, generation,
+                       pending_reason, policy_name, policy_digest
+                     ) VALUES ($1,$2,'preparing',1,1,'preparing_retained_authority',$3,$4)
+                     ON CONFLICT (root_import_session_id) DO NOTHING`,
+              values: [
+                input.preparation.root_import_session_id,
+                input.preparation.root_label,
+                HNS_ROOT_IMPORT_LIFECYCLE_POLICY_NAME_V1,
+                hnsRootImportLifecyclePolicyDigest(),
+              ],
+              readonly: false,
+            });
             if (preparation.admission_kind === "name_signature") {
               // A retained pre-amendment preparation keeps its original proof gate.
               const response = sessionResponse(row, options.environment, false);

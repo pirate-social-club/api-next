@@ -460,6 +460,7 @@ export {
 export * from "./hns-resource-codec.ts";
 export * from "./hns-root-import.ts";
 export * from "./hns-root-import-lifecycle-projection.ts";
+export * from "./hns-root-import-lifecycle-service.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,
   HnsRootImportNameProofMessageInput,
