@@ -750,6 +750,7 @@ suite("community HNS root-import repositories", () => {
           ])
         ).rows[0].held;
       expect(await held()).toBe(true);
+      expect(await freshPrepare("retry-before-cleanup")).toEqual({ kind: "conflict" });
       expect(
         (
           await admin.query(
@@ -806,6 +807,28 @@ suite("community HNS root-import repositories", () => {
       expect(
         (await finalizeCleanup(reclaimed.lease_fence, "failed", "session_expired")).rows[0].outcome,
       ).toBe("replayed");
+
+      // A terminal failure need not wait for its one-hour deadline once the
+      // fenced teardown has released its reservation. Preserve its history.
+      expect(
+        (
+          await admin.query(
+            "SELECT status,expires_at>clock_timestamp() AS unexpired FROM hns_root_import_sessions WHERE root_import_session_id='community-import-session'",
+          )
+        ).rows,
+      ).toEqual([{ status: "failed", unexpired: true }]);
+      expect(await freshPrepare("retry-after-cleanup")).toMatchObject({ kind: "created" });
+      expect(
+        (
+          await admin.query(
+            `SELECT session.status,attachment.status AS attachment_status
+               FROM hns_root_import_sessions AS session
+               JOIN community_route_attachment_intents AS attachment
+                 ON attachment.attachment_intent_id=session.attachment_intent_id
+              WHERE session.root_import_session_id='community-import-session'`,
+          )
+        ).rows,
+      ).toEqual([{ status: "failed", attachment_status: "expired" }]);
 
       await admin.query(
         "UPDATE community_route_authority_grants SET status='revoked',revoked_at=clock_timestamp(),revoked_by_user_id=principal_user_id WHERE grant_id='community-root-import-grant'",
