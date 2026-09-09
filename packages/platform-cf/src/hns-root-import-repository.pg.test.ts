@@ -246,7 +246,7 @@ async function provisionRootImport(
     "SELECT * FROM claim_hns_authority_provision_job_v1($1, $2)",
     ["authority-executor", 60],
   );
-  const plan = buildHnsRootImportPublishPlanV1({
+  const plan = await buildHnsRootImportPublishPlanV1({
     current_records: [{ type: "TXT", txt: ["preserve-me"] }],
     challenge_txt_value: record.challenge_txt_value,
     ds_records: [
@@ -615,7 +615,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         lease_fence: "2",
       });
 
-      const plan = buildHnsRootImportPublishPlanV1({
+      const plan = await buildHnsRootImportPublishPlanV1({
         current_records: [
           { type: "TXT", txt: ["preserve-me"] },
           { type: "NS", ns: "old-authority.example." },
@@ -890,7 +890,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         ["authority-executor", 60],
       );
       expect(claim.rows).toHaveLength(1);
-      const plan = buildHnsRootImportPublishPlanV1({
+      const plan = await buildHnsRootImportPublishPlanV1({
         current_records: [],
         challenge_txt_value: record.challenge_txt_value,
         ds_records: [

@@ -21093,7 +21093,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -21111,7 +21118,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -21732,7 +21738,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -21750,7 +21763,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -22741,7 +22753,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -22759,7 +22778,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -23794,7 +23812,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -23812,7 +23837,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -24433,7 +24457,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -24451,7 +24482,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -25285,7 +25315,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -25303,7 +25340,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -27005,7 +27041,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -27023,7 +27066,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -27875,7 +27917,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -27893,7 +27942,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -29285,7 +29333,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -29303,7 +29358,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -30525,7 +30579,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -30543,7 +30604,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -31809,7 +31869,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -31827,7 +31894,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -32679,7 +32745,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -32697,7 +32770,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
@@ -33762,7 +33834,14 @@
                           }
                         },
                         "encoded_resource_sha256": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -33780,7 +33859,6 @@
                         "added_records",
                         "replacement_records",
                         "preserved_unknown_record_types",
-                        "encoded_resource_sha256",
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false

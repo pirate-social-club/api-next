@@ -137,6 +137,7 @@
     "0134_reward_qualification_terms.sql": "c4e42b5a044e36b56f212d7f33bcee10e126ab616757022f24b40b76f368b828",
     "0135_song_source_recording_authority.sql": "fdef3c6d12c22db8b9bb508510252b6e3c5c0dd3156b44ff97247eaced05e96c",
     "0136_hns_existing_name_attachment.sql": "52daabc2ac8d8efc5138dad17c6f5e1e06f89e62880bd476e1dac82c2a35a621",
-    "0137_hns_root_import_lifecycle.sql": "d815181433623ed83fc32b7cb639ffb9238d19deff24ab8a8347f8fd186f6889"
+    "0137_hns_root_import_lifecycle.sql": "d815181433623ed83fc32b7cb639ffb9238d19deff24ab8a8347f8fd186f6889",
+    "0138_hns_lifecycle_execution_privileges.sql": "451b07af678160d77eaebe828aeb78f986553d4a3b6aa5b55877c2df358421d7"
   }
 }

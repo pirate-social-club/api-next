@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decideHnsTeardownRetentionV1 } from "@pirate/application/namespace-ownership";
 import {
   buildManagedRootRrsets,
   makePowerDnsRootProvisioner,
@@ -283,5 +284,109 @@ describe("PowerDNS managed HNS root rrsets", () => {
     );
     await teardown({ root_label: "newroot" });
     expect(calls).toEqual(["DELETE /api/v1/servers/localhost/zones/newroot."]);
+  });
+});
+
+describe("teardown variants retain authority unless positive evidence allows retirement (T07)", () => {
+  const planDigest = "ab".repeat(32);
+  function observed(
+    view: "current" | "safe",
+    digest: string | null,
+  ): import("@pirate/application/namespace-ownership").HnsChainObservationResultV1 {
+    return {
+      kind: "observed",
+      observation: {
+        view,
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        anchor: {
+          network: "main",
+          genesis_block_hash: `${"0".repeat(63)}1`,
+          height: 812_345,
+          best_block_hash: "aa".repeat(32),
+          median_time_past_epoch_seconds: 1_770_000_000,
+          header_time_epoch_seconds: 1_770_000_030,
+          confirmations: 1,
+        },
+        tip_height: 812_345,
+        update_inclusion_height: 800_000,
+        commitment: null,
+        observed_at_epoch_ms: 1_770_000_060_000,
+        records: [],
+        resource_sha256: digest ?? `${"0".repeat(63)}${view === "current" ? "1" : "2"}`,
+      },
+    };
+  }
+
+  test("every teardown variant retains authority when either view references the plan", () => {
+    for (const teardown_kind of ["teardown_provisional_root_v1", "teardown_root_v1"] as const) {
+      for (const referencingView of ["current", "safe"] as const) {
+        const decision = decideHnsTeardownRetentionV1({
+          teardown_kind,
+          plan_encoded_resource_sha256: planDigest,
+          current:
+            referencingView === "current"
+              ? observed("current", planDigest)
+              : observed("current", null),
+          safe: referencingView === "safe" ? observed("safe", planDigest) : observed("safe", null),
+          positive_absence_evidence: true,
+        });
+        expect(decision).toMatchObject({
+          decision: "retain",
+          reason: "chain_reference_retained",
+        });
+      }
+    }
+  });
+
+  test("unavailable reads retain authority pending another inspection", () => {
+    for (const unavailable of [
+      { kind: "unavailable", classification: "transport_failure" },
+      { kind: "unavailable", classification: "chain_moving" },
+      { kind: "unavailable", classification: "node_stale" },
+      { kind: "finding", classification: "resource_absent" },
+    ]) {
+      const decision = decideHnsTeardownRetentionV1({
+        teardown_kind: "teardown_root_v1",
+        plan_encoded_resource_sha256: planDigest,
+        current: observed("current", null),
+        safe: unavailable as never,
+        positive_absence_evidence: false,
+      });
+      expect(decision).toMatchObject({
+        decision: "retain",
+        reason: "unavailable_chain_state_retained",
+      });
+    }
+  });
+
+  test("chain absence after exposure alone never authorizes deletion", () => {
+    const decision = decideHnsTeardownRetentionV1({
+      teardown_kind: "teardown_provisional_root_v1",
+      plan_encoded_resource_sha256: planDigest,
+      current: observed("current", null),
+      safe: observed("safe", null),
+      positive_absence_evidence: false,
+    });
+    expect(decision).toEqual({
+      decision: "retain",
+      reason: "chain_absence_after_exposure_retained",
+      inspected_views: ["current", "safe"],
+    });
+  });
+
+  test("retirement requires positive fresh-inspection evidence", () => {
+    const decision = decideHnsTeardownRetentionV1({
+      teardown_kind: "teardown_root_v1",
+      plan_encoded_resource_sha256: planDigest,
+      current: observed("current", null),
+      safe: observed("safe", null),
+      positive_absence_evidence: true,
+    });
+    expect(decision).toEqual({
+      decision: "retire_eligible",
+      reason: "retirement_positive_evidence",
+      inspected_views: ["current", "safe"],
+    });
   });
 });

@@ -4,18 +4,18 @@
   "package": "@pirate/api-client",
   "version": "0.68.4",
   "sourceBranch": "fix/hns-root-import-lifecycle",
-  "wireContract": "Community HNS root-import session responses optionally project the coordinator-reviewed lifecycle block: phase, bounded pending reason, the applicable deadline with its kind, server time, accepted observation summary, next_check_at with a retry hint, and permitted actions. Older responses without the additive field remain valid.",
+  "wireContract": "Community HNS root-import session responses optionally project the lifecycle block (phase, bounded pending reason, deadline with kind, server time, observation summary, next_check_at with retry hint, permitted actions), and publish plans optionally carry encoded_resource_sha256, the HSD wire-encoding digest distinct from the plan-document hash. Older shapes remain valid.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.68.4.tgz",
-    "sha256": "55a1b662089214ea3a528d7dff1b8ef57d5d39001b1c4d5043e25b93db55bf44"
+    "sha256": "47287253cf1946463d86dad948391bfc7b1ceca979e4735bbe475a5eefec31f8"
   },
   "provenance": {
     "schemaVersion": 1,
     "package": "@pirate/api-client",
     "version": "0.68.4",
-    "sourceIdentifier": "api-next-contracts@609566b72a35ae66528a1fa1e0e32774d21a34a0e1849b57226a5601e459af72",
-    "openapiSha256": "609566b72a35ae66528a1fa1e0e32774d21a34a0e1849b57226a5601e459af72",
-    "clientSha256": "2da4ae50bd54266b686e3237858ada716a651a2f1f635b8123cd4c6b66b87d83"
+    "sourceIdentifier": "api-next-contracts@196e87351712a06737891af69e69e65d1b0155a04c123d31291959c8815dcb2a",
+    "openapiSha256": "196e87351712a06737891af69e69e65d1b0155a04c123d31291959c8815dcb2a",
+    "clientSha256": "a8188ebe6c58d38015064fc1ae072178cb4c9a71eb2039a7daa6fe70a727c2eb"
   },
   "verification": {
     "status": "Contract fixture suite (T12) passed for every phase and error class; handler emission wiring pending in this lane."
