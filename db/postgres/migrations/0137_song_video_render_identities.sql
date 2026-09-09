@@ -11,7 +11,7 @@
 -- an execution path; the byte ceiling that applied is recorded per master so a
 -- later ratified value is auditable rather than retroactively assumed.
 CREATE TABLE media_song_video_render_plans (
-  plan_id TEXT PRIMARY KEY CHECK (length(plan_id) BETWEEN 1 AND 128 AND btrim(plan_id) = plan_id),
+  plan_id TEXT PRIMARY KEY CHECK (length(plan_id) >= 1 AND length(plan_id) <= 128 AND btrim(plan_id) = plan_id),
   submission_id TEXT NOT NULL,
   song_post_id TEXT NOT NULL CHECK (btrim(song_post_id) <> ''),
   song_asset_id TEXT NOT NULL CHECK (btrim(song_asset_id) <> ''),
@@ -41,7 +41,7 @@ ALTER TABLE media_immutable_objects
   ADD CONSTRAINT media_immutable_objects_submission_key UNIQUE (immutable_ref, submission_id);
 
 CREATE TABLE media_song_video_render_attempts (
-  attempt_id TEXT PRIMARY KEY CHECK (length(attempt_id) BETWEEN 1 AND 128 AND btrim(attempt_id) = attempt_id),
+  attempt_id TEXT PRIMARY KEY CHECK (length(attempt_id) >= 1 AND length(attempt_id) <= 128 AND btrim(attempt_id) = attempt_id),
   plan_id TEXT NOT NULL REFERENCES media_song_video_render_plans (plan_id) ON DELETE RESTRICT,
   generation INTEGER NOT NULL CHECK (generation >= 1),
   state TEXT NOT NULL CHECK (state IN ('started', 'sealed', 'accepted', 'loser', 'abandoned')),
@@ -67,7 +67,7 @@ CREATE INDEX media_song_video_render_attempts_plan_idx
   ON media_song_video_render_attempts (plan_id, state);
 
 CREATE TABLE media_song_video_masters (
-  master_revision_id TEXT PRIMARY KEY CHECK (length(master_revision_id) BETWEEN 1 AND 128 AND btrim(master_revision_id) = master_revision_id),
+  master_revision_id TEXT PRIMARY KEY CHECK (length(master_revision_id) >= 1 AND length(master_revision_id) <= 128 AND btrim(master_revision_id) = master_revision_id),
   plan_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL UNIQUE,
   attempt_generation INTEGER NOT NULL CHECK (attempt_generation >= 1),
