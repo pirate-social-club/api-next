@@ -119,7 +119,8 @@ describe("HSD root resource observer", () => {
         mediantime: tipMedianTime - 600,
         time: tipHeaderTime - 600,
         confirmations: 6,
-        treeRoot: commitmentRoot,
+        // hsd spells this `treeroot` in getblockheader.
+        treeroot: commitmentRoot,
       }),
       rpcResponse(resource([{ type: "NS", ns: "ns1.pirate." }])),
       rpcResponse(chainInfo()),
@@ -153,7 +154,9 @@ describe("HSD root resource observer", () => {
       { method: "getblockchaininfo", params: [] },
       { method: "getblockheader", params: [tipHash, true] },
       { method: "getnameinfo", params: ["newroot", true] },
-      { method: "getblockbyheight", params: [812_340, false, false] },
+      // Verbose: hsd returns a hex string otherwise, which the observer
+      // cannot read. A live regtest node established this (T03).
+      { method: "getblockbyheight", params: [812_340, true, false] },
       { method: "getblockheader", params: [commitmentHash, true] },
       { method: "getnameresource", params: ["newroot", true] },
       { method: "getblockchaininfo", params: [] },

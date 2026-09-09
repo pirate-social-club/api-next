@@ -286,13 +286,21 @@ export function makeHsdRootResourceObserver(
           config.tree_interval_blocks,
           config.safe_minimum_confirmations,
         );
-        const blockResult = object(await rpc("getblockbyheight", [commitmentHeight, false, false]));
+        // Verbose. hsd returns the raw block as a hex string when this flag is
+        // false, which `object` then rejects, so every safe observation failed
+        // as a transport failure and no operation could ever establish
+        // finality. Found by running the controlled regtest harness (T03).
+        const blockResult = object(await rpc("getblockbyheight", [commitmentHeight, true, false]));
         commitmentBlockHash = hexHash(blockResult.hash);
         if (commitmentBlockHash === null) {
           throw new HsdObservationUnavailable("malformed_response");
         }
         const headerResult = object(await rpc("getblockheader", [commitmentBlockHash, true]));
-        commitmentTreeRoot = hexHash(headerResult.treeRoot);
+        // hsd names this `treeroot` in getblockheader. Reading `treeRoot` gave
+        // null and classified every safe observation as malformed_response.
+        // Both spellings are accepted so a future rename cannot silently
+        // reintroduce a permanently unavailable safe view.
+        commitmentTreeRoot = hexHash(headerResult.treeroot ?? headerResult.treeRoot);
         if (
           hexHash(headerResult.hash) !== commitmentBlockHash ||
           safeInteger(headerResult.height) !== commitmentHeight ||
