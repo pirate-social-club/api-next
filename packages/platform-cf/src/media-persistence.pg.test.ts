@@ -38,6 +38,7 @@ import {
   createActivePersonaFixture,
 } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+import { authorizeSongPlayback } from "./song-playback-authority.ts";
 import { makeSongSourceRecordingRepository } from "./song-source-recording-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -49,7 +50,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 43;
+const testCount = 44;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -3656,6 +3657,50 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+
+  test("song playback authority requires current published visibility and approved audio", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      const postId = `media-post-${operation}`;
+      const read = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            authorizeSongPlayback({ postId }).pipe(
+              Effect.provide(makeDirectPostgresControlPlaneLayer(connection)),
+            ),
+          ),
+        );
+      expect(await read()).toBeNull();
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "publish-playback",
+          ),
+          expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId,
+        }),
+      );
+      expect(await read()).toEqual({ immutableRef: "media_pg_immutable" });
+      await admin.query("UPDATE posts SET visibility='members_only' WHERE post_id=$1", [postId]);
+      expect(await read()).toBeNull();
+      await admin.query(
+        "UPDATE posts SET visibility='public',content_rating='adult_18' WHERE post_id=$1",
+        [postId],
+      );
+      expect(await read()).toBeNull();
+      await admin.query(
+        "UPDATE posts SET content_rating='general',status='removed' WHERE post_id=$1",
+        [postId],
+      );
+      expect(await read()).toBeNull();
+    });
+    completedTestCount += 1;
+  }, 40000);
 
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withCurrentSchema(async (admin, connection) => {

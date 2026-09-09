@@ -101,6 +101,8 @@
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",
     "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts",
     "./video/workflow": "./src/video/workflow.ts",
-    "./video/publication-wakeup": "./src/video/publication-wakeup.ts"
+    "./video/publication-wakeup": "./src/video/publication-wakeup.ts",
+    "./use-cases/content/comment-thread": "./src/use-cases/content/comment-thread.ts",
+    "./use-cases/content/song-playback": "./src/use-cases/content/song-playback.ts"
   }
 }
