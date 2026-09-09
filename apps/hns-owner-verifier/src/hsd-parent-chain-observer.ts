@@ -417,7 +417,10 @@ function parseRootDecision(value: unknown, anchorHeight: number): HnsStableHsdRo
   ) {
     throw new HsdSemanticUnavailable("chain_response_invalid");
   }
-  const active = state === "CLOSED" && info.registered && !info.expired;
+  // getnameinfo filters current expiry before returning info. The serialized
+  // expired flag is historical and can remain true after re-registration.
+  // Current renewal height is checked against the stable anchor below.
+  const active = state === "CLOSED" && info.registered;
   const stats = info.stats;
   if (active) {
     const values = requireObject(stats);

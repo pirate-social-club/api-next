@@ -98,7 +98,10 @@ export function makeHsdRootResourceInspector(
     }
     const nameResult = object(await rpc("getnameinfo", [rootLabel, true]));
     const info = object(nameResult.info);
-    if (info.state !== "CLOSED" || info.registered !== true || info.expired !== false) {
+    // HSD getnameinfo omits currently expired names (info=null). Its serialized
+    // expired flag records a previous expiry and survives re-registration;
+    // it is not the current NameState.isExpired(height, network) decision.
+    if (info.state !== "CLOSED" || info.registered !== true || typeof info.expired !== "boolean") {
       throw new Error("HSD root is not active");
     }
     const resourceValue = await rpc("getnameresource", [rootLabel, true]);

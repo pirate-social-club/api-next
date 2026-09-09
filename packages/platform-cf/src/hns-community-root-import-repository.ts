@@ -534,7 +534,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
 
             // The provider challenge can expire before its seven-day parent.
             // Keep the unique open-parent invariant, retiring only this actor's
-            // expired imports whose provisioned resources have been released.
+            // failed or expired imports whose resources have been released.
             yield* transaction.execute({
               label: "hns.community-root-import.expire-released-parent",
               text: `UPDATE community_route_attachment_intents AS attachment
@@ -546,7 +546,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                         AND attachment.authority_grant_id=$3
                         AND attachment.status IN ('verification_required','commit_ready')
                         AND session.status<>'activated'
-                        AND session.expires_at<=clock_timestamp()
+                        AND (session.status IN ('failed','expired')
+                             OR session.expires_at<=clock_timestamp())
                         AND NOT hns_community_root_import_reservation_held_v1(session.root_import_session_id)`,
               values: [input.request.actor_id, input.request.community_id, grantId],
               readonly: false,

@@ -85,6 +85,7 @@ function rpcError(code: number): Uint8Array {
 
 type ScriptOverrides = Readonly<{
   root?: "active" | "absent" | "inactive";
+  historicalExpired?: boolean;
   records?: ReadonlyArray<unknown>;
   changedAnchor?: boolean;
   stale?: boolean;
@@ -163,7 +164,7 @@ function hsdScript(overrides: ScriptOverrides = {}) {
                   : {
                       state: "CLOSED",
                       registered: true,
-                      expired: false,
+                      expired: overrides.historicalExpired ?? false,
                       stats: {
                         renewalPeriodEnd: 200_000,
                         blocksUntilExpire: 76_544,
@@ -235,6 +236,24 @@ async function observe(
 }
 
 describe("HNS parent-chain HSD observer", () => {
+  test("verifies a re-registered root despite the historical expired flag", async () => {
+    const observed = await observe({ historicalExpired: true });
+    const decoded = await decodeHnsControlObservationResultBytes(
+      observed.result.result_bytes,
+      requestValue,
+    );
+    expect(decoded.result).toMatchObject({ status: "verified", expiry_height: 200_000 });
+    expect(observed.result.transcript).toHaveLength(7);
+  });
+
+  test("historical expiry never bypasses the current ownership TXT proof", async () => {
+    const observed = await observe({ historicalExpired: true, records: [] });
+    const decoded = await decodeHnsControlObservationResultBytes(
+      observed.result.result_bytes,
+      requestValue,
+    );
+    expect(decoded.result).toMatchObject({ status: "rejected", reason_code: "txt_absent" });
+  });
   test("uses the exact stable source-closed RPC sequence and verifies chunked TXT", async () => {
     const observed = await observe();
     const decoded = await decodeHnsControlObservationResultBytes(
