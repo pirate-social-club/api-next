@@ -14,6 +14,13 @@ import { Data, Schema } from "effect";
 interface WireArgs {
   readonly message: string;
   readonly details?: Record<string, unknown> | null;
+  /**
+   * The failure this one was raised for, kept only so the HTTP boundary can log
+   * it. `toErrorBody` never reads it, so it cannot reach a client. Pass it
+   * wherever a handler maps a domain failure onto a wire error, or the original
+   * cause stops existing at that line.
+   */
+  readonly cause?: unknown;
 }
 
 /** Gate failures always carry structured evaluation evidence. */

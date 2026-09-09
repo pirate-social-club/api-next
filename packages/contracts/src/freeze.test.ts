@@ -5,6 +5,7 @@ import {
   DecimalStringSchema,
   GateFailed,
   GetCommunityPreview,
+  InternalError,
   NotFound,
   OwnerRecoveryInProgress,
   PaymentRequired,
@@ -41,6 +42,22 @@ describe("wire-error catalog", () => {
     expect(status).toBe(500);
     expect(body).toEqual({
       error: { code: "internal_error", message: "Internal server error", retryable: true },
+      request_id: "req_123",
+    });
+  });
+
+  it("keeps a retained cause out of the wire body", () => {
+    const cause = new Error("connect postgres://user:pass@host/db refused");
+    const wire = new InternalError({ message: "HNS community root import failed", cause });
+
+    expect(wire.cause).toBe(cause);
+    expect(JSON.stringify(toErrorBody(wire, "req_123"))).not.toContain("postgres://");
+    expect(toErrorBody(wire, "req_123").body).toEqual({
+      error: {
+        code: "internal_error",
+        message: "HNS community root import failed",
+        retryable: false,
+      },
       request_id: "req_123",
     });
   });

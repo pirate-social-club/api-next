@@ -25,10 +25,13 @@ import { type EndpointHandler, withEndpointResult } from "./transport.ts";
 
 function wireFailure(error: unknown): Error {
   const tagged = error as { readonly _tag?: string; readonly reason?: string };
+  // Both internal mappings carry the domain failure as a cause. Without it the
+  // reason a storage or unrecognised failure occurred stops existing here, and
+  // the HTTP boundary can only record that the import failed.
   if (tagged._tag === "HnsCommunityRootImportStorageFailed")
-    return new InternalError({ message: "HNS community root import failed" });
+    return new InternalError({ message: "HNS community root import failed", cause: error });
   if (tagged._tag !== "HnsCommunityRootImportRejected")
-    return new InternalError({ message: "HNS community root import failed" });
+    return new InternalError({ message: "HNS community root import failed", cause: error });
   if (tagged.reason === "not_found")
     return new NotFound({ message: "Community route authority was not found" });
   if (tagged.reason === "conflict")

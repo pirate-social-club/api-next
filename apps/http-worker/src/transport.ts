@@ -22,6 +22,11 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { binaryEndpointResponse } from "./binary-response.ts";
+import {
+  BOUNDARY_FAILURE_EVENT,
+  type BoundaryFailureDisposition,
+  boundaryFailureDiagnostic,
+} from "./failure-diagnostics.ts";
 import { routeTable } from "./generated/route-table.ts";
 import {
   disabledProductionHnsCommunityAppApiComposition,
@@ -559,6 +564,39 @@ const constrainedError = (endpoint: EndpointDefinition, error: unknown): unknown
   return new InternalError({ message: "Endpoint failed with an undeclared error" });
 };
 
+/**
+ * Retain the cause of a failure the client will only see as `internal_error`.
+ *
+ * Both opaque dispositions are recorded: an undeclared error, whose original is
+ * discarded by `constrainedError` and would otherwise exist nowhere, and an
+ * internal error raised by the handler itself, which reaches the client with no
+ * detail either. A declared error is not logged — its code and status already
+ * describe it on the wire.
+ */
+const retainBoundaryFailure = (
+  context: HttpContext,
+  binding: { readonly name: string; readonly path: string; readonly method: string },
+  error: unknown,
+  constrained: unknown,
+): void => {
+  if (errorCodeAndStatus(constrained).code !== "internal_error") return;
+  const disposition: BoundaryFailureDisposition =
+    constrained === error ? "passthrough" : "replaced";
+  console.error(
+    BOUNDARY_FAILURE_EVENT,
+    boundaryFailureDiagnostic({
+      requestId: requestId(context),
+      endpoint: binding.name,
+      // The declared route pattern, never the requested URL: a path parameter
+      // or query string is caller-controlled text.
+      route: binding.path,
+      method: binding.method,
+      disposition,
+      error,
+    }),
+  );
+};
+
 const corsOrigin = (
   context: HttpContext,
   config: HttpWorkerConfig | undefined,
@@ -932,7 +970,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
           return json(context, decoded, status, noStore, headers);
         } catch (error) {
-          throw constrainedError(binding.endpoint, error);
+          const constrained = constrainedError(binding.endpoint, error);
+          retainBoundaryFailure(context, binding, error, constrained);
+          throw constrained;
         }
       });
     };
