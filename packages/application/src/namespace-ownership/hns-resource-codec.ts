@@ -573,3 +573,20 @@ export async function preflightEncodeHnsResourceV1(
     sha256: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
   };
 }
+
+/**
+ * Compare like bytes: encode decoded observed records before comparing with
+ * the retained plan's wire digest. The observer's resource_sha256 identifies
+ * canonical JSON evidence and is deliberately not an input to this decision.
+ * Invalid records or plan digests throw; callers classify them as unavailable
+ * evidence rather than a confirmed resource mismatch.
+ */
+export async function hnsObservedResourceMatchesEncodedPlanV1(
+  records: readonly HnsRootResourceRecordV1[],
+  planEncodedResourceSha256: string,
+): Promise<boolean> {
+  if (!/^[0-9a-f]{64}$/u.test(planEncodedResourceSha256)) {
+    throw new HnsResourceCodecError("invalid_digest");
+  }
+  return (await preflightEncodeHnsResourceV1(records)).sha256 === planEncodedResourceSha256;
+}

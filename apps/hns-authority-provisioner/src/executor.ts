@@ -121,13 +121,10 @@ function retainedAuthorityFromPlanBytes(bytes: Uint8Array): HnsRetainedAuthority
       }
     }
   }
-  const encoded = plan.encoded_resource_sha256;
   return {
     ns_names: nsNames,
     ds,
     challenge_txt_value: challenge,
-    plan_encoded_resource_sha256:
-      typeof encoded === "string" && /^[0-9a-f]{64}$/u.test(encoded) ? encoded : null,
   };
 }
 
@@ -153,7 +150,6 @@ async function resolveTeardownRetention(
       ns_names: [],
       ds: [],
       challenge_txt_value: null,
-      plan_encoded_resource_sha256: null,
     };
   } else {
     try {

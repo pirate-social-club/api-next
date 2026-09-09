@@ -22,14 +22,21 @@ docker build -t pirate-hsd-regtest:local apps/hns-authority-provisioner/ops/hsd-
 docker run -d --name pirate-hsd-regtest --network host pirate-hsd-regtest:local
 ```
 
-Then run `HSD_REGTEST_NAME=<unused-name> bun scripts/hsd-regtest-progression.ts --execute`.
+Then run `bun scripts/hsd-regtest-progression.ts --execute`.
 The script requires loopback endpoints and the regtest genesis before any
 mutation. It funds a wallet, acquires a name through its auction, publishes a
 replacement resource, and asserts convergence through the production observer.
 It then invalidates the inclusion block, verifies that the current resource
 disappears, rebroadcasts the exact retained transaction bytes, and asserts
-current/safe convergence again. Use an unused name for each run on a retained
-node. This mutates only the disposable regtest chain.
+current/safe convergence again. Each run generates a fresh name by default;
+`HSD_REGTEST_NAME=<unused-name>` optionally selects an explicit fixture name.
+This makes repeated runs independent, rather than replaying a prior auction.
+This mutates only the disposable regtest chain.
+
+The harness also encodes observed records and checks their wire digest against
+the prepared resource digest. Its canonical-JSON observation digest remains a
+distinct evidence identity. A repeat run with a generated name included at
+1042, converged by 1052, and passed reorg/rebroadcast and wire qualification.
 
 September 9 continuation receipt: t03resumec included at 598; safe still absent
 at 603 and converged at 608. Reorg, exact-transaction rebroadcast, re-inclusion,

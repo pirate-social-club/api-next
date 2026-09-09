@@ -33,8 +33,6 @@ export type HnsRetainedAuthorityReferenceV1 = Readonly<{
     readonly digest: string;
   }>[];
   readonly challenge_txt_value: string | null;
-  /** The exposed plan's encoded-resource digest, when one exists. */
-  readonly plan_encoded_resource_sha256: string | null;
 }>;
 
 const normalizeName = (value: string): string => value.trim().toLowerCase().replace(/\.$/u, "");
@@ -140,13 +138,7 @@ export function decideHnsTeardownRetentionV1(
         inspected_views: inspectedViews,
       };
     }
-    const digestMatches =
-      input.authority.plan_encoded_resource_sha256 !== null &&
-      result.observation.resource_sha256 === input.authority.plan_encoded_resource_sha256;
-    if (
-      digestMatches ||
-      hnsObservationReferencesAuthorityV1(result.observation.records, input.authority)
-    ) {
+    if (hnsObservationReferencesAuthorityV1(result.observation.records, input.authority)) {
       // A reference to the retained zone or plan from either view retains
       // authority.
       return {

@@ -651,7 +651,7 @@ describe("executor teardown retention gate (T07)", () => {
       claim,
       // Authorized for retirement, and still retained: a chain reference
       // outranks the authorization.
-      retentionPorts({ currentDigest: planDigest, retirementAuthorized: true }),
+      retentionPorts({ records: [{ type: "NS", ns: "ns1.pirate." }], retirementAuthorized: true }),
     );
     expect(deleted).toBe(false);
     expect(result.outcome).toBe("failed");
@@ -809,7 +809,7 @@ describe("executor teardown retention gate (T07)", () => {
           teardown_zone: async () => {
             deleted = true;
           },
-          retention: retentionPorts({ safeDigest: planDigest }),
+          retention: retentionPorts({ records: [{ type: "NS", ns: "ns1.pirate." }] }),
           config: { environment: "test", valid_for_seconds: 300 },
         },
       });

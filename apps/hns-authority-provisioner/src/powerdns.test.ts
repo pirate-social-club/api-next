@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { decideHnsTeardownRetentionV1 } from "@pirate/application/namespace-ownership";
+import {
+  decideHnsTeardownRetentionV1,
+  type HnsRootResourceRecordV1,
+  hnsChainResourceDigestV1,
+  preflightEncodeHnsResourceV1,
+} from "@pirate/application/namespace-ownership";
 import {
   buildManagedRootRrsets,
   makePowerDnsRootProvisioner,
@@ -288,10 +293,10 @@ describe("PowerDNS managed HNS root rrsets", () => {
 });
 
 describe("teardown variants retain authority unless positive evidence allows retirement (T07)", () => {
-  const planDigest = "ab".repeat(32);
   function observed(
     view: "current" | "safe",
     digest: string | null,
+    records: readonly HnsRootResourceRecordV1[] = [],
   ): import("@pirate/application/namespace-ownership").HnsChainObservationResultV1 {
     return {
       kind: "observed",
@@ -312,28 +317,37 @@ describe("teardown variants retain authority unless positive evidence allows ret
         update_inclusion_height: 800_000,
         commitment: null,
         observed_at_epoch_ms: 1_770_000_060_000,
-        records: [],
+        records,
         resource_sha256: digest ?? `${"0".repeat(63)}${view === "current" ? "1" : "2"}`,
       },
     };
   }
 
-  test("every teardown variant retains authority when either view references the plan", () => {
+  test("every teardown variant retains real authority records despite distinct JSON and wire digests", async () => {
+    const records = [
+      { type: "NS", ns: "ns1.pirate." },
+      { type: "TXT", txt: ["unrelated"] },
+    ];
+    const observedDigest = await hnsChainResourceDigestV1(records);
+    const wire = await preflightEncodeHnsResourceV1(records);
+    expect(observedDigest).not.toBe(wire.sha256);
     for (const teardown_kind of ["teardown_provisional_root_v1", "teardown_root_v1"] as const) {
       for (const referencingView of ["current", "safe"] as const) {
         const decision = decideHnsTeardownRetentionV1({
           teardown_kind,
           authority: {
-            ns_names: [],
+            ns_names: ["ns1.pirate."],
             ds: [],
             challenge_txt_value: null,
-            plan_encoded_resource_sha256: planDigest,
           },
           current:
             referencingView === "current"
-              ? observed("current", planDigest)
+              ? observed("current", observedDigest, records)
               : observed("current", null),
-          safe: referencingView === "safe" ? observed("safe", planDigest) : observed("safe", null),
+          safe:
+            referencingView === "safe"
+              ? observed("safe", observedDigest, records)
+              : observed("safe", null),
           positive_absence_evidence: true,
         });
         expect(decision).toMatchObject({
@@ -357,7 +371,6 @@ describe("teardown variants retain authority unless positive evidence allows ret
           ns_names: [],
           ds: [],
           challenge_txt_value: null,
-          plan_encoded_resource_sha256: planDigest,
         },
         current: observed("current", null),
         safe: unavailable as never,
@@ -377,7 +390,6 @@ describe("teardown variants retain authority unless positive evidence allows ret
         ns_names: [],
         ds: [],
         challenge_txt_value: null,
-        plan_encoded_resource_sha256: planDigest,
       },
       current: observed("current", null),
       safe: observed("safe", null),
@@ -397,7 +409,6 @@ describe("teardown variants retain authority unless positive evidence allows ret
         ns_names: [],
         ds: [],
         challenge_txt_value: null,
-        plan_encoded_resource_sha256: planDigest,
       },
       current: observed("current", null),
       safe: observed("safe", null),

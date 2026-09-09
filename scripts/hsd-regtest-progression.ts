@@ -8,6 +8,10 @@
  */
 
 import assert from "node:assert/strict";
+import {
+  hnsObservedResourceMatchesEncodedPlanV1,
+  preflightEncodeHnsResourceV1,
+} from "@pirate/application/namespace-ownership";
 import { makeHsdRootResourceObserver } from "../apps/hns-authority-provisioner/src/hsd.ts";
 
 if (Bun.argv.slice(2).join(" ") !== "--execute") {
@@ -17,7 +21,7 @@ if (Bun.argv.slice(2).join(" ") !== "--execute") {
 const NODE = process.env.HSD_REGTEST_NODE_URL ?? "http://127.0.0.1:14037/";
 const WALLET = process.env.HSD_REGTEST_WALLET_URL ?? "http://127.0.0.1:14039/";
 const KEY = process.env.HSD_REGTEST_API_KEY ?? "controlled-progression";
-const NAME = process.env.HSD_REGTEST_NAME ?? "t03harness";
+const NAME = process.env.HSD_REGTEST_NAME ?? `t03-${crypto.randomUUID().replaceAll("-", "")}`;
 const GENESIS = "ae3895cf597eff05b19e02a70ceeeecb9dc72dbfe6504a50e9343a72f06a87c5";
 
 for (const endpoint of [NODE, WALLET]) {
@@ -107,6 +111,11 @@ const initial = await observe(NAME, "current");
 assert.equal(initial.kind, "observed");
 if (initial.kind !== "observed") throw new Error("current observation unavailable");
 const expectedDigest = initial.observation.resource_sha256;
+const encodedPlanDigest = (await preflightEncodeHnsResourceV1(initial.observation.records)).sha256;
+assert.notEqual(expectedDigest, encodedPlanDigest);
+assert.ok(
+  await hnsObservedResourceMatchesEncodedPlanV1(initial.observation.records, encodedPlanDigest),
+);
 assert.equal((await views()).safe, false);
 
 for (let advanced = 5; advanced <= 30; advanced += 5) {
@@ -119,6 +128,9 @@ const converged = await observe(NAME, "safe");
 assert.equal(converged.kind, "observed");
 if (converged.kind !== "observed") throw new Error("safe observation unavailable");
 assert.equal(converged.observation.resource_sha256, expectedDigest);
+assert.ok(
+  await hnsObservedResourceMatchesEncodedPlanV1(converged.observation.records, encodedPlanDigest),
+);
 
 // Orphan the UPDATE and its descendants, then rebroadcast the same approved
 // transaction. Creating a new UPDATE would try to spend the wallet's pending
@@ -143,6 +155,9 @@ const restored = await observe(NAME, "safe");
 assert.equal(restored.kind, "observed");
 if (restored.kind !== "observed") throw new Error("restored safe observation unavailable");
 assert.equal(restored.observation.resource_sha256, expectedDigest);
+assert.ok(
+  await hnsObservedResourceMatchesEncodedPlanV1(restored.observation.records, encodedPlanDigest),
+);
 console.log(
   JSON.stringify({
     name: NAME,
