@@ -21,6 +21,12 @@ const STACK_FRAME_LIMIT = 6;
 const FRAME_LIMIT = 200;
 /** Longest accepted machine code, e.g. a PostgreSQL SQLSTATE. */
 const CODE_LIMIT = 40;
+/**
+ * Longest accepted control-plane field. Statement labels and constraint names
+ * are long by design — `community_route_attachment_intents_one_open_per_community_uidx`
+ * is 62 characters — and truncating one would defeat the point of keeping it.
+ */
+const CONTROL_PLANE_FIELD_LIMIT = 120;
 
 const CODE_SHAPE = /^[A-Za-z0-9_.-]+$/u;
 
@@ -98,6 +104,35 @@ const errorCode = (error: unknown): string | undefined => {
     : undefined;
 };
 
+/**
+ * Fields the control-plane layer already sanitises when it builds a failure:
+ * the statement label, the five-character SQLSTATE, the violated constraint
+ * name, and how certain the outcome is. Together they name what failed without
+ * carrying any statement text or parameter value, and they are the whole answer
+ * for a database failure. Each is still shape-checked here rather than trusted,
+ * so a future field holding prose cannot ride through on the same name.
+ */
+const CONTROL_PLANE_FIELDS = ["label", "sqlState", "constraint", "outcomeCertainty"] as const;
+const CONTROL_PLANE_FIELD_NAMES: Readonly<Record<string, string>> = {
+  label: "statement",
+  sqlState: "sql_state",
+  constraint: "constraint",
+  outcomeCertainty: "outcome_certainty",
+};
+
+const controlPlaneFields = (error: unknown): Readonly<Record<string, string>> | undefined => {
+  if (typeof error !== "object" || error === null) return undefined;
+  const fields: Record<string, string> = {};
+  for (const key of CONTROL_PLANE_FIELDS) {
+    const value = stringField(error, key);
+    if (value === undefined || value.length > CONTROL_PLANE_FIELD_LIMIT) continue;
+    if (!CODE_SHAPE.test(value)) continue;
+    const name = CONTROL_PLANE_FIELD_NAMES[key];
+    if (name !== undefined) fields[name] = value;
+  }
+  return Object.keys(fields).length > 0 ? fields : undefined;
+};
+
 const errorStack = (error: unknown): readonly string[] | undefined => {
   if (!(error instanceof Error) || typeof error.stack !== "string") return undefined;
   const frames = error.stack
@@ -130,6 +165,10 @@ interface BoundaryFailureCause {
   readonly error_tag?: string;
   readonly error_code?: string;
   readonly error_message?: string;
+  readonly statement?: string;
+  readonly sql_state?: string;
+  readonly constraint?: string;
+  readonly outcome_certainty?: string;
 }
 
 export interface BoundaryFailureDiagnostic {
@@ -143,6 +182,10 @@ export interface BoundaryFailureDiagnostic {
   readonly error_code?: string;
   readonly error_message?: string;
   readonly stack?: readonly string[];
+  readonly statement?: string;
+  readonly sql_state?: string;
+  readonly constraint?: string;
+  readonly outcome_certainty?: string;
   readonly causes?: readonly BoundaryFailureCause[];
 }
 
@@ -172,6 +215,7 @@ const errorCauses = (error: unknown): readonly BoundaryFailureCause[] | undefine
       ...(tag === undefined ? {} : { error_tag: tag }),
       ...(code === undefined ? {} : { error_code: code }),
       ...(message === undefined ? {} : { error_message: message }),
+      ...controlPlaneFields(next),
     });
     current = next;
   }
@@ -190,6 +234,7 @@ export function boundaryFailureDiagnostic(input: BoundaryFailureInput): Boundary
   const message = errorMessage(input.error);
   const stack = errorStack(input.error);
   const causes = errorCauses(input.error);
+  const controlPlane = controlPlaneFields(input.error);
   return {
     request_id: input.requestId,
     endpoint: input.endpoint,
@@ -201,6 +246,7 @@ export function boundaryFailureDiagnostic(input: BoundaryFailureInput): Boundary
     ...(code === undefined ? {} : { error_code: code }),
     ...(message === undefined ? {} : { error_message: message }),
     ...(stack === undefined ? {} : { stack }),
+    ...controlPlane,
     ...(causes === undefined ? {} : { causes }),
   };
 }

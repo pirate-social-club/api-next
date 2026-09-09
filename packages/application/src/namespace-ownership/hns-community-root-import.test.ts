@@ -520,7 +520,7 @@ describe("community HNS root import", () => {
       ...dependencies.value,
       store: {
         ...dependencies.value.store,
-        prepare: () => Effect.fail(new HnsCommunityRootImportStorageFailed()),
+        prepare: () => Effect.fail(new HnsCommunityRootImportStorageFailed({})),
       },
     };
     await expect(

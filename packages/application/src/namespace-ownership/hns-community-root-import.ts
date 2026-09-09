@@ -318,9 +318,18 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
     | "ownership_misconfigured";
 }> {}
 
+/**
+ * The store could not complete a read or write.
+ *
+ * The port deliberately exposes one opaque storage failure so a use case cannot
+ * branch on database detail, but the underlying control-plane error names the
+ * statement, its SQLSTATE and the constraint it violated. That belongs in a log
+ * even though it must not reach a caller, so the originating failure is carried
+ * here as `cause`. Nothing reads it except diagnostics.
+ */
 export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
   "HnsCommunityRootImportStorageFailed",
-) {}
+)<{ readonly cause?: unknown }> {}
 
 function ownershipFailure(error: unknown) {
   return new HnsCommunityRootImportRejected({

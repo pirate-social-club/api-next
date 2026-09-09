@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { HnsCommunityRootImportStorageFailed } from "@pirate/application/namespace-ownership";
 import { Effect } from "effect";
+import { boundaryFailureDiagnostic } from "./failure-diagnostics.ts";
 import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 import type { DecodedRequest } from "./transport.ts";
 
@@ -49,6 +51,46 @@ test("an unrecognised failure also keeps its cause", async () => {
   const failure = await startFailure(unknown);
 
   expect(failure.cause).toBe(unknown);
+});
+
+// The whole point of the chain: a database failure inside the store reaches the
+// boundary naming the statement and the constraint, while the caller still sees
+// only "HNS community root import failed".
+test("a control-plane statement failure survives to the boundary as a cause", async () => {
+  const statementFailed = {
+    _tag: "ControlPlaneStatementFailed",
+    label: "hns.community-root-import.insert-intent",
+    sqlState: "23505",
+    constraint: "community_route_attachment_intents_one_open_per_community_uidx",
+    outcomeCertainty: "completed",
+  };
+  const storage = new HnsCommunityRootImportStorageFailed({ cause: statementFailed });
+
+  const failure = await startFailure(storage);
+  const record = boundaryFailureDiagnostic({
+    requestId: "request-1",
+    endpoint: "StartHnsCommunityRootImport",
+    route: "/communities/:communityId/hns-root-imports",
+    method: "POST",
+    disposition: "passthrough",
+    error: failure,
+  });
+
+  expect(failure.message).toBe("HNS community root import failed");
+  expect(record.causes).toEqual([
+    {
+      error_name: "HnsCommunityRootImportStorageFailed",
+      error_tag: "HnsCommunityRootImportStorageFailed",
+    },
+    {
+      error_name: "Object",
+      error_tag: "ControlPlaneStatementFailed",
+      statement: "hns.community-root-import.insert-intent",
+      sql_state: "23505",
+      constraint: "community_route_attachment_intents_one_open_per_community_uidx",
+      outcome_certainty: "completed",
+    },
+  ]);
 });
 
 test("a mapped rejection keeps its declared wire identity", async () => {

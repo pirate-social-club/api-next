@@ -30,8 +30,12 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
-const storageFailure = (): HnsCommunityRootImportStorageFailed =>
-  new HnsCommunityRootImportStorageFailed();
+// `cause` is present when a control-plane error caused the failure and absent
+// when the repository itself rejected an impossible row shape.
+const storageFailure = (cause?: unknown): HnsCommunityRootImportStorageFailed =>
+  cause === undefined
+    ? new HnsCommunityRootImportStorageFailed({})
+    : new HnsCommunityRootImportStorageFailed({ cause });
 
 export type HnsCommunityRootImportRepositoryOptions = Readonly<{
   readonly environment: string;
@@ -1072,8 +1076,16 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
   HnsCommunityRootImportPollStore &
   HnsCommunityRootImportActivationStore {
   const repository = makeControlPlaneHnsCommunityRootImportRepository(options);
+  // The port exposes one opaque storage failure, but discarding the control-plane
+  // error here destroyed the statement label, SQLSTATE and constraint that name
+  // what actually failed. Carry it so the HTTP boundary can log it; a caller
+  // still sees only the opaque failure.
   const provide = <A>(effect: Effect.Effect<A, unknown, ControlPlaneDb>) =>
-    Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
+    Effect.provide(runtime)(effect).pipe(
+      Effect.mapError((error) =>
+        error instanceof HnsCommunityRootImportStorageFailed ? error : storageFailure(error),
+      ),
+    );
   const activationStore = makeControlPlaneHnsRootImportStore(runtime, {
     environment: options.environment,
   });
@@ -1133,7 +1145,10 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
               },
             };
           }),
-          Effect.mapError(() => storageFailure()),
+          // The activation path narrows the same way the rest of this store does.
+          Effect.mapError((error) =>
+            error instanceof HnsCommunityRootImportStorageFailed ? error : storageFailure(error),
+          ),
         ),
   };
 }

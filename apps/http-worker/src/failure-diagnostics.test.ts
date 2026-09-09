@@ -184,6 +184,62 @@ describe("boundaryFailureDiagnostic", () => {
     expect(diagnostic(looping).causes).toBeUndefined();
   });
 
+  it("keeps the control-plane fields that name a database failure", () => {
+    const statementFailed = {
+      _tag: "ControlPlaneStatementFailed",
+      label: "hns.community-root-import.insert-intent",
+      sqlState: "23505",
+      constraint: "community_route_attachment_intents_one_open_per_community_uidx",
+      outcomeCertainty: "completed",
+    };
+
+    expect(
+      diagnostic({ _tag: "HnsCommunityRootImportStorageFailed", cause: statementFailed }),
+    ).toMatchObject({
+      error_tag: "HnsCommunityRootImportStorageFailed",
+      causes: [
+        {
+          error_tag: "ControlPlaneStatementFailed",
+          statement: "hns.community-root-import.insert-intent",
+          sql_state: "23505",
+          constraint: "community_route_attachment_intents_one_open_per_community_uidx",
+          outcome_certainty: "completed",
+        },
+      ],
+    });
+  });
+
+  it("keeps a timed-out statement's label without its numeric limits", () => {
+    const timedOut = {
+      _tag: "ControlPlaneOperationTimedOut",
+      label: "hns.community-root-import.admit",
+      limitMs: 15_000,
+      elapsedMs: 15_001,
+      outcomeCertainty: "unknown",
+    };
+    const record = diagnostic({ _tag: "HnsCommunityRootImportStorageFailed", cause: timedOut });
+
+    expect(record.causes?.[0]).toEqual({
+      error_name: "Object",
+      error_tag: "ControlPlaneOperationTimedOut",
+      statement: "hns.community-root-import.admit",
+      outcome_certainty: "unknown",
+    });
+  });
+
+  it("refuses a control-plane field that is not in field shape", () => {
+    const record = diagnostic({
+      _tag: "ControlPlaneStatementFailed",
+      label: "INSERT INTO intents (community_id) VALUES ($1)",
+      sqlState: "23505",
+      constraint: "x".repeat(200),
+    });
+
+    expect(record.sql_state).toBe("23505");
+    expect(record.statement).toBeUndefined();
+    expect(record.constraint).toBeUndefined();
+  });
+
   it("describes a thrown value that is not an error at all", () => {
     expect(diagnostic("plain string failure")).toMatchObject({
       error_name: "string",
