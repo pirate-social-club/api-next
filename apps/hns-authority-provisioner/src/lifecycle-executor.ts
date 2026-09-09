@@ -215,6 +215,19 @@ export async function runHnsRootImportLifecycleJobOnce(
   const eventPrefix = `job:${job.lifecycle_job_id}:fence:${job.lease_fence}`;
 
   const applied = await ports.withTransaction(async (client) => {
+    // Lock and validate the job before accepting evidence. A finalize-only
+    // fence is too late: the state and successor jobs would already exist.
+    const owned = await client.query(
+      `SELECT lifecycle_job_id FROM hns_root_import_lifecycle_jobs
+        WHERE lifecycle_job_id=$1 AND root_import_session_id=$2
+          AND job_kind=$3 AND state='leased' AND leased_by=$4
+          AND lease_fence=$5 AND lease_expires_at > clock_timestamp()
+        FOR UPDATE`,
+      [job.lifecycle_job_id, job.root_import_session_id, job.job_kind, executorId, job.lease_fence],
+    );
+    if (owned.rows.length !== 1) {
+      return { committed: 0, reason: "lease_conflict" } as const;
+    }
     const loaded = await client.query<Record<string, unknown>>(
       `SELECT phase, revision, generation, plan_exposed_at, publication_deadline_at,
               first_current_observation_at, finality_deadline_at, readiness_observed_at,
@@ -297,15 +310,35 @@ export async function runHnsRootImportLifecycleJobOnce(
       committed += 1;
       lastReason = decision.outcome.reason;
     }
-    return { committed, reason: lastReason } as const;
+    const outcome = evidence.kind === "provider_failure" ? "retry" : "completed";
+    const finalized = await client.query<{ readonly outcome: string }>(
+      "SELECT * FROM finalize_hns_root_import_lifecycle_job_v1($1,$2,$3,$4,$5)",
+      [
+        job.lifecycle_job_id,
+        executorId,
+        job.lease_fence,
+        outcome,
+        outcome === "completed" ? null : lastReason,
+      ],
+    );
+    if (finalized.rows[0]?.outcome !== outcome) {
+      // Throw so the caller rolls back state, history and requested work too.
+      throw new Error("HNS lifecycle finalization conflict");
+    }
+    return { committed, reason: lastReason, finalized: true } as const;
   });
 
+  if (applied.reason === "lease_conflict") {
+    return { claimed: true, outcome: "failed", reason: "lease_conflict" };
+  }
   const outcome =
     applied.reason === "lifecycle_absent" || applied.reason === "operation_superseded"
       ? "failed"
       : evidence.kind === "provider_failure"
         ? "retry"
         : "completed";
-  await ports.finalize(job, executorId, outcome, outcome === "completed" ? null : applied.reason);
+  if (!("finalized" in applied)) {
+    await ports.finalize(job, executorId, outcome, outcome === "completed" ? null : applied.reason);
+  }
   return { claimed: true, outcome, reason: applied.reason };
 }

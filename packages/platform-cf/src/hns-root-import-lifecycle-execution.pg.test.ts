@@ -150,6 +150,86 @@ const phaseOf = async (admin: Client) =>
   ).rows[0];
 
 suite("HNS lifecycle leased execution sequences", () => {
+  test("finalization failure rolls back lifecycle state, history and successors", async () => {
+    await withSchema("hns_exec_finalize_failure", async (admin) => {
+      await seed(admin, "checking_publication", {
+        planExposedInterval: "-1 hour",
+        publicationDeadlineInterval: "13 days",
+      });
+      await queueJob(admin, "observe_current");
+      const before = await phaseOf(admin);
+      await admin.query(`
+        CREATE FUNCTION reject_job_completion() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.state='completed' THEN RAISE EXCEPTION 'injected finalize failure'; END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER reject_job_completion BEFORE UPDATE ON hns_root_import_lifecycle_jobs
+          FOR EACH ROW EXECUTE FUNCTION reject_job_completion();
+      `);
+      await expect(
+        runHnsRootImportLifecycleJobOnce(
+          "exec-a",
+          60,
+          ports(admin, {
+            kind: "current_observation",
+            qualifying: true,
+            mismatch: false,
+            resource_sha256: "ab".repeat(32),
+            evidence_ref: "finalize-failure",
+          }),
+        ),
+      ).rejects.toThrow("injected finalize failure");
+      expect(await phaseOf(admin)).toEqual(before);
+      const counts = await admin.query(
+        "SELECT (SELECT count(*)::int FROM hns_root_import_lifecycle_history) AS history, (SELECT count(*)::int FROM hns_root_import_lifecycle_jobs) AS jobs",
+      );
+      expect(counts.rows[0]).toEqual({ history: 0, jobs: 1 });
+    });
+  });
+
+  test.each(["reclaimed", "expired"] as const)(
+    "a %s lease cannot commit observed evidence or successor jobs",
+    async (loss) => {
+      await withSchema("hns_exec_lease_loss", async (admin) => {
+        await seed(admin, "checking_publication", {
+          planExposedInterval: "-1 hour",
+          publicationDeadlineInterval: "13 days",
+        });
+        await queueJob(admin, "observe_current");
+        const before = await phaseOf(admin);
+        const evidence: HnsLifecycleEvidenceV1 = {
+          kind: "current_observation",
+          qualifying: true,
+          mismatch: false,
+          resource_sha256: "ab".repeat(32),
+          evidence_ref: "lost-lease-observation",
+        };
+        const result = await runHnsRootImportLifecycleJobOnce(
+          "exec-a",
+          60,
+          ports(admin, evidence, {
+            observe: async (job) => {
+              await admin.query(
+                loss === "reclaimed"
+                  ? "UPDATE hns_root_import_lifecycle_jobs SET lease_fence=lease_fence+1, leased_by='exec-b' WHERE lifecycle_job_id=$1"
+                  : "UPDATE hns_root_import_lifecycle_jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE lifecycle_job_id=$1",
+                [job.lifecycle_job_id],
+              );
+              return evidence;
+            },
+          }),
+        );
+        expect(result.reason).toBe("lease_conflict");
+        expect(await phaseOf(admin)).toEqual(before);
+        const counts = await admin.query(
+          "SELECT (SELECT count(*)::int FROM hns_root_import_lifecycle_history) AS history, (SELECT count(*)::int FROM hns_root_import_lifecycle_jobs) AS jobs",
+        );
+        expect(counts.rows[0]).toEqual({ history: 0, jobs: 1 });
+      });
+    },
+  );
+
   test("1: current matches while safe lags — anchors finality once, stays pending, no budget spent", async () => {
     await withSchema("hns_exec_current", async (admin) => {
       await seed(admin, "checking_publication", {
