@@ -22,6 +22,12 @@ import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
+// Handshake publication is block-bound. Twenty 30-second retries exhausted a
+// live one-hour owner session before a normal wallet update could confirm.
+// Keep the existing bounded 20-attempt database fence, but spread it across
+// the session lifetime instead of collapsing it into roughly ten minutes.
+export const HNS_ROOT_OBSERVATION_RETRY_DELAY_MS = 180_000;
+
 function required(name: string): string {
   const value = process.env[name];
   if (value === undefined || value.trim() !== value || value.length === 0) {
@@ -246,7 +252,9 @@ async function main(serve: boolean): Promise<void> {
       if (!serve || result.outcome !== "idle") console.log(JSON.stringify(result));
       if (serve && (result.outcome === "idle" || result.outcome === "retry") && !stopping) {
         const retryDelay =
-          result.outcome === "retry" && "observation_job_id" in result ? 30_000 : 2_000;
+          result.outcome === "retry" && "observation_job_id" in result
+            ? HNS_ROOT_OBSERVATION_RETRY_DELAY_MS
+            : 2_000;
         await Bun.sleep(retryDelay);
       }
     } while (serve && !stopping);

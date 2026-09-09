@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.2",
+  "sourceBranch": "fix/hns-terminal-failure-reason",
+  "wireContract": "Failed community HNS root-import sessions optionally project one bounded public failure reason; older responses without the additive field remain valid.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.2.tgz",
+    "sha256": "c4bd3c0eb30deb457e40941dd751b528e8c3b5279ddc6a0b18750d476608b618"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.2",
+    "sourceIdentifier": "api-next-contracts@9f60551f1815fccf0753992efcdce99fc87736b25a13b2eca79de67df5625659",
+    "openapiSha256": "9f60551f1815fccf0753992efcdce99fc87736b25a13b2eca79de67df5625659",
+    "clientSha256": "27d68a7e948b48c6b28fd615f09b1851aef3e01b85255668a5ec40047d2f1f0a"
+  },
+  "verification": {
+    "status": "Focused contract, repository and PostgreSQL regressions passed; full gates and release pending."
+  }
+}

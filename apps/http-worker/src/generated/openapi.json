@@ -26519,106 +26519,223 @@
                       "additionalProperties": false
                     },
                     {
-                      "type": "object",
-                      "properties": {
-                        "community_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "attachment_intent_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_import_session_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_label": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "revision": {
-                          "type": "integer"
-                        },
-                        "expires_at": {
-                          "type": "string"
-                        },
-                        "replayed": {
-                          "type": "boolean"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "activated",
-                            "failed",
-                            "expired"
-                          ]
-                        },
-                        "publish_plan": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "publish_plan_sha256": {
-                          "anyOf": [
-                            {
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "challenge_mismatch",
+                                    "dns_delegation_not_confirmed",
+                                    "root_resource_unavailable",
+                                    "zone_not_provisioned",
+                                    "challenge_not_published",
+                                    "provider_unavailable"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         },
-                        "readiness_result_sha256": {
-                          "anyOf": [
-                            {
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "activated",
+                                "expired"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
-                        },
-                        "retry_after_seconds": {
-                          "type": "null"
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "community_id",
-                        "attachment_intent_id",
-                        "root_import_session_id",
-                        "root_label",
-                        "revision",
-                        "expires_at",
-                        "replayed",
-                        "status",
-                        "publish_plan",
-                        "publish_plan_sha256",
-                        "readiness_result_sha256",
-                        "retry_after_seconds"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   ],
                   "$defs": {
@@ -26695,6 +26812,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -27071,106 +27198,223 @@
                       "additionalProperties": false
                     },
                     {
-                      "type": "object",
-                      "properties": {
-                        "community_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "attachment_intent_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_import_session_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_label": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "revision": {
-                          "type": "integer"
-                        },
-                        "expires_at": {
-                          "type": "string"
-                        },
-                        "replayed": {
-                          "type": "boolean"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "activated",
-                            "failed",
-                            "expired"
-                          ]
-                        },
-                        "publish_plan": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "publish_plan_sha256": {
-                          "anyOf": [
-                            {
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "challenge_mismatch",
+                                    "dns_delegation_not_confirmed",
+                                    "root_resource_unavailable",
+                                    "zone_not_provisioned",
+                                    "challenge_not_published",
+                                    "provider_unavailable"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         },
-                        "readiness_result_sha256": {
-                          "anyOf": [
-                            {
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "activated",
+                                "expired"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
-                        },
-                        "retry_after_seconds": {
-                          "type": "null"
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "community_id",
-                        "attachment_intent_id",
-                        "root_import_session_id",
-                        "root_label",
-                        "revision",
-                        "expires_at",
-                        "replayed",
-                        "status",
-                        "publish_plan",
-                        "publish_plan_sha256",
-                        "readiness_result_sha256",
-                        "retry_after_seconds"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   ],
                   "$defs": {
@@ -27247,6 +27491,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -28150,106 +28404,223 @@
                               "additionalProperties": false
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "community_id": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                },
-                                "attachment_intent_id": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                },
-                                "root_import_session_id": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                },
-                                "root_label": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                },
-                                "revision": {
-                                  "type": "integer"
-                                },
-                                "expires_at": {
-                                  "type": "string"
-                                },
-                                "replayed": {
-                                  "type": "boolean"
-                                },
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "activated",
-                                    "failed",
-                                    "expired"
-                                  ]
-                                },
-                                "publish_plan": {
-                                  "anyOf": [
-                                    {
-                                      "$ref": "#/$defs/Objects_"
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "community_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
                                     },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "publish_plan_sha256": {
-                                  "anyOf": [
-                                    {
+                                    "attachment_intent_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "root_import_session_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "revision": {
+                                      "type": "integer"
+                                    },
+                                    "expires_at": {
                                       "type": "string"
                                     },
-                                    {
+                                    "replayed": {
+                                      "type": "boolean"
+                                    },
+                                    "publish_plan": {
+                                      "$ref": "#/$defs/Union_"
+                                    },
+                                    "publish_plan_sha256": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "readiness_result_sha256": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "retry_after_seconds": {
                                       "type": "null"
+                                    },
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "failed"
+                                      ]
+                                    },
+                                    "failure_reason": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "challenge_mismatch",
+                                            "dns_delegation_not_confirmed",
+                                            "root_resource_unavailable",
+                                            "zone_not_provisioned",
+                                            "challenge_not_published",
+                                            "provider_unavailable"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
-                                  ]
+                                  },
+                                  "required": [
+                                    "community_id",
+                                    "attachment_intent_id",
+                                    "root_import_session_id",
+                                    "root_label",
+                                    "revision",
+                                    "expires_at",
+                                    "replayed",
+                                    "publish_plan",
+                                    "publish_plan_sha256",
+                                    "readiness_result_sha256",
+                                    "retry_after_seconds",
+                                    "status"
+                                  ],
+                                  "additionalProperties": false
                                 },
-                                "readiness_result_sha256": {
-                                  "anyOf": [
-                                    {
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "community_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "attachment_intent_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "root_import_session_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "revision": {
+                                      "type": "integer"
+                                    },
+                                    "expires_at": {
                                       "type": "string"
                                     },
-                                    {
+                                    "replayed": {
+                                      "type": "boolean"
+                                    },
+                                    "publish_plan": {
+                                      "$ref": "#/$defs/Union_"
+                                    },
+                                    "publish_plan_sha256": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "readiness_result_sha256": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "retry_after_seconds": {
                                       "type": "null"
+                                    },
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "activated",
+                                        "expired"
+                                      ]
+                                    },
+                                    "failure_reason": {
+                                      "anyOf": [
+                                        {
+                                          "type": "null"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
-                                  ]
-                                },
-                                "retry_after_seconds": {
-                                  "type": "null"
+                                  },
+                                  "required": [
+                                    "community_id",
+                                    "attachment_intent_id",
+                                    "root_import_session_id",
+                                    "root_label",
+                                    "revision",
+                                    "expires_at",
+                                    "replayed",
+                                    "publish_plan",
+                                    "publish_plan_sha256",
+                                    "readiness_result_sha256",
+                                    "retry_after_seconds",
+                                    "status"
+                                  ],
+                                  "additionalProperties": false
                                 }
-                              },
-                              "required": [
-                                "community_id",
-                                "attachment_intent_id",
-                                "root_import_session_id",
-                                "root_label",
-                                "revision",
-                                "expires_at",
-                                "replayed",
-                                "status",
-                                "publish_plan",
-                                "publish_plan_sha256",
-                                "readiness_result_sha256",
-                                "retry_after_seconds"
-                              ],
-                              "additionalProperties": false
+                              ]
                             }
                           ]
                         },
@@ -28339,6 +28710,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -29085,106 +29466,223 @@
                       "additionalProperties": false
                     },
                     {
-                      "type": "object",
-                      "properties": {
-                        "community_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "attachment_intent_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_import_session_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_label": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "revision": {
-                          "type": "integer"
-                        },
-                        "expires_at": {
-                          "type": "string"
-                        },
-                        "replayed": {
-                          "type": "boolean"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "activated",
-                            "failed",
-                            "expired"
-                          ]
-                        },
-                        "publish_plan": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "publish_plan_sha256": {
-                          "anyOf": [
-                            {
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "challenge_mismatch",
+                                    "dns_delegation_not_confirmed",
+                                    "root_resource_unavailable",
+                                    "zone_not_provisioned",
+                                    "challenge_not_published",
+                                    "provider_unavailable"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         },
-                        "readiness_result_sha256": {
-                          "anyOf": [
-                            {
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "activated",
+                                "expired"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
-                        },
-                        "retry_after_seconds": {
-                          "type": "null"
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "community_id",
-                        "attachment_intent_id",
-                        "root_import_session_id",
-                        "root_label",
-                        "revision",
-                        "expires_at",
-                        "replayed",
-                        "status",
-                        "publish_plan",
-                        "publish_plan_sha256",
-                        "readiness_result_sha256",
-                        "retry_after_seconds"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   ],
                   "$defs": {
@@ -29261,6 +29759,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -30051,106 +30559,223 @@
                       "additionalProperties": false
                     },
                     {
-                      "type": "object",
-                      "properties": {
-                        "community_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "attachment_intent_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_import_session_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_label": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "revision": {
-                          "type": "integer"
-                        },
-                        "expires_at": {
-                          "type": "string"
-                        },
-                        "replayed": {
-                          "type": "boolean"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "activated",
-                            "failed",
-                            "expired"
-                          ]
-                        },
-                        "publish_plan": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "publish_plan_sha256": {
-                          "anyOf": [
-                            {
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "challenge_mismatch",
+                                    "dns_delegation_not_confirmed",
+                                    "root_resource_unavailable",
+                                    "zone_not_provisioned",
+                                    "challenge_not_published",
+                                    "provider_unavailable"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         },
-                        "readiness_result_sha256": {
-                          "anyOf": [
-                            {
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "activated",
+                                "expired"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
-                        },
-                        "retry_after_seconds": {
-                          "type": "null"
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "community_id",
-                        "attachment_intent_id",
-                        "root_import_session_id",
-                        "root_label",
-                        "revision",
-                        "expires_at",
-                        "replayed",
-                        "status",
-                        "publish_plan",
-                        "publish_plan_sha256",
-                        "readiness_result_sha256",
-                        "retry_after_seconds"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   ],
                   "$defs": {
@@ -30227,6 +30852,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -30603,106 +31238,223 @@
                       "additionalProperties": false
                     },
                     {
-                      "type": "object",
-                      "properties": {
-                        "community_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "attachment_intent_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_import_session_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_label": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "revision": {
-                          "type": "integer"
-                        },
-                        "expires_at": {
-                          "type": "string"
-                        },
-                        "replayed": {
-                          "type": "boolean"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "activated",
-                            "failed",
-                            "expired"
-                          ]
-                        },
-                        "publish_plan": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "publish_plan_sha256": {
-                          "anyOf": [
-                            {
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "challenge_mismatch",
+                                    "dns_delegation_not_confirmed",
+                                    "root_resource_unavailable",
+                                    "zone_not_provisioned",
+                                    "challenge_not_published",
+                                    "provider_unavailable"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         },
-                        "readiness_result_sha256": {
-                          "anyOf": [
-                            {
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "activated",
+                                "expired"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
-                        },
-                        "retry_after_seconds": {
-                          "type": "null"
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "community_id",
-                        "attachment_intent_id",
-                        "root_import_session_id",
-                        "root_label",
-                        "revision",
-                        "expires_at",
-                        "replayed",
-                        "status",
-                        "publish_plan",
-                        "publish_plan_sha256",
-                        "readiness_result_sha256",
-                        "retry_after_seconds"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   ],
                   "$defs": {
@@ -30779,6 +31531,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -31368,106 +32130,223 @@
                       "additionalProperties": false
                     },
                     {
-                      "type": "object",
-                      "properties": {
-                        "community_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "attachment_intent_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_import_session_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "root_label": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "revision": {
-                          "type": "integer"
-                        },
-                        "expires_at": {
-                          "type": "string"
-                        },
-                        "replayed": {
-                          "type": "boolean"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "activated",
-                            "failed",
-                            "expired"
-                          ]
-                        },
-                        "publish_plan": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "publish_plan_sha256": {
-                          "anyOf": [
-                            {
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "failed"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "challenge_mismatch",
+                                    "dns_delegation_not_confirmed",
+                                    "root_resource_unavailable",
+                                    "zone_not_provisioned",
+                                    "challenge_not_published",
+                                    "provider_unavailable"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         },
-                        "readiness_result_sha256": {
-                          "anyOf": [
-                            {
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "attachment_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_import_session_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "expires_at": {
                               "type": "string"
                             },
-                            {
+                            "replayed": {
+                              "type": "boolean"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "readiness_result_sha256": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_after_seconds": {
                               "type": "null"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "activated",
+                                "expired"
+                              ]
+                            },
+                            "failure_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
-                          ]
-                        },
-                        "retry_after_seconds": {
-                          "type": "null"
+                          },
+                          "required": [
+                            "community_id",
+                            "attachment_intent_id",
+                            "root_import_session_id",
+                            "root_label",
+                            "revision",
+                            "expires_at",
+                            "replayed",
+                            "publish_plan",
+                            "publish_plan_sha256",
+                            "readiness_result_sha256",
+                            "retry_after_seconds",
+                            "status"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "community_id",
-                        "attachment_intent_id",
-                        "root_import_session_id",
-                        "root_label",
-                        "revision",
-                        "expires_at",
-                        "replayed",
-                        "status",
-                        "publish_plan",
-                        "publish_plan_sha256",
-                        "readiness_result_sha256",
-                        "retry_after_seconds"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
                   ],
                   "$defs": {
@@ -31544,6 +32423,16 @@
                         "acknowledgement_required"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
