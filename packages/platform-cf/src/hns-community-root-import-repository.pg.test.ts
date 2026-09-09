@@ -57,6 +57,75 @@ const binding = {
 };
 
 suite("community HNS root-import repositories", () => {
+  test("reports when a name is already attached to another community", async () => {
+    await withSchema(async (connection, admin) => {
+      const target = `community_${randomUUID()}`;
+      const attached = `community_${randomUUID()}`;
+      await admin.query(
+        "INSERT INTO users (user_id,status,account) VALUES ('target-owner','active','{}'),('other-owner','active','{}')",
+      );
+      await admin.query("BEGIN");
+      try {
+        await admin.query(
+          `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+             canonical_route_binding_id,route_authority_version,created_at,updated_at)
+           VALUES ($1,'Target','active','target-owner',NULL,'optional_route_v2',clock_timestamp(),clock_timestamp()),
+                  ($2,'Attached','active','other-owner',NULL,'optional_route_v2',clock_timestamp(),clock_timestamp())`,
+          [target, attached],
+        );
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query(
+          `INSERT INTO community_canonical_route_bindings (
+             route_binding_id,community_id,family,root_label,root_label_display,ownership_status,
+             route_lifecycle_status,binding_generation,verified_evidence_ref
+           ) VALUES ('attached-route',$1,'hns','claimedroot','claimedroot','verified','active',1,'evidence')`,
+          [attached],
+        );
+        await admin.query("COMMIT");
+      } catch (error) {
+        await admin.query("ROLLBACK");
+        throw error;
+      }
+      await admin.query(
+        `INSERT INTO community_route_authority_grants
+         (grant_id,community_id,principal_user_id,authority,source_kind,status,granted_at,granted_by_user_id)
+         VALUES ('target-grant',$1,'target-owner','manage_routes','creator_owner','active',clock_timestamp(),'target-owner')`,
+        [target],
+      );
+      const store = makeControlPlaneHnsCommunityRootImportRepository({
+        environment: "test",
+        provider_binding: binding,
+      });
+      const outcome = await Effect.runPromise(
+        Effect.scoped(
+          store
+            .prepare({
+              request: {
+                actor_id: "target-owner",
+                community_id: target,
+                root_label: "claimedroot",
+                idempotency_key: "claimed-root-start",
+              },
+              attachment_intent_id: "claimed-root-attachment",
+              ceremony_intent_id: "claimed-root-ceremony",
+              root_import_session_id: "claimed-root-import",
+              provision_job_id: "claimed-root-provision",
+              request_sha256: "a".repeat(64),
+            })
+            .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+        ),
+      );
+      expect(outcome).toEqual({ kind: "ownership_conflict" });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM hns_community_root_import_preparations",
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+    });
+  });
+
   test("refuses provisional import of the retained operator root without admitting work", async () => {
     await withSchema(async (connection, admin) => {
       const root = "retainedroot";
@@ -231,7 +300,7 @@ suite("community HNS root-import repositories", () => {
         kind: "created",
         value: { root_label: "dankmemes", attachment_revision: 1 },
       });
-      if (prepared.kind === "conflict" || prepared.kind === "not_found")
+      if (prepared.kind !== "created" && prepared.kind !== "replay")
         throw new Error("expected preparation");
       // A verifier failure leaves only this preparation. Reloading the form
       // supplies a fresh key; both tabs must recover one retained identity.
@@ -807,6 +876,30 @@ suite("community HNS root-import repositories", () => {
         (await finalizeCleanup(reclaimed.lease_fence, "failed", "session_expired")).rows[0].outcome,
       ).toBe("replayed");
 
+      // A completed preparation that reused the already-live signed zone does
+      // not consume the actor's rolling preparation budget.
+      await admin.query("BEGIN");
+      try {
+        await admin.query(
+          `UPDATE hns_authority_provision_jobs
+              SET state='completed',publish_plan_bytes='{}'::bytea,
+                  publish_plan_sha256=encode(sha256('{}'::bytea),'hex'),
+                  result_bytes='{"zone_created":false}'::bytea,
+                  result_sha256=encode(sha256('{"zone_created":false}'::bytea),'hex'),
+                  failure_code=NULL,completed_at=clock_timestamp(),updated_at=clock_timestamp()
+            WHERE provision_job_id='community-import-provision'`,
+        );
+        expect(
+          (
+            await admin.query(
+              "SELECT hns_community_root_import_consumes_actor_budget_v1('community-import-session') AS consumes",
+            )
+          ).rows,
+        ).toEqual([{ consumes: false }]);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+
       await admin.query(
         "UPDATE community_route_authority_grants SET status='revoked',revoked_at=clock_timestamp(),revoked_by_user_id=principal_user_id WHERE grant_id='community-root-import-grant'",
       );
@@ -869,7 +962,10 @@ suite("community HNS root-import repositories", () => {
       const third = await request("rate-actor");
       const fourth = await request("rate-actor");
       const raced = await Promise.all([prepare(third), prepare(fourth)]);
-      expect(raced.map((x) => x.kind).sort()).toEqual(["conflict", "created"]);
+      expect(raced.map((x) => x.kind).sort()).toEqual(["created", "rate_limited"]);
+      const limited = raced.find((outcome) => outcome.kind === "rate_limited");
+      expect(limited?.retry_after_seconds).toBeGreaterThan(86_390);
+      expect(limited?.retry_after_seconds).toBeLessThanOrEqual(86_400);
       expect((await prepare(first)).kind).toBe("replay");
       const rootA = await request("root-actor-a", "rootrace");
       const rootB = await request("root-actor-b", "rootrace");
@@ -913,8 +1009,27 @@ suite("community HNS root-import repositories", () => {
         ).rows,
       ).toEqual([{ held: false }]);
       expect((await prepare(overflow)).kind).toBe("created");
-      // Releasing infrastructure capacity does not refund the actor's daily admission.
-      expect(await prepare(await request("rate-actor"))).toEqual({ kind: "conflict" });
+      // Free the unrelated global slot. The released first preparation also
+      // refunds this actor immediately; no 24-hour wait or page refresh remains.
+      await admin.query(
+        "ALTER TABLE hns_community_root_import_preparations DISABLE TRIGGER hns_community_root_import_preparations_change_guard",
+      );
+      try {
+        await admin.query(
+          `UPDATE hns_community_root_import_preparations
+           SET created_at=clock_timestamp()-interval '2 hours',
+               expires_at=clock_timestamp()-interval '1 hour'
+           WHERE root_import_session_id=$1`,
+          [overflow.root_import_session_id],
+        );
+      } finally {
+        await admin.query(
+          "ALTER TABLE hns_community_root_import_preparations ENABLE TRIGGER hns_community_root_import_preparations_change_guard",
+        );
+      }
+      const retry = await request("rate-actor");
+      expect((await prepare(retry)).kind).toBe("created");
+      expect((await prepare(retry)).kind).toBe("replay");
     });
   });
 });

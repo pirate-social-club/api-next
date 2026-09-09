@@ -1,4 +1,7 @@
-import type { HnsRootDelegationDsV1 } from "@pirate/application/namespace-ownership";
+import type {
+  HnsRootDelegationDsV1,
+  HnsRootResourceRecordV1,
+} from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import { HNS_AUTHORITY_NAMESERVERS, type HnsAuthorityZoneResult } from "./provision-root.ts";
 
@@ -180,6 +183,32 @@ function retainedDsRecords(values: readonly string[]): readonly HnsRootDelegatio
     );
 }
 
+function chainUsesZoneAuthority(
+  records: readonly HnsRootResourceRecordV1[],
+  dsRecords: readonly HnsRootDelegationDsV1[],
+): boolean {
+  const nameservers = records
+    .filter((record) => record.type === "NS")
+    .map((record) => record.ns)
+    .sort();
+  const chainDs = records
+    .filter((record) => record.type === "DS")
+    .map((record) => ({
+      key_tag: record.keyTag,
+      algorithm: record.algorithm,
+      digest_type: record.digestType,
+      digest: typeof record.digest === "string" ? record.digest.toLowerCase() : record.digest,
+    }))
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  const zoneDs = dsRecords
+    .map((record) => ({ ...record }))
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  return (
+    canonicalJson(nameservers) === canonicalJson([...HNS_AUTHORITY_NAMESERVERS].sort()) &&
+    canonicalJson(chainDs) === canonicalJson(zoneDs)
+  );
+}
+
 function parseZone(
   value: unknown,
   expectedName: string,
@@ -272,6 +301,7 @@ export function makePowerDnsRootProvisioner(
 ): (input: {
   readonly root_label: string;
   readonly challenge_txt_value: string;
+  readonly current_records: readonly HnsRootResourceRecordV1[];
 }) => Promise<HnsAuthorityZoneResult> {
   if (
     !validEndpoint(config.api_url) ||
@@ -321,8 +351,26 @@ export function makePowerDnsRootProvisioner(
     } else {
       if (!existingResponse.response.ok) throw new Error("PowerDNS zone inspection failed");
       existing = parseZone(existingResponse.json, zoneName);
-      if (!retainedReservation(existingResponse.json))
-        throw new Error("PowerDNS zone belongs to another reservation");
+      if (!retainedReservation(existingResponse.json)) {
+        if (!existing.dnssec) throw new Error("PowerDNS existing zone is not DNSSEC-enabled");
+        const cryptokeys = await request("GET", `${zonePath}/cryptokeys`);
+        if (!cryptokeys.response.ok || !Array.isArray(cryptokeys.json)) {
+          throw new Error("PowerDNS DNSSEC key inspection failed");
+        }
+        const dsRecords = (cryptokeys.json as readonly ApiCryptokey[])
+          .filter((key) => key.active !== false && key.published !== false)
+          .flatMap((key) => (Array.isArray(key.ds) ? key.ds : []));
+        if (!dsRecords.every((value): value is string => typeof value === "string")) {
+          throw new Error("PowerDNS returned invalid DS data");
+        }
+        const parsedDs = retainedDsRecords(dsRecords);
+        if (!chainUsesZoneAuthority(input.current_records, parsedDs)) {
+          throw new Error("PowerDNS zone belongs to another reservation");
+        }
+        // The parent chain already delegates to this signed zone. Preserve it
+        // unchanged until the owner publishes this attempt's fresh challenge.
+        return zoneResult(config, input, existing, parsedDs, false);
+      }
     }
     if (existing === null) {
       const create = await request(
@@ -384,6 +432,79 @@ export function makePowerDnsRootProvisioner(
     // A recovered create still belongs to this reservation and must be removed
     // by its expiry teardown. "created" is retained ownership, not this call's POST.
     return zoneResult(config, input, zone, parsedDs, true);
+  };
+}
+
+/**
+ * Reconciles a retained zone only after the parent-chain replacement proves
+ * control of the name. The expected DS set prevents adopting an unrelated
+ * Pirate-hosted zone or a keyset that changed after preparation.
+ */
+export function makePowerDnsRootReconciler(
+  config: PowerDnsRootProvisionConfig,
+  fetcher: PowerDnsFetch = fetch,
+): (input: {
+  readonly root_label: string;
+  readonly challenge_txt_value: string;
+  readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+}) => Promise<void> {
+  if (
+    !validEndpoint(config.api_url) ||
+    config.api_key.length === 0 ||
+    config.server_id.length === 0 ||
+    config.soa_content.trim().length === 0 ||
+    config.axfr_tsig_key_name.trim().length === 0
+  ) {
+    throw new Error("PowerDNS root reconciler configuration is invalid");
+  }
+  const apiUrl = config.api_url.replace(/\/+$/u, "");
+  const request = async (method: string, path: string, body?: unknown) => {
+    const response = await fetcher(`${apiUrl}/api/v1${path}`, {
+      method,
+      redirect: "manual",
+      signal: AbortSignal.timeout(requestTimeoutMs),
+      headers: {
+        accept: "application/json",
+        "x-api-key": config.api_key,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { response, json: await readBoundedJson(response) };
+  };
+  return async (input) => {
+    const zoneName = canonicalName(input.root_label);
+    const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
+    const retained = await request("GET", zonePath);
+    if (!retained.response.ok) throw new Error("PowerDNS zone inspection failed");
+    const zone = parseZone(retained.json, zoneName);
+    if (!zone.dnssec) throw new Error("PowerDNS existing zone is not DNSSEC-enabled");
+    const cryptokeys = await request("GET", `${zonePath}/cryptokeys`);
+    if (!cryptokeys.response.ok || !Array.isArray(cryptokeys.json)) {
+      throw new Error("PowerDNS DNSSEC key inspection failed");
+    }
+    const dsValues = (cryptokeys.json as readonly ApiCryptokey[])
+      .filter((key) => key.active !== false && key.published !== false)
+      .flatMap((key) => (Array.isArray(key.ds) ? key.ds : []));
+    if (!dsValues.every((value): value is string => typeof value === "string")) {
+      throw new Error("PowerDNS returned invalid DS data");
+    }
+    const actualDs = retainedDsRecords(dsValues);
+    if (canonicalJson(actualDs) !== canonicalJson(input.expected_ds_records)) {
+      throw new Error("PowerDNS DNSSEC key changed after preparation");
+    }
+    const managed = buildManagedRootRrsets({ ...input, ...config });
+    const patch = await request("PATCH", zonePath, { rrsets: managed });
+    if (!patch.response.ok) throw new Error("PowerDNS zone reconciliation failed");
+    const metadata = await request("PUT", `${zonePath}/metadata/TSIG-ALLOW-AXFR`, {
+      kind: "TSIG-ALLOW-AXFR",
+      metadata: [config.axfr_tsig_key_name],
+    });
+    if (!metadata.response.ok) throw new Error("PowerDNS AXFR authorization failed");
+    const rectify = await request("PUT", `${zonePath}/rectify`);
+    if (!rectify.response.ok) throw new Error("PowerDNS DNSSEC rectification failed");
+    const notify = await request("PUT", `${zonePath}/notify`);
+    if (!notify.response.ok) throw new Error("PowerDNS secondary notification failed");
   };
 }
 

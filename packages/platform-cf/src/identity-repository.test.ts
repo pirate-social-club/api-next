@@ -174,16 +174,18 @@ describe("identity public-handle maintenance", () => {
       const rows =
         statement.label === "identity.credentials.resolve-canonical"
           ? [{ canonical_user_id: "usr_member" }]
-          : statement.label === "identity.aliases.find-active"
-            ? []
-            : statement.label === "identity.users.find-active"
-              ? [
-                  {
-                    user_id: "usr_member",
-                    account: account("usr_member", "handle_member", "member.pirate"),
-                  },
-                ]
-              : [];
+          : statement.label === "identity.resolve-canonical"
+            ? [
+                {
+                  current_user_id: "usr_member",
+                  alias_path: [],
+                  depth: 0,
+                  cycle: false,
+                  alias_count: 0,
+                  terminal_active: true,
+                },
+              ]
+            : [];
       return Effect.succeed({ rows: rows as unknown as readonly Row[], rowCount: rows.length });
     };
     const db: ControlPlaneDb["Service"] = {
@@ -206,6 +208,56 @@ describe("identity public-handle maintenance", () => {
       label: "identity.credentials.resolve-canonical",
       values: ["privy", "app_staging", "did:privy:member"],
     });
+    expect(calls[1]).toEqual({
+      label: "identity.resolve-canonical",
+      values: ["usr_member", 8],
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  test("resolves an alias chain in one database round trip", async () => {
+    const calls: string[] = [];
+    const execute: ControlPlaneDb["Service"]["execute"] = <Row>(statement: {
+      readonly label: string;
+    }) => {
+      calls.push(statement.label);
+      const rows = [
+        {
+          current_user_id: "usr_source",
+          alias_path: [],
+          depth: 0,
+          cycle: false,
+          alias_count: 1,
+          terminal_active: true,
+        },
+        {
+          current_user_id: "usr_canonical",
+          alias_path: ["usr_source"],
+          depth: 1,
+          cycle: false,
+          alias_count: 0,
+          terminal_active: true,
+        },
+      ];
+      return Effect.succeed({ rows: rows as unknown as readonly Row[], rowCount: rows.length });
+    };
+    const db: ControlPlaneDb["Service"] = {
+      execute,
+      withTransaction: (use) => use({ execute }),
+    };
+
+    const resolved = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .resolveCanonical({ sourceUserId: "usr_source" })
+        .pipe(Effect.provideService(ControlPlaneDb, db)),
+    );
+
+    expect(resolved).toEqual({
+      sourceUserId: "usr_source",
+      canonicalUserId: "usr_canonical",
+      aliasPath: ["usr_source"],
+    });
+    expect(calls).toEqual(["identity.resolve-canonical"]);
   });
 
   test("enriches the private account projection with the current stable rename state", async () => {

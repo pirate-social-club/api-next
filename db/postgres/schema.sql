@@ -355,9 +355,13 @@ BEGIN
       AND community.canonical_route_binding_id IS NULL
       AND has_community_route_authority(input_community_id, input_actor_id)
   ) THEN RETURN FALSE; END IF;
-  IF (SELECT count(*) FROM hns_community_root_import_preparations
-      WHERE actor_id = input_actor_id AND admission_kind = 'community_provisional'
-        AND created_at > database_now - interval '24 hours') >= 3
+  IF (SELECT count(*) FROM hns_community_root_import_preparations AS preparation
+      WHERE preparation.actor_id = input_actor_id
+        AND preparation.admission_kind = 'community_provisional'
+        AND preparation.created_at > database_now - interval '24 hours'
+        AND hns_community_root_import_consumes_actor_budget_v1(
+          preparation.root_import_session_id
+        )) >= 3
   THEN RETURN FALSE; END IF;
   IF EXISTS (
     SELECT 1 FROM hns_community_root_import_preparations AS preparation
@@ -10460,6 +10464,30 @@ CREATE FUNCTION has_community_route_authority(expected_community_id text, expect
   )
 $$;
 
+CREATE FUNCTION hns_community_root_import_consumes_actor_budget_v1(input_session_id text) RETURNS boolean
+    LANGUAGE sql
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT COALESCE((
+    SELECT CASE
+      WHEN preparation.admission_kind <> 'community_provisional' THEN FALSE
+      WHEN provision.state = 'completed'
+        AND convert_from(provision.result_bytes, 'UTF8')::jsonb @> '{"zone_created":false}'::jsonb
+      THEN FALSE
+      WHEN COALESCE(session.expires_at, preparation.expires_at) <= clock_timestamp()
+        AND NOT hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)
+      THEN FALSE
+      ELSE TRUE
+    END
+    FROM hns_community_root_import_preparations AS preparation
+    LEFT JOIN hns_root_import_sessions AS session
+      ON session.root_import_session_id = preparation.root_import_session_id
+    LEFT JOIN hns_authority_provision_jobs AS provision
+      ON provision.provision_job_id = preparation.provision_job_id
+    WHERE preparation.root_import_session_id = input_session_id
+  ), FALSE)
+$$;
+
 CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id text) RETURNS boolean
     LANGUAGE sql
     SET search_path FROM CURRENT
@@ -11079,6 +11107,7 @@ CREATE FUNCTION lock_hns_root_zone_mutation_v1(input_root_label text, input_chal
 DECLARE
   retained_session hns_root_import_sessions%ROWTYPE;
   selected_session_id TEXT;
+  admitted_kind TEXT;
 BEGIN
   SELECT root_import_session_id INTO selected_session_id
     FROM hns_root_import_sessions
@@ -11089,21 +11118,38 @@ BEGIN
       WHERE root_import_session_id=selected_session_id AND state='leased'
         AND teardown_job_id=input_job_id AND leased_by=input_executor_id AND lease_fence=input_lease_fence
         AND lease_expires_at>clock_timestamp() FOR UPDATE;
+    admitted_kind := 'teardown';
   ELSE
     PERFORM 1 FROM hns_authority_provision_jobs
       WHERE root_import_session_id=selected_session_id AND state='leased'
         AND provision_job_id=input_job_id AND leased_by=input_executor_id AND lease_fence=input_lease_fence
         AND lease_expires_at>clock_timestamp() FOR UPDATE;
+    IF FOUND THEN
+      admitted_kind := 'provision';
+    ELSE
+      PERFORM 1 FROM hns_root_import_observation_jobs
+        WHERE root_import_session_id=selected_session_id AND state='leased'
+          AND operation_kind='observe_root_v1'
+          AND observation_job_id=input_job_id AND leased_by=input_executor_id
+          AND lease_fence=input_lease_fence AND lease_expires_at>clock_timestamp()
+        FOR UPDATE;
+      admitted_kind := 'observation';
+    END IF;
   END IF;
   IF NOT FOUND THEN RETURN FALSE; END IF;
   SELECT * INTO retained_session FROM hns_root_import_sessions
     WHERE root_import_session_id=selected_session_id FOR UPDATE;
-  IF input_teardown THEN
+  IF admitted_kind = 'teardown' THEN
     RETURN retained_session.provision_authorization_kind='community_provisional'
       AND (retained_session.status IN ('failed','expired') OR (
         retained_session.status IN ('awaiting_owner_update','observing','ready')
         AND retained_session.expires_at<=clock_timestamp()
       ));
+  END IF;
+  IF admitted_kind = 'observation' THEN
+    RETURN retained_session.status='observing'
+      AND retained_session.observation_job_id=input_job_id
+      AND retained_session.expires_at>clock_timestamp();
   END IF;
   RETURN retained_session.status='provisioning'
     AND retained_session.expires_at>clock_timestamp();

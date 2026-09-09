@@ -6,6 +6,7 @@ import type {
   MediaTransformVideoProbeInput,
 } from "@pirate/application/media/transform";
 import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
+import { isExplicitlyEnabled } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -60,7 +61,6 @@ import { makeVideoStageArtifactHead } from "@pirate/platform-cf/video-stage-arti
 import { makeControlPlaneVideoStageFactStore } from "@pirate/platform-cf/video-stage-fact-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
-import { isMediaProcessingEnabled } from "./posture.ts";
 import { makeVideoDeliveryComposition } from "./video-delivery-composition.ts";
 
 export { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
@@ -380,7 +380,7 @@ export function makeMediaProcessorComposition(
     workflowBinding,
     workflowIsNeverMissingByThrownError,
   );
-  const enabled = isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED);
+  const enabled = isExplicitlyEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
   const videoAnalysisEnabled = env.VIDEO_ANALYSIS_ENABLED === "true";
   const videoAnalysisRepository = videoAnalysisEnabled

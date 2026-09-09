@@ -19,23 +19,39 @@ import {
   NotFound,
   ProviderMisconfigured,
   ProviderUnavailable,
+  RateLimited,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import { type EndpointHandler, withEndpointResult } from "./transport.ts";
 
 function wireFailure(error: unknown): Error {
-  const tagged = error as { readonly _tag?: string; readonly reason?: string };
-  // Both internal mappings carry the domain failure as a cause. Without it the
-  // reason a storage or unrecognised failure occurred stops existing here, and
-  // the HTTP boundary can only record that the import failed.
+  const tagged = error as {
+    readonly _tag?: string;
+    readonly reason?: string;
+    readonly retry_after_seconds?: number;
+  };
+  // Preserve the originating failure while retaining the declared quota and
+  // ownership responses from the current production contract.
   if (tagged._tag === "HnsCommunityRootImportStorageFailed")
     return new InternalError({ message: "HNS community root import failed", cause: error });
   if (tagged._tag !== "HnsCommunityRootImportRejected")
     return new InternalError({ message: "HNS community root import failed", cause: error });
   if (tagged.reason === "not_found")
     return new NotFound({ message: "Community route authority was not found" });
+  if (tagged.reason === "rate_limited" && tagged.retry_after_seconds !== undefined)
+    return new RateLimited({
+      message:
+        "You can prepare three HNS record lists in 24 hours. Try again after the limit resets.",
+      retry_after_seconds: tagged.retry_after_seconds,
+      details: {
+        reason: "hns_preparation_daily_limit",
+        retry_after_seconds: tagged.retry_after_seconds,
+      },
+    });
   if (tagged.reason === "conflict")
     return new Conflict({ message: "HNS root import conflicts with durable state" });
+  if (tagged.reason === "ownership_conflict")
+    return new Conflict({ message: "This HNS name is already attached to another community" });
   if (tagged.reason === "ownership_misconfigured")
     return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")

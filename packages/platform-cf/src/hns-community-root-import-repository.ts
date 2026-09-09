@@ -455,6 +455,20 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                 ? yield* Effect.fail(invariantFailure("resume-preparation.undecodable_row"))
                 : ({ kind: "replay", value } as const);
             }
+            const attached = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.check-attached-root",
+              text: `SELECT EXISTS (
+                       SELECT 1 FROM community_canonical_route_bindings
+                        WHERE family='hns' AND root_label=$1
+                          AND route_lifecycle_status='active'
+                     ) AS attached`,
+              values: [input.request.root_label],
+              readonly: false,
+            });
+            const attachedRow = oneRow(attached);
+            if (attachedRow === undefined) return yield* Effect.fail(storageFailure());
+            if (attachedRow?.attached === true) return { kind: "ownership_conflict" } as const;
+
             const admission = yield* transaction.execute<Row>({
               label: "hns.community-root-import.admit",
               text: "SELECT admit_hns_community_root_import_v1($1,$2,$3) AS admitted",
@@ -465,15 +479,37 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               ],
               readonly: false,
             });
-            if (oneRow(admission)?.admitted !== true) return { kind: "conflict" } as const;
+            if (oneRow(admission)?.admitted !== true) {
+              // Keep the database admission guard authoritative. Classify a rejected
+              // admission under the same lock, after all replay paths have run.
+              const quota = yield* transaction.execute<Row>({
+                label: "hns.community-root-import.admission-retry",
+                text: `SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM
+                          (created_at + interval '24 hours' - clock_timestamp()))))::integer
+                            AS retry_after_seconds
+                         FROM hns_community_root_import_preparations
+                        WHERE actor_id=$1 AND admission_kind='community_provisional'
+                          AND created_at>clock_timestamp()-interval '24 hours'
+                        ORDER BY created_at DESC OFFSET 2 LIMIT 1`,
+                values: [input.request.actor_id],
+                readonly: false,
+              });
+              const quotaRow = oneRow(quota);
+              if (quotaRow === undefined) return yield* Effect.fail(storageFailure());
+              if (quotaRow !== null) {
+                const retryAfter = integer(quotaRow.retry_after_seconds);
+                if (retryAfter === null || retryAfter > 86_400)
+                  return yield* Effect.fail(storageFailure());
+                return { kind: "rate_limited", retry_after_seconds: retryAfter } as const;
+              }
+              return { kind: "conflict" } as const;
+            }
 
             const unavailable = yield* transaction.execute<Row>({
               label: "hns.community-root-import.check-root",
               text: `SELECT (
                        $1='pirate'
                        OR EXISTS (SELECT 1 FROM hns_dns_zone_activation_current WHERE canonical_root=$1)
-                       OR EXISTS (SELECT 1 FROM community_canonical_route_bindings
-                                   WHERE family='hns' AND root_label=$1 AND route_lifecycle_status='active')
                        OR EXISTS (SELECT 1 FROM community_handle_sale_namespace_activation_current
                                    WHERE family='hns' AND canonical_root=$1)
                        OR EXISTS (SELECT 1 FROM hns_root_import_sessions

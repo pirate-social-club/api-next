@@ -111,11 +111,13 @@ type UserRow = {
   readonly label_normalized: unknown;
 };
 
-type AliasRow = {
-  readonly source_user_id: unknown;
-  readonly canonical_user_id: unknown;
-  readonly kind: unknown;
-  readonly status: unknown;
+type CanonicalIdentityRow = {
+  readonly current_user_id: unknown;
+  readonly alias_path: unknown;
+  readonly cycle: unknown;
+  readonly depth: unknown;
+  readonly alias_count: unknown;
+  readonly terminal_active: unknown;
 };
 
 type CredentialRow = {
@@ -268,53 +270,79 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
   const resolveCanonical: IdentityRepository["resolveCanonical"] = ({ sourceUserId }) =>
     Effect.gen(function* () {
       if (!validId(sourceUserId)) return yield* Effect.fail(invalid());
-      const source = yield* findUser(sourceUserId);
-      if (source === null) return yield* Effect.fail(missing());
-
-      const visited = new Set<string>();
-      const aliasPath: string[] = [];
-      let current = source.userId;
-
-      for (let depth = 0; depth < MAX_CANONICAL_ALIAS_HOPS; depth += 1) {
-        if (visited.has(current))
-          return yield* Effect.fail(new IdentityRepositoryError({ reason: "cyclic" }));
-        visited.add(current);
-
-        const db = yield* ControlPlaneDb;
-        const aliases = yield* db.execute<AliasRow>({
-          label: "identity.aliases.find-active",
-          text: `SELECT source_user_id, canonical_user_id, kind, status
-                 FROM account_aliases
-                 WHERE source_user_id = $1
-                   AND ((kind = 'alias' AND status = 'active')
-                     OR (kind = 'merge' AND status IN ('finalizing', 'completed')))`
-            .replace(/\s+/gu, " ")
-            .trim(),
-          values: [current],
-          readonly: true,
-        });
-        if (aliases.rows.length === 0) {
-          const terminal = yield* findUser(current);
-          if (terminal === null) return yield* Effect.fail(missing());
-          return { sourceUserId, canonicalUserId: current, aliasPath };
-        }
-        if (aliases.rows.length !== 1) return yield* Effect.fail(invalid());
-
-        const alias = aliases.rows[0];
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<CanonicalIdentityRow>({
+        label: "identity.resolve-canonical",
+        text: `WITH RECURSIVE identity_chain AS (
+                 SELECT account.user_id AS current_user_id,
+                        ARRAY[]::text[] AS alias_path,
+                        ARRAY[account.user_id]::text[] AS visited,
+                        0 AS depth,
+                        false AS cycle
+                   FROM users AS account
+                  WHERE account.user_id=$1 AND account.status='active'
+                 UNION ALL
+                 SELECT alias.canonical_user_id,
+                        chain.alias_path || chain.current_user_id,
+                        chain.visited || alias.canonical_user_id,
+                        chain.depth + 1,
+                        alias.canonical_user_id=ANY(chain.visited)
+                   FROM identity_chain AS chain
+                   JOIN account_aliases AS alias
+                     ON alias.source_user_id=chain.current_user_id
+                    AND ((alias.kind='alias' AND alias.status='active')
+                      OR (alias.kind='merge' AND alias.status IN ('finalizing','completed')))
+                  WHERE chain.depth < $2 AND NOT chain.cycle
+               )
+               SELECT chain.current_user_id,chain.alias_path,chain.depth,chain.cycle,
+                      (SELECT COUNT(*)::integer
+                         FROM account_aliases AS candidate
+                        WHERE candidate.source_user_id=chain.current_user_id
+                          AND ((candidate.kind='alias' AND candidate.status='active')
+                            OR (candidate.kind='merge' AND candidate.status IN ('finalizing','completed')))) AS alias_count,
+                      EXISTS(SELECT 1 FROM users AS terminal
+                              WHERE terminal.user_id=chain.current_user_id
+                                AND terminal.status='active') AS terminal_active
+                 FROM identity_chain AS chain
+                ORDER BY chain.depth ASC`,
+        values: [sourceUserId, MAX_CANONICAL_ALIAS_HOPS],
+        readonly: true,
+      });
+      if (result.rows.length === 0) return yield* Effect.fail(missing());
+      for (const row of result.rows) {
+        const aliasCount =
+          typeof row.alias_count === "number"
+            ? row.alias_count
+            : typeof row.alias_count === "string" && /^\d+$/u.test(row.alias_count)
+              ? Number(row.alias_count)
+              : Number.NaN;
         if (
-          alias === undefined ||
-          typeof alias.source_user_id !== "string" ||
-          typeof alias.canonical_user_id !== "string" ||
-          !validId(alias.source_user_id) ||
-          !validId(alias.canonical_user_id) ||
-          (alias.kind !== "alias" && alias.kind !== "merge") ||
-          (alias.kind === "alias" && alias.status !== "active") ||
-          (alias.kind === "merge" && alias.status !== "finalizing" && alias.status !== "completed")
+          typeof row.current_user_id !== "string" ||
+          !validId(row.current_user_id) ||
+          !Array.isArray(row.alias_path) ||
+          !row.alias_path.every((entry) => typeof entry === "string" && validId(entry)) ||
+          typeof row.depth !== "number" ||
+          !Number.isSafeInteger(row.depth) ||
+          row.depth < 0 ||
+          typeof row.cycle !== "boolean" ||
+          typeof row.terminal_active !== "boolean" ||
+          !Number.isSafeInteger(aliasCount) ||
+          aliasCount < 0
         ) {
           return yield* Effect.fail(invalid());
         }
-        aliasPath.push(current);
-        current = alias.canonical_user_id;
+        if (row.cycle) {
+          return yield* Effect.fail(new IdentityRepositoryError({ reason: "cyclic" }));
+        }
+        if (aliasCount > 1) return yield* Effect.fail(invalid());
+        if (aliasCount === 0) {
+          if (!row.terminal_active) return yield* Effect.fail(missing());
+          return {
+            sourceUserId,
+            canonicalUserId: row.current_user_id,
+            aliasPath: row.alias_path,
+          };
+        }
       }
 
       return yield* Effect.fail(new IdentityRepositoryError({ reason: "cyclic" }));
