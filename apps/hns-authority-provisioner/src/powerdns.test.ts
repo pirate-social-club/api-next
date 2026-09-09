@@ -323,7 +323,12 @@ describe("teardown variants retain authority unless positive evidence allows ret
       for (const referencingView of ["current", "safe"] as const) {
         const decision = decideHnsTeardownRetentionV1({
           teardown_kind,
-          plan_encoded_resource_sha256: planDigest,
+          authority: {
+            ns_names: [],
+            ds: [],
+            challenge_txt_value: null,
+            plan_encoded_resource_sha256: planDigest,
+          },
           current:
             referencingView === "current"
               ? observed("current", planDigest)
@@ -348,7 +353,12 @@ describe("teardown variants retain authority unless positive evidence allows ret
     ]) {
       const decision = decideHnsTeardownRetentionV1({
         teardown_kind: "teardown_root_v1",
-        plan_encoded_resource_sha256: planDigest,
+        authority: {
+          ns_names: [],
+          ds: [],
+          challenge_txt_value: null,
+          plan_encoded_resource_sha256: planDigest,
+        },
         current: observed("current", null),
         safe: unavailable as never,
         positive_absence_evidence: false,
@@ -363,7 +373,12 @@ describe("teardown variants retain authority unless positive evidence allows ret
   test("chain absence after exposure alone never authorizes deletion", () => {
     const decision = decideHnsTeardownRetentionV1({
       teardown_kind: "teardown_provisional_root_v1",
-      plan_encoded_resource_sha256: planDigest,
+      authority: {
+        ns_names: [],
+        ds: [],
+        challenge_txt_value: null,
+        plan_encoded_resource_sha256: planDigest,
+      },
       current: observed("current", null),
       safe: observed("safe", null),
       positive_absence_evidence: false,
@@ -378,7 +393,12 @@ describe("teardown variants retain authority unless positive evidence allows ret
   test("retirement requires positive fresh-inspection evidence", () => {
     const decision = decideHnsTeardownRetentionV1({
       teardown_kind: "teardown_root_v1",
-      plan_encoded_resource_sha256: planDigest,
+      authority: {
+        ns_names: [],
+        ds: [],
+        challenge_txt_value: null,
+        plan_encoded_resource_sha256: planDigest,
+      },
       current: observed("current", null),
       safe: observed("safe", null),
       positive_absence_evidence: true,

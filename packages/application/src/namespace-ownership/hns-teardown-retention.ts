@@ -1,4 +1,5 @@
 import type { HnsChainObservationResultV1 } from "./hns-chain-observation.ts";
+import type { HnsRootResourceRecordV1 } from "./hns-root-import-plan.ts";
 
 /**
  * Authority retention decision before any retirement — spec 012
@@ -13,6 +14,86 @@ import type { HnsChainObservationResultV1 } from "./hns-chain-observation.ts";
 
 export type HnsTeardownKindV1 = "teardown_provisional_root_v1" | "teardown_root_v1";
 
+/**
+ * The authority a retained plan asserts on the name.
+ *
+ * Whole-resource digest equality is not a reference test. The resource is a
+ * complete replacement, so any unrelated change the owner makes — one extra
+ * TXT record — alters its digest while our nameservers and delegation signer
+ * remain published and serving. Judging absence by digest inequality would
+ * read "the owner added a record" as "the owner never published", which is
+ * the reading that authorizes deleting live infrastructure.
+ */
+export type HnsRetainedAuthorityReferenceV1 = Readonly<{
+  readonly ns_names: readonly string[];
+  readonly ds: readonly Readonly<{
+    readonly key_tag: number;
+    readonly algorithm: number;
+    readonly digest_type: number;
+    readonly digest: string;
+  }>[];
+  readonly challenge_txt_value: string | null;
+  /** The exposed plan's encoded-resource digest, when one exists. */
+  readonly plan_encoded_resource_sha256: string | null;
+}>;
+
+const normalizeName = (value: string): string => value.trim().toLowerCase().replace(/\.$/u, "");
+
+const recordField = (record: HnsRootResourceRecordV1, key: string): unknown =>
+  (record as Record<string, unknown>)[key];
+
+const asString = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
+const asNumber = (value: unknown): number | null => (typeof value === "number" ? value : null);
+
+/**
+ * True when the observed resource still references the retained authority by
+ * any of its nameservers, its delegation signer, or its verification
+ * challenge. Any one of these means deleting the zone or keyset would break a
+ * name the owner is currently serving.
+ */
+export function hnsObservationReferencesAuthorityV1(
+  records: readonly HnsRootResourceRecordV1[],
+  authority: HnsRetainedAuthorityReferenceV1,
+): boolean {
+  const wantedNs = new Set(authority.ns_names.map(normalizeName));
+  const wantedDs = new Set(
+    authority.ds.map(
+      (entry) =>
+        `${entry.key_tag}:${entry.algorithm}:${entry.digest_type}:${entry.digest.trim().toLowerCase()}`,
+    ),
+  );
+  for (const record of records) {
+    const type = asString(recordField(record, "type"))?.toUpperCase();
+    if (type === "NS") {
+      const name = asString(recordField(record, "ns"));
+      if (name !== null && wantedNs.has(normalizeName(name))) return true;
+    }
+    if (type === "DS") {
+      const keyTag =
+        asNumber(recordField(record, "keyTag")) ?? asNumber(recordField(record, "key_tag"));
+      const algorithm = asNumber(recordField(record, "algorithm"));
+      const digestType =
+        asNumber(recordField(record, "digestType")) ?? asNumber(recordField(record, "digest_type"));
+      const digest = asString(recordField(record, "digest"));
+      if (keyTag !== null && algorithm !== null && digestType !== null && digest !== null) {
+        if (wantedDs.has(`${keyTag}:${algorithm}:${digestType}:${digest.trim().toLowerCase()}`)) {
+          return true;
+        }
+      }
+    }
+    if (type === "TXT" && authority.challenge_txt_value !== null) {
+      const values = recordField(record, "txt");
+      if (Array.isArray(values)) {
+        for (const value of values) {
+          if (asString(value)?.trim() === authority.challenge_txt_value.trim()) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export type HnsTeardownRetentionDecisionV1 = Readonly<{
   readonly decision: "retain" | "retire_eligible";
   readonly reason:
@@ -26,8 +107,7 @@ export type HnsTeardownRetentionDecisionV1 = Readonly<{
 export function decideHnsTeardownRetentionV1(
   input: Readonly<{
     readonly teardown_kind: HnsTeardownKindV1;
-    /** The exposed plan's encoded-resource digest, when one exists. */
-    readonly plan_encoded_resource_sha256: string | null;
+    readonly authority: HnsRetainedAuthorityReferenceV1;
     readonly current: HnsChainObservationResultV1 | null;
     readonly safe: HnsChainObservationResultV1 | null;
     /**
@@ -60,9 +140,12 @@ export function decideHnsTeardownRetentionV1(
         inspected_views: inspectedViews,
       };
     }
+    const digestMatches =
+      input.authority.plan_encoded_resource_sha256 !== null &&
+      result.observation.resource_sha256 === input.authority.plan_encoded_resource_sha256;
     if (
-      input.plan_encoded_resource_sha256 !== null &&
-      result.observation.resource_sha256 === input.plan_encoded_resource_sha256
+      digestMatches ||
+      hnsObservationReferencesAuthorityV1(result.observation.records, input.authority)
     ) {
       // A reference to the retained zone or plan from either view retains
       // authority.

@@ -190,7 +190,17 @@ async function main(serve: boolean): Promise<void> {
   }
   const connectionString = required("CONTROL_PLANE_POSTGRES_URL");
   const queue = makePostgresHnsAuthorityProvisionQueue(connectionString);
-  const observeCurrentResource = makeHsdRootResourceObserver(
+  async function withPgClient<A>(url: string, use: (client: Client) => Promise<A>): Promise<A> {
+    const client = new Client({ connectionString: url });
+    await client.connect();
+    try {
+      return await use(client);
+    } finally {
+      await client.end();
+    }
+  }
+
+  const observeChain = makeHsdRootResourceObserver(
     {
       rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
       authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
@@ -288,19 +298,29 @@ async function main(serve: boolean): Promise<void> {
     executor_id: executorId,
     queue,
     provision: {
-      observe_current_resource: (rootLabel: string) => observeCurrentResource(rootLabel, "current"),
+      observe_current_resource: (rootLabel: string) => observeChain(rootLabel, "current"),
       ensure_zone: ensureZone,
     },
     observation: {
       queue: makePostgresHnsRootObservationQueue(connectionString),
       observe: {
-        observe_current_resource: (rootLabel: string) =>
-          observeCurrentResource(rootLabel, "current"),
+        observe_current_resource: (rootLabel: string) => observeChain(rootLabel, "current"),
         reconcile_zone: reconcileZone,
         inspect_zone: inspectZone,
         observe_live: observeLive,
       },
       teardown_zone: teardownZone,
+      retention: {
+        observe_chain: (rootLabel: string, view: "current" | "safe") =>
+          observeChain(rootLabel, view),
+        // No retention review or supersession is recorded anywhere yet, so this
+        // returns null and every teardown retains. That is the intended state
+        // until the retention-review persistence lands: the live defect is
+        // deleting authority the owner is still using, and retaining costs
+        // only quota. Wiring this to a real query is part of the persisted
+        // lifecycle work and must not be substituted with an elapsed-time rule.
+        retirement_authorization: () => Promise.resolve(null),
+      },
       config: {
         environment: required("HNS_AUTHORITY_ENVIRONMENT"),
         valid_for_seconds: readinessValidForSeconds(),
