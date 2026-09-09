@@ -189,6 +189,26 @@ async function main(serve: boolean): Promise<void> {
     throw new Error("HNS authority provisioner configuration is invalid");
   }
   const connectionString = required("CONTROL_PLANE_POSTGRES_URL");
+  /**
+   * How recent a retention review's inspection must be to authorize deletion.
+   * Thirty minutes: long enough for a review and the teardown that acts on it
+   * to be separate jobs, short enough that the chain cannot have changed
+   * meaningfully between them. It bounds evidence age and never substitutes
+   * for the inspection.
+   */
+  const RETIREMENT_EVIDENCE_FRESHNESS_SECONDS = 1_800;
+  async function withRetentionClient<A>(
+    url: string,
+    use: (client: Client) => Promise<A>,
+  ): Promise<A> {
+    const client = new Client({ connectionString: url });
+    await client.connect();
+    try {
+      return await use(client);
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
   const queue = makePostgresHnsAuthorityProvisionQueue(connectionString);
 
   const observeChain = makeHsdRootResourceObserver(
@@ -304,13 +324,32 @@ async function main(serve: boolean): Promise<void> {
       retention: {
         observe_chain: (rootLabel: string, view: "current" | "safe") =>
           observeChain(rootLabel, view),
-        // No retention review or supersession is recorded anywhere yet, so this
-        // returns null and every teardown retains. That is the intended state
-        // until the retention-review persistence lands: the live defect is
-        // deleting authority the owner is still using, and retaining costs
-        // only quota. Wiring this to a real query is part of the persisted
-        // lifecycle work and must not be substituted with an elapsed-time rule.
-        retirement_authorization: () => Promise.resolve(null),
+        // Authorization comes only from a recorded retention review or
+        // supersession, validated in SQL against the operation's current
+        // authority generation and a freshness bound on its evidence. No row
+        // means retain, which is also what an absent lifecycle, a superseded
+        // generation and stale evidence all produce.
+        retirement_authorization: (rootImportSessionId: string) =>
+          withRetentionClient(connectionString, async (client) => {
+            const result = await client.query<{
+              readonly kind: string;
+              readonly recorded_at: Date;
+              readonly evidence_ref: string;
+            }>("SELECT * FROM authorize_hns_root_import_retirement_v1($1,$2)", [
+              rootImportSessionId,
+              RETIREMENT_EVIDENCE_FRESHNESS_SECONDS,
+            ]);
+            const row = result.rows[0];
+            if (row === undefined) return null;
+            return {
+              kind:
+                row.kind === "supersession"
+                  ? ("supersession" as const)
+                  : ("retention_review" as const),
+              recorded_at_epoch_ms: row.recorded_at.getTime(),
+              evidence_ref: row.evidence_ref,
+            };
+          }),
       },
       config: {
         environment: required("HNS_AUTHORITY_ENVIRONMENT"),

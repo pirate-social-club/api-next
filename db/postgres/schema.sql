@@ -537,6 +537,36 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION authorize_hns_root_import_retirement_v1(input_session_id text, input_freshness_seconds integer) RETURNS TABLE(kind text, recorded_at timestamp with time zone, evidence_ref text, authority_generation bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  current_generation BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_freshness_seconds IS NULL OR input_freshness_seconds NOT BETWEEN 1 AND 604800 THEN
+    RAISE EXCEPTION 'invalid HNS retirement freshness bound';
+  END IF;
+  SELECT lifecycle.generation INTO current_generation
+    FROM hns_root_import_lifecycle AS lifecycle
+   WHERE lifecycle.root_import_session_id = input_session_id;
+  IF NOT FOUND THEN
+    -- No lifecycle means no inspected generation to validate against.
+    RETURN;
+  END IF;
+  RETURN QUERY
+    SELECT CASE WHEN review.decision = 'superseded' THEN 'supersession' ELSE 'retention_review' END,
+           review.reviewed_at, review.evidence_ref, review.authority_generation
+      FROM hns_root_import_retention_reviews AS review
+     WHERE review.root_import_session_id = input_session_id
+       AND review.decision IN ('retire_authorized', 'superseded')
+       AND review.authority_generation = current_generation
+       AND review.reviewed_at > database_now - (input_freshness_seconds * interval '1 second')
+     ORDER BY review.reviewed_at DESC
+     LIMIT 1;
+END;
+$$;
+
 CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_idempotency_key text, input_request_sha256 text, input_ownership_result_sha256 text, input_observation_job_id text, input_observation_request_bytes bytea, input_observation_request_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -13493,6 +13523,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_hns_retention_review_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS retention reviews are append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_localization_immutable_mutation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -23903,6 +23941,36 @@ CREATE TABLE hns_root_import_observation_jobs (
     CONSTRAINT hns_root_import_observation_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
 );
 
+CREATE TABLE hns_root_import_retention_reviews (
+    retention_review_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    reviewed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    current_observed_at timestamp with time zone,
+    safe_observed_at timestamp with time zone,
+    current_resource_sha256 text,
+    safe_resource_sha256 text,
+    decision text NOT NULL,
+    reason text NOT NULL,
+    evidence_ref text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_retention_review_digest_shape CHECK ((((current_resource_sha256 IS NULL) OR (current_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((safe_resource_sha256 IS NULL) OR (safe_resource_sha256 ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT hns_retention_review_evidence_shape CHECK (((decision <> 'retire_authorized'::text) OR ((current_observed_at IS NOT NULL) AND (safe_observed_at IS NOT NULL)))),
+    CONSTRAINT hns_root_import_retention_reviews_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_retention_reviews_decision_check CHECK ((decision = ANY (ARRAY['retain'::text, 'retire_authorized'::text, 'superseded'::text]))),
+    CONSTRAINT hns_root_import_retention_reviews_evidence_ref_check CHECK (((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 256)))),
+    CONSTRAINT hns_root_import_retention_reviews_reason_check CHECK (((btrim(reason) = reason) AND ((octet_length(reason) >= 1) AND (octet_length(reason) <= 256))))
+);
+
+ALTER TABLE hns_root_import_retention_reviews ALTER COLUMN retention_review_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_retention_reviews_retention_review_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 CREATE TABLE hns_root_import_sessions (
     root_import_session_id text NOT NULL,
     actor_id text NOT NULL,
@@ -29377,6 +29445,9 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotion_receipts_pkey PRIMARY KEY (receipt_id);
 
+ALTER TABLE ONLY hns_root_import_retention_reviews
+    ADD CONSTRAINT hns_retention_review_unique_evidence UNIQUE (root_import_session_id, evidence_ref);
+
 ALTER TABLE ONLY hns_root_health_renewal_jobs
     ADD CONSTRAINT hns_root_health_renewal_jobs_dns_zone_activation_id_activat_key UNIQUE (dns_zone_activation_id, activation_generation, expected_health_generation);
 
@@ -29415,6 +29486,9 @@ ALTER TABLE ONLY hns_root_import_observation_jobs
 
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_root_import_session_id_key UNIQUE (root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_retention_reviews
+    ADD CONSTRAINT hns_root_import_retention_reviews_pkey PRIMARY KEY (retention_review_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_actor_id_creation_intent_id_root_i_key UNIQUE (actor_id, creation_intent_id, root_import_session_id);
@@ -30795,6 +30869,8 @@ CREATE INDEX hns_root_import_lifecycle_root_label_idx ON hns_root_import_lifecyc
 
 CREATE INDEX hns_root_import_observation_jobs_claim_idx ON hns_root_import_observation_jobs USING btree (state, created_at, observation_job_id);
 
+CREATE INDEX hns_root_import_retention_reviews_session_idx ON hns_root_import_retention_reviews USING btree (root_import_session_id, reviewed_at DESC);
+
 CREATE UNIQUE INDEX hns_root_import_sessions_active_root_unique ON hns_root_import_sessions USING btree (root_label) WHERE (status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text]));
 
 CREATE INDEX hns_root_import_teardown_jobs_claim_idx ON hns_root_import_teardown_jobs USING btree (state, created_at, teardown_job_id);
@@ -31478,6 +31554,8 @@ CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_observation_jobs_retain BEFORE DELETE ON hns_root_import_observation_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
+
+CREATE TRIGGER hns_root_import_retention_reviews_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_retention_reviews FOR EACH ROW EXECUTE FUNCTION reject_hns_retention_review_change_v1();
 
 CREATE TRIGGER hns_root_import_sessions_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_sessions FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_session_change();
 
