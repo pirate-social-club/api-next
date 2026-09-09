@@ -368,6 +368,11 @@ export function decideHnsRootImportLifecycleV1(
         // Only resource findings are findings about the name; unavailable
         // evidence never reaches this event.
         if (state.phase === "checking_authority" || state.phase === "ready") {
+          // Spec 012, "Conflicting current authority" (2026-09-09 amendment).
+          // Only a confirmed finding about the name reaches this event;
+          // unavailable evidence of every class arrives as `provider_failure`
+          // and preserves both the phase and the readiness evidence. An outage
+          // is not proof that control changed.
           // The chain no longer carries the resource this operation was made
           // ready against. Holding as pending would leave the phase at `ready`
           // with its readiness evidence intact, and a request arriving next

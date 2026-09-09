@@ -373,6 +373,57 @@ suite("HNS lifecycle leased execution sequences", () => {
     });
   });
 
+  test("9: an outage preserves the phase and the readiness evidence", async () => {
+    await withSchema("hns_exec_outage", async (admin) => {
+      // Same starting state as the conflict case, but the node is unreachable
+      // rather than reporting a finding. An outage is not proof that control
+      // changed, so readiness must survive it.
+      await seed(admin, "ready", {
+        planExposedInterval: "-3 hours",
+        publicationDeadlineInterval: "13 days",
+        firstCurrentInterval: "-2 hours",
+        finalityDeadlineInterval: "22 hours",
+        readinessInterval: "-1 minute",
+      });
+      const before = await phaseOf(admin);
+      const readinessBefore = await admin.query(
+        "SELECT readiness_observed_at FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+        [SESSION],
+      );
+
+      for (const classification of [
+        "transport_failure",
+        "node_stale",
+        "node_unavailable",
+        "wrong_network",
+        "malformed_response",
+      ]) {
+        await queueJob(admin, "observe_current");
+        await runHnsRootImportLifecycleJobOnce(
+          "exec-a",
+          60,
+          ports(admin, {
+            kind: "provider_failure",
+            classification,
+            budget_exempt: false,
+            evidence_ref: `outage-${classification}`,
+          }),
+        );
+      }
+
+      const after = await phaseOf(admin);
+      expect(after?.phase).toBe("ready");
+      expect(after?.phase).toBe(before?.phase);
+      const readinessAfter = await admin.query(
+        "SELECT readiness_observed_at FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+        [SESSION],
+      );
+      expect(readinessAfter.rows[0]?.readiness_observed_at).toEqual(
+        readinessBefore.rows[0]?.readiness_observed_at,
+      );
+    });
+  });
+
   test("6: stale readiness refuses activation and schedules a fresh check", async () => {
     await withSchema("hns_exec_stale", async (admin) => {
       // Ready, but the readiness evidence is older than the 1,800s freshness
