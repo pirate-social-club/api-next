@@ -24,9 +24,15 @@ describe("redactDiagnosticText", () => {
     );
   });
 
-  it("removes a named secret assigned with either separator", () => {
+  it("drops a list-valued credential header and everything after it", () => {
     expect(redactDiagnosticText('cookie: pirate_session=value-1; password="p4ssw0rd"')).toBe(
-      "cookie=[redacted]; password=[redacted]",
+      "cookie=[redacted]",
+    );
+  });
+
+  it("removes a scalar named secret assigned with either separator", () => {
+    expect(redactDiagnosticText('user=someone; password="p4ssw0rd"; retry=1')).toBe(
+      "user=someone; password=[redacted]; retry=1",
     );
   });
 
@@ -40,6 +46,22 @@ describe("redactDiagnosticText", () => {
     expect(redactDiagnosticText(`value ${"a1b2c3d4".repeat(5)} rejected`)).toBe(
       "value [redacted] rejected",
     );
+  });
+
+  it("keeps a long type name, which is the most useful field in the record", () => {
+    // Regression: the opaque-run rule redacted `HnsCommunityRootImportStorageFailed`
+    // because it is 35 undelimited characters.
+    for (const name of [
+      "HnsCommunityRootImportStorageFailed",
+      "ControlPlaneOperationTimedOut",
+      "NamespaceOwnershipProviderUnboundRejected",
+    ]) {
+      expect(redactDiagnosticText(name)).toBe(name);
+    }
+  });
+
+  it("still removes a long run once it mixes in a digit", () => {
+    expect(redactDiagnosticText(`${"a".repeat(31)}9`)).toBe("[redacted]");
   });
 
   it("keeps the identifiers this product logs on purpose", () => {
@@ -246,5 +268,73 @@ describe("boundaryFailureDiagnostic", () => {
       error_message: "plain string failure",
     });
     expect(diagnostic(undefined)).toMatchObject({ error_name: "undefined" });
+  });
+});
+
+describe("retained strings are bounded and scrubbed", () => {
+  it("scrubs a quoted secret whose value contains spaces", () => {
+    expect(redactDiagnosticText('password="synthetic secret words"')).toBe("password=[redacted]");
+  });
+
+  it("scrubs a quoted secret name in a JSON fragment", () => {
+    expect(redactDiagnosticText('{"password":"synthetic-value"}')).not.toContain("synthetic-value");
+  });
+
+  it("scrubs every pair in a cookie list, not just the first", () => {
+    const redacted = redactDiagnosticText("Cookie: a=one; custom_auth=synthetic-value");
+    expect(redacted).not.toContain("synthetic-value");
+    expect(redacted).not.toContain("a=one");
+  });
+
+  it("scrubs and bounds the error name, which a thrown value can set freely", () => {
+    const named = new Error("boom");
+    named.name = "Bearer SYNTHETIC_SECRET";
+
+    expect(diagnostic(named).error_name).toBe("Bearer [redacted]");
+  });
+
+  it("bounds an error name that is not a name at all", () => {
+    const named = new Error("boom");
+    named.name = "n".repeat(500);
+
+    expect(diagnostic(named).error_name.length).toBeLessThanOrEqual(93);
+  });
+
+  it("names the invariant a repository rejected when there is no cause", () => {
+    expect(
+      diagnostic({
+        _tag: "HnsCommunityRootImportStorageFailed",
+        reason: "insert-session.missing_or_ambiguous_row",
+      }).invariant,
+    ).toBe("insert-session.missing_or_ambiguous_row");
+  });
+});
+
+describe("a hostile thrown value cannot break reporting", () => {
+  it("survives a cause accessor that throws", () => {
+    const record = diagnostic({
+      _tag: "Throwing",
+      get cause() {
+        throw new Error("getter blew up");
+      },
+    });
+
+    expect(record.error_tag).toBe("Throwing");
+    expect(record.causes).toBeUndefined();
+  });
+
+  it("survives accessors that throw on every inspected property", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        get: (_target, key) => {
+          if (key === "constructor") return undefined;
+          throw new Error(`no ${String(key)}`);
+        },
+      },
+    );
+
+    expect(() => diagnostic(hostile)).not.toThrow();
+    expect(diagnostic(hostile).request_id).toBe("request-1");
   });
 });

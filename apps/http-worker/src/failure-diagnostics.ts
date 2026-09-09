@@ -30,23 +30,47 @@ const CONTROL_PLANE_FIELD_LIMIT = 120;
 
 const CODE_SHAPE = /^[A-Za-z0-9_.-]+$/u;
 
+/**
+ * Names that make whatever follows them a secret. A value is redacted to the
+ * end of its segment rather than to the end of its first token, because a
+ * quoted secret may contain spaces and a header dump may hold several pairs.
+ */
+const SECRET_NAME =
+  "csrf[\\w-]*|passwd|password|secret|session[\\w-]*|api[_-]?key|access[_-]?token|refresh[_-]?token|token|signature|private[_-]?key|mnemonic|seed[_-]?phrase";
+
+/**
+ * Header names whose value is a list. There is no safe tail after one: a cookie
+ * header holds arbitrarily many pairs, so everything from the name onward is
+ * dropped rather than up to the next separator. Whatever context follows a
+ * credential dump in a collapsed message is not worth the risk of keeping it.
+ */
+const LIST_SECRET_NAME = "authorization|proxy-authorization|cookie|set-cookie";
+
 const REDACTIONS: readonly (readonly [RegExp, string])[] = [
+  // A list-valued credential header and everything after it.
+  [new RegExp(`"?\\b(${LIST_SECRET_NAME})\\b"?\\s*[:=].*$`, "iu"), "$1=[redacted]"],
   // `scheme://user:secret@host` in a connection string or URL.
   [/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s@/]+@/giu, "$1:[redacted]@"],
   // An HTTP credential presented inline.
   [/\b(bearer|basic)\s+[\w\-._~+/]+=*/giu, "$1 [redacted]"],
-  // A named secret assigned with either `:` or `=`.
-  [
-    /\b(authorization|cookie|set-cookie|csrf[\w-]*|passwd|password|secret|session[\w-]*|api[_-]?key|access[_-]?token|refresh[_-]?token|token)\b\s*[:=]\s*"?[^\s",;]+"?/giu,
-    "$1=[redacted]",
-  ],
+  // A quoted secret value, whether or not the name is quoted and whether or not
+  // the value contains spaces: `password="a b c"`, `"password":"a b c"`.
+  [new RegExp(`"?\\b(${SECRET_NAME})\\b"?\\s*[:=]\\s*"[^"]*"`, "giu"), "$1=[redacted]"],
+  // An unquoted secret value, consumed to the end of its segment so a value
+  // containing spaces cannot leave a tail behind.
+  [new RegExp(`"?\\b(${SECRET_NAME})\\b"?\\s*[:=]\\s*[^;,]*`, "giu"), "$1=[redacted]"],
   // A signed token: three dot-separated base64url segments.
   [/\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu, "[redacted]"],
   // Any remaining long unbroken opaque run. Identifiers this product logs on
-  // purpose (UUIDs, prefixed resource ids, SQLSTATEs) carry `-` or `_` and are
-  // left intact; an undelimited 32-character run is treated as a secret even
-  // when it is only a digest, because the two cannot be told apart here.
-  [/\b[A-Za-z0-9+/]{32,}={0,2}\b/gu, "[redacted]"],
+  // purpose (UUIDs, prefixed resource ids, SQLSTATEs) carry `-` or `_`, and a
+  // purely alphabetic run is a type or class name such as
+  // `HnsCommunityRootImportStorageFailed`, which is the most useful thing in
+  // the record; both are left intact. A 32-character run mixing in a digit or a
+  // base64 character is treated as a secret even when it is only a digest,
+  // because the two cannot be told apart here. The residual risk is an
+  // all-alphabetic secret of that length, which no token format this product
+  // handles produces.
+  [/\b(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{32,}={0,2}\b/gu, "[redacted]"],
 ];
 
 /** Remove credential shapes from free text that is about to be retained. */
@@ -59,28 +83,50 @@ export function redactDiagnosticText(value: string): string {
 const truncate = (value: string, limit: number): string =>
   value.length <= limit ? value : `${value.slice(0, limit)}…[truncated]`;
 
+/**
+ * A thrown value is not required to be well behaved. Any property on it may be
+ * an accessor that throws, so every read here is contained: a hostile or broken
+ * value degrades the record rather than replacing the failure being reported.
+ */
+const readProperty = (source: unknown, key: string): unknown => {
+  if (typeof source !== "object" || source === null) return undefined;
+  try {
+    return (source as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+};
+
 const stringField = (source: object, key: string): string | undefined => {
-  const value = (source as Record<string, unknown>)[key];
+  const value = readProperty(source, key);
   return typeof value === "string" && value.length > 0 ? value : undefined;
 };
 
+/** Longest retained error name; a class name is short and an attacker-set one is not. */
+const NAME_LIMIT = 80;
+
+/**
+ * `Error.name` is writable, so a thrown value can carry arbitrary text here.
+ * It is sanitised and bounded exactly like a message rather than trusted for
+ * being a "name".
+ */
 const errorName = (error: unknown): string => {
-  if (error instanceof Error && error.name.length > 0) return error.name;
-  if (typeof error === "object" && error !== null) {
-    return error.constructor?.name ?? "Object";
-  }
-  return typeof error;
+  const named = readProperty(error, "name");
+  const constructorName = readProperty(readProperty(error, "constructor"), "name");
+  const raw =
+    typeof named === "string" && named.length > 0
+      ? named
+      : typeof error === "object" && error !== null
+        ? typeof constructorName === "string" && constructorName.length > 0
+          ? constructorName
+          : "Object"
+        : typeof error;
+  return truncate(redactDiagnosticText(raw), NAME_LIMIT);
 };
 
 const errorMessage = (error: unknown): string | undefined => {
-  const raw =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : typeof error === "object" && error !== null
-          ? stringField(error, "message")
-          : undefined;
+  const message = readProperty(error, "message");
+  const raw = typeof error === "string" ? error : typeof message === "string" ? message : undefined;
   if (raw === undefined || raw.length === 0) return undefined;
   return truncate(redactDiagnosticText(raw), MESSAGE_LIMIT);
 };
@@ -112,12 +158,22 @@ const errorCode = (error: unknown): string | undefined => {
  * for a database failure. Each is still shape-checked here rather than trusted,
  * so a future field holding prose cannot ride through on the same name.
  */
-const CONTROL_PLANE_FIELDS = ["label", "sqlState", "constraint", "outcomeCertainty"] as const;
+const CONTROL_PLANE_FIELDS = [
+  "label",
+  "sqlState",
+  "constraint",
+  "outcomeCertainty",
+  // A repository invariant names the branch it rejected when there is no
+  // control-plane error to keep. It is built from a statement label and a fixed
+  // check word, so it validates as a machine field like the rest.
+  "reason",
+] as const;
 const CONTROL_PLANE_FIELD_NAMES: Readonly<Record<string, string>> = {
   label: "statement",
   sqlState: "sql_state",
   constraint: "constraint",
   outcomeCertainty: "outcome_certainty",
+  reason: "invariant",
 };
 
 const controlPlaneFields = (error: unknown): Readonly<Record<string, string>> | undefined => {
@@ -134,8 +190,9 @@ const controlPlaneFields = (error: unknown): Readonly<Record<string, string>> | 
 };
 
 const errorStack = (error: unknown): readonly string[] | undefined => {
-  if (!(error instanceof Error) || typeof error.stack !== "string") return undefined;
-  const frames = error.stack
+  const stack = readProperty(error, "stack");
+  if (typeof stack !== "string") return undefined;
+  const frames = stack
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.startsWith("at "))
@@ -169,6 +226,7 @@ interface BoundaryFailureCause {
   readonly sql_state?: string;
   readonly constraint?: string;
   readonly outcome_certainty?: string;
+  readonly invariant?: string;
 }
 
 export interface BoundaryFailureDiagnostic {
@@ -186,6 +244,7 @@ export interface BoundaryFailureDiagnostic {
   readonly sql_state?: string;
   readonly constraint?: string;
   readonly outcome_certainty?: string;
+  readonly invariant?: string;
   readonly causes?: readonly BoundaryFailureCause[];
 }
 
@@ -204,7 +263,7 @@ const errorCauses = (error: unknown): readonly BoundaryFailureCause[] | undefine
   let current: unknown = error;
   while (causes.length < CAUSE_DEPTH_LIMIT) {
     if (typeof current !== "object" || current === null) break;
-    const next: unknown = (current as { cause?: unknown }).cause;
+    const next: unknown = readProperty(current, "cause");
     if (next === undefined || next === null || seen.has(next)) break;
     seen.add(next);
     const tag = errorTag(next);

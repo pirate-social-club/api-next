@@ -3,8 +3,10 @@ import {
   ControlPlaneDb,
   ControlPlaneStatementFailed,
   HnsCommunityRootImportStorageFailed,
+  HnsRootImportStorageFailed,
 } from "@pirate/application";
 import { Effect, Layer } from "effect";
+import { boundaryFailureDiagnostic } from "../../../apps/http-worker/src/failure-diagnostics.ts";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "./hns-community-root-import-repository.ts";
 
 const binding = {
@@ -57,4 +59,63 @@ test("an already-opaque failure is not wrapped a second time", async () => {
 
   expect(failure).toBe(storage);
   expect(failure.cause).toBeUndefined();
+});
+
+// Activation is delegated to the shared root-import store, which narrows the
+// control-plane error before the community wrapper ever sees it. Preserving the
+// cause only on the community wrapper would leave this path opaque.
+test("the delegated activation path preserves the control-plane error too", async () => {
+  const statementFailed = new ControlPlaneStatementFailed({
+    label: "hns-root-import.activate",
+    sqlState: "40001",
+    constraint: null,
+    outcomeCertainty: "unknown",
+  });
+
+  const failure = await Effect.runPromise(
+    storeFailingWith(statementFailed)
+      .activate({
+        input: {
+          actor_id: "user_1",
+          community_id: "community_1",
+          root_import_session_id: "session_1",
+          creation_intent_id: "attachment_1",
+        },
+        attachment_intent_id: "attachment_1",
+        request_sha256: "a".repeat(64),
+        community_id: "community_1",
+        dns_zone_activation_id: "zone_1",
+        app_host_activation_id: "host_1",
+        sale_namespace_activation_id: "sale_1",
+        operation_id: "operation_1",
+      } as never)
+      .pipe(Effect.flip),
+  );
+
+  // Two opaque wrappers sit between the boundary and the database error, so the
+  // chain is two links deep. The diagnostic cause walk follows three.
+  const delegated = (failure as { readonly cause?: unknown }).cause;
+  expect(failure).toBeInstanceOf(HnsCommunityRootImportStorageFailed);
+  expect(delegated).toBeInstanceOf(HnsRootImportStorageFailed);
+  expect((delegated as { readonly cause?: unknown }).cause).toBe(statementFailed);
+
+  expect(
+    boundaryFailureDiagnostic({
+      requestId: "request-1",
+      endpoint: "ActivateHnsCommunityRootImport",
+      route: "/communities/:communityId/hns-root-imports/:sessionId/activate",
+      method: "POST",
+      disposition: "passthrough",
+      error: failure,
+    }).causes,
+  ).toEqual([
+    { error_name: "HnsRootImportStorageFailed", error_tag: "HnsRootImportStorageFailed" },
+    {
+      error_name: "ControlPlaneStatementFailed",
+      error_tag: "ControlPlaneStatementFailed",
+      statement: "hns-root-import.activate",
+      sql_state: "40001",
+      outcome_certainty: "unknown",
+    },
+  ]);
 });

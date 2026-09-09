@@ -174,4 +174,27 @@ describe("HTTP boundary failure evidence", () => {
     expect(serialized).not.toContain("SELECT");
     expect(serialized).not.toContain("session-value-1");
   });
+
+  it("still answers, and still records the reference, when the failure is hostile", async () => {
+    const hostile = new Error("hostile failure");
+    Object.defineProperty(hostile, "cause", {
+      get: () => {
+        throw new Error("getter blew up");
+      },
+    });
+    const { captured, response } = await requestPublicFeed(() => {
+      throw hostile;
+    });
+
+    // Reporting must not become the failure: the response is unchanged and a
+    // record still exists carrying the reference and the endpoint.
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { code: "internal_error" } });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.diagnostic).toMatchObject({
+      endpoint: "GetPublicHomeFeed",
+      route: "/feed/home/public",
+    });
+    expect(captured[0]?.diagnostic.request_id).toBeString();
+  });
 });

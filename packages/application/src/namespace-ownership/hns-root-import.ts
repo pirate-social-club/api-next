@@ -260,7 +260,14 @@ export class HnsRootImportRejected extends Data.TaggedError("HnsRootImportReject
     | "not_found";
 }> {}
 
-export class HnsRootImportStorageFailed extends Data.TaggedError("HnsRootImportStorageFailed") {}
+/**
+ * The store could not complete a read or write. `cause` carries the originating
+ * control-plane error for diagnostics only; no caller branches on it and
+ * `toErrorBody` never reads it.
+ */
+export class HnsRootImportStorageFailed extends Data.TaggedError("HnsRootImportStorageFailed")<{
+  readonly cause?: unknown;
+}> {}
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const encoder = new TextEncoder();

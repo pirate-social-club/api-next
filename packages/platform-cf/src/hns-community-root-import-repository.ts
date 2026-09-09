@@ -37,6 +37,16 @@ const storageFailure = (cause?: unknown): HnsCommunityRootImportStorageFailed =>
     ? new HnsCommunityRootImportStorageFailed({})
     : new HnsCommunityRootImportStorageFailed({ cause });
 
+/**
+ * A store invariant the repository itself rejected: a row count, a missing row,
+ * an undecodable row or an outcome the contract does not allow. No
+ * control-plane error caused it, so there is no cause to keep and the reason is
+ * the only thing that can name the branch. Reasons are built from the statement
+ * label of the query being handled and a fixed check word, never from a value.
+ */
+const invariantFailure = (reason: string): HnsCommunityRootImportStorageFailed =>
+  new HnsCommunityRootImportStorageFailed({ reason });
+
 export type HnsCommunityRootImportRepositoryOptions = Readonly<{
   readonly environment: string;
   readonly provider_binding: CommunityCreationProviderBinding;
@@ -297,7 +307,9 @@ function loadPreparation(
       readonly: false,
     });
     const row = oneRow(result);
-    return row === undefined ? yield* Effect.fail(storageFailure()) : row;
+    return row === undefined
+      ? yield* Effect.fail(invariantFailure("load-preparation.unexpected_row_count"))
+      : row;
   });
 }
 
@@ -384,7 +396,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const reusedKeyRow = oneRow(reusedKey);
-            if (reusedKeyRow === undefined) return yield* Effect.fail(storageFailure());
+            if (reusedKeyRow === undefined)
+              return yield* Effect.fail(invariantFailure("check-idempotency.unexpected_row_count"));
             if (reusedKeyRow !== null) return { kind: "conflict" } as const;
             const authority = yield* transaction.execute<Row>({
               label: "hns.community-root-import.lock-authority",
@@ -402,7 +415,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const authorityRow = oneRow(authority);
-            if (authorityRow === undefined) return yield* Effect.fail(storageFailure());
+            if (authorityRow === undefined)
+              return yield* Effect.fail(invariantFailure("lock-authority.unexpected_row_count"));
             const grantId = authorityRow === null ? null : text(authorityRow, "grant_id");
             if (grantId === null) return { kind: "not_found" } as const;
             // A provider failure can leave a valid preparation without a session.
@@ -431,11 +445,14 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const resumableRow = oneRow(resumable);
-            if (resumableRow === undefined) return yield* Effect.fail(storageFailure());
+            if (resumableRow === undefined)
+              return yield* Effect.fail(
+                invariantFailure("resume-preparation.unexpected_row_count"),
+              );
             if (resumableRow !== null) {
               const value = decodePreparation(resumableRow);
               return value === null
-                ? yield* Effect.fail(storageFailure())
+                ? yield* Effect.fail(invariantFailure("resume-preparation.undecodable_row"))
                 : ({ kind: "replay", value } as const);
             }
             const admission = yield* transaction.execute<Row>({
@@ -475,7 +492,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const unavailableRow = oneRow(unavailable);
-            if (unavailableRow === undefined) return yield* Effect.fail(storageFailure());
+            if (unavailableRow === undefined)
+              return yield* Effect.fail(invariantFailure("check-root.unexpected_row_count"));
             if (unavailableRow?.unavailable !== false) return { kind: "conflict" } as const;
 
             // The provider challenge can expire before its seven-day parent.
@@ -508,7 +526,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const openAttachmentRow = oneRow(openAttachment);
-            if (openAttachmentRow === undefined) return yield* Effect.fail(storageFailure());
+            if (openAttachmentRow === undefined)
+              return yield* Effect.fail(invariantFailure("check-open-parent.unexpected_row_count"));
             if (openAttachmentRow?.open !== false) return { kind: "conflict" } as const;
 
             const expires = yield* transaction.execute<Row>({
@@ -518,7 +537,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const expiresAt = instant(oneRow(expires)?.expires_at);
-            if (expiresAt === null) return yield* Effect.fail(storageFailure());
+            if (expiresAt === null)
+              return yield* Effect.fail(invariantFailure("database-time.undecodable_row"));
             yield* transaction.execute({
               label: "hns.community-root-import.insert-intent",
               text: `INSERT INTO community_route_attachment_intents (
@@ -662,7 +682,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const existingRow = oneRow(existing);
-            if (existingRow === undefined) return yield* Effect.fail(storageFailure());
+            if (existingRow === undefined)
+              return yield* Effect.fail(invariantFailure("find-session.unexpected_row_count"));
             if (existingRow !== null) {
               const response = sessionResponse(existingRow, options.environment, true);
               return response !== null && existingRow.start_request_sha256 === input.request_sha256
@@ -707,7 +728,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const authorityRow = oneRow(authority);
-            if (authorityRow === undefined) return yield* Effect.fail(storageFailure());
+            if (authorityRow === undefined)
+              return yield* Effect.fail(invariantFailure("recheck-authority.unexpected_row_count"));
             if (authorityRow === null) return { kind: "not_found" } as const;
             const ownership = yield* transaction.execute<Row>({
               label: "hns.community-root-import.lock-ownership-session",
@@ -764,12 +786,15 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             const row = oneRow(inserted);
-            if (row === undefined || row === null) return yield* Effect.fail(storageFailure());
+            if (row === undefined || row === null)
+              return yield* Effect.fail(
+                invariantFailure("insert-session.missing_or_ambiguous_row"),
+              );
             if (preparation.admission_kind === "name_signature") {
               // A retained pre-amendment preparation keeps its original proof gate.
               const response = sessionResponse(row, options.environment, false);
               return response === null
-                ? yield* Effect.fail(storageFailure())
+                ? yield* Effect.fail(invariantFailure("insert-session.undecodable_row"))
                 : ({ kind: "created", session: response } as const);
             }
             const provisionRequest = {
@@ -799,7 +824,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               readonly: false,
             });
             if (oneRow(started)?.outcome !== "provisioning")
-              return yield* Effect.fail(storageFailure());
+              return yield* Effect.fail(invariantFailure("queue-provisional.unexpected_outcome"));
             const retained = yield* transaction.execute<Row>({
               label: "hns.community-root-import.read-provisional",
               text: "SELECT * FROM hns_root_import_sessions WHERE root_import_session_id=$1",
@@ -811,7 +836,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               ? sessionResponse(retainedRow, options.environment, false)
               : null;
             return response === null
-              ? yield* Effect.fail(storageFailure())
+              ? yield* Effect.fail(invariantFailure("read-provisional.undecodable_row"))
               : ({ kind: "created", session: response } as const);
           }),
         );
@@ -857,20 +882,23 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           readonly: true,
         });
         const row = oneRow(result);
-        if (row === undefined) return yield* Effect.fail(storageFailure());
+        if (row === undefined)
+          return yield* Effect.fail(invariantFailure("get-current.unexpected_row_count"));
         if (row === null) return null;
         const session =
           row.root_import_session_id === null
             ? null
             : sessionResponse(row, options.environment, false);
         if (row.root_import_session_id !== null && session === null) {
-          return yield* Effect.fail(storageFailure());
+          return yield* Effect.fail(invariantFailure("get-current.unexpected_outcome"));
         }
         const decoded = Schema.decodeUnknownOption(
           HnsCommunityRootImportCurrentResponseV1,
           exactParseOptions,
         )({ community_id: input.community_id, attachment: row.attachment, session });
-        return Option.isSome(decoded) ? decoded.value : yield* Effect.fail(storageFailure());
+        return Option.isSome(decoded)
+          ? decoded.value
+          : yield* Effect.fail(invariantFailure("get-current.undecodable_row"));
       }),
     get: (input: Parameters<HnsCommunityRootImportPollStore["get"]>[0]) =>
       Effect.gen(function* () {
@@ -885,7 +913,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           readonly: true,
         });
         const row = oneRow(result);
-        if (row === undefined) return yield* Effect.fail(storageFailure());
+        if (row === undefined)
+          return yield* Effect.fail(invariantFailure("get.unexpected_row_count"));
         return row === null ? null : sessionResponse(row, options.environment, false);
       }),
     loadPollAuthority: (
@@ -912,7 +941,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           readonly: true,
         });
         const row = oneRow(result);
-        if (row === undefined) return yield* Effect.fail(storageFailure());
+        if (row === undefined)
+          return yield* Effect.fail(invariantFailure("load-poll-authority.unexpected_row_count"));
         if (row === null) return null;
         const session = sessionResponse(row, options.environment, false);
         const ceremonyIntentId = text(row, "ceremony_intent_id");
@@ -934,7 +964,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           (row.ownership_result_sha256 !== null && ownershipResultHash === null) ||
           (row.provision_result_sha256 !== null && provisionResultHash === null)
         ) {
-          return yield* Effect.fail(storageFailure());
+          return yield* Effect.fail(invariantFailure("load-poll-authority.unexpected_outcome"));
         }
         return {
           session,
@@ -979,12 +1009,12 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             const outcome = oneRow(result);
             if (outcome === undefined || outcome === null) {
-              return yield* Effect.fail(storageFailure());
+              return yield* Effect.fail(invariantFailure("begin-provisioning.unexpected_outcome"));
             }
             if (outcome.outcome === "not_found") return { kind: "not_found" } as const;
             if (outcome.outcome === "conflict") return { kind: "conflict" } as const;
             if (outcome.outcome !== "provisioning" && outcome.outcome !== "replayed") {
-              return yield* Effect.fail(storageFailure());
+              return yield* Effect.fail(invariantFailure("begin-provisioning.unexpected_outcome"));
             }
             const loaded = yield* transaction.execute<Row>({
               label: "hns.community-root-import.load-provisioned-session",
@@ -1004,7 +1034,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                 ? null
                 : sessionResponse(row, options.environment, outcome.outcome === "replayed");
             return session === null
-              ? yield* Effect.fail(storageFailure())
+              ? yield* Effect.fail(invariantFailure("load-provisioned-session.undecodable_row"))
               : ({ kind: outcome.outcome, session } as const);
           }),
         );
@@ -1035,12 +1065,12 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             const outcome = oneRow(result);
             if (outcome === undefined || outcome === null) {
-              return yield* Effect.fail(storageFailure());
+              return yield* Effect.fail(invariantFailure("begin-observation.unexpected_outcome"));
             }
             if (outcome.outcome === "not_found") return { kind: "not_found" } as const;
             if (outcome.outcome === "conflict") return { kind: "conflict" } as const;
             if (outcome.outcome !== "observing" && outcome.outcome !== "replayed") {
-              return yield* Effect.fail(storageFailure());
+              return yield* Effect.fail(invariantFailure("begin-observation.unexpected_outcome"));
             }
             const loaded = yield* transaction.execute<Row>({
               label: "hns.community-root-import.load-observing-session",
@@ -1060,7 +1090,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                 ? null
                 : sessionResponse(row, options.environment, outcome.outcome === "replayed");
             return session === null
-              ? yield* Effect.fail(storageFailure())
+              ? yield* Effect.fail(invariantFailure("load-observing-session.undecodable_row"))
               : ({ kind: outcome.outcome, session } as const);
           }),
         );

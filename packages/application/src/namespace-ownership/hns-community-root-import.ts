@@ -329,7 +329,16 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
  */
 export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
   "HnsCommunityRootImportStorageFailed",
-)<{ readonly cause?: unknown }> {}
+)<{
+  readonly cause?: unknown;
+  /**
+   * Which invariant the store rejected, when no control-plane error caused the
+   * failure. It is built from the statement label of the query being handled
+   * plus the check that failed, so it names a branch without carrying any row
+   * value. Absent when `cause` explains the failure instead.
+   */
+  readonly reason?: string;
+}> {}
 
 function ownershipFailure(error: unknown) {
   return new HnsCommunityRootImportRejected({

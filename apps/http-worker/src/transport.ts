@@ -579,22 +579,49 @@ const retainBoundaryFailure = (
   error: unknown,
   constrained: unknown,
 ): void => {
-  if (errorCodeAndStatus(constrained).code !== "internal_error") return;
-  const disposition: BoundaryFailureDisposition =
-    constrained === error ? "passthrough" : "replaced";
-  console.error(
-    BOUNDARY_FAILURE_EVENT,
-    boundaryFailureDiagnostic({
+  // Reporting must never become the failure. Inspecting a thrown value runs
+  // whatever accessors it defines, and the request identifier and endpoint are
+  // worth keeping even when nothing else can be read, so a minimal record is
+  // written instead and the original error is still the one that propagates.
+  let identity: { readonly requestId: string; readonly disposition: BoundaryFailureDisposition };
+  try {
+    if (errorCodeAndStatus(constrained).code !== "internal_error") return;
+    identity = {
       requestId: requestId(context),
-      endpoint: binding.name,
-      // The declared route pattern, never the requested URL: a path parameter
-      // or query string is caller-controlled text.
-      route: binding.path,
-      method: binding.method,
-      disposition,
-      error,
-    }),
-  );
+      disposition: constrained === error ? "passthrough" : "replaced",
+    };
+  } catch {
+    return;
+  }
+  try {
+    console.error(
+      BOUNDARY_FAILURE_EVENT,
+      boundaryFailureDiagnostic({
+        requestId: identity.requestId,
+        endpoint: binding.name,
+        // The declared route pattern, never the requested URL: a path parameter
+        // or query string is caller-controlled text.
+        route: binding.path,
+        method: binding.method,
+        disposition: identity.disposition,
+        error,
+      }),
+    );
+  } catch {
+    try {
+      console.error(BOUNDARY_FAILURE_EVENT, {
+        request_id: identity.requestId,
+        endpoint: binding.name,
+        route: binding.path,
+        method: binding.method,
+        disposition: identity.disposition,
+        error_name: "unreadable",
+        diagnostic_unavailable: true,
+      });
+    } catch {
+      // A logger that throws is not worth a third attempt.
+    }
+  }
 };
 
 const corsOrigin = (
