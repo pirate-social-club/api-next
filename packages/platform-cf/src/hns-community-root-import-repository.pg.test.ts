@@ -803,7 +803,7 @@ suite("community HNS root-import repositories", () => {
 
       // Failed provisioning can leave a zone without retaining a result.
       const failure = await admin.query(
-        "SELECT * FROM finalize_hns_authority_provision_job_v1($1,$2,$3,$4,'failed',NULL,NULL,NULL,NULL,'authority_unavailable')",
+        "SELECT * FROM finalize_hns_authority_provision_job_v1($1,$2,$3,$4,'failed',NULL,NULL,NULL,NULL,'root_unavailable')",
         [
           claim.rows[0].provision_job_id,
           "provisional-executor",
@@ -812,6 +812,10 @@ suite("community HNS root-import repositories", () => {
         ],
       );
       expect(failure.rows[0].outcome).toBe("failed");
+      expect((await current())?.session).toMatchObject({
+        status: "failed",
+        failure_reason: "root_resource_unavailable",
+      });
       const held = async () =>
         (
           await admin.query("SELECT hns_community_root_import_reservation_held_v1($1) AS held", [

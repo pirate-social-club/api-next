@@ -15,6 +15,7 @@ import {
 import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
 import {
   HnsCommunityRootImportCurrentResponseV1,
+  type HnsCommunityRootImportFailureReasonV1,
   type HnsCommunityRootImportSessionResponseV1 as HnsCommunityRootImportSessionResponse,
   HnsCommunityRootImportSessionResponseV1,
 } from "@pirate/contracts";
@@ -23,7 +24,7 @@ import {
   canonicalJson,
   communityCreationProviderBindingHash,
 } from "@pirate/domain";
-import { Effect, type Layer, Option, Schema } from "effect";
+import { Effect, type Layer, Option, Predicate, Schema } from "effect";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -122,7 +123,21 @@ const sessionReadColumns = `session.*,
              AND attempt.actor_id=session.actor_id AND attempt.community_id=session.community_id
              AND attempt.attachment_intent_id=session.attachment_intent_id
              AND attempt.expected_revision=session.ownership_expected_revision
-  )) AS publication_check_pending`;
+  )) AS publication_check_pending,
+  (SELECT job.failure_code FROM hns_authority_provision_jobs AS job
+    WHERE job.provision_job_id=session.provision_job_id AND job.state='failed')
+    AS provision_failure_code,
+  (SELECT job.failure_code FROM hns_community_publication_jobs AS job
+    WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed')
+    AS publication_failure_code,
+  (SELECT job.failure_code FROM hns_root_import_observation_jobs AS job
+    WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed')
+    AS readiness_failure_code,
+  (SELECT observation.raw_response_bytes
+     FROM community_route_attachment_completion_observations AS observation
+    WHERE observation.namespace_session_id=session.namespace_session_id
+      AND observation.status='rejected'
+    ORDER BY observation.created_at DESC LIMIT 1) AS ownership_response_bytes`;
 
 const ownershipReadJoin = `LEFT JOIN community_route_attachment_namespace_sessions AS ownership
   ON ownership.namespace_session_id=session.namespace_session_id
@@ -163,6 +178,50 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
         root_import_session_id,
         provision_job_id,
       };
+}
+
+function ownershipFailureReason(row: Row): HnsCommunityRootImportFailureReasonV1 | null {
+  const raw = bytes(row.ownership_response_bytes);
+  if (raw === null) return null;
+  try {
+    const decoded = decodeStrictHnsJsonBytes(raw, 1_048_576);
+    if (!Predicate.isReadonlyObject(decoded) || decoded.status !== "rejected") return null;
+    switch (decoded.reason_code) {
+      case "txt_absent":
+        return "challenge_not_published";
+      case "txt_value_mismatch":
+        return "challenge_mismatch";
+      case "root_absent":
+      case "root_inactive":
+      case "expiry_horizon_insufficient":
+        return "root_resource_unavailable";
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function terminalFailureReason(row: Row): HnsCommunityRootImportFailureReasonV1 {
+  const ownership = ownershipFailureReason(row);
+  if (ownership !== null) return ownership;
+  switch (text(row, "provision_failure_code")) {
+    case "root_unavailable":
+      return "root_resource_unavailable";
+    case "provision_failed":
+      return "zone_not_provisioned";
+    case "authority_unavailable":
+      return "provider_unavailable";
+  }
+  switch (text(row, "readiness_failure_code")) {
+    case "authority_mismatch":
+      return "dns_delegation_not_confirmed";
+    case "authority_unavailable":
+    case "observation_failed":
+      return "provider_unavailable";
+  }
+  return "provider_unavailable";
 }
 
 function sessionResponse(
@@ -273,6 +332,7 @@ function sessionResponse(
               ? {
                   ...base,
                   status,
+                  failure_reason: status === "failed" ? terminalFailureReason(row) : null,
                   publish_plan: plan,
                   publish_plan_sha256: planHash,
                   readiness_result_sha256: readinessHash,

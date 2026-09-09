@@ -323,14 +323,38 @@ const HnsCommunityRootImportReadyResponseV1 = Schema.Struct({
   retry_after_seconds: Schema.Null,
 });
 
-const HnsCommunityRootImportTerminalResponseV1 = Schema.Struct({
+export const HnsCommunityRootImportFailureReasonV1 = Schema.Literals([
+  "challenge_mismatch",
+  "dns_delegation_not_confirmed",
+  "root_resource_unavailable",
+  "zone_not_provisioned",
+  "challenge_not_published",
+  "provider_unavailable",
+]);
+export type HnsCommunityRootImportFailureReasonV1 = Schema.Schema.Type<
+  typeof HnsCommunityRootImportFailureReasonV1
+>;
+
+const HnsCommunityRootImportTerminalBaseV1 = {
   ...HnsCommunityRootImportSessionBaseV1,
-  status: Schema.Literals(["activated", "failed", "expired"]),
   publish_plan: Schema.NullOr(HnsRootImportPublishPlanV1),
   publish_plan_sha256: Schema.NullOr(Sha256Hex),
   readiness_result_sha256: Schema.NullOr(Sha256Hex),
   retry_after_seconds: Schema.Null,
-});
+} as const;
+
+const HnsCommunityRootImportTerminalResponseV1 = Schema.Union([
+  Schema.Struct({
+    ...HnsCommunityRootImportTerminalBaseV1,
+    status: Schema.Literal("failed"),
+    failure_reason: Schema.optional(HnsCommunityRootImportFailureReasonV1),
+  }),
+  Schema.Struct({
+    ...HnsCommunityRootImportTerminalBaseV1,
+    status: Schema.Literals(["activated", "expired"]),
+    failure_reason: Schema.optional(Schema.Null),
+  }),
+]);
 
 export const HnsCommunityRootImportSessionResponseV1 = Schema.Union([
   HnsCommunityRootImportAwaitingOwnershipResponseV1,

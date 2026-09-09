@@ -109,4 +109,34 @@ describe("HNS root-import contract", () => {
     });
     expect(Option.isSome(result)).toBe(true);
   });
+
+  test("bounds community failure reasons while accepting older terminal responses", () => {
+    const terminal = {
+      community_id: "community_fixture",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      revision: 3,
+      expires_at: "2026-09-09T00:00:00.000Z",
+      replayed: false,
+      status: "failed",
+      publish_plan: null,
+      publish_plan_sha256: null,
+      readiness_result_sha256: null,
+      retry_after_seconds: null,
+    };
+    expect(Schema.is(HnsCommunityRootImportSessionResponseV1)(terminal)).toBe(true);
+    expect(
+      Schema.is(HnsCommunityRootImportSessionResponseV1)({
+        ...terminal,
+        failure_reason: "root_resource_unavailable",
+      }),
+    ).toBe(true);
+    expect(
+      Schema.is(HnsCommunityRootImportSessionResponseV1)({
+        ...terminal,
+        failure_reason: "raw_driver_failure",
+      }),
+    ).toBe(false);
+  });
 });
