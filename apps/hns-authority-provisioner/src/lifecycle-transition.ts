@@ -79,7 +79,7 @@ export async function commitLifecycleEventInTransaction(
       decision.outcome.kind,
       decision.outcome.reason,
       next === null ? null : next.phase,
-      next === null ? "{}" : hnsRootImportLifecycleDeadlinePatchV1(next),
+      next === null ? "{}" : hnsRootImportLifecycleDeadlinePatchV1(next, state),
       JSON.stringify(
         decision.requested_work.map((work) => ({
           kind: work.kind,

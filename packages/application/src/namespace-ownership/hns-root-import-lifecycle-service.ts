@@ -172,20 +172,40 @@ export function hnsRootImportLifecycleStateFromRowV1(
 }
 
 /**
- * The patch the commit function applies. Every field is sent explicitly,
- * including nulls, so a transition that clears a deadline clears it instead of
- * inheriting the previous value.
+ * The patch the commit function applies.
+ *
+ * A timestamp is sent only when the prior state did not already hold it. Two
+ * reasons, both load-bearing. The anchor and the finality deadline are
+ * immutable once set and the database enforces that with `IS DISTINCT FROM`,
+ * and PostgreSQL keeps microseconds while a JavaScript `Date` keeps
+ * milliseconds — so resending a stored value at all would drift it and trip
+ * the guard. Omitting it lets the commit function's COALESCE keep exactly what
+ * is stored, which is also what "anchored exactly once, never recomputed on
+ * restart" requires.
  */
 export function hnsRootImportLifecycleDeadlinePatchV1(
   state: HnsRootImportLifecycleStateV1,
+  prior?: HnsRootImportLifecycleStateV1,
 ): string {
   const iso = (value: number | null): string | null =>
     value === null ? null : new Date(value).toISOString();
+  /** Established values are never rewritten, only established. */
+  const established = (next: number | null, previous: number | null | undefined): string | null =>
+    previous === null || previous === undefined ? iso(next) : null;
   return JSON.stringify({
-    plan_exposed_at: iso(state.plan_exposed_at_epoch_ms),
-    publication_deadline_at: iso(state.publication_deadline_at_epoch_ms),
-    first_current_observation_at: iso(state.first_current_observation_at_epoch_ms),
-    finality_deadline_at: iso(state.finality_deadline_at_epoch_ms),
+    plan_exposed_at: established(state.plan_exposed_at_epoch_ms, prior?.plan_exposed_at_epoch_ms),
+    publication_deadline_at: established(
+      state.publication_deadline_at_epoch_ms,
+      prior?.publication_deadline_at_epoch_ms,
+    ),
+    first_current_observation_at: established(
+      state.first_current_observation_at_epoch_ms,
+      prior?.first_current_observation_at_epoch_ms,
+    ),
+    finality_deadline_at: established(
+      state.finality_deadline_at_epoch_ms,
+      prior?.finality_deadline_at_epoch_ms,
+    ),
     readiness_observed_at: iso(state.readiness_observed_at_epoch_ms),
     pending_reason: state.pending_reason,
     next_check_at: iso(state.next_check_at_epoch_ms),
