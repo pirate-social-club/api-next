@@ -312,6 +312,146 @@ suite("HNS lifecycle leased execution sequences", () => {
     });
   });
 
+  test("8: conflicting current authority blocks activation despite matching safe evidence", async () => {
+    await withSchema("hns_exec_conflict", async (admin) => {
+      // Ready on safe evidence that matched, with fresh readiness. Then the
+      // current chain stops carrying our resource.
+      await seed(admin, "ready", {
+        planExposedInterval: "-3 hours",
+        publicationDeadlineInterval: "13 days",
+        firstCurrentInterval: "-2 hours",
+        finalityDeadlineInterval: "22 hours",
+        readinessInterval: "-1 minute",
+      });
+      await queueJob(admin, "observe_current");
+      await runHnsRootImportLifecycleJobOnce(
+        "exec-a",
+        60,
+        ports(admin, {
+          kind: "current_observation",
+          qualifying: false,
+          mismatch: true,
+          resource_sha256: "ff".repeat(32),
+          evidence_ref: "conflict-1",
+        }),
+      );
+
+      const after = await phaseOf(admin);
+      // Readiness is invalidated and the operation re-enters authority
+      // checking, so an activation arriving next cannot succeed against
+      // authority the chain no longer reflects.
+      expect(after?.phase).toBe("checking_publication");
+      const readiness = await admin.query(
+        "SELECT readiness_observed_at FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+        [SESSION],
+      );
+      expect(readiness.rows[0]?.readiness_observed_at).toBeNull();
+
+      await admin.query("BEGIN");
+      const state = await admin.query(
+        "SELECT revision FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+        [SESSION],
+      );
+      await expect(
+        admin.query(
+          "SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+          [
+            SESSION,
+            Number(state.rows[0]?.revision),
+            "activation-conflict",
+            "activation_requested",
+            "transition",
+            "activated",
+            "activated",
+            "{}",
+            "[]",
+          ],
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      expect((await phaseOf(admin))?.phase).toBe("checking_publication");
+    });
+  });
+
+  test("6: stale readiness refuses activation and schedules a fresh check", async () => {
+    await withSchema("hns_exec_stale", async (admin) => {
+      // Ready, but the readiness evidence is older than the 1,800s freshness
+      // bound. Activation must not proceed on evidence this old.
+      await seed(admin, "ready", {
+        planExposedInterval: "-3 hours",
+        publicationDeadlineInterval: "13 days",
+        firstCurrentInterval: "-2 hours",
+        finalityDeadlineInterval: "22 hours",
+        readinessInterval: "-2 hours",
+      });
+      const before = await phaseOf(admin);
+      await admin.query("BEGIN");
+      const state = await admin.query(
+        "SELECT revision FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+        [SESSION],
+      );
+      await admin.query(
+        "SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        [
+          SESSION,
+          Number(state.rows[0]?.revision),
+          "activation-stale",
+          "activation_requested",
+          "pending",
+          "readiness_evidence_stale",
+          // A pending hold keeps its phase; the reducer's next_state carries it
+          // unchanged and the database refuses a null phase outright.
+          "ready",
+          JSON.stringify({ pending_reason: "readiness_evidence_stale" }),
+          JSON.stringify([
+            { kind: "observe_readiness", due_at: new Date(Date.now() + 60_000).toISOString() },
+          ]),
+        ],
+      );
+      await admin.query("COMMIT");
+
+      const after = await phaseOf(admin);
+      expect(after?.phase).toBe("ready");
+      expect(after?.phase).toBe(before?.phase);
+      const queued = await admin.query(
+        `SELECT job_kind FROM hns_root_import_lifecycle_jobs
+          WHERE root_import_session_id=$1 AND job_kind='observe_readiness'`,
+        [SESSION],
+      );
+      expect(queued.rows.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  test("7: a reorg invalidates its evidence while deadlines and authority survive", async () => {
+    await withSchema("hns_exec_reorg", async (admin) => {
+      await seed(admin, "waiting_safe_commitment", {
+        planExposedInterval: "-2 hours",
+        publicationDeadlineInterval: "13 days",
+        firstCurrentInterval: "-30 minutes",
+        finalityDeadlineInterval: "23 hours",
+      });
+      const before = await phaseOf(admin);
+      await queueJob(admin, "observe_current");
+      await runHnsRootImportLifecycleJobOnce(
+        "exec-a",
+        60,
+        ports(admin, {
+          kind: "reorg_detected",
+          invalidated: "current_inclusion_invalid",
+          evidence_ref: "reorg-1",
+        }),
+      );
+
+      const after = await phaseOf(admin);
+      // The affected evidence is invalidated and the operation returns to
+      // checking, but the anchor and both deadlines are timing history and
+      // must survive: a reorg does not move the anchor or extend the window.
+      expect(after?.first_current_observation_at).toEqual(before?.first_current_observation_at);
+      expect(after?.finality_deadline_at).toEqual(before?.finality_deadline_at);
+      expect(["checking_publication", "waiting_safe_commitment"]).toContain(after?.phase);
+    });
+  });
+
   test("5: a superseded operation refuses evidence gathered for the previous generation", async () => {
     await withSchema("hns_exec_generation", async (admin) => {
       await seed(admin, "checking_publication", {

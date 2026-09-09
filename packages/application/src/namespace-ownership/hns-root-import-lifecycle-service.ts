@@ -207,6 +207,13 @@ export function hnsRootImportLifecycleDeadlinePatchV1(
       prior?.finality_deadline_at_epoch_ms,
     ),
     readiness_observed_at: iso(state.readiness_observed_at_epoch_ms),
+    // Clearing is explicit. An absent field means "leave it alone", so an
+    // invalidation has to say so rather than send a null the patch cannot
+    // distinguish from omission.
+    clear_readiness_observed_at:
+      state.readiness_observed_at_epoch_ms === null &&
+      prior !== undefined &&
+      prior.readiness_observed_at_epoch_ms !== null,
     pending_reason: state.pending_reason,
     next_check_at: iso(state.next_check_at_epoch_ms),
     observation_count: state.observation_count,

@@ -367,6 +367,30 @@ export function decideHnsRootImportLifecycleV1(
       if (!event.qualifying) {
         // Only resource findings are findings about the name; unavailable
         // evidence never reaches this event.
+        if (state.phase === "checking_authority" || state.phase === "ready") {
+          // The chain no longer carries the resource this operation was made
+          // ready against. Holding as pending would leave the phase at `ready`
+          // with its readiness evidence intact, and a request arriving next
+          // would activate — publishing app and handle authority for a name
+          // whose current control has changed. The readiness evidence is
+          // invalidated and the operation re-enters authority checking.
+          return withState(
+            state,
+            {
+              // `checking_publication`, not `checking_authority`: the current
+              // chain no longer carries our resource, so publication evidence
+              // is what must be re-established. It is also a transition the
+              // ratified table permits from both phases.
+              phase: "checking_publication",
+              readiness_observed_at_epoch_ms: null,
+              pending_reason: event.mismatch
+                ? "current_authority_conflict"
+                : "current_authority_absent",
+            },
+            event.mismatch ? "current_authority_conflict" : "current_authority_absent",
+            [{ kind: "observe_current", due_at_epoch_ms: event.occurred_at_epoch_ms + cadenceMs }],
+          );
+        }
         return pending(
           state,
           event.mismatch ? "resource_mismatch_hold" : "resource_absent_hold",

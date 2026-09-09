@@ -1779,8 +1779,7 @@ END;
 $$;
 
 CREATE FUNCTION commit_hns_root_import_lifecycle_decision_v1(input_session_id text, input_expected_revision bigint, input_event_id text, input_event_name text, input_outcome text, input_decision_reason text, input_new_phase text, input_deadline_patch jsonb, input_requested_work jsonb) RETURNS TABLE(outcome text, revision bigint, replayed boolean)
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
     AS $$
 DECLARE
   lifecycle hns_root_import_lifecycle%ROWTYPE;
@@ -1840,10 +1839,13 @@ BEGIN
             (input_deadline_patch->>'finality_deadline_at')::TIMESTAMPTZ,
             finality_deadline_at
           ),
-          readiness_observed_at = COALESCE(
-            (input_deadline_patch->>'readiness_observed_at')::TIMESTAMPTZ,
-            readiness_observed_at
-          ),
+          readiness_observed_at = CASE
+            WHEN input_deadline_patch->>'clear_readiness_observed_at' = 'true' THEN NULL
+            ELSE COALESCE(
+              (input_deadline_patch->>'readiness_observed_at')::TIMESTAMPTZ,
+              readiness_observed_at
+            )
+          END,
           plan_exposed_at = COALESCE(
             (input_deadline_patch->>'plan_exposed_at')::TIMESTAMPTZ,
             plan_exposed_at

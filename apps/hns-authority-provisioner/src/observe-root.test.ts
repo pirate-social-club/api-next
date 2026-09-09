@@ -228,6 +228,58 @@ describe("HNS root readiness observation", () => {
     await expect(observe(1, now, 604_801)).rejects.toThrow();
   });
 
+  /** Drop every record of one type from a decoded plan's replacement list. */
+  const withoutType = (records: readonly unknown[], type: string): readonly unknown[] =>
+    records.filter((record) => (record as { readonly type?: unknown }).type !== type);
+
+  test("renewal accepts unrelated TXT drift while holding NS and DS continuity", async () => {
+    const state = await fixture();
+    async function renew(records: readonly unknown[]) {
+      return observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "renewal-drift", executor_id: "executor", lease_fence: 1 },
+        operation_kind: "renew_health_v1",
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          observe_current_resource: async () => observedCurrent(records),
+          reconcile_zone: async () => {},
+          inspect_zone: async () => ({ ...state.zone, created: false }),
+          observe_live: async () => state.live,
+        },
+        config: {
+          environment: "test",
+          valid_for_seconds: 604_800,
+          now: () => Date.parse("2026-09-05T06:00:00.000Z"),
+        },
+      });
+    }
+
+    // The owner adds a record of their own after activation. Their NS and DS
+    // still delegate to us, so authority is intact and renewal must proceed:
+    // an unrelated TXT is not a loss of control.
+    const drifted = [
+      ...state.plan.replacement_records,
+      { type: "TXT", txt: ["owner-added-after-activation=1"] },
+    ];
+    const renewed = await renew(drifted);
+    const decoded = await decodeHnsRootImportReadinessResultV1(renewed.result_bytes);
+    expect(decoded.result.root_label).toBe(state.request.root_label);
+
+    // Grant and generation continuity: renewal reports the same authority
+    // identity it was issued against, so a renewal cannot quietly migrate an
+    // operation onto different infrastructure.
+    const baseline = await decodeHnsRootImportReadinessResultV1(
+      (await renew(state.plan.replacement_records)).result_bytes,
+    );
+    expect(decoded.result.ds_records).toEqual(baseline.result.ds_records);
+    expect(decoded.result.authority_inventory_version).toBeDefined();
+
+    // Losing the delegation itself is a different matter and must not renew.
+    await expect(renew(withoutType(state.plan.replacement_records, "NS"))).rejects.toThrow();
+    await expect(renew(withoutType(state.plan.replacement_records, "DS"))).rejects.toThrow();
+  });
+
   test("reports owner-update pending without inspecting authority", async () => {
     const state = await fixture();
     let inspectedZone = false;
