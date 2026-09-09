@@ -31,46 +31,36 @@ const CONTROL_PLANE_FIELD_LIMIT = 120;
 const CODE_SHAPE = /^[A-Za-z0-9_.-]+$/u;
 
 /**
- * Names that make whatever follows them a secret. A value is redacted to the
- * end of its segment rather than to the end of its first token, because a
- * quoted secret may contain spaces and a header dump may hold several pairs.
+ * Names that make whatever follows them a secret.
+ *
+ * Everything from the name to the end of the text is discarded, not just the
+ * value. Deciding where a value ends is what leaked twice: a quoted value
+ * containing an escaped quote ended the match early, and so did a malformed one
+ * whose closing quote arrived before its tail. A collapsed one-line message has
+ * no reliable value terminator and no context after a credential worth the
+ * risk, so the remainder goes.
  */
 const SECRET_NAME =
-  "csrf[\\w-]*|passwd|password|secret|session[\\w-]*|api[_-]?key|access[_-]?token|refresh[_-]?token|token|signature|private[_-]?key|mnemonic|seed[_-]?phrase";
-
-/**
- * Header names whose value is a list. There is no safe tail after one: a cookie
- * header holds arbitrarily many pairs, so everything from the name onward is
- * dropped rather than up to the next separator. Whatever context follows a
- * credential dump in a collapsed message is not worth the risk of keeping it.
- */
-const LIST_SECRET_NAME = "authorization|proxy-authorization|cookie|set-cookie";
+  "authorization|proxy-authorization|cookie|set-cookie|csrf[\\w-]*|passwd|password|secret|session[\\w-]*|api[_-]?key|access[_-]?token|refresh[_-]?token|token|signature|private[_-]?key|mnemonic|seed[_-]?phrase";
 
 const REDACTIONS: readonly (readonly [RegExp, string])[] = [
-  // A list-valued credential header and everything after it.
-  [new RegExp(`"?\\b(${LIST_SECRET_NAME})\\b"?\\s*[:=].*$`, "iu"), "$1=[redacted]"],
+  // A secret assignment and everything after it.
+  [new RegExp(`"?\\b(${SECRET_NAME})\\b"?\\s*[:=].*$`, "iu"), "$1=[redacted]"],
   // `scheme://user:secret@host` in a connection string or URL.
   [/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s@/]+@/giu, "$1:[redacted]@"],
   // An HTTP credential presented inline.
   [/\b(bearer|basic)\s+[\w\-._~+/]+=*/giu, "$1 [redacted]"],
-  // A quoted secret value, whether or not the name is quoted and whether or not
-  // the value contains spaces: `password="a b c"`, `"password":"a b c"`.
-  [new RegExp(`"?\\b(${SECRET_NAME})\\b"?\\s*[:=]\\s*"[^"]*"`, "giu"), "$1=[redacted]"],
-  // An unquoted secret value, consumed to the end of its segment so a value
-  // containing spaces cannot leave a tail behind.
-  [new RegExp(`"?\\b(${SECRET_NAME})\\b"?\\s*[:=]\\s*[^;,]*`, "giu"), "$1=[redacted]"],
   // A signed token: three dot-separated base64url segments.
   [/\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu, "[redacted]"],
-  // Any remaining long unbroken opaque run. Identifiers this product logs on
-  // purpose (UUIDs, prefixed resource ids, SQLSTATEs) carry `-` or `_`, and a
-  // purely alphabetic run is a type or class name such as
-  // `HnsCommunityRootImportStorageFailed`, which is the most useful thing in
-  // the record; both are left intact. A 32-character run mixing in a digit or a
-  // base64 character is treated as a secret even when it is only a digest,
-  // because the two cannot be told apart here. The residual risk is an
-  // all-alphabetic secret of that length, which no token format this product
-  // handles produces.
-  [/\b(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{32,}={0,2}\b/gu, "[redacted]"],
+  // Any remaining long unbroken opaque run is treated as a secret, including a
+  // wholly alphabetic one: lowercase hex is a valid digest and exempting every
+  // alphabetic run would pass it through. The one exemption is a multi-hump
+  // CamelCase name carrying no digits — `HnsCommunityRootImportStorageFailed`,
+  // `ControlPlaneOperationTimedOut` — which is the diagnostic type name this
+  // record exists to carry, and which no hex digest or base64 token can be,
+  // since a digest has no uppercase and a token of this length essentially
+  // always carries a digit. Identifiers with `-` or `_` never reach this rule.
+  [/\b(?![A-Z][a-z]*(?:[A-Z][a-z]*)+\b)[A-Za-z0-9+/]{32,}={0,2}\b/gu, "[redacted]"],
 ];
 
 /** Remove credential shapes from free text that is about to be retained. */

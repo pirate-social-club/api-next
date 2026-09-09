@@ -24,16 +24,33 @@ describe("redactDiagnosticText", () => {
     );
   });
 
-  it("drops a list-valued credential header and everything after it", () => {
+  it("drops a credential header and everything after it", () => {
     expect(redactDiagnosticText('cookie: pirate_session=value-1; password="p4ssw0rd"')).toBe(
       "cookie=[redacted]",
     );
   });
 
-  it("removes a scalar named secret assigned with either separator", () => {
+  it("discards everything after a secret assignment, including trailing context", () => {
     expect(redactDiagnosticText('user=someone; password="p4ssw0rd"; retry=1')).toBe(
-      "user=someone; password=[redacted]; retry=1",
+      "user=someone; password=[redacted]",
     );
+  });
+
+  it.each([
+    // A value whose closing quote is escaped, so the quoted form ends late.
+    String.raw`{"password":"first\";SYNTHETIC_SECRET_TAIL"}`,
+    // A value whose closing quote arrives early, leaving a tail behind it.
+    '{"password":"first";SYNTHETIC_SECRET_TAIL"}',
+    // No quotes at all.
+    "password=first;SYNTHETIC_SECRET_TAIL",
+  ])("leaves no tail after a secret whose value has no reliable end", (leaked) => {
+    expect(redactDiagnosticText(leaked)).not.toContain("SYNTHETIC_SECRET_TAIL");
+    expect(redactDiagnosticText(leaked)).toContain("password=[redacted]");
+  });
+
+  it("discards the remainder for an unquoted or unterminated value", () => {
+    expect(redactDiagnosticText("password=unquoted value; retry=1")).toBe("password=[redacted]");
+    expect(redactDiagnosticText('token="unterminated; retry=1')).toBe("token=[redacted]");
   });
 
   it("removes a signed token presented without a name", () => {
@@ -62,6 +79,16 @@ describe("redactDiagnosticText", () => {
 
   it("still removes a long run once it mixes in a digit", () => {
     expect(redactDiagnosticText(`${"a".repeat(31)}9`)).toBe("[redacted]");
+  });
+
+  it("removes a wholly alphabetic digest, which lowercase hex can be", () => {
+    expect(redactDiagnosticText("abcdefabcdefabcdefabcdefabcdefabcdef")).toBe("[redacted]");
+    expect(redactDiagnosticText("f".repeat(64))).toBe("[redacted]");
+  });
+
+  it("removes a long single-hump or lowercase run that is not a type name", () => {
+    expect(redactDiagnosticText(`A${"a".repeat(40)}`)).toBe("[redacted]");
+    expect(redactDiagnosticText("z".repeat(40))).toBe("[redacted]");
   });
 
   it("keeps the identifiers this product logs on purpose", () => {
