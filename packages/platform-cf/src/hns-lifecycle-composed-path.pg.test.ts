@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { preflightEncodeHnsResourceV1 } from "@pirate/application/namespace-ownership";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Client } from "pg";
-import { makeHsdRootResourceObserver } from "../../../apps/hns-authority-provisioner/src/hsd.ts";
 import { makeHnsLifecycleObservePort } from "../../../apps/hns-authority-provisioner/src/lifecycle-evidence.ts";
 import { runHnsRootImportLifecycleJobOnce } from "../../../apps/hns-authority-provisioner/src/lifecycle-executor.ts";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";

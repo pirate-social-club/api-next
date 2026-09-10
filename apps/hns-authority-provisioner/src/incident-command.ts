@@ -2,7 +2,7 @@ import {
   decodeHnsResourceV1,
   hnsRetainedAuthorityFromPlanDocumentV1,
 } from "@pirate/application/namespace-ownership";
-import { makeHsdRootResourceObserver } from "./hsd.ts";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import {
   gatherHnsIncidentEvidenceV1,
   type HnsIncidentEvidencePortsV1,

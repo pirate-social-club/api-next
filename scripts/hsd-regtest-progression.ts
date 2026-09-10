@@ -12,7 +12,7 @@ import {
   hnsObservedResourceMatchesEncodedPlanV1,
   preflightEncodeHnsResourceV1,
 } from "@pirate/application/namespace-ownership";
-import { makeHsdRootResourceObserver } from "../apps/hns-authority-provisioner/src/hsd.ts";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 
 if (Bun.argv.slice(2).join(" ") !== "--execute") {
   throw new Error("Pass --execute to mutate the disposable regtest chain");

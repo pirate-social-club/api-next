@@ -12,6 +12,7 @@
     "@pirate/application": "workspace:*",
     "@pirate/domain": "workspace:*",
     "@pirate/hns-dns-runtime": "workspace:*",
+    "@pirate/platform-cf": "workspace:*",
     "pg": "8.16.3"
   }
 }

@@ -4,8 +4,8 @@ import {
   decodeHnsResourceV1,
   preflightEncodeHnsResourceV1,
 } from "@pirate/application/namespace-ownership";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Client } from "pg";
-import { makeHsdRootResourceObserver } from "../../../apps/hns-authority-provisioner/src/hsd.ts";
 import { gatherHnsIncidentEvidenceV1 } from "../../../apps/hns-authority-provisioner/src/incident-evidence.ts";
 import { makeHnsIncidentHsdReadsV1 } from "../../../apps/hns-authority-provisioner/src/incident-hsd.ts";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";

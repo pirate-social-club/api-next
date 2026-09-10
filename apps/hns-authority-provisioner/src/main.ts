@@ -4,9 +4,9 @@ import type {
   HnsRootDelegationDsV1,
   HnsRootResourceRecordV1,
 } from "@pirate/application/namespace-ownership";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Client } from "pg";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
-import { makeHsdRootResourceObserver } from "./hsd.ts";
 import { runHnsIncidentReportCommandV1 } from "./incident-command.ts";
 import { makeHnsLifecycleObservePort } from "./lifecycle-evidence.ts";
 import { runHnsRootImportLifecycleJobOnce } from "./lifecycle-executor.ts";
