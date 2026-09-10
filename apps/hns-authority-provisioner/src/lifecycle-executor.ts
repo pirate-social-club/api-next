@@ -128,7 +128,8 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
    */
   readonly record_observation?: (
     client: LifecycleTransactionClient,
-    rootImportSessionId: string,
+    job: HnsLifecycleClaimV1,
+    executorId: string,
     summary: HnsLifecycleObservationSummaryV1,
   ) => Promise<void>;
   readonly review?: (
@@ -365,7 +366,7 @@ export async function runHnsRootImportLifecycleJobOnce(
           ? evidence.summary
           : undefined;
       if (summary !== undefined) {
-        await ports.record_observation(client, job.root_import_session_id, summary);
+        await ports.record_observation(client, job, executorId, summary);
       }
     }
     const outcome = evidence.kind === "provider_failure" ? "retry" : "completed";

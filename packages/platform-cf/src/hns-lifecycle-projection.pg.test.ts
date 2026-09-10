@@ -232,12 +232,47 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         const before = (await read(connection))?.lifecycle as Record<string, unknown>;
 
         // The runner accepts a safe observation at a later tip, through the
-        // function the runner itself calls.
+        // function the runner itself calls — under a real claimed lease, which
+        // is what that function now requires.
         await admin.query(
-          `SELECT record_hns_root_import_lifecycle_observation_v1(
-             $1,'safe',$2,3300,3248,3295, TIMESTAMPTZ '2026-09-10T11:59:30Z')`,
-          [sessionId, "4".repeat(64)],
+          `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
+             VALUES ($1,'observe_safe', clock_timestamp() - interval '1 second')`,
+          [sessionId],
         );
+        const claimed = await admin.query<Record<string, unknown>>(
+          "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+          ["projection-executor", 60],
+        );
+        const job = claimed.rows[0];
+        expect(job).toBeDefined();
+        const written = await admin.query<{ readonly outcome: string }>(
+          `SELECT record_hns_root_import_lifecycle_observation_v1(
+             $1,$2,$3,$4,'safe',$5,3300,3248,3295,
+             TIMESTAMPTZ '2026-09-10T11:59:30Z') AS outcome`,
+          [
+            sessionId,
+            job?.lifecycle_job_id,
+            "projection-executor",
+            Number(job?.lease_fence),
+            "4".repeat(64),
+          ],
+        );
+        expect(written.rows[0]?.outcome).toBe("recorded");
+
+        // A worker that has lost its lease writes nothing, so the projection
+        // can never report evidence nobody can vouch for.
+        const stale = await admin.query<{ readonly outcome: string }>(
+          `SELECT record_hns_root_import_lifecycle_observation_v1(
+             $1,$2,$3,$4,'current',$5,9999,NULL,NULL, clock_timestamp()) AS outcome`,
+          [
+            sessionId,
+            job?.lifecycle_job_id,
+            "projection-executor",
+            Number(job?.lease_fence) - 1,
+            "9".repeat(64),
+          ],
+        );
+        expect(stale.rows[0]?.outcome).toBe("lease_conflict");
         const after = (await read(connection))?.lifecycle as Record<string, unknown>;
 
         expect(after.observation).not.toEqual(before.observation);
@@ -270,7 +305,7 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         await expect(
           admin.query(
             `SELECT record_hns_root_import_lifecycle_observation_v1(
-               $1,'sideways',$2,3300,NULL,NULL, clock_timestamp())`,
+               $1,1,'projection-executor',1,'sideways',$2,3300,NULL,NULL, clock_timestamp())`,
             [sessionId, "4".repeat(64)],
           ),
         ).rejects.toThrow(/invalid HNS lifecycle observation evidence/u);

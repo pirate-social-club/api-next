@@ -87,10 +87,18 @@ const recordFinding = (admin: Client, finding: Finding, generation = 1) =>
     ],
   );
 
-const authorize = (admin: Client, evidenceRef: string, action: string, ttl = 3_600) =>
+const FRESHNESS_SECONDS = 3_600;
+
+const authorize = (
+  admin: Client,
+  evidenceRef: string,
+  action: string,
+  ttl = 3_600,
+  freshness = FRESHNESS_SECONDS,
+) =>
   admin.query<Record<string, unknown>>(
-    "SELECT * FROM authorize_hns_root_import_recovery_v1($1,$2,$3,$4)",
-    [session, evidenceRef, action, ttl],
+    "SELECT * FROM authorize_hns_root_import_recovery_v1($1,$2,$3,$4,$5)",
+    [session, evidenceRef, action, ttl, freshness],
   );
 
 const apply = (
@@ -98,9 +106,10 @@ const apply = (
   evidenceRef: string,
   revision: number,
   phase = "checking_publication",
+  freshness = FRESHNESS_SECONDS,
 ) =>
   admin.query<Record<string, unknown>>(
-    "SELECT * FROM apply_hns_root_import_recovery_v1($1,$2,$3,$4,$5::jsonb)",
+    "SELECT * FROM apply_hns_root_import_recovery_v1($1,$2,$3,$4,$5::jsonb,$6)",
     [
       session,
       evidenceRef,
@@ -109,6 +118,7 @@ const apply = (
       JSON.stringify([
         { kind: "observe_current", due_at: new Date(Date.now() + 1_000).toISOString() },
       ]),
+      freshness,
     ],
   );
 
@@ -321,6 +331,157 @@ suite("HNS incident recovery on PostgreSQL 17", () => {
         expect((await recordFinding(admin, matching, 1)).rows[0]?.outcome).toBe(
           "generation_conflict",
         );
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "stale evidence is refused when authorizing and again when applying",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedRecovery(admin);
+        await recordFinding(admin, matching);
+        // The generation only moves on supersession, so it says nothing about
+        // what the owner did to their own name since the reading. A one-minute
+        // bound and a reading older than that is refused outright.
+        await admin.query("SELECT pg_sleep(1.2)");
+        expect(
+          (await authorize(admin, matching.evidence_ref, "resume", 3_600, 60)).rows[0]?.outcome,
+        ).toBe("recorded");
+        // Authorized inside the bound, applied outside it: permission was
+        // granted at one moment and is being used at another, so the reading's
+        // age is checked again here.
+        const applied = await apply(admin, matching.evidence_ref, 1, "checking_publication", 60);
+        expect(applied.rows[0]?.outcome).toBe("applied");
+        const stale = await withSchema(async (second) => {
+          await seedRecovery(second);
+          await recordFinding(second, matching);
+          await authorize(second, matching.evidence_ref, "resume", 3_600, 3_600);
+          await second.query("SELECT pg_sleep(1.2)");
+          return apply(second, matching.evidence_ref, 1, "checking_publication", 1);
+        });
+        expect(stale.rows[0]?.outcome).toBe("evidence_stale");
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a refused transition leaves the operator's single-use authorization unspent",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedRecovery(admin);
+        await recordFinding(admin, matching);
+        await authorize(admin, matching.evidence_ref, "resume");
+        // `activated` is not a permitted successor of recovery. The commit
+        // function raises, so the statement rolls back; nothing moves and the
+        // operator's single-use authorization is not spent.
+        await expect(apply(admin, matching.evidence_ref, 1, "activated")).rejects.toThrow(
+          /transition not permitted: recovery_required -> activated/u,
+        );
+        expect(await phaseOf(admin)).toMatchObject({ phase: "recovery_required", revision: "1" });
+        const unspent = await admin.query<Record<string, unknown>>(
+          `SELECT consumed_at FROM hns_root_import_recovery_authorizations
+            WHERE root_import_session_id = $1`,
+          [session],
+        );
+        expect(unspent.rows[0]?.consumed_at).toBeNull();
+        // And the same authorization still works for a phase that is permitted.
+        expect((await apply(admin, matching.evidence_ref, 1)).rows[0]?.outcome).toBe("applied");
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "adoption binds the operation to the published resource and demands fresh evidence",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedRecovery(admin);
+        // The operation has already anchored finality and been made ready
+        // against the plan it was created with.
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET first_current_observation_at = clock_timestamp() - interval '3 days',
+                  finality_deadline_at = clock_timestamp() - interval '2 days',
+                  readiness_observed_at = clock_timestamp() - interval '2 days'
+            WHERE root_import_session_id = $1`,
+          [session],
+        );
+        // Within the generation the plan digest cannot be rewritten at all.
+        await expect(
+          admin.query(
+            `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256 = $2
+              WHERE root_import_session_id = $1`,
+            [session, otherDigest],
+          ),
+        ).rejects.toThrow(/plan digest is immutable/u);
+
+        const adopted: Finding = {
+          evidence_ref: "recovery:adopt-published",
+          classification: "matching_authority_available",
+          reason: "published_resource_references_authority",
+          supported_action: "adopt",
+        };
+        // The finding attributes the published bytes to a transaction; those
+        // bytes, and nothing the caller supplies, are what adoption binds to.
+        await admin.query<Record<string, unknown>>(
+          `SELECT * FROM record_hns_root_import_recovery_finding_v1(
+             $1,1,$2,'matching_authority_available','published_resource_references_authority',
+             'adopt',$3,3301,$4,$5,NULL,NULL,true,true)`,
+          [session, adopted.evidence_ref, txid, otherDigest, planDigest],
+        );
+        await authorize(admin, adopted.evidence_ref, "adopt");
+
+        // Every phase after checking asserts evidence adoption discards.
+        expect(
+          (await apply(admin, adopted.evidence_ref, 1, "checking_authority")).rows[0]?.outcome,
+        ).toBe("adoption_target_invalid");
+
+        const applied = await apply(admin, adopted.evidence_ref, 1, "checking_publication");
+        expect(applied.rows[0]?.outcome).toBe("applied");
+        const row = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision, generation, plan_encoded_resource_sha256,
+                  first_current_observation_at, finality_deadline_at, readiness_observed_at,
+                  plan_exposed_at, publication_deadline_at
+             FROM hns_root_import_lifecycle WHERE root_import_session_id = $1`,
+          [session],
+        );
+        const state = row.rows[0];
+        // Bound to what is published, on a new generation.
+        expect(state?.plan_encoded_resource_sha256).toBe(otherDigest);
+        expect(state?.generation).toBe("2");
+        expect(state?.phase).toBe("checking_publication");
+        // Fresh safe-view and readiness evidence are required again: the old
+        // anchor, its deadline and the readiness it produced are all gone.
+        expect(state?.first_current_observation_at).toBeNull();
+        expect(state?.finality_deadline_at).toBeNull();
+        expect(state?.readiness_observed_at).toBeNull();
+        // The exposure record is not rewritten. Adoption changes what the
+        // operation is measured against, not the history of what was issued.
+        expect(state?.plan_exposed_at).not.toBeNull();
+        expect(state?.publication_deadline_at).not.toBeNull();
+
+        // On the new generation the digest is immutable again, and evidence
+        // recorded against the old generation no longer applies.
+        await expect(
+          admin.query(
+            `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256 = $2
+              WHERE root_import_session_id = $1`,
+            [session, planDigest],
+          ),
+        ).rejects.toThrow(/plan digest is immutable/u);
+        expect((await recordFinding(admin, matching, 1)).rows[0]?.outcome).toBe(
+          "generation_conflict",
+        );
+        // And a generation never moves backwards.
+        await expect(
+          admin.query(
+            "UPDATE hns_root_import_lifecycle SET generation = 1 WHERE root_import_session_id = $1",
+            [session],
+          ),
+        ).rejects.toThrow(/generation never decreases/u);
       });
     },
     BUDGET_MS,

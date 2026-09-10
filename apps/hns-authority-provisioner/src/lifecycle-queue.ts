@@ -134,11 +134,14 @@ export function makePostgresHnsRootImportLifecycleQueue(
         };
       }),
     observe,
-    record_observation: async (client, rootImportSessionId, summary) => {
+    record_observation: async (client, job, executorId, summary) => {
       const result = await client.query<Record<string, unknown>>(
-        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7) AS outcome`,
+        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) AS outcome`,
         [
-          rootImportSessionId,
+          job.root_import_session_id,
+          job.lifecycle_job_id,
+          executorId,
+          job.lease_fence,
           summary.view,
           summary.resource_sha256,
           summary.tip_height,

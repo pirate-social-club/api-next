@@ -537,7 +537,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb) RETURNS TABLE(outcome text, revision bigint)
+CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, revision bigint, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
@@ -546,56 +546,89 @@ DECLARE
   finding hns_root_import_recovery_findings%ROWTYPE;
   recovery_grant hns_root_import_recovery_authorizations%ROWTYPE;
   committed RECORD;
+  rebound BIGINT;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
+  IF input_evidence_freshness_seconds IS NULL
+    OR input_evidence_freshness_seconds NOT BETWEEN 1 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS recovery evidence freshness bound';
+  END IF;
   SELECT * INTO lifecycle FROM hns_root_import_lifecycle
    WHERE root_import_session_id = input_session_id FOR UPDATE;
   IF NOT FOUND THEN
-    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT, NULL::BIGINT;
     RETURN;
   END IF;
   IF lifecycle.phase <> 'recovery_required' THEN
-    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   IF lifecycle.revision <> input_expected_revision THEN
-    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   SELECT * INTO finding FROM hns_root_import_recovery_findings
    WHERE root_import_session_id = input_session_id AND evidence_ref = input_evidence_ref;
   IF NOT FOUND THEN
-    RETURN QUERY SELECT 'finding_absent'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'finding_absent'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   IF finding.authority_generation <> lifecycle.generation THEN
-    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF finding.recorded_at <= database_now - (input_evidence_freshness_seconds * interval '1 second')
+  THEN
+    RETURN QUERY SELECT 'evidence_stale'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   SELECT * INTO recovery_grant FROM hns_root_import_recovery_authorizations
    WHERE recovery_finding_id = finding.recovery_finding_id FOR UPDATE;
   IF NOT FOUND THEN
-    RETURN QUERY SELECT 'authorization_absent'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'authorization_absent'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   IF recovery_grant.consumed_at IS NOT NULL THEN
-    -- Single use. A second application of the same authorization is refused
-    -- rather than replayed, because the first one already moved the operation.
-    RETURN QUERY SELECT 'authorization_consumed'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'authorization_consumed'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   IF recovery_grant.expires_at <= database_now THEN
-    RETURN QUERY SELECT 'authorization_expired'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'authorization_expired'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
   IF recovery_grant.authority_generation <> lifecycle.generation THEN
-    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
   END IF;
 
-  UPDATE hns_root_import_recovery_authorizations
-     SET consumed_at = database_now
-   WHERE recovery_authorization_id = recovery_grant.recovery_authorization_id;
+  IF recovery_grant.action = 'adopt' THEN
+    IF finding.covenant_resource_sha256 IS NULL THEN
+      -- Adoption binds to attributed bytes. Without them there is nothing to
+      -- bind to, and a finding that supports adoption should never lack them.
+      RETURN QUERY SELECT 'adoption_evidence_missing'::TEXT, lifecycle.revision,
+                          lifecycle.generation;
+      RETURN;
+    END IF;
+    IF input_target_phase <> 'checking_publication' THEN
+      -- Every later phase asserts evidence this rebinding has just discarded.
+      -- Adoption re-enters the checking phase and earns the rest again.
+      RETURN QUERY SELECT 'adoption_target_invalid'::TEXT, lifecycle.revision,
+                          lifecycle.generation;
+      RETURN;
+    END IF;
+    UPDATE hns_root_import_lifecycle
+       SET generation = lifecycle.generation + 1,
+           plan_encoded_resource_sha256 = finding.covenant_resource_sha256,
+           first_current_observation_at = NULL,
+           finality_deadline_at = NULL,
+           readiness_observed_at = NULL,
+           updated_at = database_now
+     WHERE root_import_session_id = input_session_id
+    RETURNING hns_root_import_lifecycle.generation INTO rebound;
+  ELSE
+    rebound := lifecycle.generation;
+  END IF;
 
   SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
     input_session_id,
@@ -609,14 +642,17 @@ BEGIN
     coalesce(input_requested_work, '[]'::jsonb)
   );
   IF committed.outcome IS DISTINCT FROM 'transition' THEN
-    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision;
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, rebound;
     RETURN;
   END IF;
-  RETURN QUERY SELECT 'applied'::TEXT, committed.revision;
+  UPDATE hns_root_import_recovery_authorizations
+     SET consumed_at = database_now
+   WHERE recovery_authorization_id = recovery_grant.recovery_authorization_id;
+  RETURN QUERY SELECT 'applied'::TEXT, committed.revision, rebound;
 END;
 $$;
 
-CREATE FUNCTION authorize_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_action text, input_ttl_seconds integer) RETURNS TABLE(outcome text, recovery_authorization_id bigint)
+CREATE FUNCTION authorize_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_action text, input_ttl_seconds integer, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, recovery_authorization_id bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
@@ -627,8 +663,11 @@ DECLARE
   inserted BIGINT;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
-  IF input_ttl_seconds IS NULL OR input_ttl_seconds NOT BETWEEN 60 AND 86400 THEN
-    RAISE EXCEPTION 'invalid HNS recovery recovery_grant window';
+  IF input_ttl_seconds IS NULL OR input_ttl_seconds NOT BETWEEN 60 AND 86400
+    OR input_evidence_freshness_seconds IS NULL
+    OR input_evidence_freshness_seconds NOT BETWEEN 1 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS recovery authorization window';
   END IF;
   SELECT * INTO lifecycle FROM hns_root_import_lifecycle
    WHERE root_import_session_id = input_session_id FOR UPDATE;
@@ -643,13 +682,18 @@ BEGIN
     RETURN;
   END IF;
   IF finding.authority_generation <> lifecycle.generation THEN
-    -- The evidence describes infrastructure the operation no longer holds.
     RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
     RETURN;
   END IF;
+  IF finding.recorded_at <= database_now - (input_evidence_freshness_seconds * interval '1 second')
+  THEN
+    -- The generation only moves on supersession. It says nothing about what
+    -- the owner did to their own name since this reading, so the reading's own
+    -- age has to be bounded separately.
+    RETURN QUERY SELECT 'evidence_stale'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
   IF finding.supported_action IS DISTINCT FROM input_action THEN
-    -- An operator may only authorize what the evidence supports. Authorizing
-    -- past a conflicting or insufficient finding is the whole failure mode.
     RETURN QUERY SELECT 'action_unsupported'::TEXT, NULL::BIGINT;
     RETURN;
   END IF;
@@ -7475,19 +7519,27 @@ $_$;
 
 CREATE FUNCTION guard_hns_root_import_lifecycle_anchor_v1() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
+DECLARE
+  rebinding BOOLEAN := NEW.generation > OLD.generation;
 BEGIN
-  IF NEW.first_current_observation_at IS DISTINCT FROM OLD.first_current_observation_at
-    AND OLD.first_current_observation_at IS NOT NULL THEN
-    RAISE EXCEPTION 'HNS lifecycle finality anchor is immutable';
+  IF NOT rebinding THEN
+    IF NEW.first_current_observation_at IS DISTINCT FROM OLD.first_current_observation_at
+      AND OLD.first_current_observation_at IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS lifecycle finality anchor is immutable';
+    END IF;
+    IF NEW.finality_deadline_at IS DISTINCT FROM OLD.finality_deadline_at
+      AND OLD.finality_deadline_at IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS lifecycle finality deadline is immutable';
+    END IF;
+    IF NEW.plan_encoded_resource_sha256 IS DISTINCT FROM OLD.plan_encoded_resource_sha256
+      AND OLD.plan_encoded_resource_sha256 IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS lifecycle plan digest is immutable';
+    END IF;
   END IF;
-  IF NEW.finality_deadline_at IS DISTINCT FROM OLD.finality_deadline_at
-    AND OLD.finality_deadline_at IS NOT NULL THEN
-    RAISE EXCEPTION 'HNS lifecycle finality deadline is immutable';
-  END IF;
-  IF NEW.plan_encoded_resource_sha256 IS DISTINCT FROM OLD.plan_encoded_resource_sha256
-    AND OLD.plan_encoded_resource_sha256 IS NOT NULL THEN
-    RAISE EXCEPTION 'HNS lifecycle plan digest is immutable';
+  IF NEW.generation < OLD.generation THEN
+    RAISE EXCEPTION 'HNS lifecycle generation never decreases';
   END IF;
   IF OLD.phase = 'failed' AND NEW.phase <> 'failed' THEN
     RAISE EXCEPTION 'HNS lifecycle terminal decisions allow no further transitions';
@@ -13621,10 +13673,13 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone) RETURNS text
+CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
+DECLARE
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
   IF input_view NOT IN ('current', 'safe')
     OR input_resource_sha256 !~ '^[0-9a-f]{64}$'
@@ -13634,6 +13689,21 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid HNS lifecycle observation evidence';
   END IF;
+  -- The same fence the decision itself commits under: state, holder, fence and
+  -- expiry. Evidence recorded by a worker that has lost its lease describes an
+  -- observation nobody can vouch for.
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+   WHERE lifecycle_job_id = input_lifecycle_job_id
+   FOR UPDATE;
+  IF NOT FOUND
+    OR job.root_import_session_id <> input_session_id
+    OR job.state <> 'leased'
+    OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence <> input_lease_fence
+    OR job.lease_expires_at <= database_now
+  THEN
+    RETURN 'lease_conflict';
+  END IF;
   UPDATE hns_root_import_lifecycle
      SET last_observation_view = input_view,
          last_observation_resource_sha256 = input_resource_sha256,
@@ -13641,7 +13711,7 @@ BEGIN
          last_observation_update_inclusion_height = input_update_inclusion_height,
          last_observation_commitment_height = input_commitment_height,
          last_observation_at = input_observed_at,
-         updated_at = clock_timestamp()
+         updated_at = database_now
    WHERE root_import_session_id = input_session_id;
   IF NOT FOUND THEN RETURN 'lifecycle_absent'; END IF;
   RETURN 'recorded';
