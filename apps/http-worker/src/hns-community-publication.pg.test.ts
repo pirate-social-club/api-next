@@ -7,9 +7,10 @@ import type {
 import {
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
+  preflightEncodeHnsResourceV1,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import { Client } from "pg";
 import { makeHnsCommunityPublicationQueue } from "../../../packages/platform-cf/src/hns-community-publication-queue.ts";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "../../../packages/platform-cf/src/hns-community-root-import-repository.ts";
@@ -28,7 +29,9 @@ import type { HnsAuthorityZoneResult } from "../../hns-authority-provisioner/src
 import { makePostgresHnsAuthorityProvisionQueue } from "../../hns-authority-provisioner/src/queue.ts";
 import { attachmentObserverFixture } from "../../hns-owner-verifier/src/attachment-observer.fixture.ts";
 import { handleRequest } from "../../hns-owner-verifier/src/index.ts";
+import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
+import { startHnsRootResourceRpcFixture } from "./hns-root-resource-rpc.fixture.ts";
 import { createHttpWorker } from "./transport.ts";
 
 function observedCurrent(records: readonly unknown[] = []): HnsChainObservationResultV1 {
@@ -69,6 +72,7 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
     await admin.connect();
     await admin.query(`CREATE SCHEMA "${schema}"`);
     const connection = `${url}${url?.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
+    const hsd = startHnsRootResourceRpcFixture();
     try {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query(`SET search_path TO "${schema}"`);
@@ -138,6 +142,17 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
       const services = {
         store,
         publicationQueue: queue,
+        currentView: makeProductionHnsActivationCurrentView(layer, {
+          enabled: true,
+          HNS_AUTHORITY_HSD_RPC_URL: hsd.url,
+          HNS_AUTHORITY_HSD_AUTHORIZATION: Redacted.make("Basic fixture"),
+          HNS_AUTHORITY_CHAIN_NETWORK: "regtest",
+          HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+          HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: 36,
+          HNS_AUTHORITY_SAFE_CONFIRMATIONS: 12,
+          HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: 86_400,
+          HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: 3_600,
+        }),
         ownership: {
           start: (input: Parameters<typeof startRouteAttachmentOwnership>[0]) =>
             startRouteAttachmentOwnership(input, {
@@ -486,6 +501,17 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
         },
       });
       expect(readiness.outcome).toBe("ready");
+      // This harness drives the legacy readiness writer, which persists the
+      // session result; the operation's lifecycle row is brought to the ready
+      // state the production readiness performer would have produced, exactly
+      // as the repository suite's activation fixture documents. The readiness
+      // handover that makes that performer live is a later deliverable.
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle
+            SET phase='ready', readiness_observed_at=clock_timestamp()
+          WHERE root_import_session_id=$1`,
+        [starting.root_import_session_id],
+      );
       const activatable = (await (await call(sessionUrl)).json()) as {
         status: string;
         revision: number;
@@ -493,6 +519,23 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
         readiness_result_sha256: string;
       };
       expect(activatable.status).toBe("ready");
+      // The current view serves the plan's own records, and the expected wire
+      // digest is prepared from those records independently of the HSD read.
+      // The lifecycle row's generation-bound encoded-resource digest is the
+      // same value, so qualification compares observed wire bytes against the
+      // retained plan rather than two reads of one source.
+      hsd.setRecords(ready.publish_plan.replacement_records);
+      const expectedWireDigest = (
+        await preflightEncodeHnsResourceV1(ready.publish_plan.replacement_records)
+      ).sha256;
+      expect(
+        (
+          await admin.query<{ plan_encoded_resource_sha256: string }>(
+            "SELECT plan_encoded_resource_sha256 FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+            [starting.root_import_session_id],
+          )
+        ).rows[0]?.plan_encoded_resource_sha256,
+      ).toBe(expectedWireDigest);
       const activated = await call(`${sessionUrl}/activate`, {
         expected_revision: activatable.revision,
         idempotency_key: "activate",
@@ -505,6 +548,7 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
         "activated",
       );
     } finally {
+      hsd.stop();
       await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
       await admin.end();
     }
