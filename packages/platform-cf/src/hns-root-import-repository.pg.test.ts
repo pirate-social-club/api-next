@@ -518,6 +518,19 @@ suite("Postgres 17 HNS root-import repository", () => {
           replayed: false,
         },
       });
+      // The older creation path now commits its lifecycle row with its session,
+      // so the operation has a server-decided phase from the moment it exists.
+      const lifecycle = await admin.query<Record<string, unknown>>(
+        `SELECT phase, revision, generation, policy_name
+           FROM hns_root_import_lifecycle WHERE root_import_session_id = $1`,
+        ["root-import-session"],
+      );
+      expect(lifecycle.rows).toHaveLength(1);
+      expect(lifecycle.rows[0]).toMatchObject({
+        phase: "preparing",
+        revision: "1",
+        generation: "1",
+      });
       const rootExclusivity = await admin.query<{ predicate: string }>(
         `SELECT pg_get_expr(index.indpred, index.indrelid) AS predicate
            FROM pg_index AS index

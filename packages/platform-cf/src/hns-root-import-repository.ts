@@ -21,7 +21,11 @@ import {
   hnsRootImportNameProofMessage,
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application";
-import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
+import {
+  decodeStrictHnsJsonBytes,
+  HNS_ROOT_IMPORT_LIFECYCLE_POLICY_NAME_V1,
+  hnsRootImportLifecyclePolicyDigest,
+} from "@pirate/application/namespace-ownership";
 import {
   type HnsRootImportSessionResponseV1 as HnsRootImportSessionResponse,
   HnsRootImportSessionResponseV1,
@@ -425,6 +429,25 @@ export function makeControlPlaneHnsRootImportRepository(
             const insertedRow = oneRow(insertedSession);
             if (insertedRow === undefined) return yield* Effect.fail(storageFailure());
             if (insertedRow === null) return { kind: "conflict" } as const;
+            // The lifecycle row is part of the creation record, exactly as it
+            // is on the community creation path: a session with no lifecycle
+            // row is a phase that can only be guessed later. Both rows commit
+            // in one transaction, and a replayed Start leaves both untouched.
+            yield* transaction.execute<Row>({
+              label: "hns.root-import.start.insert-lifecycle",
+              text: `INSERT INTO hns_root_import_lifecycle (
+                       root_import_session_id, root_label, phase, revision, generation,
+                       pending_reason, policy_name, policy_digest
+                     ) VALUES ($1,$2,'preparing',1,1,'preparing_retained_authority',$3,$4)
+                     ON CONFLICT (root_import_session_id) DO NOTHING`,
+              values: [
+                input.root_import_session_id,
+                input.root_label,
+                HNS_ROOT_IMPORT_LIFECYCLE_POLICY_NAME_V1,
+                hnsRootImportLifecyclePolicyDigest(),
+              ],
+              readonly: false,
+            });
             const response = responseFromRow(insertedRow, false, options);
             return response === null
               ? yield* Effect.fail(storageFailure())
