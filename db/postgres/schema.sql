@@ -1937,15 +1937,6 @@ BEGIN
      )
      AND selected_session.status = 'observing'
      AND selected_session.expires_at > database_now
-     -- Execution ownership: a lifecycle-managed operation is observed by
-     -- the lifecycle runner alone. Two owners reading the same chain and
-     -- driving the same authority is what let an outage look like a lost
-     -- name; the older readiness path yields the whole operation, and its
-     -- queued rows stay inert rather than being rewritten.
-     AND NOT EXISTS (
-       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-        WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
-     )
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -1976,15 +1967,6 @@ BEGIN
      )
      AND selected_session.status = 'observing'
      AND selected_session.expires_at > database_now
-     -- Execution ownership: a lifecycle-managed operation is observed by
-     -- the lifecycle runner alone. Two owners reading the same chain and
-     -- driving the same authority is what let an outage look like a lost
-     -- name; the older readiness path yields the whole operation, and its
-     -- queued rows stay inert rather than being rewritten.
-     AND NOT EXISTS (
-       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-        WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
-     )
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;

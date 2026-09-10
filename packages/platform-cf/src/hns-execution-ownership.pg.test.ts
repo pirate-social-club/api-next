@@ -128,100 +128,31 @@ async function schemaWithMigrations(admin: Client, schema: string): Promise<void
 
 suite("one execution owner per HNS root-import operation on PostgreSQL 17", () => {
   test(
-    "a lifecycle-managed operation is invisible to the older observation path",
+    "a lifecycle-managed operation is still claimable for readiness work",
     async () => {
-      const schema = `hns_ownership_${randomUUID().replaceAll("-", "")}`;
+      const schema = `hns_ownership_ready_${randomUUID().replaceAll("-", "").slice(0, 18)}`;
       const admin = new Client({ connectionString });
       await admin.connect();
       try {
         await schemaWithMigrations(admin, schema);
         await seedObservingSession(admin, {
-          session: "owned-by-lifecycle",
-          label: "ownedone",
-          lifecycle: true,
-        });
-        await seedObservingSession(admin, {
-          session: "owned-by-legacy",
-          label: "ownedtwo",
-          lifecycle: false,
-        });
-        await admin.query("COMMIT");
-
-        // The older path claims only the operation nothing else owns, and it
-        // keeps claiming that one rather than skipping the class entirely.
-        const first = await admin.query(
-          "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-          ["legacy-executor", 60],
-        );
-        expect(first.rows).toHaveLength(1);
-        expect(first.rows[0]?.root_import_session_id).toBe("owned-by-legacy");
-        const second = await admin.query(
-          "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-          ["legacy-executor-2", 60],
-        );
-        expect(second.rows).toHaveLength(0);
-
-        // The lifecycle-managed operation's legacy job is left exactly as it
-        // was: yielding ownership never rewrites another owner's job state.
-        const untouched = await admin.query(
-          `SELECT state, attempt_count, failure_code, leased_by
-           FROM hns_root_import_observation_jobs
-          WHERE root_import_session_id = 'owned-by-lifecycle'`,
-        );
-        expect(untouched.rows[0]).toMatchObject({
-          state: "queued",
-          attempt_count: 0,
-          failure_code: null,
-          leased_by: null,
-        });
-        // And its session was not failed by the exhaustion arm either.
-        const session = await admin.query(
-          "SELECT status FROM hns_root_import_sessions WHERE root_import_session_id = 'owned-by-lifecycle'",
-        );
-        expect(session.rows[0]?.status).toBe("observing");
-      } finally {
-        await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`).catch(() => undefined);
-        await admin.end().catch(() => undefined);
-      }
-    },
-    SCHEMA_BUDGET_MS,
-  );
-
-  test(
-    "the exhaustion arm also yields: an owned operation is never failed by the older path",
-    async () => {
-      const schema = `hns_ownership_exh_${randomUUID().replaceAll("-", "").slice(0, 20)}`;
-      const admin = new Client({ connectionString });
-      await admin.connect();
-      try {
-        await schemaWithMigrations(admin, schema);
-        await seedObservingSession(admin, {
-          session: "exhausted-owned",
-          label: "exhausted1",
+          session: "readiness-owned",
+          label: "readyowned",
           lifecycle: true,
         });
         await admin.query("COMMIT");
-        await admin.query(
-          `UPDATE hns_root_import_observation_jobs SET attempt_count = 20
-          WHERE root_import_session_id = 'exhausted-owned'`,
-        );
-
+        // 0141 excluded this claim and 0147 withdrew that. The lifecycle runner
+        // implements chain observation only; the readiness leg is the live DNS
+        // and gateway check that moves a session to `ready`, and nothing else
+        // performs it. Excluding it meant no community operation could ever
+        // become ready.
         const claimed = await admin.query(
           "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-          ["legacy-executor", 60],
+          ["readiness-executor", 60],
         );
-        expect(claimed.rows).toHaveLength(0);
-        const after = await admin.query(
-          `SELECT job.state, job.failure_code, session.status
-           FROM hns_root_import_observation_jobs AS job
-           JOIN hns_root_import_sessions AS session USING (root_import_session_id)
-          WHERE job.root_import_session_id = 'exhausted-owned'`,
-        );
-        expect(after.rows[0]).toMatchObject({
-          state: "queued",
-          failure_code: null,
-          status: "observing",
-        });
+        expect(claimed.rows).toHaveLength(1);
+        expect(claimed.rows[0]?.root_import_session_id).toBe("readiness-owned");
+        expect(claimed.rows[0]?.operation_kind).toBe("observe_root_v1");
       } finally {
         await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`).catch(() => undefined);
         await admin.end().catch(() => undefined);
@@ -287,12 +218,16 @@ suite("one execution owner per HNS root-import operation on PostgreSQL 17", () =
         );
         expect(drained.rows).toHaveLength(1);
         expect(drained.rows[0]?.job_kind).toBe("observe_current");
-        // And the legacy path cannot reclaim its own expired lease now.
+        // The legacy readiness job remains claimable: 0147 withdrew the
+        // ownership transfer, because the lifecycle runner does not perform
+        // readiness work and excluding it left nobody who did. The fence that
+        // survives is the one proven above — the lifecycle waits for an
+        // in-flight legacy lease rather than observing alongside it.
         const reclaimed = await admin.query(
           "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
           ["legacy-executor", 60],
         );
-        expect(reclaimed.rows).toHaveLength(0);
+        expect(reclaimed.rows).toHaveLength(1);
       } finally {
         await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`).catch(() => undefined);
         await admin.end().catch(() => undefined);
