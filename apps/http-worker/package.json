@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "hono": "4.12.34"
+    "hono": "4.13.5"
   },
   "devDependencies": {
     "@pirate/testing": "workspace:*"
