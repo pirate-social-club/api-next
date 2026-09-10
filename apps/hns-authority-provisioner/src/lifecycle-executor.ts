@@ -141,7 +141,22 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
     job: HnsLifecycleClaimV1,
     executorId: string,
   ) => Promise<HnsRetentionReviewerResultV1>;
+  /**
+   * Handles a claimed `observe_readiness` job. Readiness has its own atomic
+   * acceptance statement — result bytes and digest, session readiness, the
+   * lifecycle transition and job completion commit together — so it is
+   * dispatched here rather than through the generic evidence reducer.
+   */
+  readonly readiness?: (
+    job: HnsLifecycleClaimV1,
+    executorId: string,
+  ) => Promise<HnsLifecycleReadinessResultV1>;
   readonly now_epoch_ms: () => number;
+}>;
+
+export type HnsLifecycleReadinessResultV1 = Readonly<{
+  readonly outcome: "completed" | "failed" | "retry";
+  readonly reason: string;
 }>;
 
 export type HnsLifecycleExecutorResultV1 = Readonly<{
@@ -241,6 +256,17 @@ export async function runHnsRootImportLifecycleJobOnce(
   if (job.job_kind === "retention_review" && ports.review !== undefined) {
     const reviewed = await ports.review(job, executorId);
     return { claimed: true, outcome: reviewed.outcome, reason: reviewed.reason };
+  }
+
+  if (job.job_kind === "observe_readiness") {
+    if (ports.readiness === undefined) {
+      // A declared job without a performer is never marked successfully
+      // performed.
+      await ports.finalize(job, executorId, "failed", "readiness_performer_absent");
+      return { claimed: true, outcome: "failed", reason: "readiness_performer_absent" };
+    }
+    const readiness = await ports.readiness(job, executorId);
+    return { claimed: true, outcome: readiness.outcome, reason: readiness.reason };
   }
 
   const identity = await ports.identity(job.root_import_session_id);

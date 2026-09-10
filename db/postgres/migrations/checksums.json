@@ -149,6 +149,7 @@
     "0146_hns_recovery_adoption.sql": "d040bcbe054543970778d7dab041136a617f01d521fb1624c76216d43bcd8a04",
     "0147_hns_withdraw_readiness_ownership.sql": "8ac8896a7140fdc48d11d508609e0261215e2af6068e24cd8b079377543a7068",
     "0148_hns_observation_decision_fence_and_adoption_replay.sql": "86e87ec877a999008f9d15f9e86896e8414b266569a76afe4f40bd97f1792f76",
-    "0149_hns_observation_provenance_fence.sql": "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700"
+    "0149_hns_observation_provenance_fence.sql": "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700",
+    "0150_hns_readiness_ownership_handover.sql": "4e4b6436b2c483453fce346723909803b0f1df09d34d54b20ed2dab341a8ddf0"
   }
 }

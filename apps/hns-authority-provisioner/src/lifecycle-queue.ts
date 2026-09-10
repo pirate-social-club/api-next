@@ -8,6 +8,14 @@ import type {
   HnsLifecycleEvidenceV1,
   HnsLifecycleExecutorPortsV1,
 } from "./lifecycle-executor.ts";
+import type {
+  HnsLifecycleReadinessContextV1,
+  HnsLifecycleReadinessPortsV1,
+} from "./lifecycle-readiness.ts";
+import type {
+  HnsRootReadinessObservationConfig,
+  HnsRootReadinessObservationPorts,
+} from "./observe-root.ts";
 import type { HnsRetentionReviewerPortsV1 } from "./retention-reviewer.ts";
 
 /**
@@ -288,6 +296,119 @@ export function makePostgresHnsRetentionReviewerPorts(
           throw new Error("HNS retention review writer returned no result");
         }
         return { outcome: row.outcome };
+      }),
+    finalize,
+    now_epoch_ms: () => Date.now(),
+  };
+}
+
+/**
+ * The lifecycle readiness performer's database ports.
+ *
+ * The context read reaches the legacy session and provision tables for the
+ * same reason the retention reviewer does: the exposed plan and its provision
+ * result live there, and the lifecycle row deliberately does not duplicate
+ * them. Every failure to establish the context is reported as an absent
+ * operation rather than an invented one, and the plan bytes are checked
+ * against their stored digest before probes run.
+ */
+export function makePostgresHnsLifecycleReadinessPorts(
+  connectionString: string,
+  observe: HnsRootReadinessObservationPorts,
+  config: HnsRootReadinessObservationConfig,
+  finalize: HnsLifecycleExecutorPortsV1["finalize"],
+): HnsLifecycleReadinessPortsV1 {
+  if (connectionString.trim() !== connectionString || connectionString.length === 0) {
+    throw new Error("HNS lifecycle readiness configuration is invalid");
+  }
+  return {
+    context: (rootImportSessionId) =>
+      withClient(connectionString, async (client) => {
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT session.namespace_session_id, session.root_label, session.challenge_txt_value,
+                  session.ownership_result_sha256, session.publish_plan_sha256,
+                  session.publish_plan_bytes, session.expires_at,
+                  provision.result_sha256 AS provision_result_sha256,
+                  provision.result_bytes AS provision_result_bytes,
+                  lifecycle.revision AS lifecycle_revision, lifecycle.phase
+             FROM hns_root_import_lifecycle AS lifecycle
+             JOIN hns_root_import_sessions AS session
+               ON session.root_import_session_id = lifecycle.root_import_session_id
+             JOIN hns_authority_provision_jobs AS provision
+               ON provision.provision_job_id = session.provision_job_id
+            WHERE lifecycle.root_import_session_id = $1`,
+          [rootImportSessionId],
+        );
+        const row = result.rows[0];
+        if (result.rows.length !== 1 || row === undefined) return null;
+        const revision = safePositiveInteger(row.lifecycle_revision);
+        const publishPlanBytes =
+          row.publish_plan_bytes instanceof Uint8Array ? row.publish_plan_bytes : null;
+        const provisionResultBytes =
+          row.provision_result_bytes instanceof Uint8Array ? row.provision_result_bytes : null;
+        const publishPlanSha256 =
+          typeof row.publish_plan_sha256 === "string" ? row.publish_plan_sha256 : null;
+        const provisionResultSha256 =
+          typeof row.provision_result_sha256 === "string" ? row.provision_result_sha256 : null;
+        const ownershipResultSha256 =
+          typeof row.ownership_result_sha256 === "string" ? row.ownership_result_sha256 : null;
+        if (
+          revision === null ||
+          publishPlanBytes === null ||
+          provisionResultBytes === null ||
+          !(row.expires_at instanceof Date) ||
+          typeof row.namespace_session_id !== "string" ||
+          typeof row.root_label !== "string" ||
+          typeof row.challenge_txt_value !== "string" ||
+          typeof row.phase !== "string" ||
+          publishPlanSha256 === null ||
+          provisionResultSha256 === null ||
+          ownershipResultSha256 === null ||
+          !/^[0-9a-f]{64}$/u.test(publishPlanSha256) ||
+          !/^[0-9a-f]{64}$/u.test(provisionResultSha256) ||
+          !/^[0-9a-f]{64}$/u.test(ownershipResultSha256) ||
+          (await sha256Hex(publishPlanBytes)) !== publishPlanSha256 ||
+          (await sha256Hex(provisionResultBytes)) !== provisionResultSha256
+        ) {
+          throw new Error("HNS lifecycle readiness read an invalid operation");
+        }
+        const context: HnsLifecycleReadinessContextV1 = {
+          lifecycle_revision: revision,
+          phase: row.phase,
+          namespace_session_id: row.namespace_session_id,
+          root_label: row.root_label,
+          challenge_txt_value: row.challenge_txt_value,
+          ownership_result_sha256: ownershipResultSha256,
+          publish_plan_sha256: publishPlanSha256,
+          publish_plan_bytes: publishPlanBytes,
+          provision_result_sha256: provisionResultSha256,
+          provision_result_bytes: provisionResultBytes,
+          expires_at: row.expires_at.toISOString(),
+        };
+        return context;
+      }),
+    observe,
+    config,
+    record: (input) =>
+      withClient(connectionString, async (client) => {
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            input.root_import_session_id,
+            input.lifecycle_job_id,
+            input.executor_id,
+            input.lease_fence,
+            input.expected_revision,
+            input.result_bytes,
+            input.result_sha256,
+          ],
+        );
+        const row = result.rows[0];
+        if (result.rows.length !== 1 || row === undefined || typeof row.outcome !== "string") {
+          throw new Error("HNS lifecycle readiness writer returned no result");
+        }
+        const revision = row.revision === null ? null : safePositiveInteger(row.revision);
+        return { outcome: row.outcome, revision };
       }),
     finalize,
     now_epoch_ms: () => Date.now(),

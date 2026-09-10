@@ -11,10 +11,12 @@ import { runHnsIncidentReportCommandV1 } from "./incident-command.ts";
 import { makeHnsLifecycleObservePort } from "./lifecycle-evidence.ts";
 import { runHnsRootImportLifecycleJobOnce } from "./lifecycle-executor.ts";
 import {
+  makePostgresHnsLifecycleReadinessPorts,
   makePostgresHnsRetentionReviewerPorts,
   makePostgresHnsRootImportLifecycleQueue,
   nextHnsLifecycleJobDueEpochMs,
 } from "./lifecycle-queue.ts";
+import { runHnsRootImportReadinessOnce } from "./lifecycle-readiness.ts";
 import {
   type HnsRootReadinessAuthorityEndpointV1,
   makeLiveHnsRootReadinessObserverV1,
@@ -377,10 +379,33 @@ async function main(serve: boolean): Promise<void> {
     (rootLabel: string, view: "current" | "safe") => observeChain(rootLabel, view),
     lifecyclePorts.finalize,
   );
+  // Readiness is the one lifecycle responsibility whose acceptance is its own
+  // atomic statement. The performer runs the existing readiness probes and
+  // the writer persists the result, the session readiness, the lifecycle
+  // transition and the job completion together. It acts only when the
+  // persisted ownership marker is enabled by the handover transaction.
+  const readinessPorts = makePostgresHnsLifecycleReadinessPorts(
+    connectionString,
+    {
+      observe_current_resource: (rootLabel: string) => observeChain(rootLabel, "current"),
+      reconcile_zone: reconcileZone,
+      inspect_zone: inspectZone,
+      observe_live: observeLive,
+    },
+    {
+      environment: required("HNS_AUTHORITY_ENVIRONMENT"),
+      valid_for_seconds: readinessValidForSeconds(),
+    },
+    lifecyclePorts.finalize,
+  );
   const lifecycleWithReview = {
     ...lifecyclePorts,
     review: (job: Parameters<typeof runHnsRetentionReviewOnce>[0], reviewExecutorId: string) =>
       runHnsRetentionReviewOnce(job, reviewExecutorId, reviewerPorts),
+    readiness: (
+      job: Parameters<typeof runHnsRootImportReadinessOnce>[0],
+      readinessExecutorId: string,
+    ) => runHnsRootImportReadinessOnce(job, readinessExecutorId, readinessPorts),
   } as const;
 
   const runners: HnsExecutorRunnersV1 = {

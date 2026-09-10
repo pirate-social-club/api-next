@@ -81,6 +81,12 @@ GRANT EXECUTE ON FUNCTION record_hns_root_import_retention_review_v1(
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
   TO api_next_app;
+-- The atomic readiness acceptance: result bytes, session readiness, the
+-- lifecycle transition and job completion in one statement. It acts only
+-- when the persisted readiness ownership marker is enabled.
+GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
+  TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
+) TO api_next_app;
 
 -- The operator role is the only writer that can produce an authorization to
 -- delete retained authority or to apply a recovery decision. Its functions
@@ -100,3 +106,8 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_recovery_v1(
 GRANT EXECUTE ON FUNCTION apply_hns_root_import_recovery_v1(
   TEXT, TEXT, BIGINT, TEXT, JSONB, INTEGER
 ) TO api_next_operator;
+-- The readiness ownership handover is an operator transaction: it refuses
+-- while a conflicting lease is live, disposes obsolete rows and enables the
+-- persisted marker. It is deliberately not a runtime grant.
+GRANT EXECUTE ON FUNCTION begin_hns_root_import_readiness_ownership_v1(TEXT)
+  TO api_next_operator;

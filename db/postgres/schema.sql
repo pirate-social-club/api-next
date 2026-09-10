@@ -1369,6 +1369,106 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION begin_hns_root_import_readiness_ownership_v1(input_evidence_ref text) RETURNS TABLE(outcome text, dispositioned_jobs bigint, queued_jobs bigint, enabled_at timestamp with time zone)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  marker hns_root_import_execution_ownership%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  dispositioned BIGINT := 0;
+  queued BIGINT := 0;
+BEGIN
+  IF input_evidence_ref IS NULL
+    OR btrim(input_evidence_ref) IS DISTINCT FROM input_evidence_ref
+    OR octet_length(input_evidence_ref) NOT BETWEEN 1 AND 512
+  THEN
+    RAISE EXCEPTION 'invalid HNS readiness handover evidence';
+  END IF;
+
+  SELECT * INTO marker FROM hns_root_import_execution_ownership
+   WHERE responsibility = 'readiness'
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'marker_absent'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+  IF marker.enabled THEN
+    RETURN QUERY SELECT 'already_enabled'::TEXT, 0::BIGINT, 0::BIGINT, marker.enabled_at;
+    RETURN;
+  END IF;
+
+  -- Quiesce: a live legacy readiness lease on a lifecycle-managed operation
+  -- is a conflicting claim. The operator retries after it finishes or
+  -- expires; a stale observation cannot be accepted after handover anyway,
+  -- so the handover waits rather than racing it.
+  IF EXISTS (
+    SELECT 1
+      FROM hns_root_import_observation_jobs AS job
+      JOIN hns_root_import_lifecycle AS lifecycle
+        ON lifecycle.root_import_session_id = job.root_import_session_id
+     WHERE job.operation_kind = 'observe_root_v1'
+       AND job.state = 'leased'
+       AND job.lease_expires_at > database_now
+  ) OR EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_jobs AS job
+     WHERE job.state = 'leased'
+       AND job.lease_expires_at > database_now
+       AND job.job_kind IN ('observe_current', 'observe_safe', 'observe_readiness')
+  ) THEN
+    RETURN QUERY SELECT 'live_lease_present'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+
+  -- Obsolete queued or abandoned legacy readiness rows for operations the
+  -- lifecycle now owns receive a named disposition. Live rows were excluded
+  -- above; nothing is completed as though it had been performed.
+  UPDATE hns_root_import_observation_jobs AS job
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'readiness_ownership_transferred', completed_at = database_now,
+         updated_at = database_now
+   WHERE job.operation_kind = 'observe_root_v1'
+     AND (
+       job.state = 'queued'
+       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+     )
+     AND EXISTS (
+       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+        WHERE lifecycle.root_import_session_id = job.root_import_session_id
+     );
+  GET DIAGNOSTICS dispositioned = ROW_COUNT;
+
+  -- Unfinished readiness work is queued for the operation's current
+  -- generation exactly once: only phases where readiness is the next
+  -- evidence, and only when no current-generation readiness job is already
+  -- queued or leased.
+  INSERT INTO hns_root_import_lifecycle_jobs (
+    root_import_session_id, job_kind, due_at, generation
+  )
+  SELECT lifecycle.root_import_session_id, 'observe_readiness',
+         database_now, lifecycle.generation
+    FROM hns_root_import_lifecycle AS lifecycle
+   WHERE lifecycle.phase = 'checking_authority'
+     AND NOT EXISTS (
+       SELECT 1 FROM hns_root_import_lifecycle_jobs AS pending
+        WHERE pending.root_import_session_id = lifecycle.root_import_session_id
+          AND pending.job_kind = 'observe_readiness'
+          AND pending.generation = lifecycle.generation
+          AND pending.state IN ('queued', 'leased')
+     );
+  GET DIAGNOSTICS queued = ROW_COUNT;
+
+  UPDATE hns_root_import_execution_ownership
+     SET enabled = TRUE,
+         enabled_at = database_now,
+         evidence_ref = input_evidence_ref,
+         updated_at = database_now
+   WHERE responsibility = 'readiness';
+
+  RETURN QUERY SELECT 'enabled'::TEXT, dispositioned, queued, database_now;
+END;
+$$;
+
 CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, target_rating text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -1809,6 +1909,13 @@ BEGIN
    WHERE ((job.state = 'queued' AND job.due_at <= database_now)
       OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
      AND job.generation = lifecycle.generation
+     AND (
+       job.job_kind <> 'observe_readiness'
+       OR EXISTS (
+         SELECT 1 FROM hns_root_import_execution_ownership AS ownership
+          WHERE ownership.responsibility = 'readiness' AND ownership.enabled
+       )
+     )
      -- The reciprocal of the observation exclusion. A legacy readiness lease
      -- taken before the lifecycle row existed is still in flight, so the
      -- lifecycle runner waits for it to drain rather than observing the same
@@ -1976,6 +2083,21 @@ BEGIN
      )
      AND selected_session.status = 'observing'
      AND selected_session.expires_at > database_now
+     -- Readiness ownership handover: once the marker is enabled, the legacy
+     -- readiness claimant yields lifecycle-managed operations to the
+     -- lifecycle runner. Sessions with no lifecycle row keep the legacy
+     -- performer.
+     AND NOT (
+       job.operation_kind = 'observe_root_v1'
+       AND EXISTS (
+         SELECT 1 FROM hns_root_import_execution_ownership AS ownership
+          WHERE ownership.responsibility = 'readiness' AND ownership.enabled
+       )
+       AND EXISTS (
+         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+          WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+       )
+     )
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -2006,6 +2128,17 @@ BEGIN
      )
      AND selected_session.status = 'observing'
      AND selected_session.expires_at > database_now
+     AND NOT (
+       job.operation_kind = 'observe_root_v1'
+       AND EXISTS (
+         SELECT 1 FROM hns_root_import_execution_ownership AS ownership
+          WHERE ownership.responsibility = 'readiness' AND ownership.enabled
+       )
+       AND EXISTS (
+         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+          WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+       )
+     )
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -2180,6 +2313,177 @@ BEGIN
   RETURN QUERY SELECT input_outcome::TEXT, lifecycle.revision, FALSE;
 END;
 $$;
+
+CREATE FUNCTION commit_hns_root_import_readiness_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_expected_revision bigint, input_result_bytes bytea, input_result_sha256 text) RETURNS TABLE(outcome text, revision bigint, readiness_result_sha256 text)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  result JSONB;
+  database_now TIMESTAMPTZ;
+  readiness_event_id TEXT;
+  committed RECORD;
+  problem TEXT;
+BEGIN
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_lifecycle_job_id IS NULL
+    OR input_lifecycle_job_id <= 0
+    OR input_executor_id IS NULL
+    OR length(btrim(input_executor_id)) = 0
+    OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR input_lease_fence IS NULL
+    OR input_lease_fence < 0
+    OR input_expected_revision IS NULL
+    OR input_expected_revision <= 0
+    OR input_result_bytes IS NULL
+    OR octet_length(input_result_bytes) NOT BETWEEN 1 AND 1048576
+    OR input_result_sha256 IS NULL
+    OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+    OR encode(sha256(input_result_bytes), 'hex') IS DISTINCT FROM input_result_sha256
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle readiness result';
+  END IF;
+
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+   WHERE lifecycle_job_id = input_lifecycle_job_id
+   FOR UPDATE;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  database_now := clock_timestamp();
+
+  IF lifecycle.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF session.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM hns_root_import_execution_ownership AS ownership
+     WHERE ownership.responsibility = 'readiness' AND ownership.enabled
+  ) THEN
+    RETURN QUERY SELECT 'ownership_not_enabled'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  readiness_event_id :=
+    'readiness:' || input_lifecycle_job_id::text || ':' || input_lease_fence::text ||
+    ':' || input_result_sha256;
+
+  IF job.state = 'completed' THEN
+    IF EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle_history
+       WHERE root_import_session_id = input_session_id AND event_id = readiness_event_id
+    ) THEN
+      RETURN QUERY SELECT 'replayed'::TEXT, lifecycle.revision, input_result_sha256;
+      RETURN;
+    END IF;
+    RETURN QUERY SELECT 'conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF job.root_import_session_id IS DISTINCT FROM input_session_id
+    OR job.state IS DISTINCT FROM 'leased'
+    OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence IS DISTINCT FROM input_lease_fence
+    OR job.lease_expires_at <= database_now
+    OR job.job_kind IS DISTINCT FROM 'observe_readiness'
+    OR job.generation IS DISTINCT FROM lifecycle.generation
+  THEN
+    RETURN QUERY SELECT 'lease_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF lifecycle.phase IS DISTINCT FROM 'checking_authority' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF lifecycle.revision IS DISTINCT FROM input_expected_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF lifecycle.plan_encoded_resource_sha256 IS NULL THEN
+    RETURN QUERY SELECT 'plan_absent'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF session.status IS DISTINCT FROM 'observing' THEN
+    RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF session.expires_at <= database_now THEN
+    RETURN QUERY SELECT 'session_expired'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  BEGIN
+    result := convert_from(input_result_bytes, 'UTF8')::jsonb;
+    IF jsonb_typeof(result) IS DISTINCT FROM 'object' THEN
+      problem := 'shape';
+    ELSIF result->>'version' IS DISTINCT FROM 'pirate-hns-root-import-readiness-result-v1' THEN
+      problem := 'version';
+    ELSIF result->>'root_import_session_id' IS DISTINCT FROM input_session_id THEN
+      problem := 'session';
+    ELSIF result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256 THEN
+      problem := 'plan';
+    ELSIF (result->>'observed_at')::TIMESTAMPTZ > database_now THEN
+      problem := 'observed_future';
+    ELSIF (result->>'valid_until')::TIMESTAMPTZ <= database_now THEN
+      problem := 'expired';
+    ELSE
+      problem := NULL;
+    END IF;
+  EXCEPTION WHEN others THEN
+    problem := 'unreadable';
+  END;
+  IF problem IS NOT NULL THEN
+    RETURN QUERY SELECT 'invalid_result'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    readiness_event_id,
+    'readiness_observed',
+    'transition',
+    'readiness_retained',
+    'ready',
+    jsonb_build_object(
+      'readiness_observed_at', database_now,
+      'next_check_at', database_now + interval '1800 seconds',
+      'pending_reason', NULL
+    ),
+    '[]'::jsonb,
+    input_lifecycle_job_id,
+    input_lease_fence
+  );
+  IF committed.outcome IS DISTINCT FROM 'transition' THEN
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  UPDATE hns_root_import_sessions
+     SET status = 'ready',
+         revision = session.revision + 1,
+         readiness_result_bytes = input_result_bytes,
+         readiness_result_sha256 = input_result_sha256,
+         updated_at = database_now
+   WHERE root_import_session_id = input_session_id;
+  UPDATE hns_root_import_lifecycle_jobs
+     SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = NULL, completed_at = database_now, updated_at = database_now
+   WHERE lifecycle_job_id = input_lifecycle_job_id;
+  RETURN QUERY SELECT 'ready'::TEXT, committed.revision, input_result_sha256;
+END;
+$_$;
 
 CREATE FUNCTION community_handle_sales_creator_grant_id_v1(input_community_id text, input_account_id text) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT
@@ -3625,6 +3929,23 @@ BEGIN
     FROM hns_root_import_sessions
    WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id
    FOR UPDATE;
+  -- Ownership handover: readiness acceptance for a lifecycle-managed
+  -- operation belongs to the lifecycle runner once the marker is enabled. A
+  -- legacy lease that survived handover is refused and changes nothing.
+  IF input_outcome = 'ready'
+    AND job.operation_kind = 'observe_root_v1'
+    AND EXISTS (
+      SELECT 1 FROM hns_root_import_execution_ownership AS ownership
+       WHERE ownership.responsibility = 'readiness' AND ownership.enabled
+    )
+    AND EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+       WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+    )
+  THEN
+    RETURN QUERY SELECT 'ownership_conflict'::TEXT, session.root_import_session_id, session.revision;
+    RETURN;
+  END IF;
   IF job.state IN ('completed', 'failed') THEN
     IF job.state = 'completed'
       AND input_outcome = 'ready'
@@ -24477,6 +24798,17 @@ CREATE TABLE hns_root_import_activation_operations (
     CONSTRAINT hns_root_import_activation_operations_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (attachment_intent_id IS NOT NULL))))
 );
 
+CREATE TABLE hns_root_import_execution_ownership (
+    responsibility text NOT NULL,
+    enabled boolean DEFAULT false NOT NULL,
+    enabled_at timestamp with time zone,
+    evidence_ref text,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_root_import_execution_ownership_evidence_shape CHECK (((evidence_ref IS NULL) OR ((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 512))))),
+    CONSTRAINT hns_root_import_execution_ownership_marker_shape CHECK (((enabled AND (enabled_at IS NOT NULL)) OR ((NOT enabled) AND (enabled_at IS NULL)))),
+    CONSTRAINT hns_root_import_execution_ownership_responsibility_check CHECK ((responsibility = 'readiness'::text))
+);
+
 CREATE TABLE hns_root_import_lifecycle (
     root_import_session_id text NOT NULL,
     root_label text NOT NULL,
@@ -24562,7 +24894,7 @@ CREATE TABLE hns_root_import_lifecycle_jobs (
     generation bigint NOT NULL,
     CONSTRAINT hns_root_import_lifecycle_jobs_attempt_count_check CHECK ((attempt_count >= 0)),
     CONSTRAINT hns_root_import_lifecycle_jobs_generation_positive CHECK ((generation > 0)),
-    CONSTRAINT hns_root_import_lifecycle_jobs_job_kind_check CHECK ((job_kind = ANY (ARRAY['observe_current'::text, 'observe_safe'::text, 'observe_readiness'::text, 'reconcile_provider'::text, 'schedule_activation_window'::text, 'retention_review'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_jobs_job_kind_v2_check CHECK ((job_kind = ANY (ARRAY['observe_current'::text, 'observe_safe'::text, 'observe_readiness'::text, 'reconcile_provider'::text, 'retention_review'::text]))),
     CONSTRAINT hns_root_import_lifecycle_jobs_lease_fence_check CHECK ((lease_fence >= 0)),
     CONSTRAINT hns_root_import_lifecycle_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'completed'::text, 'failed'::text])))
 );
@@ -29060,6 +29392,8 @@ INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04
 
 INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
 
+INSERT INTO hns_root_import_execution_ownership VALUES ('readiness', false, NULL, NULL, '2000-01-01 00:00:00+00');
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -30207,6 +30541,9 @@ ALTER TABLE ONLY hns_root_import_activation_operations
 
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_operations_pkey PRIMARY KEY (operation_id);
+
+ALTER TABLE ONLY hns_root_import_execution_ownership
+    ADD CONSTRAINT hns_root_import_execution_ownership_pkey PRIMARY KEY (responsibility);
 
 ALTER TABLE ONLY hns_root_import_lifecycle_history
     ADD CONSTRAINT hns_root_import_lifecycle_history_pkey PRIMARY KEY (history_id);

@@ -139,7 +139,6 @@ export type HnsRootImportRequestedWorkV1 = Readonly<{
     | "observe_safe"
     | "observe_readiness"
     | "reconcile_provider"
-    | "schedule_activation_window"
     | "retention_review";
   readonly due_at_epoch_ms: number;
 }>;

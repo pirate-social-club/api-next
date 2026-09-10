@@ -107,6 +107,7 @@ function ports(
         root_import_session_id: String(row.root_import_session_id),
         job_kind: row.job_kind,
         lease_fence: Number(row.lease_fence),
+        generation: Number(row.generation),
       } as HnsLifecycleClaimV1;
     },
     identity: async (sessionId) => {
@@ -141,6 +142,44 @@ function ports(
         [job.lifecycle_job_id, executorId, job.lease_fence, outcome, failureCode],
       );
       return { outcome: String(finalized.rows[0]?.outcome) };
+    },
+    // The production readiness performer is the atomic writer covered by the
+    // ownership suite. Here the harness simulates its accepted commit so this
+    // file keeps testing the runner's dispatch and the phase sequence.
+    readiness: async (job, executorId) => {
+      await admin.query("BEGIN");
+      try {
+        const state = await admin.query(
+          "SELECT revision FROM hns_root_import_lifecycle WHERE root_import_session_id=$1",
+          [job.root_import_session_id],
+        );
+        await admin.query(
+          `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1(
+             $1,$2,$3,'readiness_observed','transition','readiness_retained','ready',
+             jsonb_build_object('readiness_observed_at', clock_timestamp(),
+               'next_check_at', clock_timestamp() + interval '1800 seconds'),
+             '[]'::jsonb,$4::bigint,$5::bigint)`,
+          [
+            job.root_import_session_id,
+            Number(state.rows[0]?.revision),
+            `readiness:${job.lifecycle_job_id}:${job.lease_fence}`,
+            job.lifecycle_job_id,
+            job.lease_fence,
+          ],
+        );
+        const finalized = await admin.query(
+          "SELECT * FROM finalize_hns_root_import_lifecycle_job_v1($1,$2,$3,'completed',NULL)",
+          [job.lifecycle_job_id, executorId, job.lease_fence],
+        );
+        if (String(finalized.rows[0]?.outcome) !== "completed") {
+          throw new Error("readiness harness finalize conflict");
+        }
+        await admin.query("COMMIT");
+        return { outcome: "completed" as const, reason: "readiness_retained" };
+      } catch (error) {
+        await admin.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      }
     },
     now_epoch_ms: () => Date.now(),
     ...overrides,
@@ -310,6 +349,14 @@ suite("HNS lifecycle leased execution sequences", () => {
         );
         expect((await phaseOf(admin))?.phase).toBe("checking_authority");
 
+        // Readiness is claimable only under the enabled ownership marker; the
+        // handover transaction is its production writer, and this harness
+        // enables it directly to exercise the runner's dispatch.
+        await admin.query(
+          `UPDATE hns_root_import_execution_ownership
+              SET enabled=TRUE, enabled_at=clock_timestamp(), evidence_ref='exec-suite'
+            WHERE responsibility='readiness'`,
+        );
         await queueJob(admin, "observe_readiness");
         await runHnsRootImportLifecycleJobOnce(
           "exec-a",
