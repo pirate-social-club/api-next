@@ -37,6 +37,11 @@ import {
 } from "../media/submission-service.ts";
 import type { M2Actor } from "../ports.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
+import {
+  type FrozenSongReservationPlan,
+  freezeSongReservationPlan,
+  type SongVideoIntervalServices,
+} from "./song-interval.ts";
 import type { VideoStageFact } from "./stage-facts.ts";
 import { VideoWorkflowTerminalError } from "./workflow-errors.ts";
 
@@ -119,6 +124,8 @@ export interface VideoMultipartUploadGateway {
 export type VideoReservationRecord = Readonly<{
   reservationId: string;
   communityId: string;
+  /** Immutable, chosen once at reservation. Everything downstream branches on it. */
+  intent: "original_audio" | "song_reference";
   actorAccountId: string;
   authorPersonaId: string;
   requestHash: string;
@@ -236,6 +243,8 @@ export interface VideoPublicationStore {
     idempotencyKey: string;
     responseSha256: string;
     parts: readonly VideoMultipartPart[];
+    /** Required exactly when the record's intent is `song_reference`. */
+    songPlan?: FrozenSongReservationPlan;
   }) => Promise<StoredReplay>;
   readonly getReservationForAuthor: (input: {
     reservationId: string;
@@ -387,6 +396,11 @@ export interface VideoPublicationStore {
 
 export type VideoPublicationServices = Readonly<{
   store: VideoPublicationStore;
+  /**
+   * Present only where song-backed video is composed. Absent, a song-reference
+   * request is refused as an unavailable capability, exactly as before.
+   */
+  songInterval?: SongVideoIntervalServices;
   multipart: VideoMultipartUploadGateway;
   sealer: MediaUploadSealer;
   personaServices: Pick<MediaSubmissionServices, "personaStore">;
@@ -546,15 +560,15 @@ function reservationDocument(
     "responseBytes" | "updatedAt" | "manifest" | "state" | "submissionId" | "operationId"
   >,
   parts: readonly VideoMultipartPart[],
+  songPlan?: FrozenSongReservationPlan,
 ): VideoUploadReservationV1 {
-  return {
+  const common = {
     reservation_id: record.reservationId,
     track: "video",
     slot: "primary_video",
     status: "awaiting_upload",
     author_persona_id: record.authorPersonaId,
     ingest_policy_revision: record.ingestPolicyRevision,
-    intent: "original_audio",
     upload: {
       method: "MULTIPART",
       upload_id: record.uploadId,
@@ -566,6 +580,31 @@ function reservationDocument(
         expires_at: part.expiresAt,
       })),
       expires_at: record.expiresAt,
+    },
+  } as const;
+  if (record.intent === "original_audio") return { ...common, intent: "original_audio" };
+  if (songPlan === undefined) {
+    throw new InternalError({ message: "A song-reference reservation requires its frozen plan" });
+  }
+  return {
+    ...common,
+    intent: "song_reference",
+    song_reference: {
+      song_post_id: songPlan.songPostId,
+      audio_revision: songPlan.audioRevision,
+      song_asset_id: songPlan.songAssetId,
+    },
+    reservation_policy_snapshot: {
+      observed_at_transition: "media_reservation_issued",
+      owner_policy_revision: songPlan.ownerPolicyRevision,
+      owner_policy_hash: songPlan.ownerPolicyHash,
+      derivative_video: songPlan.derivativeVideo,
+      observed_at: songPlan.observedAt,
+    },
+    interval: {
+      clip_start_samples: songPlan.clipStartSamples,
+      clip_duration_samples: songPlan.clipDurationSamples,
+      song_duration_samples: songPlan.songDurationSamples,
     },
   };
 }
@@ -599,7 +638,15 @@ export async function reserveVideoUpload(
     }),
   );
   if (prior !== null) return prior;
-  if (body.intent === "song_reference") throw capabilityUnavailable("song_reference");
+  let songPlan: FrozenSongReservationPlan | undefined;
+  if (body.intent === "song_reference") {
+    if (services.songInterval === undefined) throw capabilityUnavailable("song_reference");
+    // Revalidated here, from scratch, before any upload authority is issued.
+    songPlan = await freezeSongReservationPlan(
+      { actor: input.actor, body, observedAt: services.nowIso() },
+      services.songInterval,
+    );
+  }
 
   const reservationId = `media-reservation-${uuid(services)}`;
   const reservationExpiresAt = new Date(
@@ -633,6 +680,7 @@ export async function reserveVideoUpload(
   const base = {
     reservationId,
     communityId: input.communityId,
+    intent: body.intent,
     actorAccountId: input.actor.userId,
     authorPersonaId: body.persona_id,
     requestHash,
@@ -645,7 +693,7 @@ export async function reserveVideoUpload(
     partCount: upload.partCount,
     expiresAt: reservationExpiresAt,
   } as const;
-  const response = await snapshot(reservationDocument(base, upload.parts));
+  const response = await snapshot(reservationDocument(base, upload.parts, songPlan));
   const record: VideoReservationRecord = {
     ...base,
     state: "issued",
@@ -660,6 +708,7 @@ export async function reserveVideoUpload(
     idempotencyKey: body.idempotency_key,
     responseSha256: response.sha256,
     parts: upload.parts,
+    ...(songPlan === undefined ? {} : { songPlan }),
   });
   const replayed = replayReservation(stored);
   if (replayed !== null) {
@@ -713,6 +762,10 @@ export async function renewVideoUploadParts(
     actorAccountId: input.actor.userId,
   });
   if (reservation === null) throw new NotFound({ message: "Video reservation not found" });
+  // Renewal reproduces the reservation response, which for a song reference
+  // carries its frozen plan. The upload leg of that path is not composed yet,
+  // so it is refused explicitly rather than answered with a partial document.
+  if (reservation.intent !== "original_audio") throw capabilityUnavailable("song_reference");
   if (reservation.authorPersonaId !== body.persona_id) {
     throw new Conflict({
       message: "The reserving persona is required",
@@ -766,6 +819,7 @@ export async function renewVideoUploadParts(
       {
         reservationId: reservation.reservationId,
         communityId: reservation.communityId,
+        intent: reservation.intent,
         actorAccountId: reservation.actorAccountId,
         authorPersonaId: reservation.authorPersonaId,
         requestHash: reservation.requestHash,
@@ -820,6 +874,11 @@ export async function createVideoSubmission(
       details: { reason_code: "action_expired" },
     });
   }
+  // A song-reference reservation must never be claimed by the original-audio
+  // submission path below: it would publish captured audio under a plan that
+  // promised the canonical song. Until the song-reference submission path is
+  // composed, such a reservation can be issued and inspected but not started.
+  if (reservation.intent !== "original_audio") throw capabilityUnavailable("song_reference");
   if (reservation.communityId !== input.communityId || reservation.state !== "issued") {
     throw new Conflict({ message: "Video reservation cannot be claimed" });
   }

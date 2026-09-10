@@ -15,7 +15,10 @@ export const VIDEO_INGEST_POLICY_V1 = Object.freeze({
   maxFrameRateMillihertz: 60_000,
 });
 
-/** Spec 013 U.6, adopted 2026-09-09. This is a byte ceiling, not a codec guarantee. */
+/**
+ * Spec 013 U.6, recorded as an owner decision on 2026-09-10 in the specification's
+ * Gate A section. This is a byte ceiling, not a codec guarantee.
+ */
 export const SONG_VIDEO_MASTER_POLICY_V1 = Object.freeze({
   version: "song-video-master-policy-v1" as const,
   policyRevision: 1,
@@ -536,6 +539,68 @@ export function publishOriginalVideo(
 
 /** Canonical song timing is decided in integer samples at this rate. */
 export const SONG_VIDEO_SAMPLE_RATE_HZ = 48_000;
+
+/**
+ * The playback interval a song-backed video renders, settled by the owner on
+ * 2026-09-10: 3 to 180 seconds of the canonical song, contained within it in
+ * integer samples. It is bounded like the video itself, so the limits come from
+ * the ingest policy rather than being restated. It is independent of the Spec
+ * 021 Dance segment, which is a separate, later, 6 to 30 second choice.
+ */
+export const SONG_VIDEO_INTERVAL_POLICY_V1 = Object.freeze({
+  version: "song-video-interval-policy-v1" as const,
+  policyRevision: 1,
+  sampleRateHz: SONG_VIDEO_SAMPLE_RATE_HZ,
+  minClipDurationSamples:
+    (VIDEO_INGEST_POLICY_V1.minDurationMs * SONG_VIDEO_SAMPLE_RATE_HZ) / 1_000,
+  maxClipDurationSamples:
+    (VIDEO_INGEST_POLICY_V1.maxDurationMs * SONG_VIDEO_SAMPLE_RATE_HZ) / 1_000,
+});
+
+export type SongVideoIntervalRefusal =
+  | "invalid_interval"
+  | "interval_too_short"
+  | "interval_too_long"
+  | "canonical_song_interval_uncovered";
+
+export type SongVideoIntervalCheck =
+  | Readonly<{ accepted: true; clipEndSamples: number }>
+  | Readonly<{ accepted: false; reason: SongVideoIntervalRefusal }>;
+
+/**
+ * Whether an author's interval can be rendered from a song of this canonical
+ * length. Half-open, in samples, with no tolerance: an interval whose exclusive
+ * end equals the canonical duration is accepted, and one sample past it is not.
+ * The duration must be the server-probed canonical count, never a client value.
+ */
+export function checkSongVideoInterval(input: {
+  readonly clipStartSamples: number;
+  readonly clipDurationSamples: number;
+  readonly songDurationSamples: number;
+}): SongVideoIntervalCheck {
+  const { clipStartSamples, clipDurationSamples, songDurationSamples } = input;
+  if (
+    !Number.isSafeInteger(clipStartSamples) ||
+    !Number.isSafeInteger(clipDurationSamples) ||
+    !Number.isSafeInteger(songDurationSamples) ||
+    clipStartSamples < 0 ||
+    clipDurationSamples < 1 ||
+    songDurationSamples < 1
+  ) {
+    return { accepted: false, reason: "invalid_interval" };
+  }
+  if (clipDurationSamples < SONG_VIDEO_INTERVAL_POLICY_V1.minClipDurationSamples) {
+    return { accepted: false, reason: "interval_too_short" };
+  }
+  if (clipDurationSamples > SONG_VIDEO_INTERVAL_POLICY_V1.maxClipDurationSamples) {
+    return { accepted: false, reason: "interval_too_long" };
+  }
+  const clipEndSamples = clipStartSamples + clipDurationSamples;
+  if (!Number.isSafeInteger(clipEndSamples) || clipEndSamples > songDurationSamples) {
+    return { accepted: false, reason: "canonical_song_interval_uncovered" };
+  }
+  return { accepted: true, clipEndSamples };
+}
 
 /**
  * The immutable song reference frozen at reservation. Durations are

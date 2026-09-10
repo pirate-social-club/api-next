@@ -60,6 +60,7 @@ export async function finalizedFixture(
     record: {
       reservationId,
       communityId: community,
+      intent: "original_audio",
       actorAccountId: actor,
       authorPersonaId: persona,
       requestHash: "c".repeat(64),

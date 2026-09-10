@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.69.0",
+  "sourceBranch": "feat/song-video-persistence-publication",
+  "wireContract": "Adds PreflightSongVideoInterval (POST /communities/:communityId/song-video-interval-preflights), which answers a song post's audio revision and server-probed canonical duration in 48 kHz samples, or measuring/unavailable, and judges a proposed interval. The song_reference variant of ReserveVideoUploadV1 now requires audio_revision, clip_start_samples and clip_duration_samples, and its reservation response carries the frozen interval. That request variant was always refused by the server as capability_unavailable, so no working client depended on its previous shape; the change is breaking to the schema but not to any behaviour. Original-audio requests are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.69.0.tgz",
+    "sha256": "f4eca00c8f9718ab326824b70c68877a325b0073509ee600119e75f168c64080"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.69.0",
+    "sourceIdentifier": "api-next-contracts@8501dcd77ca8a2b3feba3cb101e97c859624ad8c4c7895e72f753e80fb01e0f0",
+    "openapiSha256": "8501dcd77ca8a2b3feba3cb101e97c859624ad8c4c7895e72f753e80fb01e0f0",
+    "clientSha256": "dedfd85c284d9aa951fbaaeed8de14a921f2190bec87f457163dc5e2be2dceee"
+  },
+  "verification": {
+    "status": "Focused contract, application and PostgreSQL regressions passed locally; the full required gates and release are pending. Version 0.69.0 may collide with another lane cutting a release concurrently; whichever lands second takes the next version."
+  }
+}

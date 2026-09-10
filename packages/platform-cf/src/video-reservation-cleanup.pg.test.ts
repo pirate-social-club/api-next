@@ -35,6 +35,7 @@ suite("video reservation cleanup PostgreSQL", () => {
             record: {
               reservationId: id,
               communityId: community,
+              intent: "original_audio",
               actorAccountId: actor,
               authorPersonaId: persona,
               requestHash: "a".repeat(64),

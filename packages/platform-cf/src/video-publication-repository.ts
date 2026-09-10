@@ -70,9 +70,13 @@ function reservationFromRow(row: Row): VideoReservationRecord {
     row.multipart_manifest === null || row.multipart_manifest === undefined
       ? null
       : json<readonly { partNumber: number; etag: string }[]>(row.multipart_manifest);
+  const intent = text(row, "video_intent");
+  if (intent !== "original_audio" && intent !== "song_reference")
+    throw new Error("invalid video reservation intent");
   return {
     reservationId: text(row, "reservation_id"),
     communityId: text(row, "community_id"),
+    intent,
     actorAccountId: text(row, "actor_user_id"),
     authorPersonaId: text(row, "actor_persona_id"),
     requestHash: text(row, "request_hash"),
@@ -121,7 +125,7 @@ function submissionFromRow(row: Row): VideoSubmissionRecord {
   };
 }
 
-const RESERVATION_COLUMNS = `reservation_id,community_id,actor_user_id,actor_persona_id,
+const RESERVATION_COLUMNS = `reservation_id,community_id,video_intent,actor_user_id,actor_persona_id,
   request_hash,expected_content_type,expected_size_bytes,expected_sha256,
   ingest_policy_revision,multipart_upload_id,multipart_part_size_bytes,
   multipart_part_count,multipart_manifest,expires_at,state,submission_id,
@@ -333,6 +337,11 @@ export function makeControlPlaneVideoPublicationStore(
               });
               if (prior.rows[0] !== undefined)
                 return replayFromRow(prior.rows[0], input.record.requestHash, "reservation_id");
+              // The intent and the frozen plan travel together or not at all. The
+              // database refuses a song-reference reservation that commits without
+              // its plan; refusing here as well names the caller's mistake.
+              if ((input.record.intent === "song_reference") !== (input.songPlan !== undefined))
+                throw new Error("video reservation intent and frozen song plan disagree");
               yield* tx.execute({
                 label: "video-publication.reservation-insert",
                 text: `INSERT INTO media_upload_reservations
@@ -342,7 +351,7 @@ export function makeControlPlaneVideoPublicationStore(
                    media_kind,video_intent,ingest_policy_revision,multipart_upload_id,
                    multipart_part_size_bytes,multipart_part_count)
                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'[]'::jsonb,$10,$11,$12,
-                          'video','original_audio',$13,$14,$15,$16)`,
+                          'video',$17,$13,$14,$15,$16)`,
                 values: [
                   input.record.reservationId,
                   input.record.communityId,
@@ -360,9 +369,42 @@ export function makeControlPlaneVideoPublicationStore(
                   input.record.uploadId,
                   input.record.partSizeBytes,
                   input.record.partCount,
+                  input.record.intent,
                 ],
                 readonly: false,
               });
+              if (input.songPlan !== undefined) {
+                const plan = input.songPlan;
+                yield* tx.execute({
+                  label: "video-publication.reservation-song-plan-insert",
+                  text: `INSERT INTO media_video_reservation_song_plans
+                    (reservation_id,reservation_community_id,song_post_id,audio_revision,
+                     canonical_audio_sha256,song_duration_samples,song_asset_id,
+                     clip_start_samples,clip_duration_samples,interval_policy_revision,
+                     owner_policy_revision,owner_policy_hash,derivative_video,
+                     selected_from_kind,origin_post_id,origin_verified)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+                  values: [
+                    input.record.reservationId,
+                    input.record.communityId,
+                    plan.songPostId,
+                    plan.audioRevision,
+                    plan.canonicalAudioSha256,
+                    plan.songDurationSamples,
+                    plan.songAssetId,
+                    plan.clipStartSamples,
+                    plan.clipDurationSamples,
+                    plan.intervalPolicyRevision,
+                    plan.ownerPolicyRevision,
+                    plan.ownerPolicyHash,
+                    plan.derivativeVideo,
+                    plan.selectedFrom.kind,
+                    plan.selectedFrom.kind === "feed" ? plan.selectedFrom.originPostId : null,
+                    plan.originVerified,
+                  ],
+                  readonly: false,
+                });
+              }
               for (const part of input.parts) {
                 yield* tx.execute({
                   label: "video-publication.part-insert",
