@@ -625,6 +625,8 @@ export const VideoSoundtrackProjectionV1 = Schema.Union([
       song_title: Schema.String,
       song_author_persona_id: PersonaIdV1,
     }),
+    /** The soundtrack is the canonical song interval; the capture's audio is discarded. */
+    render_mode: Schema.Literal("canonical_replace"),
   }),
 ]);
 export type VideoSoundtrackProjectionV1 = Schema.Schema.Type<typeof VideoSoundtrackProjectionV1>;
@@ -1279,7 +1281,8 @@ const VideoMediaSubmissionCommon = {
   author_persona: PublicPersonaV1,
   href: SongAuthorString,
   track: Schema.Literal("video"),
-  intent: Schema.Literal("original_audio"),
+  /** Immutable from reservation; a song-reference snapshot must never read as original audio. */
+  intent: Schema.Literals(["original_audio", "song_reference"]),
   creation_revision: PositiveRevision,
   video_revision: NonNegativeRevision,
   caption: Schema.NullOr(Schema.String.check(Schema.isMaxLength(5_000))),
@@ -1319,8 +1322,18 @@ export const VideoPostSubmissionV1 = Schema.Union([
       "known_recording_requires_song_reference",
       "policy_violation",
       "rights_violation",
+      "song_reference_invalid",
     ]),
     song_post_id: Schema.optional(SongAuthorString),
+    /** Present with `song_reference_invalid`: why the referenced song can no longer be used. */
+    song_reason_code: Schema.optional(
+      Schema.Literals([
+        "song_not_published",
+        "song_audio_revision_missing",
+        "derivative_video_blocked",
+        "derivative_video_owner_only",
+      ]),
+    ),
   }),
   Schema.Struct({
     ...VideoMediaSubmissionCommon,

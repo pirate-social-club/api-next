@@ -16,13 +16,22 @@ import {
 } from "@pirate/contracts";
 import { Schema } from "effect";
 import {
+  type AcceptedSongVideoMaster,
+  attachAcceptedSongVideoMaster,
   attachImmutableVideo,
   attachVideoDecision,
   createOriginalVideoSubmission,
+  createSongReferenceVideoSubmission,
   decideOriginalAudioVideo,
+  decideSongReferenceVideo,
   type OriginalSoundReference,
   publishOriginalVideo,
+  publishSongReferenceVideo,
+  type SongReferenceInvalidReason,
+  type SongReferencePublication,
+  songVideoFrameWindowMs,
   VIDEO_INGEST_POLICY_V1,
+  VIDEO_POSTER_POLICY_V1,
   type VideoPublicationDecision,
   type VideoSubmissionState,
   type VideoTrustedAnalysis,
@@ -170,6 +179,28 @@ export type VideoPublishBundle = Readonly<{
   }>[];
 }>;
 
+/**
+ * A song-reference publication. The published video is the accepted master;
+ * the capture and its audio appear nowhere in it.
+ */
+export type VideoSongReferencePublishBundle = Readonly<{
+  observedEventSequence: number;
+  state: VideoSubmissionState;
+  decision: VideoPublicationDecision;
+  songReference: SongReferencePublication;
+  poster: Readonly<{ artifactRef: string; canonicalSha256: string }>;
+  derivedArtifacts: readonly Readonly<{
+    artifactRef: string;
+    artifactKind: "poster" | "first" | "midpoint";
+    canonicalSha256: string;
+  }>[];
+}>;
+
+/** The referenced song as observed at a decision fence, with the facts the decision needs. */
+export type SongReferencePolicyObservation =
+  | Readonly<{ permitted: true; contentRating: "general" | "adult_18" }>
+  | Readonly<{ permitted: false; reasonCode: SongReferenceInvalidReason }>;
+
 export type VideoTechnicalFailureCode = Exclude<
   NonNullable<VideoSubmissionState["failureCode"]>,
   | "poster_undecodable"
@@ -255,6 +286,10 @@ export interface VideoPublicationStore {
     reservationId: string;
     actorAccountId: string;
   }) => Promise<VideoReservationRecord | null>;
+  /** The plan frozen at a song-reference reservation; null for any other reservation. */
+  readonly getReservationSongPlan: (input: {
+    reservationId: string;
+  }) => Promise<FrozenSongReservationPlan | null>;
   readonly renewParts: (input: {
     reservation: VideoReservationRecord;
     endpointTemplate: string;
@@ -350,6 +385,33 @@ export interface VideoPublicationStore {
     input: VideoPublishBundle,
   ) => Promise<
     VideoSubmissionRecord | Readonly<{ kind: "membership_required"; record: VideoSubmissionRecord }>
+  >;
+  /**
+   * Records the owner-policy observation for this operation at
+   * `publication_allowed` and its creation revision, and reads the song's
+   * current publication and rating. A replay returns what was recorded.
+   */
+  readonly observeSongReferencePolicy: (input: {
+    submission: VideoSubmissionState;
+  }) => Promise<SongReferencePolicyObservation>;
+  /** Render → publish, once the plan's master has been verified, sealed and accepted. */
+  readonly attachSongVideoMaster: (input: {
+    submission: VideoSubmissionState;
+    observedEventSequence: number;
+    nextState: VideoSubmissionState;
+  }) => Promise<VideoSubmissionRecord>;
+  /**
+   * The atomic song-reference publication (Spec 013 §5A.7). The owner policy is
+   * observed again inside the transaction at `publication_committed`; when it no
+   * longer permits this account nothing publishes, and the operation is
+   * re-decided at the next creation revision against the same observation.
+   */
+  readonly publishSongReference: (
+    input: VideoSongReferencePublishBundle,
+  ) => Promise<
+    | VideoSubmissionRecord
+    | Readonly<{ kind: "membership_required"; record: VideoSubmissionRecord }>
+    | Readonly<{ kind: "song_reference_invalid"; record: VideoSubmissionRecord }>
   >;
   readonly retryPoster: (input: {
     submission: VideoSubmissionState;
@@ -494,7 +556,7 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
     author_persona: record.authorPersona,
     href: `/media-post-submissions/${encodeURIComponent(state.submissionId)}`,
     track: "video" as const,
-    intent: "original_audio" as const,
+    intent: state.intent,
     creation_revision: state.creationRevision,
     video_revision: state.videoRevision,
     caption: state.caption,
@@ -503,7 +565,13 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
   switch (state.status) {
     case "processing":
       if (state.phase === null) throw new InternalError({ message: "Video phase is missing" });
-      return { ...common, status: "processing", phase: state.phase };
+      // Rendering is how a song-reference video produces what it publishes, so
+      // the author sees it as part of publishing rather than as a new phase.
+      return {
+        ...common,
+        status: "processing",
+        phase: state.phase === "render" ? "publish" : state.phase,
+      };
     case "manual_review":
       return {
         ...common,
@@ -530,6 +598,9 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
         reason_code: reason,
         ...(outcome?.kind === "block" && outcome.songPostId !== undefined
           ? { song_post_id: outcome.songPostId }
+          : {}),
+        ...(outcome?.kind === "block" && outcome.songReasonCode !== undefined
+          ? { song_reason_code: outcome.songReasonCode }
           : {}),
       };
     }
@@ -614,6 +685,27 @@ function capabilityUnavailable(capability: "song_reference" | "original_sound_re
     message: "Video capability is unavailable",
     details: { reason_code: "capability_unavailable", track: "video", capability },
   });
+}
+
+/** One render plan per song-reference submission, named by it. */
+export const songVideoPlanId = (submissionId: string): string => `song-video-plan:${submissionId}`;
+
+/**
+ * A song-reference poster must be a frame the master carries, and the master
+ * carries only the interval's length of the capture.
+ */
+function requireSongVideoPosterInWindow(
+  state: VideoSubmissionState,
+  posterTimestampMs: number | null,
+): void {
+  if (state.songPlan === null) return;
+  const timestamp = posterTimestampMs ?? VIDEO_POSTER_POLICY_V1.defaultPosterTimestampMs;
+  if (timestamp >= songVideoFrameWindowMs(state.songPlan)) {
+    throw new BadRequest({
+      message: "The poster must be inside the selected song interval",
+      details: { reason_code: "poster_timestamp_out_of_range" },
+    });
+  }
 }
 
 function uuid(services: Pick<VideoPublicationServices, "randomUuid">): string {
@@ -748,6 +840,24 @@ function ensurePersonaContinuity(state: VideoSubmissionState, personaId: string)
   }
 }
 
+/**
+ * The frozen plan of a song-reference reservation, or null for original audio.
+ * Refused while the song-reference path is not composed, and whenever the
+ * reservation claims the intent without its plan.
+ */
+async function songReservationPlan(
+  reservation: VideoReservationRecord,
+  services: VideoPublicationServices,
+): Promise<FrozenSongReservationPlan | null> {
+  if (reservation.intent === "original_audio") return null;
+  if (services.songInterval === undefined) throw capabilityUnavailable("song_reference");
+  const plan = await services.store.getReservationSongPlan({
+    reservationId: reservation.reservationId,
+  });
+  if (plan === null) throw new InternalError({ message: "Song reservation plan is missing" });
+  return plan;
+}
+
 export async function renewVideoUploadParts(
   input: Readonly<{ reservationId: string; actor: M2Actor; body: unknown }>,
   services: VideoPublicationServices,
@@ -763,9 +873,8 @@ export async function renewVideoUploadParts(
   });
   if (reservation === null) throw new NotFound({ message: "Video reservation not found" });
   // Renewal reproduces the reservation response, which for a song reference
-  // carries its frozen plan. The upload leg of that path is not composed yet,
-  // so it is refused explicitly rather than answered with a partial document.
-  if (reservation.intent !== "original_audio") throw capabilityUnavailable("song_reference");
+  // carries its frozen plan, read back rather than re-derived.
+  const songPlan = await songReservationPlan(reservation, services);
   if (reservation.authorPersonaId !== body.persona_id) {
     throw new Conflict({
       message: "The reserving persona is required",
@@ -833,6 +942,7 @@ export async function renewVideoUploadParts(
         expiresAt: reservation.expiresAt,
       },
       renewed,
+      songPlan ?? undefined,
     ),
   );
   const outcome = await services.store.renewParts({
@@ -874,17 +984,17 @@ export async function createVideoSubmission(
       details: { reason_code: "action_expired" },
     });
   }
-  // A song-reference reservation must never be claimed by the original-audio
-  // submission path below: it would publish captured audio under a plan that
-  // promised the canonical song. Until the song-reference submission path is
-  // composed, such a reservation can be issued and inspected but not started.
-  if (reservation.intent !== "original_audio") throw capabilityUnavailable("song_reference");
+  // A song-reference reservation starts only the song-reference path: its
+  // submission carries the plan frozen at reservation and publishes a rendered
+  // master, never the capture's own audio.
+  const songPlan = await songReservationPlan(reservation, services);
   if (reservation.communityId !== input.communityId || reservation.state !== "issued") {
     throw new Conflict({ message: "Video reservation cannot be claimed" });
   }
   const requestHash = await mediaRequestHash({ community_id: input.communityId }, body);
-  const state = createOriginalVideoSubmission({
-    submissionId: `media-submission-${uuid(services)}`,
+  const submissionId = `media-submission-${uuid(services)}`;
+  const common = {
+    submissionId,
     operationId: `media-operation-${uuid(services)}`,
     communityId: input.communityId,
     actorAccountId: input.actor.userId,
@@ -892,7 +1002,23 @@ export async function createVideoSubmission(
     reservationId: body.video_reservation_id,
     caption: body.caption ?? null,
     authorDeclaredRating: body.author_declared_rating ?? "general",
-  });
+  } as const;
+  const state =
+    songPlan === null
+      ? createOriginalVideoSubmission(common)
+      : createSongReferenceVideoSubmission({
+          ...common,
+          songPlan: {
+            planId: songVideoPlanId(submissionId),
+            songPostId: songPlan.songPostId,
+            songAssetId: songPlan.songAssetId,
+            audioRevision: songPlan.audioRevision,
+            canonicalAudioSha256: songPlan.canonicalAudioSha256,
+            songDurationSamples: songPlan.songDurationSamples,
+            clipStartSamples: songPlan.clipStartSamples,
+            clipDurationSamples: songPlan.clipDurationSamples,
+          },
+        });
   const response = await snapshot(
     projectVideoSubmission({
       state,
@@ -976,6 +1102,7 @@ export async function finalizeVideoSubmission(
     });
     throw new BadRequest({ message: "Invalid multipart manifest" });
   }
+  requireSongVideoPosterInWindow(record.state, body.poster_timestamp_ms ?? null);
   const begun = await services.store.beginFinalize({
     submission: record.state,
     expectedCreationRevision: body.expected_creation_revision,
@@ -1113,6 +1240,15 @@ export async function acceptTrustedVideoAnalysis(
   ) {
     return projectVideoSubmission(await publishPreparedVideo(record, services));
   }
+  // A song-reference video decided to publish waits for its master; the render
+  // stage attaches it and publishes.
+  if (
+    record.state.phase === "render" &&
+    record.state.analysis?.analysisRevision === input.analysis.analysisRevision &&
+    record.state.decision?.outcome.kind === "publish"
+  ) {
+    return projectVideoSubmission(record);
+  }
   const captionSha256 =
     record.state.caption === null
       ? null
@@ -1125,14 +1261,29 @@ export async function acceptTrustedVideoAnalysis(
               .trim(),
           ),
         );
+  // The owner policy is observed now, at publication_allowed, for this creation
+  // revision. A reservation-time permission is not honored once it has changed.
+  const song =
+    record.state.intent === "song_reference"
+      ? await services.store.observeSongReferencePolicy({ submission: record.state })
+      : null;
   const { decision, nextState } = (() => {
     try {
-      const decision = decideOriginalAudioVideo({
-        state: record.state,
-        analysis: input.analysis,
-        canonicalCaptionSha256: captionSha256,
-        decidedAt: services.nowIso(),
-      });
+      const decision =
+        song === null
+          ? decideOriginalAudioVideo({
+              state: record.state,
+              analysis: input.analysis,
+              canonicalCaptionSha256: captionSha256,
+              decidedAt: services.nowIso(),
+            })
+          : decideSongReferenceVideo({
+              state: record.state,
+              analysis: input.analysis,
+              canonicalCaptionSha256: captionSha256,
+              decidedAt: services.nowIso(),
+              song,
+            });
       const nextState = attachVideoDecision(record.state, input.analysis, decision);
       return { decision, nextState };
     } catch {
@@ -1185,8 +1336,24 @@ async function publishPreparedVideo(
     throw new Conflict({ message: "Video publication is not ready" });
   }
   const postId = record.state.postId ?? `post-${uuid(services)}`;
-  const published = publishOriginalVideo(record.state, postId);
   const poster = analysis.frames.extracted[0];
+  if (analysis.audio.intent === "song_reference") {
+    const published = publishSongReferenceVideo(record.state, postId);
+    const outcome = await services.store.publishSongReference({
+      observedEventSequence: record.eventSequence,
+      state: published.state,
+      decision,
+      songReference: published.songReference,
+      poster: { artifactRef: poster.artifactRef, canonicalSha256: poster.sha256 },
+      derivedArtifacts: analysis.frames.extracted.map((frame) => ({
+        artifactRef: frame.artifactRef,
+        artifactKind: frame.role,
+        canonicalSha256: frame.sha256,
+      })),
+    });
+    return "kind" in outcome ? outcome.record : outcome;
+  }
+  const published = publishOriginalVideo(record.state, postId);
   const soundtrack = analysis.audio.soundtrack;
   const outcome = await services.store.publish({
     observedEventSequence: record.eventSequence,
@@ -1208,6 +1375,47 @@ async function publishPreparedVideo(
     ],
   });
   return "kind" in outcome ? outcome.record : outcome;
+}
+
+/**
+ * Render → publish. Called by the render stage once the plan's master has been
+ * verified, sealed and accepted; the master's identity comes from that sealed
+ * record, never from the renderer's own report.
+ */
+export async function attachSongVideoMasterAndPublish(
+  input: Readonly<{
+    submissionId: string;
+    operationId: string;
+    master: AcceptedSongVideoMaster;
+  }>,
+  services: VideoPublicationCommitServices,
+): Promise<VideoPostSubmissionV1> {
+  let record = await services.store.getSubmissionByOperation({
+    submissionId: input.submissionId,
+    operationId: input.operationId,
+  });
+  if (record === null) throw new NotFound({ message: "Video submission not found" });
+  if (record.state.status === "published") return projectVideoSubmission(record);
+  if (record.state.phase === "render") {
+    let nextState: VideoSubmissionState;
+    try {
+      nextState = attachAcceptedSongVideoMaster(record.state, input.master);
+    } catch {
+      throw new VideoWorkflowTerminalError("analysis_rejected");
+    }
+    record = await services.store.attachSongVideoMaster({
+      submission: record.state,
+      observedEventSequence: record.eventSequence,
+      nextState,
+    });
+  }
+  if (
+    record.state.status !== "processing" ||
+    record.state.phase !== "publish" ||
+    record.state.master?.masterRevisionId !== input.master.masterRevisionId
+  )
+    return projectVideoSubmission(record);
+  return projectVideoSubmission(await publishPreparedVideo(record, services));
 }
 
 export async function retryVideoPoster(
@@ -1236,6 +1444,7 @@ export async function retryVideoPoster(
       message: "Poster retry is not allowed",
       details: { reason_code: "retry_not_allowed" },
     });
+  requireSongVideoPosterInWindow(record.state, body.poster_timestamp_ms);
   const requestHash = await mediaRequestHash({ submission_id: input.submissionId }, body);
   const nextState: VideoSubmissionState = {
     ...record.state,
@@ -1460,4 +1669,5 @@ export async function moderateVideoSubmission(
 
 export const videoAnalysisFixtureSha256IsValid = (analysis: VideoTrustedAnalysis): boolean =>
   sha256Pattern.test(analysis.canonicalVideoSha256) &&
-  sha256Pattern.test(analysis.audio.soundtrack.extractedAudioSha256);
+  (analysis.audio.intent !== "original_audio" ||
+    sha256Pattern.test(analysis.audio.soundtrack.extractedAudioSha256));

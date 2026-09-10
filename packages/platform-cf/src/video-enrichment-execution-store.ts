@@ -17,7 +17,8 @@ const Row = Schema.Struct({
 const authority = `FROM media_video_enrichment_outbox o
   JOIN media_publication_projections p ON p.operation_id=o.operation_id
     AND p.submission_id=o.submission_id AND p.post_id=o.post_id AND p.media_kind='video'
-  JOIN media_video_rights r ON r.submission_id=o.submission_id AND r.rights_basis='original'
+  JOIN media_video_rights r ON r.submission_id=o.submission_id
+    AND r.rights_basis IN ('original','derivative')
   WHERE o.effect_identity=$1 AND o.enrichment_kind IN ('stream','thumbnail')
     AND o.state IN ('pending','running')`;
 

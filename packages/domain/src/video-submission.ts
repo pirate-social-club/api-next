@@ -100,24 +100,30 @@ export type VideoTrustedAnalysis = Readonly<{
     audioCodec: "aac";
     hasAudio: true;
   }>;
-  audio: Readonly<{
-    intent: "original_audio";
-    soundtrack:
-      | Readonly<{
-          extractedAudioRef: string;
-          extractedAudioSha256: string;
-          verification: OriginalAudioVerification;
-          policyRevision: string;
-        }>
-      | Readonly<{
-          extractedAudioRef: string;
-          extractedAudioSha256: string;
-          verification: null;
-          exhaustion: "acr_exhausted" | "acr_skipped";
-          evidenceRef: string;
-          policyRevision: string;
-        }>;
-  }>;
+  audio:
+    | Readonly<{
+        intent: "original_audio";
+        soundtrack:
+          | Readonly<{
+              extractedAudioRef: string;
+              extractedAudioSha256: string;
+              verification: OriginalAudioVerification;
+              policyRevision: string;
+            }>
+          | Readonly<{
+              extractedAudioRef: string;
+              extractedAudioSha256: string;
+              verification: null;
+              exhaustion: "acr_exhausted" | "acr_skipped";
+              evidenceRef: string;
+              policyRevision: string;
+            }>;
+      }>
+    /**
+     * A song-reference video publishes the canonical song interval; its captured
+     * audio is discarded and never extracted or recognized (Spec 013 U.3).
+     */
+    | Readonly<{ intent: "song_reference" }>;
   frames: Readonly<{
     posterPolicyRevision: number;
     evidenceRef: string;
@@ -143,6 +149,10 @@ export type VideoTrustedAnalysis = Readonly<{
   }>;
 }>;
 
+/** An analysis of an original-audio video, whose soundtrack was extracted and recognized. */
+export type OriginalAudioTrustedAnalysis = VideoTrustedAnalysis &
+  Readonly<{ audio: Extract<VideoTrustedAnalysis["audio"], { intent: "original_audio" }> }>;
+
 export type VideoReviewReason =
   | "media_review_required"
   | "caption_review_required"
@@ -157,7 +167,9 @@ export type VideoPublicationDecision = Readonly<{
   creationRevision: number;
   videoRevision: number;
   acceptedAnalysisRevision: number;
-  authorization: Readonly<{ intent: "original_audio" }>;
+  authorization:
+    | Readonly<{ intent: "original_audio" }>
+    | Readonly<{ intent: "song_reference"; planId: string }>;
   outcome:
     | Readonly<{ kind: "publish" }>
     | Readonly<{ kind: "review"; reasonCodes: readonly VideoReviewReason[] }>
@@ -166,13 +178,23 @@ export type VideoPublicationDecision = Readonly<{
         reasonCode:
           | "known_recording_requires_song_reference"
           | "policy_violation"
-          | "rights_violation";
+          | "rights_violation"
+          | "song_reference_invalid";
         publicReason: string;
         songPostId?: string;
+        /** Song reference only: why the referenced song can no longer be used. */
+        songReasonCode?: SongReferenceInvalidReason;
       }>;
   effectiveContentRating: ContentRating;
   decidedAt: string;
 }>;
+
+/** Spec 013 §5A.8: why a song reference cannot publish. */
+export type SongReferenceInvalidReason =
+  | "song_not_published"
+  | "song_audio_revision_missing"
+  | "derivative_video_blocked"
+  | "derivative_video_owner_only";
 
 export type ImmutableVideo = Readonly<{
   videoRevision: number;
@@ -205,8 +227,36 @@ export type VideoSubmissionPhase =
   | "finalize"
   | "analysis"
   | "decision"
+  /** Song reference only: render the canonical interval before publishing. */
+  | "render"
   | "publish"
   | null;
+
+/**
+ * The render plan a song-reference submission carries, copied from the plan
+ * frozen at its reservation. Every value was established by the server.
+ */
+export type SongReferenceSubmissionPlan = Readonly<{
+  planId: string;
+  songPostId: string;
+  songAssetId: string;
+  audioRevision: number;
+  canonicalAudioSha256: string;
+  songDurationSamples: number;
+  clipStartSamples: number;
+  clipDurationSamples: number;
+}>;
+
+/** The master accepted for a song-reference submission, sealed after verification. */
+export type AcceptedSongVideoMaster = Readonly<{
+  masterRevisionId: string;
+  attemptId: string;
+  masterRef: string;
+  masterSha256: string;
+  masterByteLength: number;
+  /** Digest of the master's decoded audio: the canonical interval, bit for bit. */
+  soundtrackSha256: string;
+}>;
 
 export type VideoSubmissionState = Readonly<{
   submissionId: string;
@@ -215,7 +265,11 @@ export type VideoSubmissionState = Readonly<{
   actorAccountId: string;
   authorPersonaId: string;
   reservationId: string;
-  intent: "original_audio";
+  intent: "original_audio" | "song_reference";
+  /** Present exactly when the intent is `song_reference`. */
+  songPlan: SongReferenceSubmissionPlan | null;
+  /** Song reference only, once a verified master has been accepted. */
+  master: AcceptedSongVideoMaster | null;
   caption: string | null;
   posterTimestampMs: number | null;
   authorDeclaredRating: ContentRating;
@@ -246,6 +300,17 @@ export type VideoSubmissionState = Readonly<{
 }>;
 
 const SHA256 = /^[0-9a-f]{64}$/u;
+
+/**
+ * The span, in whole milliseconds, within which a frame timestamp lies inside a
+ * song-reference master. The master's video covers exactly the interval's
+ * samples, so a frame at `t` ms is inside it when 48·t is below that count.
+ */
+export function songVideoFrameWindowMs(
+  plan: Pick<SongReferenceSubmissionPlan, "clipDurationSamples">,
+): number {
+  return Math.ceil((plan.clipDurationSamples * 1_000) / SONG_VIDEO_SAMPLE_RATE_HZ);
+}
 const present = (value: string): boolean => value.length > 0 && value.trim() === value;
 const positiveInteger = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
 
@@ -253,7 +318,8 @@ export function validateVideoTrustedAnalysis(
   state: Pick<
     VideoSubmissionState,
     "operationId" | "videoRevision" | "video" | "caption" | "analysisRevision" | "posterTimestampMs"
-  >,
+  > &
+    Partial<Pick<VideoSubmissionState, "intent" | "songPlan">>,
   analysis: VideoTrustedAnalysis,
   canonicalCaptionSha256: string | null,
 ): string | null {
@@ -286,19 +352,47 @@ export function validateVideoTrustedAnalysis(
     probe.hasAudio !== true
   )
     return "probe";
-  const soundtrack = analysis.audio.soundtrack;
+  if (analysis.audio.intent !== (state.intent ?? "original_audio")) return "soundtrack";
+  if (analysis.audio.intent === "song_reference") {
+    // Source admission (U.5): the capture may run past the song by at most the
+    // recorded allowance, and must cover the interval it is to be cut to.
+    const plan = state.songPlan ?? null;
+    if (plan === null) return "soundtrack";
+    const songDurationMs = Math.floor(
+      (plan.songDurationSamples * 1_000) / SONG_VIDEO_SAMPLE_RATE_HZ,
+    );
+    const clipDurationMs = Math.ceil(
+      (plan.clipDurationSamples * 1_000) / SONG_VIDEO_SAMPLE_RATE_HZ,
+    );
+    if (
+      probe.durationMs >
+        Math.min(
+          VIDEO_INGEST_POLICY_V1.maxDurationMs,
+          songDurationMs + VIDEO_INGEST_POLICY_V1.maxOverSongMs,
+        ) ||
+      probe.durationMs < clipDurationMs
+    )
+      return "source_admission";
+  }
+  const soundtrack = analysis.audio.intent === "original_audio" ? analysis.audio.soundtrack : null;
   if (
-    analysis.audio.intent !== "original_audio" ||
-    !present(soundtrack.extractedAudioRef) ||
-    !SHA256.test(soundtrack.extractedAudioSha256) ||
-    !present(soundtrack.policyRevision) ||
-    (soundtrack.verification === null
-      ? !present(soundtrack.evidenceRef)
-      : !present(soundtrack.verification.evidenceRef) ||
-        !present(soundtrack.verification.adapterRevision))
+    soundtrack !== null &&
+    (!present(soundtrack.extractedAudioRef) ||
+      !SHA256.test(soundtrack.extractedAudioSha256) ||
+      !present(soundtrack.policyRevision) ||
+      (soundtrack.verification === null
+        ? !present(soundtrack.evidenceRef)
+        : !present(soundtrack.verification.evidenceRef) ||
+          !present(soundtrack.verification.adapterRevision)))
   )
     return "soundtrack";
   const frames = analysis.frames.extracted;
+  // A song-reference video publishes only the interval's length of the capture,
+  // so every moderated frame, the poster included, must be a frame it carries.
+  const frameWindowMs =
+    analysis.audio.intent === "song_reference" && state.songPlan
+      ? Math.min(probe.durationMs, songVideoFrameWindowMs(state.songPlan))
+      : probe.durationMs;
   const roles: readonly VideoFrameRole[] = ["poster", "first", "midpoint"];
   const expectedPosterTimestamp =
     state.posterTimestampMs ?? VIDEO_POSTER_POLICY_V1.defaultPosterTimestampMs;
@@ -315,7 +409,7 @@ export function validateVideoTrustedAnalysis(
           : frame.requestedTimestampMs !== null) ||
         !Number.isSafeInteger(frame.timestampMs) ||
         frame.timestampMs < 0 ||
-        frame.timestampMs >= probe.durationMs ||
+        frame.timestampMs >= frameWindowMs ||
         !SHA256.test(frame.sha256) ||
         !present(frame.artifactRef),
     )
@@ -373,6 +467,9 @@ export function decideOriginalAudioVideo(
       outcome: { kind: "block", reasonCode: "policy_violation", publicReason: "policy_violation" },
     };
   }
+  if (input.analysis.audio.intent !== "original_audio") {
+    throw new Error("invalid video analysis: intent");
+  }
   const soundtrack = input.analysis.audio.soundtrack;
   if (soundtrack.verification?.status === "known_recording") {
     const identified = soundtrack.verification.identified;
@@ -423,6 +520,8 @@ export function createOriginalVideoSubmission(
   return {
     ...input,
     intent: "original_audio",
+    songPlan: null,
+    master: null,
     creationRevision: 1,
     videoRevision: 0,
     analysisRevision: 0,
@@ -470,13 +569,17 @@ export function attachVideoDecision(
     decision.acceptedAnalysisRevision !== analysis.analysisRevision
   )
     throw new Error("video decision is not allowed");
+  if (decision.authorization.intent !== state.intent) {
+    throw new Error("video decision is not allowed");
+  }
   if (decision.outcome.kind === "publish") {
     return {
       ...state,
       analysisRevision: analysis.analysisRevision,
       analysis,
       decision,
-      phase: "publish",
+      // A song-reference video publishes a rendered master, never its capture.
+      phase: state.intent === "song_reference" ? "render" : "publish",
     };
   }
   if (decision.outcome.kind === "review") {
@@ -504,8 +607,10 @@ export function publishOriginalVideo(
   state: VideoSubmissionState,
   postId: string,
 ): Readonly<{ state: VideoSubmissionState; originalSound: OriginalSoundReference }> {
-  const soundtrack = state.analysis?.audio.soundtrack;
+  const audio = state.analysis?.audio;
+  const soundtrack = audio?.intent === "original_audio" ? audio.soundtrack : undefined;
   if (
+    state.intent !== "original_audio" ||
     state.status !== "processing" ||
     state.phase !== "publish" ||
     state.decision?.outcome.kind !== "publish" ||
@@ -708,4 +813,246 @@ export function resolveSongVideoPolicyConfiguration(
     return { configured: false, missing };
   }
   return { configured: true, policy: { sourceOverrunDisposition: disposition, masterMaxBytes } };
+}
+
+/* ------------------------------------------------------------------ *
+ * Spec 013 Gate A: the song-reference submission path
+ *
+ * reserve → awaiting_upload → finalize → analysis → decision → render →
+ * publish. The render phase is where the canonical interval replaces the
+ * capture; publication accepts only a verified, sealed master.
+ * ------------------------------------------------------------------ */
+
+export function createSongReferenceVideoSubmission(
+  input: Readonly<{
+    submissionId: string;
+    operationId: string;
+    communityId: string;
+    actorAccountId: string;
+    authorPersonaId: string;
+    reservationId: string;
+    caption: string | null;
+    authorDeclaredRating: ContentRating;
+    songPlan: SongReferenceSubmissionPlan;
+  }>,
+): VideoSubmissionState {
+  const plan = input.songPlan;
+  if (
+    !present(plan.planId) ||
+    !present(plan.songPostId) ||
+    !present(plan.songAssetId) ||
+    !positiveInteger(plan.audioRevision) ||
+    !SHA256.test(plan.canonicalAudioSha256) ||
+    !checkSongVideoInterval({
+      clipStartSamples: plan.clipStartSamples,
+      clipDurationSamples: plan.clipDurationSamples,
+      songDurationSamples: plan.songDurationSamples,
+    }).accepted
+  )
+    throw new Error("song-reference submission plan is invalid");
+  return {
+    ...input,
+    intent: "song_reference",
+    master: null,
+    creationRevision: 1,
+    videoRevision: 0,
+    analysisRevision: 0,
+    retryCount: 0,
+    reconciliationRequired: false,
+    posterTimestampMs: null,
+    status: "processing",
+    phase: "awaiting_upload",
+    video: null,
+    analysis: null,
+    decision: null,
+    reviewReasons: [],
+    approvedHolds: [],
+    failureCode: null,
+    postId: null,
+  };
+}
+
+/**
+ * The decision for a song-reference video. Safety decides as it does for
+ * original audio; there is no soundtrack verdict, because the capture is
+ * discarded and the soundtrack is the canonical song the owner permitted.
+ */
+export function decideSongReferenceVideo(
+  input: Readonly<{
+    state: VideoSubmissionState;
+    analysis: VideoTrustedAnalysis;
+    canonicalCaptionSha256: string | null;
+    decidedAt: string;
+    /**
+     * The referenced song as observed now, at `publication_allowed`: whether the
+     * owner's current policy still permits this account, and the song's rating,
+     * which is a lower bound on the video's. A reservation-time permission is
+     * not honored once the policy has changed (Spec 013 §5A.11 D.4).
+     */
+    song:
+      | Readonly<{ permitted: true; contentRating: ContentRating }>
+      | Readonly<{ permitted: false; reasonCode: SongReferenceInvalidReason }>;
+  }>,
+): VideoPublicationDecision {
+  const plan = input.state.songPlan;
+  if (input.state.intent !== "song_reference" || plan === null) {
+    throw new Error("invalid video analysis: intent");
+  }
+  const invalid = validateVideoTrustedAnalysis(
+    input.state,
+    input.analysis,
+    input.canonicalCaptionSha256,
+  );
+  if (invalid !== null) throw new Error(`invalid video analysis: ${invalid}`);
+  const common = {
+    version: "video-publication-decision-v1" as const,
+    operationId: input.state.operationId,
+    creationRevision: input.state.creationRevision,
+    videoRevision: input.state.videoRevision,
+    acceptedAnalysisRevision: input.analysis.analysisRevision,
+    authorization: { intent: "song_reference" as const, planId: plan.planId },
+    effectiveContentRating: ratingMax(
+      ratingMax(input.state.authorDeclaredRating, input.analysis.automatedRating),
+      input.song.permitted ? input.song.contentRating : "general",
+    ),
+    decidedAt: input.decidedAt,
+  };
+  if (!input.song.permitted) {
+    return {
+      ...common,
+      outcome: {
+        kind: "block",
+        reasonCode: "song_reference_invalid",
+        publicReason: "song_reference_invalid",
+        songPostId: plan.songPostId,
+        songReasonCode: input.song.reasonCode,
+      },
+    };
+  }
+  if (input.analysis.mediaSafety === "blocked" || input.analysis.captionSafety === "blocked") {
+    return {
+      ...common,
+      outcome: { kind: "block", reasonCode: "policy_violation", publicReason: "policy_violation" },
+    };
+  }
+  const reasons = new Set<VideoReviewReason>();
+  if (input.analysis.adapterRevisions.safety === "safety-unavailable") {
+    reasons.add("safety_adapter_unavailable");
+  } else {
+    if (input.analysis.mediaSafety === "review_required") reasons.add("media_review_required");
+    if (input.analysis.captionSafety === "review_required") reasons.add("caption_review_required");
+  }
+  return reasons.size === 0
+    ? { ...common, outcome: { kind: "publish" } }
+    : { ...common, outcome: { kind: "review", reasonCodes: [...reasons] } };
+}
+
+/** Render → publish, on a master whose identity was sealed after verification. */
+export function attachAcceptedSongVideoMaster(
+  state: VideoSubmissionState,
+  master: AcceptedSongVideoMaster,
+): VideoSubmissionState {
+  if (
+    state.intent !== "song_reference" ||
+    state.status !== "processing" ||
+    state.phase !== "render" ||
+    state.master !== null ||
+    state.decision?.outcome.kind !== "publish" ||
+    !present(master.masterRevisionId) ||
+    !present(master.attemptId) ||
+    !present(master.masterRef) ||
+    !SHA256.test(master.masterSha256) ||
+    !SHA256.test(master.soundtrackSha256) ||
+    !positiveInteger(master.masterByteLength) ||
+    master.masterByteLength > SONG_VIDEO_MASTER_POLICY_V1.maxBytes ||
+    // A master that is the capture itself would publish the discarded audio.
+    master.masterSha256 === state.video?.canonicalSha256
+  )
+    throw new Error("song-video master is not allowed");
+  return { ...state, master, phase: "publish" };
+}
+
+/**
+ * Spec 013 §5A.6: the owner policy observed inside the publication transaction
+ * no longer permits this account. Nothing publishes. The operation is decided
+ * again at the next creation revision against that same observation, which
+ * blocks it; the accepted master is kept for its disposition, never published.
+ */
+export function redecideSongReferenceAfterCommitDenial(
+  state: VideoSubmissionState,
+  reasonCode: SongReferenceInvalidReason,
+  decidedAt: string,
+): Readonly<{ state: VideoSubmissionState; decision: VideoPublicationDecision }> {
+  const plan = state.songPlan;
+  const prior = state.decision;
+  if (
+    state.intent !== "song_reference" ||
+    plan === null ||
+    prior === null ||
+    state.status !== "processing" ||
+    state.phase !== "publish"
+  )
+    throw new Error("song-reference re-decision is not allowed");
+  const decision: VideoPublicationDecision = {
+    ...prior,
+    creationRevision: state.creationRevision + 1,
+    outcome: {
+      kind: "block",
+      reasonCode: "song_reference_invalid",
+      publicReason: "song_reference_invalid",
+      songPostId: plan.songPostId,
+      songReasonCode: reasonCode,
+    },
+    decidedAt,
+  };
+  return {
+    decision,
+    state: {
+      ...state,
+      creationRevision: decision.creationRevision,
+      status: "blocked",
+      phase: null,
+      decision,
+    },
+  };
+}
+
+export type SongReferencePublication = Readonly<{
+  songPostId: string;
+  audioRevision: number;
+  planId: string;
+  clipStartSamples: number;
+  clipDurationSamples: number;
+  master: AcceptedSongVideoMaster;
+}>;
+
+export function publishSongReferenceVideo(
+  state: VideoSubmissionState,
+  postId: string,
+): Readonly<{ state: VideoSubmissionState; songReference: SongReferencePublication }> {
+  const plan = state.songPlan;
+  const master = state.master;
+  if (
+    state.intent !== "song_reference" ||
+    state.status !== "processing" ||
+    state.phase !== "publish" ||
+    state.decision?.outcome.kind !== "publish" ||
+    state.decision.authorization.intent !== "song_reference" ||
+    plan === null ||
+    master === null ||
+    state.decision.authorization.planId !== plan.planId ||
+    !present(postId)
+  )
+    throw new Error("video publication is not allowed");
+  return {
+    state: { ...state, status: "published", phase: null, postId },
+    songReference: {
+      songPostId: plan.songPostId,
+      audioRevision: plan.audioRevision,
+      planId: plan.planId,
+      clipStartSamples: plan.clipStartSamples,
+      clipDurationSamples: plan.clipDurationSamples,
+      master,
+    },
+  };
 }

@@ -20,6 +20,7 @@ import { recoverVideoWorkflowLaunches } from "../../application/src/video/workfl
 import {
   attachVideoDecision,
   decideOriginalAudioVideo,
+  type OriginalAudioTrustedAnalysis,
   publishOriginalVideo,
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
@@ -830,7 +831,7 @@ suite("video publication PostgreSQL", () => {
         ...fixtureAnalysis,
         frames: { ...fixtureAnalysis.frames, extracted: posterFrames },
       };
-      const analysis: VideoTrustedAnalysis = {
+      const analysis: OriginalAudioTrustedAnalysis = {
         ...baseAnalysis,
         mediaSafety: "review_required",
         audio: {

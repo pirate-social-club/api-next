@@ -3,17 +3,25 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
 } from "@pirate/application";
+import {
+  deterministicDataRegistrationOperationId,
+  deterministicDataRegistrationOutboxId,
+  deterministicDataRegistrationWorkflowId,
+} from "@pirate/application/data/registration-persistence";
 import type {
   VideoAttemptReconciliationStore,
   VideoPublicationStore,
   VideoPublishBundle,
   VideoReservationRecord,
+  VideoSongReferencePublishBundle,
   VideoSubmissionRecord,
 } from "@pirate/application/video/publication";
+import type { FrozenSongReservationPlan } from "@pirate/application/video/song-interval";
 import { Conflict } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
 import {
   attachImmutableVideo,
+  redecideSongReferenceAfterCommitDenial,
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   type VideoSubmissionState,
 } from "../../domain/src/video-submission.ts";
@@ -106,12 +114,21 @@ function submissionFromRow(row: Row): VideoSubmissionRecord {
     typeof snapshot.reconciliationRequired !== "boolean"
   )
     throw new Error("invalid video reconciliation fact");
-  const state = { ...snapshot, reconciliationRequired: snapshot.reconciliationRequired ?? false };
+  // Snapshots written before the song-reference path carry neither field and
+  // are original audio; only absence defaults, and the intent must agree.
+  const state: VideoSubmissionState = {
+    ...snapshot,
+    reconciliationRequired: snapshot.reconciliationRequired ?? false,
+    songPlan: snapshot.songPlan ?? null,
+    master: snapshot.master ?? null,
+  };
   if (
     state.submissionId !== text(row, "submission_id") ||
     state.operationId !== text(row, "operation_id") ||
     state.authorPersonaId !== text(row, "author_persona_id") ||
-    state.intent !== "original_audio"
+    state.intent !== text(row, "video_intent") ||
+    (state.intent === "original_audio") !== (state.songPlan === null) ||
+    (state.intent === "original_audio" && state.master !== null)
   )
     throw new Error("invalid video submission snapshot");
   const persona = json<VideoSubmissionRecord["authorPersona"]>(row.author_persona);
@@ -125,13 +142,44 @@ function submissionFromRow(row: Row): VideoSubmissionRecord {
   };
 }
 
+function songPlanFromRow(row: Row, observedAt: string): FrozenSongReservationPlan {
+  const derivativeVideo = text(row, "derivative_video");
+  if (derivativeVideo !== "allowed" && derivativeVideo !== "owner_only")
+    throw new Error("invalid song reservation plan");
+  const selectedFrom = text(row, "selected_from_kind");
+  const originPostId = nullableText(row, "origin_post_id");
+  return {
+    songPostId: text(row, "song_post_id"),
+    audioRevision: integer(row, "audio_revision", 1),
+    canonicalAudioSha256: text(row, "canonical_audio_sha256"),
+    songDurationSamples: integer(row, "song_duration_samples", 1),
+    songAssetId: text(row, "song_asset_id"),
+    clipStartSamples: integer(row, "clip_start_samples"),
+    clipDurationSamples: integer(row, "clip_duration_samples", 1),
+    intervalPolicyRevision: integer(row, "interval_policy_revision", 1),
+    ownerPolicyRevision: integer(row, "owner_policy_revision", 1),
+    ownerPolicyHash: text(row, "owner_policy_hash"),
+    derivativeVideo,
+    selectedFrom:
+      selectedFrom === "feed" && originPostId !== null
+        ? { kind: "feed", originPostId }
+        : selectedFrom === "library" && originPostId === null
+          ? { kind: "library" }
+          : (() => {
+              throw new Error("invalid song reservation plan");
+            })(),
+    originVerified: row.origin_verified === true,
+    observedAt,
+  };
+}
+
 const RESERVATION_COLUMNS = `reservation_id,community_id,video_intent,actor_user_id,actor_persona_id,
   request_hash,expected_content_type,expected_size_bytes,expected_sha256,
   ingest_policy_revision,multipart_upload_id,multipart_part_size_bytes,
   multipart_part_count,multipart_manifest,expires_at,state,submission_id,
   operation_id,response_snapshot_bytes,updated_at`;
 
-const SUBMISSION_SELECT = `SELECT s.submission_id,s.operation_id,s.author_persona_id,
+const SUBMISSION_SELECT = `SELECT s.submission_id,s.operation_id,s.author_persona_id,s.video_intent,
   s.video_state_snapshot,s.event_sequence,s.updated_at,public_persona_projection(s.author_persona_id) AS author_persona
   FROM media_post_submissions s`;
 
@@ -436,6 +484,26 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
 
+    getReservationSongPlan: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "video-publication.reservation-song-plan-read",
+            text: `SELECT song_post_id,audio_revision,canonical_audio_sha256,song_duration_samples,
+                          song_asset_id,clip_start_samples,clip_duration_samples,
+                          interval_policy_revision,owner_policy_revision,owner_policy_hash,
+                          derivative_video,selected_from_kind,origin_post_id,origin_verified,
+                          frozen_at
+                     FROM media_video_reservation_song_plans WHERE reservation_id=$1`,
+            values: [input.reservationId],
+            readonly: true,
+          });
+          const row = result.rows[0];
+          return row === undefined ? null : songPlanFromRow(row, instant(row, "frozen_at"));
+        }),
+      ),
+
     getReservationForAccount: (input) =>
       run(
         Effect.gen(function* () {
@@ -581,7 +649,7 @@ export function makeControlPlaneVideoPublicationStore(
                    response_snapshot_bytes,response_snapshot_sha256,media_kind,video_intent,caption,
                    video_revision,video_state_snapshot,author_declared_rating)
                   VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL,$8::jsonb,$9,1,0,0,1,'processing',
-                          'awaiting_upload',$10,$11,'video','original_audio',$12,0,$13::jsonb,$14)`,
+                          'awaiting_upload',$10,$11,'video',$15,$12,0,$13::jsonb,$14)`,
                 values: [
                   state.submissionId,
                   state.communityId,
@@ -597,9 +665,35 @@ export function makeControlPlaneVideoPublicationStore(
                   state.caption,
                   JSON.stringify(state),
                   state.authorDeclaredRating,
+                  state.intent,
                 ],
                 readonly: false,
               });
+              // The render plan is created with the submission. The schema
+              // refuses any plan that is not the reservation's frozen plan.
+              const plan = state.songPlan;
+              if ((state.intent === "song_reference") !== (plan !== null))
+                throw new Error("video submission intent and plan disagree");
+              if (plan !== null) {
+                yield* tx.execute({
+                  label: "video-publication.render-plan-insert",
+                  text: `INSERT INTO media_song_video_render_plans
+                    (plan_id,submission_id,song_post_id,song_asset_id,audio_revision,
+                     song_duration_samples,clip_start_samples,clip_duration_samples)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+                  values: [
+                    plan.planId,
+                    state.submissionId,
+                    plan.songPostId,
+                    plan.songAssetId,
+                    plan.audioRevision,
+                    plan.songDurationSamples,
+                    plan.clipStartSamples,
+                    plan.clipDurationSamples,
+                  ],
+                  readonly: false,
+                });
+              }
               yield* tx.execute({
                 label: "video-publication.claim-reservation-update",
                 text: `UPDATE media_upload_reservations SET state='claimed',submission_id=$1,
@@ -972,7 +1066,7 @@ export function makeControlPlaneVideoPublicationStore(
                 values: [input.submission.submissionId, input.submission.operationId],
               });
               if (
-                current?.state.phase === "publish" &&
+                (current?.state.phase === "publish" || current?.state.phase === "render") &&
                 current.state.analysis?.analysisRevision === input.analysis.analysisRevision &&
                 current.state.decision?.acceptedAnalysisRevision ===
                   input.decision.acceptedAnalysisRevision
@@ -1024,13 +1118,21 @@ export function makeControlPlaneVideoPublicationStore(
                 ],
                 readonly: false,
               });
-              const soundtrack = input.analysis.audio.soundtrack;
+              if (input.decision.authorization.intent === "song_reference") {
+                yield* requireSongDecisionObservation(tx, current.state, input.decision);
+              }
+              // A song-reference capture's audio is never extracted.
+              const audio = input.analysis.audio;
               for (const artifact of [
-                {
-                  artifactRef: soundtrack.extractedAudioRef,
-                  artifactKind: "extracted_audio" as const,
-                  canonicalSha256: soundtrack.extractedAudioSha256,
-                },
+                ...(audio.intent === "original_audio"
+                  ? [
+                      {
+                        artifactRef: audio.soundtrack.extractedAudioRef,
+                        artifactKind: "extracted_audio" as const,
+                        canonicalSha256: audio.soundtrack.extractedAudioSha256,
+                      },
+                    ]
+                  : []),
                 ...input.analysis.frames.extracted.map((frame) => ({
                   artifactRef: frame.artifactRef,
                   artifactKind: frame.role,
@@ -1222,7 +1324,7 @@ export function makeControlPlaneVideoPublicationStore(
                 current.state.status !== "processing" ||
                 !(
                   (current.state.phase === "analysis" && current.state.decision === null) ||
-                  (current.state.phase === "publish" &&
+                  ((current.state.phase === "render" || current.state.phase === "publish") &&
                     current.state.analysis?.videoRevision === current.state.videoRevision)
                 )
               )
@@ -1260,7 +1362,9 @@ export function makeControlPlaneVideoPublicationStore(
               if (
                 !capped &&
                 uncertain.length === 0 &&
-                (attempts.rows.length > 0 || current.state.phase === "publish")
+                (attempts.rows.length > 0 ||
+                  current.state.phase === "render" ||
+                  current.state.phase === "publish")
               )
                 return "continue" as const;
               for (const attempt of uncertain) {
@@ -1455,7 +1559,8 @@ export function makeControlPlaneVideoPublicationStore(
                 current.state.creationRevision !== input.submission.creationRevision ||
                 current.state.videoRevision !== input.submission.videoRevision ||
                 current.state.analysisRevision !== input.submission.analysisRevision ||
-                !["analysis", "publish"].includes(current.state.phase ?? "")
+                // A song reference can fail while its master is rendered.
+                !["analysis", "render", "publish"].includes(current.state.phase ?? "")
               ) {
                 throw new Error("video processing failure fence rejected");
               }
@@ -1492,6 +1597,10 @@ export function makeControlPlaneVideoPublicationStore(
       ),
 
     publish: (input) => run(publishTransaction(input)),
+    observeSongReferencePolicy: (input) =>
+      run(observeSongReferencePolicyTransaction(input.submission)),
+    attachSongVideoMaster: (input) => run(attachSongVideoMasterTransaction(input)),
+    publishSongReference: (input) => run(publishSongReferenceTransaction(input)),
 
     retryPoster: (input) =>
       run(
@@ -1900,6 +2009,56 @@ function insertPublicationWakeup(
   });
 }
 
+/**
+ * `active_community_effect` at publication_committed. Without it nothing
+ * publishes and the operation fails retryably from the publish phase.
+ */
+function membershipFailure(
+  tx: Executor,
+  current: VideoSubmissionRecord,
+  observedEventSequence: number,
+) {
+  return Effect.gen(function* () {
+    const active = yield* tx.execute({
+      label: "video-publication.membership-recheck",
+      text: "SELECT 1 WHERE active_community_effect($1,$2)",
+      values: [current.state.communityId, current.state.actorAccountId],
+      readonly: true,
+    });
+    if (active.rowCount === 1) return null;
+    const next: VideoSubmissionState = {
+      ...current.state,
+      status: "processing_failed",
+      phase: null,
+      failureCode: "membership_required",
+      reconciliationRequired: false,
+    };
+    const updated = yield* updateSubmissionSnapshot(tx, {
+      prior: current.state,
+      next,
+      observedEventSequence,
+      extraSql:
+        ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase=$13",
+      extraValues: [
+        `video-publication-membership:${current.state.operationId}:c${current.state.creationRevision}`,
+        current.state.retryCount,
+        current.state.retryCount < 3,
+        "publish",
+      ],
+    });
+    if (updated.rows.length !== 1) throw new Error("video membership failure fence rejected");
+    return {
+      kind: "membership_required" as const,
+      record: {
+        ...current,
+        state: next,
+        eventSequence: current.eventSequence + 1,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  });
+}
+
 function publishTransaction(input: VideoPublishBundle) {
   return Effect.gen(function* () {
     const db = yield* ControlPlaneDb;
@@ -1921,44 +2080,8 @@ function publishTransaction(input: VideoPublishBundle) {
           current.state.decision?.outcome.kind !== "publish"
         )
           throw new Error("video publication fence rejected");
-        const active = yield* tx.execute({
-          label: "video-publication.membership-recheck",
-          text: "SELECT 1 WHERE active_community_effect($1,$2)",
-          values: [current.state.communityId, current.state.actorAccountId],
-          readonly: true,
-        });
-        if (active.rowCount !== 1) {
-          const next: VideoSubmissionState = {
-            ...current.state,
-            status: "processing_failed",
-            phase: null,
-            failureCode: "membership_required",
-            reconciliationRequired: false,
-          };
-          const updated = yield* updateSubmissionSnapshot(tx, {
-            prior: current.state,
-            next,
-            observedEventSequence: input.observedEventSequence,
-            extraSql:
-              ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase=$13",
-            extraValues: [
-              `video-publication-membership:${current.state.operationId}:c${current.state.creationRevision}`,
-              current.state.retryCount,
-              current.state.retryCount < 3,
-              "publish",
-            ],
-          });
-          if (updated.rows.length !== 1) throw new Error("video membership failure fence rejected");
-          return {
-            kind: "membership_required" as const,
-            record: {
-              ...current,
-              state: next,
-              eventSequence: current.eventSequence + 1,
-              updatedAt: new Date().toISOString(),
-            },
-          };
-        }
+        const membership = yield* membershipFailure(tx, current, input.observedEventSequence);
+        if (membership !== null) return membership;
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
         yield* tx.execute({
@@ -2140,6 +2263,682 @@ function publishTransaction(input: VideoPublishBundle) {
           values: [current.state.operationId],
           readonly: false,
         });
+        yield* updateSubmissionSnapshot(tx, { prior: current.state, next: input.state });
+        return {
+          ...current,
+          eventSequence: current.eventSequence + 1,
+          state: input.state,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Spec 013 §5A: the song-reference decision fences and publication.
+ * ------------------------------------------------------------------ */
+
+/** The chain the video lane registers on; the parent's deterministic id uses it too. */
+const VIDEO_DATA_CHAIN_ID = 1315n;
+
+type SongPublicationRow = Readonly<{
+  songCommunityId: string;
+  audioRevision: number;
+  contentRating: "general" | "adult_18";
+}>;
+
+/** The referenced song as currently published, or null when it no longer is. */
+function readPublishedSong(tx: Executor, songPostId: string) {
+  return Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: "video-publication.song-reference-song",
+      text: `SELECT p.community_id,p.audio_revision,post.content_rating
+               FROM media_publication_projections p
+               JOIN posts post ON post.community_id=p.community_id AND post.post_id=p.post_id
+              WHERE p.post_id=$1 AND p.media_kind='song'
+                AND post.post_type='song' AND post.status='published' AND post.visibility='public'`,
+      values: [songPostId],
+      readonly: true,
+    });
+    if (result.rows.length === 0) return null;
+    if (result.rows.length !== 1 || result.rows[0] === undefined)
+      throw new Error("song post has more than one publication");
+    const row = result.rows[0];
+    const contentRating = text(row, "content_rating");
+    if (contentRating !== "general" && contentRating !== "adult_18")
+      throw new Error("invalid song content rating");
+    const song: SongPublicationRow = {
+      songCommunityId: text(row, "community_id"),
+      audioRevision: integer(row, "audio_revision", 1),
+      contentRating,
+    };
+    return song;
+  });
+}
+
+type PolicyObservationRow = Readonly<{
+  permitted: boolean;
+  denialReason: "derivative_video_blocked" | "derivative_video_owner_only" | null;
+  ownerPolicyRevision: number;
+  ownerPolicyHash: string;
+  derivativeVideo: "allowed" | "owner_only" | "blocked";
+}>;
+
+/** Records (or replays) the owner-policy observation for one transition and revision. */
+function observeDerivativePolicy(
+  tx: Executor,
+  input: Readonly<{
+    state: VideoSubmissionState;
+    transition: "publication_allowed" | "publication_committed";
+    creationRevision: number;
+    song: SongPublicationRow;
+  }>,
+) {
+  return Effect.gen(function* () {
+    const plan = input.state.songPlan;
+    if (plan === null) throw new Error("song-reference submission has no plan");
+    const result = yield* tx.execute<Row>({
+      label: "video-publication.song-policy-observe",
+      text: `SELECT permitted,denial_reason,owner_policy_revision,owner_policy_hash,derivative_video
+               FROM observe_song_derivative_video_policy_v1($1,$2,$3,$4,$5,$6,$7)`,
+      values: [
+        input.state.operationId,
+        input.transition,
+        input.creationRevision,
+        input.song.songCommunityId,
+        plan.songPostId,
+        plan.audioRevision,
+        input.state.actorAccountId,
+      ],
+      readonly: false,
+    });
+    const row = result.rows[0];
+    if (row === undefined || result.rows.length !== 1)
+      throw new Error("song policy observation was not recorded");
+    const derivativeVideo = text(row, "derivative_video");
+    const denialReason = nullableText(row, "denial_reason");
+    if (
+      typeof row.permitted !== "boolean" ||
+      (derivativeVideo !== "allowed" &&
+        derivativeVideo !== "owner_only" &&
+        derivativeVideo !== "blocked") ||
+      (denialReason !== null &&
+        denialReason !== "derivative_video_blocked" &&
+        denialReason !== "derivative_video_owner_only")
+    )
+      throw new Error("invalid song policy observation");
+    const observation: PolicyObservationRow = {
+      permitted: row.permitted,
+      denialReason,
+      ownerPolicyRevision: integer(row, "owner_policy_revision", 1),
+      ownerPolicyHash: text(row, "owner_policy_hash"),
+      derivativeVideo,
+    };
+    return observation;
+  });
+}
+
+/**
+ * A song-reference decision is committed only against the observation it was
+ * made from: a publish needs a permitting observation at publication_allowed
+ * for this creation revision, and a policy block needs the refusing one.
+ */
+function requireSongDecisionObservation(
+  tx: Executor,
+  state: VideoSubmissionState,
+  decision: VideoPublishBundle["decision"],
+) {
+  return Effect.gen(function* () {
+    const outcome = decision.outcome;
+    const expected =
+      outcome.kind === "publish"
+        ? { permitted: true, reason: null }
+        : outcome.kind === "block" &&
+            (outcome.songReasonCode === "derivative_video_blocked" ||
+              outcome.songReasonCode === "derivative_video_owner_only")
+          ? { permitted: false, reason: outcome.songReasonCode }
+          : null;
+    if (expected === null) return;
+    const result = yield* tx.execute<Row>({
+      label: "video-publication.song-decision-observation",
+      text: `SELECT permitted,denial_reason FROM song_derivative_video_policy_observations
+              WHERE operation_id=$1 AND observed_at_transition='publication_allowed'
+                AND creation_revision=$2 AND actor_account_id=$3`,
+      values: [state.operationId, decision.creationRevision, state.actorAccountId],
+      readonly: true,
+    });
+    const row = result.rows[0];
+    if (
+      row === undefined ||
+      row.permitted !== expected.permitted ||
+      (row.denial_reason ?? null) !== expected.reason
+    )
+      throw new Error("song-reference decision does not match its policy observation");
+  });
+}
+
+function observeSongReferencePolicyTransaction(state: VideoSubmissionState) {
+  return Effect.gen(function* () {
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((tx) =>
+      Effect.gen(function* () {
+        const plan = state.songPlan;
+        if (state.intent !== "song_reference" || plan === null)
+          throw new Error("not a song-reference submission");
+        const song = yield* readPublishedSong(tx, plan.songPostId);
+        if (song === null) return { permitted: false, reasonCode: "song_not_published" } as const;
+        if (song.audioRevision !== plan.audioRevision)
+          return { permitted: false, reasonCode: "song_audio_revision_missing" } as const;
+        const observation = yield* observeDerivativePolicy(tx, {
+          state,
+          transition: "publication_allowed",
+          creationRevision: state.creationRevision,
+          song,
+        });
+        if (observation.permitted)
+          return { permitted: true, contentRating: song.contentRating } as const;
+        if (observation.denialReason === null) throw new Error("refusal without a reason");
+        return { permitted: false, reasonCode: observation.denialReason } as const;
+      }),
+    );
+  });
+}
+
+type AcceptedMasterRow = Readonly<{
+  masterRevisionId: string;
+  attemptId: string;
+  masterRef: string;
+  masterSha256: string;
+  masterByteLength: number;
+  soundtrackSha256: string;
+}>;
+
+/** The master accepted for a plan, as sealed after verification. */
+function readAcceptedMaster(tx: Executor, planId: string) {
+  return Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: "video-publication.song-accepted-master",
+      text: `SELECT m.master_revision_id,m.attempt_id,m.verified_object_key,m.master_sha256,
+                    m.master_byte_length,m.soundtrack_sha256
+               FROM media_song_video_accepted_masters a
+               JOIN media_song_video_masters m
+                 ON m.master_revision_id=a.master_revision_id AND m.plan_id=a.plan_id
+              WHERE a.plan_id=$1`,
+      values: [planId],
+      readonly: true,
+    });
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    const master: AcceptedMasterRow = {
+      masterRevisionId: text(row, "master_revision_id"),
+      attemptId: text(row, "attempt_id"),
+      masterRef: text(row, "verified_object_key"),
+      masterSha256: text(row, "master_sha256"),
+      masterByteLength: integer(row, "master_byte_length", 1),
+      soundtrackSha256: text(row, "soundtrack_sha256"),
+    };
+    return master;
+  });
+}
+
+function attachSongVideoMasterTransaction(
+  input: Parameters<VideoPublicationStore["attachSongVideoMaster"]>[0],
+) {
+  return Effect.gen(function* () {
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((tx) =>
+      Effect.gen(function* () {
+        const current = yield* findSubmission(tx, {
+          clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+          values: [input.submission.submissionId, input.submission.operationId],
+        });
+        const master = input.nextState.master;
+        const plan = current?.state.songPlan ?? null;
+        if (current === null || master === null || plan === null)
+          throw new Error("song video master fence rejected");
+        if (
+          current.state.phase !== "render" &&
+          current.state.master?.masterRevisionId === master.masterRevisionId
+        )
+          return current;
+        if (
+          current.eventSequence !== input.observedEventSequence ||
+          current.state.phase !== "render" ||
+          current.state.creationRevision !== input.nextState.creationRevision ||
+          input.nextState.phase !== "publish"
+        )
+          throw new Error("song video master fence rejected");
+        // The state may name only the master the plan's compare-and-set accepted,
+        // exactly as it was sealed.
+        const accepted = yield* readAcceptedMaster(tx, plan.planId);
+        if (
+          accepted === null ||
+          accepted.masterRevisionId !== master.masterRevisionId ||
+          accepted.attemptId !== master.attemptId ||
+          accepted.masterRef !== master.masterRef ||
+          accepted.masterSha256 !== master.masterSha256 ||
+          accepted.masterByteLength !== master.masterByteLength ||
+          accepted.soundtrackSha256 !== master.soundtrackSha256
+        )
+          throw new Error("song video master is not the accepted master");
+        const updated = yield* updateSubmissionSnapshot(tx, {
+          prior: current.state,
+          next: input.nextState,
+          observedEventSequence: input.observedEventSequence,
+        });
+        if (updated.rows.length !== 1) throw new Error("song video master fence rejected");
+        return {
+          ...current,
+          state: input.nextState,
+          eventSequence: current.eventSequence + 1,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    );
+  });
+}
+
+function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle) {
+  return Effect.gen(function* () {
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((tx) =>
+      Effect.gen(function* () {
+        const current = yield* findSubmission(tx, {
+          clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+          values: [input.state.submissionId, input.state.operationId],
+        });
+        if (current?.state.status === "published" && current.state.postId === input.state.postId)
+          return current;
+        const plan = current?.state.songPlan ?? null;
+        const master = current?.state.master ?? null;
+        const reference = input.songReference;
+        if (
+          current === null ||
+          plan === null ||
+          master === null ||
+          current.eventSequence !== input.observedEventSequence ||
+          current.state.creationRevision !== input.state.creationRevision ||
+          current.state.intent !== "song_reference" ||
+          current.state.phase !== "publish" ||
+          current.state.video === null ||
+          current.state.analysis === null ||
+          current.state.decision?.outcome.kind !== "publish" ||
+          current.state.decision.authorization.intent !== "song_reference" ||
+          current.state.decision.authorization.planId !== plan.planId ||
+          reference.planId !== plan.planId ||
+          reference.master.masterRevisionId !== master.masterRevisionId
+        )
+          throw new Error("song video publication fence rejected");
+        const membership = yield* membershipFailure(tx, current, input.observedEventSequence);
+        if (membership !== null) return membership;
+
+        // The owner policy again, at publication_committed, inside this
+        // transaction. A refusal publishes nothing and re-decides against it.
+        const song = yield* readPublishedSong(tx, plan.songPostId);
+        const committed =
+          song === null || song.audioRevision !== plan.audioRevision
+            ? null
+            : yield* observeDerivativePolicy(tx, {
+                state: current.state,
+                transition: "publication_committed",
+                creationRevision: current.state.creationRevision,
+                song,
+              });
+        if (song === null || committed === null || !committed.permitted) {
+          const reason =
+            song === null
+              ? ("song_not_published" as const)
+              : committed === null
+                ? ("song_audio_revision_missing" as const)
+                : committed.denialReason;
+          if (reason === null) throw new Error("refusal without a reason");
+          const redecided = redecideSongReferenceAfterCommitDenial(
+            current.state,
+            reason,
+            new Date().toISOString(),
+          );
+          if (song !== null && committed !== null) {
+            yield* observeDerivativePolicy(tx, {
+              state: current.state,
+              transition: "publication_allowed",
+              creationRevision: redecided.decision.creationRevision,
+              song,
+            });
+          }
+          yield* tx.execute({
+            label: "video-publication.song-redecision-insert",
+            text: `INSERT INTO media_video_publication_decisions
+              (submission_id,community_id,actor_user_id,operation_id,creation_revision,
+               video_revision,analysis_revision,outcome,effective_content_rating,
+               decision_snapshot,decided_at)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,'block',$8,$9::jsonb,$10)`,
+            values: [
+              current.state.submissionId,
+              current.state.communityId,
+              current.state.actorAccountId,
+              current.state.operationId,
+              redecided.decision.creationRevision,
+              redecided.decision.videoRevision,
+              redecided.decision.acceptedAnalysisRevision,
+              redecided.decision.effectiveContentRating,
+              JSON.stringify(redecided.decision),
+              redecided.decision.decidedAt,
+            ],
+            readonly: false,
+          });
+          const updated = yield* updateSubmissionSnapshot(tx, {
+            prior: current.state,
+            next: redecided.state,
+            observedEventSequence: input.observedEventSequence,
+          });
+          if (updated.rows.length !== 1) throw new Error("song video re-decision fence rejected");
+          return {
+            kind: "song_reference_invalid" as const,
+            record: {
+              ...current,
+              state: redecided.state,
+              eventSequence: current.eventSequence + 1,
+              updatedAt: new Date().toISOString(),
+            },
+          };
+        }
+        if (committed.derivativeVideo === "blocked")
+          throw new Error("a permitting observation cannot block");
+
+        const accepted = yield* readAcceptedMaster(tx, plan.planId);
+        if (
+          accepted === null ||
+          accepted.masterRevisionId !== master.masterRevisionId ||
+          accepted.masterSha256 !== master.masterSha256 ||
+          accepted.masterRef !== master.masterRef
+        )
+          throw new Error("song video publication is not the accepted master");
+        const postId = input.state.postId;
+        if (postId === null) throw new Error("video publication post missing");
+        const video = current.state.video;
+        yield* tx.execute({
+          label: "video-publication.post-insert",
+          text: `INSERT INTO posts
+            (community_id,post_id,author_user_id,author_persona_id,post_type,status,
+             visibility,title,body,created_at,updated_at,idempotency_key,
+             author_declared_rating,content_rating)
+            VALUES ($1,$2,$3,$4,'video','published','public',NULL,$5,
+                    clock_timestamp(),clock_timestamp(),$6,$7,$8)
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [
+            current.state.communityId,
+            postId,
+            current.state.actorAccountId,
+            current.state.authorPersonaId,
+            current.state.caption,
+            `video-publication:${current.state.operationId}`,
+            current.state.authorDeclaredRating,
+            input.decision.effectiveContentRating,
+          ],
+          readonly: false,
+        });
+        yield* tx.execute({
+          label: "video-publication.rights-insert",
+          text: `INSERT INTO media_video_rights
+            (submission_id,rights_basis,access_mode,royalty_allocations,offered_license)
+            VALUES ($1,'derivative','public',$2::jsonb,NULL) ON CONFLICT DO NOTHING`,
+          values: [
+            current.state.submissionId,
+            JSON.stringify([{ recipient_id: current.state.authorPersonaId, share_bps: 10_000 }]),
+          ],
+          readonly: false,
+        });
+        for (const artifact of input.derivedArtifacts) {
+          yield* tx.execute({
+            label: "video-publication.derived-insert",
+            text: `INSERT INTO media_video_derived_artifacts
+              (artifact_ref,submission_id,video_revision,analysis_revision,artifact_kind,
+               canonical_sha256,retention_policy_revision)
+              VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
+            values: [
+              artifact.artifactRef,
+              current.state.submissionId,
+              current.state.videoRevision,
+              current.state.analysisRevision,
+              artifact.artifactKind,
+              artifact.canonicalSha256,
+              VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1.policyRevision,
+            ],
+            readonly: false,
+          });
+        }
+        // The references_song edge, carrying the committed owner-policy snapshot.
+        yield* tx.execute({
+          label: "video-publication.song-edge-insert",
+          text: `INSERT INTO media_video_song_references
+            (submission_id,operation_id,creation_revision,actor_account_id,post_id,
+             song_community_id,song_post_id,audio_revision,plan_id,master_revision_id,
+             owner_policy_revision,owner_policy_hash,derivative_video)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          values: [
+            current.state.submissionId,
+            current.state.operationId,
+            current.state.creationRevision,
+            current.state.actorAccountId,
+            postId,
+            song.songCommunityId,
+            plan.songPostId,
+            plan.audioRevision,
+            plan.planId,
+            master.masterRevisionId,
+            committed.ownerPolicyRevision,
+            committed.ownerPolicyHash,
+            committed.derivativeVideo,
+          ],
+          readonly: false,
+        });
+        // The published video is the accepted master, never the capture.
+        yield* tx.execute({
+          label: "video-publication.projection-insert",
+          text: `INSERT INTO media_publication_projections
+            (submission_id,community_id,actor_user_id,operation_id,post_id,
+             creation_revision,audio_revision,analysis_revision,decision_revision,
+             canonical_audio_sha256,title,audio_asset_ref,language_status,
+             lyrics_explicitness,media_kind,video_revision,caption,video_asset_ref,
+             poster_artifact_ref,original_sound_id,canonical_video_sha256,
+             song_video_plan_id,song_video_master_revision_id)
+            VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,NULL,NULL,NULL,'unavailable','not_applicable',
+                    'video',$9,$10,$11,$12,NULL,$13,$14,$15)
+            ON CONFLICT (submission_id) DO NOTHING`,
+          values: [
+            current.state.submissionId,
+            current.state.communityId,
+            current.state.actorAccountId,
+            current.state.operationId,
+            postId,
+            current.state.creationRevision,
+            current.state.analysisRevision,
+            current.state.creationRevision,
+            current.state.videoRevision,
+            current.state.caption,
+            master.masterRef,
+            input.poster.artifactRef,
+            master.masterSha256,
+            plan.planId,
+            master.masterRevisionId,
+          ],
+          readonly: false,
+        });
+        // Spec 008: the derivative intent names its parent by deterministic id.
+        // A song whose own registration row is absent gets it here, in its
+        // initial state, with its launch; this publication never waits on it.
+        const parentOperationId = deterministicDataRegistrationOperationId(
+          VIDEO_DATA_CHAIN_ID,
+          plan.songPostId,
+          1n,
+        );
+        const parentWorkflowId = deterministicDataRegistrationWorkflowId(parentOperationId, 1n);
+        const parentOutboxId = deterministicDataRegistrationOutboxId(parentOperationId, 1n);
+        yield* tx.execute({
+          label: "video-publication.data-parent-insert",
+          text: `INSERT INTO data_registration_operations
+            (registration_operation_id,community_id,actor_user_id,submission_id,
+             media_operation_id,post_id,asset_id,chain_id,registration_revision,
+             publication_creation_revision,publication_audio_revision,
+             publication_analysis_revision,publication_decision_revision,
+             canonical_audio_sha256,workflow_revision,workflow_instance_id)
+            SELECT $1,p.community_id,p.actor_user_id,p.submission_id,p.operation_id,
+                   p.post_id,p.post_id,$2,1,p.creation_revision,p.audio_revision,
+                   p.analysis_revision,p.decision_revision,p.canonical_audio_sha256,1,$3
+              FROM media_publication_projections p
+             WHERE p.post_id=$4 AND p.media_kind='song' AND p.audio_revision=$5
+            ON CONFLICT DO NOTHING`,
+          values: [
+            parentOperationId,
+            VIDEO_DATA_CHAIN_ID.toString(),
+            parentWorkflowId,
+            plan.songPostId,
+            plan.audioRevision,
+          ],
+          readonly: false,
+        });
+        yield* tx.execute({
+          label: "video-publication.data-parent-outbox-insert",
+          text: `INSERT INTO data_registration_outbox
+            (outbox_id,registration_operation_id,workflow_revision,workflow_instance_id,
+             event_type,effect_identity,payload)
+            SELECT $1,$2,1,$3,'registration_launch',$4,$5::jsonb
+             WHERE EXISTS (SELECT 1 FROM data_registration_operations
+                            WHERE registration_operation_id=$2 AND state='pending')
+            ON CONFLICT DO NOTHING`,
+          values: [
+            parentOutboxId,
+            parentOperationId,
+            parentWorkflowId,
+            `data-registration-launch:${parentOperationId}:r1`,
+            JSON.stringify({ operation_id: parentOperationId, outbox_id: parentOutboxId }),
+          ],
+          readonly: false,
+        });
+        const license = yield* tx.execute<Row>({
+          label: "video-publication.song-license",
+          text: `SELECT t.license_preset,t.commercial_remix_share_bps
+                   FROM media_publication_projections p
+                   JOIN media_submission_terms t ON t.submission_id=p.submission_id
+                    AND t.creation_revision<=p.creation_revision
+                  WHERE p.post_id=$1 AND p.media_kind='song'
+                  ORDER BY t.creation_revision DESC LIMIT 1`,
+          values: [plan.songPostId],
+          readonly: true,
+        });
+        const terms = license.rows[0];
+        if (terms === undefined) throw new Error("the referenced song has no license");
+        const preset = text(terms, "license_preset");
+        const registrationOperationId = deterministicDataRegistrationOperationId(
+          VIDEO_DATA_CHAIN_ID,
+          postId,
+          1n,
+        );
+        const workflowInstanceId = deterministicDataRegistrationWorkflowId(
+          registrationOperationId,
+          1n,
+        );
+        const outboxId = deterministicDataRegistrationOutboxId(registrationOperationId, 1n);
+        yield* tx.execute({
+          label: "video-publication.data-operation-insert",
+          text: `INSERT INTO data_registration_operations
+            (registration_operation_id,community_id,actor_user_id,submission_id,
+             media_operation_id,post_id,asset_id,chain_id,registration_revision,
+             publication_creation_revision,publication_audio_revision,
+             publication_analysis_revision,publication_decision_revision,
+             canonical_audio_sha256,workflow_revision,workflow_instance_id,
+             media_kind,rights_basis)
+            VALUES ($1,$2,$3,$4,$5,$6,$6,$7,1,$8,$9,$10,$11,$12,1,$13,
+                    'video','derivative') ON CONFLICT DO NOTHING`,
+          values: [
+            registrationOperationId,
+            current.state.communityId,
+            current.state.actorAccountId,
+            current.state.submissionId,
+            current.state.operationId,
+            postId,
+            VIDEO_DATA_CHAIN_ID.toString(),
+            current.state.creationRevision,
+            current.state.videoRevision,
+            current.state.analysisRevision,
+            current.state.creationRevision,
+            master.masterSha256,
+            workflowInstanceId,
+          ],
+          readonly: false,
+        });
+        yield* tx.execute({
+          label: "video-publication.data-parent-reference-insert",
+          text: `INSERT INTO data_registration_parent_references
+            (registration_operation_id,relationship,parent_asset_id,
+             parent_registration_operation_id,expected_parent_license_preset,
+             expected_parent_commercial_rev_share_bps,owner_policy_revision,
+             owner_policy_hash,owner_derivative_video)
+            VALUES ($1,'references_song',$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+          values: [
+            registrationOperationId,
+            plan.songPostId,
+            parentOperationId,
+            preset,
+            preset === "commercial-remix" ? integer(terms, "commercial_remix_share_bps") : null,
+            committed.ownerPolicyRevision,
+            committed.ownerPolicyHash,
+            committed.derivativeVideo,
+          ],
+          readonly: false,
+        });
+        yield* tx.execute({
+          label: "video-publication.data-outbox-insert",
+          text: `INSERT INTO data_registration_outbox
+            (outbox_id,registration_operation_id,workflow_revision,workflow_instance_id,
+             event_type,effect_identity,payload)
+            VALUES ($1,$2,1,$3,'registration_launch',$4,$5::jsonb)
+            ON CONFLICT DO NOTHING`,
+          values: [
+            outboxId,
+            registrationOperationId,
+            workflowInstanceId,
+            `data-registration-launch:${registrationOperationId}:r1`,
+            JSON.stringify({ operation_id: registrationOperationId, outbox_id: outboxId }),
+          ],
+          readonly: false,
+        });
+        // Playback encodes the master; the thumbnail is the moderated poster.
+        for (const kind of ["stream", "thumbnail"] as const) {
+          yield* tx.execute({
+            label: "video-publication.enrichment-outbox-insert",
+            text: `INSERT INTO media_video_enrichment_outbox
+              (effect_identity,submission_id,operation_id,post_id,enrichment_kind,payload)
+              VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`,
+            values: [
+              `video-enrichment:${current.state.operationId}:${kind}`,
+              current.state.submissionId,
+              current.state.operationId,
+              postId,
+              kind,
+              JSON.stringify({
+                operation_id: current.state.operationId,
+                submission_id: current.state.submissionId,
+                post_id: postId,
+                video_revision: current.state.videoRevision,
+                canonical_video_sha256: master.masterSha256,
+                source_ref: master.masterRef,
+                ...(kind === "thumbnail" ? { poster_ref: input.poster.artifactRef } : {}),
+              }),
+            ],
+            readonly: false,
+          });
+        }
+        yield* tx.execute({
+          label: "video-publication.stream-ledger-insert",
+          text: `INSERT INTO media_video_stream_ingests (operation_id)
+                 VALUES ($1) ON CONFLICT DO NOTHING`,
+          values: [current.state.operationId],
+          readonly: false,
+        });
+        if (video.canonicalSha256 === master.masterSha256)
+          throw new Error("a song-reference publication cannot publish its capture");
         yield* updateSubmissionSnapshot(tx, { prior: current.state, next: input.state });
         return {
           ...current,

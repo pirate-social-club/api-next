@@ -30,6 +30,11 @@ import {
   verifyRenderedOutput,
 } from "./song-video-output-verification.ts";
 
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** Surfaces structurally through SealOutcome. */
 type SourceBindingFailure =
   | { readonly kind: "plan_absent"; readonly planId: string }
@@ -48,6 +53,7 @@ type SourceBindingFailure =
   | { readonly kind: "seal_transition_lost"; readonly attemptId: string }
   | { readonly kind: "output_not_verified"; readonly reason: string }
   | { readonly kind: "output_changed_during_seal"; readonly objectKey: string }
+  | { readonly kind: "soundtrack_not_canonical"; readonly planId: string }
   | { readonly kind: "sealed_source_absent"; readonly immutableRef: string }
   | {
       readonly kind: "sealed_source_digest_mismatch";
@@ -96,6 +102,24 @@ export type SealRequest = {
 
   readonly decisionClipStartSamples: number;
   readonly decisionClipDurationSamples: number;
+};
+
+/**
+ * Binds a master's soundtrack to the selected song. Both digests come from the
+ * same pinned decode chain the canonical duration was measured with, so equal
+ * digests mean the master's audio is the canonical interval bit for bit.
+ */
+export type SongVideoSoundtrackVerifier = {
+  /** The canonical interval, decoded from the song's exact bytes; null when they do not verify. */
+  readonly canonicalIntervalDigest: (input: {
+    readonly songAssetId: string;
+    readonly canonicalAudioSha256: string;
+    readonly songDurationSamples: number;
+    readonly clipStartSamples: number;
+    readonly clipDurationSamples: number;
+  }) => Promise<string | null>;
+  /** The master's audio track, decoded; null when it cannot be decoded. */
+  readonly decodedSoundtrackDigest: (masterBytes: Uint8Array) => Promise<string | null>;
 };
 
 /** Persists the plan frozen at reservation. Containment is enforced by the schema. */
@@ -162,6 +186,7 @@ export async function verifyAndSealMaster(
   dependencies: {
     readonly store: SongVideoOutputStore;
     readonly prober: SongVideoOutputProbe;
+    readonly soundtrack: SongVideoSoundtrackVerifier;
   },
   request: SealRequest,
 ): Promise<SealOutcome> {
@@ -171,6 +196,9 @@ export async function verifyAndSealMaster(
     // belonging to a different plan cannot be presented as this plan's work.
     const bound = await client.query<{
       submission_id: string;
+      song_asset_id: string;
+      song_duration_samples: string;
+      canonical_audio_sha256: string;
       clip_start_samples: string;
       clip_duration_samples: string;
       generation: number;
@@ -179,10 +207,15 @@ export async function verifyAndSealMaster(
       dispatch_renderer_identity: string;
       dispatch_renderer_policy_revision: number;
     }>(
-      `SELECT p.submission_id, p.clip_start_samples, p.clip_duration_samples,
+      // The canonical bytes' digest is the reservation's, reached through the
+      // submission, so the soundtrack is judged against the song that was frozen.
+      `SELECT p.submission_id, p.song_asset_id, p.song_duration_samples,
+              r.canonical_audio_sha256, p.clip_start_samples, p.clip_duration_samples,
               a.generation, a.state, a.dispatch_output_key,
               a.dispatch_renderer_identity, a.dispatch_renderer_policy_revision
          FROM media_song_video_render_plans p
+         JOIN media_post_submissions s ON s.submission_id = p.submission_id
+         JOIN media_video_reservation_song_plans r ON r.reservation_id = s.audio_reservation_id
          JOIN media_song_video_render_attempts a
            ON a.plan_id = p.plan_id AND a.attempt_id = $2
         WHERE p.plan_id = $1
@@ -310,11 +343,35 @@ export async function verifyAndSealMaster(
       boundRow.dispatch_output_key,
       verified.objectVersion,
     );
-    if (reread === null) {
+    if (reread === null || (await sha256Hex(reread)) !== verified.masterSha256) {
       await client.query("ROLLBACK");
       return {
         sealed: false,
         failure: { kind: "output_changed_during_seal", objectKey: boundRow.dispatch_output_key },
+      };
+    }
+    // The verified bytes' audio must be the frozen interval of the frozen song.
+    // A master of equal length cut from another song, or from another interval
+    // of this one, decodes to different samples and is refused here.
+    const [expectedSoundtrack, soundtrackSha256] = await Promise.all([
+      dependencies.soundtrack.canonicalIntervalDigest({
+        songAssetId: boundRow.song_asset_id,
+        canonicalAudioSha256: boundRow.canonical_audio_sha256,
+        songDurationSamples: Number(boundRow.song_duration_samples),
+        clipStartSamples: Number(boundRow.clip_start_samples),
+        clipDurationSamples: Number(boundRow.clip_duration_samples),
+      }),
+      dependencies.soundtrack.decodedSoundtrackDigest(reread),
+    ]);
+    if (
+      expectedSoundtrack === null ||
+      soundtrackSha256 === null ||
+      expectedSoundtrack !== soundtrackSha256
+    ) {
+      await client.query("ROLLBACK");
+      return {
+        sealed: false,
+        failure: { kind: "soundtrack_not_canonical", planId: request.attempt.planId },
       };
     }
     await client.query(
@@ -325,8 +382,8 @@ export async function verifyAndSealMaster(
           decision_clip_start_samples, decision_clip_duration_samples,
           verified_object_key, verified_object_version, measured_video_duration_samples,
           measured_audio_duration_samples, measured_audio_sample_rate_hz, measured_audio_channels,
-          master_policy_revision)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          master_policy_revision, soundtrack_sha256)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [
         request.masterRevisionId,
         request.attempt.planId,
@@ -351,6 +408,7 @@ export async function verifyAndSealMaster(
         verified.probe.audioSampleRateHz,
         verified.probe.audioChannels,
         SONG_VIDEO_MASTER_POLICY_V1.policyRevision,
+        soundtrackSha256,
       ],
     );
     const transitioned = await client.query(

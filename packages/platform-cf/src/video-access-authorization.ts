@@ -17,12 +17,14 @@ const authorizePublication = Effect.fn("authorizeVideoPublication")(function* (
       JOIN media_post_submissions s
         ON s.submission_id=pub.submission_id AND s.operation_id=pub.operation_id
        AND s.community_id=pub.community_id AND s.post_id=pub.post_id
-       AND s.media_kind='video' AND s.video_intent='original_audio' AND s.status='published'
+       AND s.media_kind='video' AND s.video_intent IN ('original_audio','song_reference')
+       AND s.status='published'
        AND s.creation_revision=pub.creation_revision AND s.video_revision=pub.video_revision
       JOIN media_video_publication_decisions d
         ON d.submission_id=pub.submission_id AND d.creation_revision=pub.creation_revision
        AND d.video_revision=pub.video_revision AND d.analysis_revision=pub.analysis_revision
-      JOIN media_video_rights r ON r.submission_id=pub.submission_id AND r.rights_basis='original'
+      JOIN media_video_rights r ON r.submission_id=pub.submission_id
+       AND r.rights_basis=CASE s.video_intent WHEN 'song_reference' THEN 'derivative' ELSE 'original' END
       WHERE p.post_id=$1 AND p.community_id=$2 AND p.post_type='video' AND p.status='published'
         AND (p.visibility='public' OR (p.visibility='members_only' AND EXISTS (
           SELECT 1 FROM community_memberships m

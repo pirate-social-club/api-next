@@ -198,7 +198,37 @@ suite("local song-video engine", () => {
       masterCeilingBytes: SONG_VIDEO_MASTER_POLICY_V1.maxBytes,
     });
     expect(verification.verified).toBe(true);
-  }, 120_000);
+    // Seal-time binding, computed without anything render reported: the
+    // master's audio and the canonical interval decode to the same samples,
+    // and an equal-length interval elsewhere in the song does not.
+    const canonical = await engine.canonicalIntervalDigest({
+      songAssetId: song.reference,
+      canonicalAudioSha256: song.sha256,
+      songDurationSamples,
+      clipStartSamples: start,
+      clipDurationSamples: duration,
+    });
+    expect(await engine.decodedSoundtrackDigest(result.masterBytes)).toBe(canonical);
+    expect(
+      await engine.canonicalIntervalDigest({
+        songAssetId: song.reference,
+        canonicalAudioSha256: song.sha256,
+        songDurationSamples,
+        clipStartSamples: start + SECOND,
+        clipDurationSamples: duration,
+      }),
+    ).not.toBe(canonical);
+    // Bytes that are not the frozen song are refused rather than measured.
+    expect(
+      await engine.canonicalIntervalDigest({
+        songAssetId: song.reference,
+        canonicalAudioSha256: "0".repeat(64),
+        songDurationSamples,
+        clipStartSamples: start,
+        clipDurationSamples: duration,
+      }),
+    ).toBeNull();
+  }, 180_000);
 
   test("refuses a recording shorter than the interval instead of padding it", async () => {
     const result = await engine.render({
@@ -233,7 +263,7 @@ suite("local song-video engine", () => {
   test("leaves no workspace behind", async () => {
     // Every measure, probe and render above removed its own workspace.
     const leftovers = await Array.fromAsync(
-      new Bun.Glob("pirate-song-{measure,probe,render}-*").scan({
+      new Bun.Glob("pirate-song-{measure,probe,render,interval,soundtrack}-*").scan({
         cwd: tmpdir(),
         onlyFiles: false,
       }),

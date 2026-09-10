@@ -94,6 +94,21 @@ export type LocalSongVideoEngine = Readonly<{
   prober: CanonicalSongProber;
   render: (input: SongVideoRenderInput) => Promise<SongVideoRenderResult>;
   probeMaster: (bytes: Uint8Array) => Promise<SongVideoMasterFacts | null>;
+  /**
+   * Seal-time soundtrack binding, independent of anything `render` reported:
+   * the canonical interval decoded from the song's exact bytes, and a master's
+   * audio decoded from its verified bytes, on the same chain.
+   */
+  canonicalIntervalDigest: (
+    input: Readonly<{
+      songAssetId: string;
+      canonicalAudioSha256: string;
+      songDurationSamples: number;
+      clipStartSamples: number;
+      clipDurationSamples: number;
+    }>,
+  ) => Promise<string | null>;
+  decodedSoundtrackDigest: (masterBytes: Uint8Array) => Promise<string | null>;
 }>;
 
 type ProbeStream = Readonly<Record<string, unknown>>;
@@ -274,6 +289,89 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
     );
   };
 
+  /** A master's single audio track, decoded exactly as rendering verified it. */
+  const decodeMasterAudio = (masterPath: string, outputPath: string) =>
+    runPinnedTool(
+      [
+        ffmpeg,
+        ...quiet,
+        "-i",
+        masterPath,
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "pcm_s16le",
+        "-f",
+        "s16le",
+        outputPath,
+      ],
+      timeoutMs,
+    );
+
+  const canonicalIntervalDigest: LocalSongVideoEngine["canonicalIntervalDigest"] = async (
+    input,
+  ) => {
+    const end = input.clipStartSamples + input.clipDurationSamples;
+    if (
+      !Number.isSafeInteger(input.clipStartSamples) ||
+      !Number.isSafeInteger(input.clipDurationSamples) ||
+      input.clipStartSamples < 0 ||
+      input.clipDurationSamples < 1 ||
+      !Number.isSafeInteger(end) ||
+      end > input.songDurationSamples
+    )
+      return null;
+    await assertPinnedVersion();
+    const bytes = await options.mediaReader.read(input.songAssetId);
+    if ((await mediaSha256Bytes(bytes)) !== input.canonicalAudioSha256) return null;
+    return withVerifiedTempSource(
+      {
+        bytes,
+        expectedSha256: input.canonicalAudioSha256,
+        fileName: "song.bin",
+        workspacePrefix: "pirate-song-interval-",
+        lengthMismatchMessage: "song length mismatch",
+        digestMismatchMessage: "song digest mismatch",
+      },
+      async (songPath, directory) => {
+        const total = await decodeCount(songPath, join(directory, "canonical.pcm"));
+        if (total !== input.songDurationSamples) return null;
+        const intervalPath = join(directory, "interval.pcm");
+        const samples = await decodeCount(songPath, intervalPath, {
+          start: input.clipStartSamples,
+          end,
+        });
+        if (samples !== input.clipDurationSamples) return null;
+        return mediaSha256Bytes(new Uint8Array(await readFile(intervalPath)));
+      },
+    );
+  };
+
+  const decodedSoundtrackDigest: LocalSongVideoEngine["decodedSoundtrackDigest"] = async (
+    masterBytes,
+  ) => {
+    await assertPinnedVersion();
+    return withVerifiedTempSource(
+      {
+        bytes: masterBytes,
+        expectedSha256: await mediaSha256Bytes(masterBytes),
+        fileName: "master.mp4",
+        workspacePrefix: "pirate-song-soundtrack-",
+        lengthMismatchMessage: "master length mismatch",
+        digestMismatchMessage: "master digest mismatch",
+      },
+      async (masterPath, directory) => {
+        const outputPath = join(directory, "master-audio.pcm");
+        try {
+          await decodeMasterAudio(masterPath, outputPath);
+        } catch {
+          return null;
+        }
+        return mediaSha256Bytes(new Uint8Array(await readFile(outputPath)));
+      },
+    );
+  };
+
   const render = async (input: SongVideoRenderInput): Promise<SongVideoRenderResult> => {
     const start = input.clipStartSamples;
     const duration = input.clipDurationSamples;
@@ -433,22 +531,7 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
           return { ok: false, reason: "master_not_exact" } as const;
         }
         const soundtrackPath = join(directory, "master-audio.pcm");
-        await runPinnedTool(
-          [
-            ffmpeg,
-            ...quiet,
-            "-i",
-            masterPath,
-            "-map",
-            "0:a:0",
-            "-c:a",
-            "pcm_s16le",
-            "-f",
-            "s16le",
-            soundtrackPath,
-          ],
-          timeoutMs,
-        );
+        await decodeMasterAudio(masterPath, soundtrackPath);
         const soundtrackSha256 = await mediaSha256Bytes(
           new Uint8Array(await readFile(soundtrackPath)),
         );
@@ -475,5 +558,7 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
     prober,
     render,
     probeMaster,
+    canonicalIntervalDigest,
+    decodedSoundtrackDigest,
   };
 }

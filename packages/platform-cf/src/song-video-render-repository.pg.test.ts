@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
@@ -7,7 +8,15 @@ import {
   startRenderAttempt,
   verifyAndSealMaster,
 } from "./song-video-render-repository.ts";
-import { finalizedFixture, seedVideoActors } from "./video-publication.pg-fixture.ts";
+import {
+  finalizedFixture,
+  type PublishedSongFixture,
+  seedPublishedSongFixture,
+  seedSongOwner,
+  seedVideoActors,
+  songReferenceFinalizedFixture,
+  community as videoCommunity,
+} from "./video-publication.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -16,15 +25,29 @@ const suite = connectionString ? describe : describe.skip;
 
 const SAMPLE_RATE = 48_000;
 
-const basePlan = {
-  submissionId: "media-submission-video-publication",
+const song: PublishedSongFixture = {
   songPostId: "post-song-1",
-  songAssetId: "asset-song-1",
+  communityId: videoCommunity,
+  audioAssetRef: "asset-song-1",
+  canonicalAudioSha256: "e".repeat(64),
+  durationSamples: 180 * SAMPLE_RATE,
+  title: "Render suite song",
+  contentRating: "general",
+  derivativeVideo: "allowed",
+  licensePreset: "commercial-remix",
+  commercialRemixShareBps: 1_000,
+};
+
+/** Every plan in this suite is its own submission's plan, frozen at its reservation. */
+const basePlan = {
+  songPostId: song.songPostId,
+  songAssetId: song.audioAssetRef,
   audioRevision: 1,
   songDurationSamples: 180 * SAMPLE_RATE,
   clipStartSamples: 30 * SAMPLE_RATE,
   clipDurationSamples: 15 * SAMPLE_RATE,
 };
+const CANONICAL_INTERVAL = "f".repeat(64);
 
 suite("song video render persistence", () => {
   const schema = `song_video_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -69,9 +92,42 @@ suite("song video render persistence", () => {
       hasVideoTrack: true,
     }),
   };
+  // The soundtrack verifier is a port here; the real decode is exercised by
+  // the local engine's own suite and by the composed flow.
+  const soundtrack = {
+    canonicalIntervalDigest: async () => CANONICAL_INTERVAL,
+    decodedSoundtrackDigest: async () => CANONICAL_INTERVAL,
+  };
   const seal = (request: Parameters<typeof verifyAndSealMaster>[2]) => {
     outputFor(request.attempt.attemptId);
-    return verifyAndSealMaster(client, { store, prober }, request);
+    return verifyAndSealMaster(client, { store, prober, soundtrack }, request);
+  };
+
+  /**
+   * A fresh song-reference submission whose render plan is `planId`, created
+   * with it by the real publication store. Later seals in the same test use
+   * its sealed source.
+   */
+  let fixtures = 0;
+  const bindPlan = async (planId: string) => {
+    fixtures += 1;
+    const sourceSha = createHash("sha256").update(`source-${planId}`).digest("hex");
+    const identity = {
+      reservationId: `media-reservation-00000000-0000-4000-8000-${String(fixtures).padStart(12, "0")}`,
+      submissionId: `media-submission-render-${fixtures}`,
+      operationId: `media-operation-render-${fixtures}`,
+    };
+    await songReferenceFinalizedFixture(scoped.toString(), {
+      identity,
+      planId,
+      song,
+      clipStartSamples: basePlan.clipStartSamples,
+      clipDurationSamples: basePlan.clipDurationSamples,
+      source: { sha256: sourceSha, sizeBytes: 1_024 },
+    });
+    sourceImmutableRef = `media://immutable/${identity.operationId}/video/1`;
+    storedSourceSha256 = sourceSha;
+    return identity;
   };
 
   beforeAll(async () => {
@@ -80,23 +136,17 @@ suite("song video render persistence", () => {
     await admin.query(`SET search_path TO "${schema}"`);
     await runPostgresMigrations({ connectionString: scoped.toString() });
     await seedVideoActors(admin);
-    // A genuinely sealed source, produced by the real publication store rather
-    // than inserted past its guard, so the binding is checked against a row the
+    await seedSongOwner(admin);
+    // Each test's source is sealed by the real publication store rather than
+    // inserted past its guard, so the binding is checked against rows the
     // system itself created.
-    await finalizedFixture(scoped.toString());
-    const sealed = await admin.query<{ immutable_ref: string; canonical_sha256: string }>(
-      "SELECT immutable_ref, canonical_sha256 FROM media_immutable_objects ORDER BY sealed_at LIMIT 1",
-    );
-    const row = sealed.rows[0];
-    if (!row) throw new Error("fixture sealed no immutable object");
-    sourceImmutableRef = row.immutable_ref;
-    storedSourceSha256 = row.canonical_sha256;
+    await seedPublishedSongFixture(admin, song);
     await client.connect();
   }, 180_000);
 
   test("persists attempt identity before any master exists", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-song-video-1" });
+      await bindPlan("plan-song-video-1");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-1", planId: "plan-song-video-1", generation: 1 },
@@ -117,7 +167,7 @@ suite("song video render persistence", () => {
 
   test("refuses to seal when the claimed source digest is not the stored one", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-mismatch" });
+      await bindPlan("plan-mismatch");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-mismatch", planId: "plan-mismatch", generation: 1 },
@@ -148,7 +198,7 @@ suite("song video render persistence", () => {
 
   test("refuses to seal against a source that is not stored at all", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-absent" });
+      await bindPlan("plan-absent");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-absent", planId: "plan-absent", generation: 1 },
@@ -171,7 +221,7 @@ suite("song video render persistence", () => {
 
   test("records the stored digest rather than the caller's claim", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-bound" });
+      await bindPlan("plan-bound");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-bound", planId: "plan-bound", generation: 1 },
@@ -216,7 +266,7 @@ suite("song video render persistence", () => {
 
   test("accepts exactly one master under concurrent acceptance on separate connections", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-race" });
+      await bindPlan("plan-race");
       for (const [attemptId, revisionId, digest, generation] of [
         ["attempt-race-a", "master-race-a", "b".repeat(64), 1],
         ["attempt-race-b", "master-race-b", "c".repeat(64), 2],
@@ -282,7 +332,7 @@ suite("song video render persistence", () => {
 
   test("replaying the winning acceptance returns success and changes nothing", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-replay" });
+      await bindPlan("plan-replay");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-replay", planId: "plan-replay", generation: 1 },
@@ -320,8 +370,8 @@ suite("song video render persistence", () => {
 
   test("refuses to seal an attempt that belongs to a different plan", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-other-a" });
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-other-b" });
+      await bindPlan("plan-other-a");
+      await bindPlan("plan-other-b");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-of-a", planId: "plan-other-a", generation: 1 },
@@ -342,7 +392,7 @@ suite("song video render persistence", () => {
 
   test("refuses a generation that is not the stored one", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-generation" });
+      await bindPlan("plan-generation");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-generation", planId: "plan-generation", generation: 1 },
@@ -365,7 +415,7 @@ suite("song video render persistence", () => {
 
   test("refuses an applied interval that is not the plan's frozen interval", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-interval" });
+      await bindPlan("plan-interval");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-interval", planId: "plan-interval", generation: 1 },
@@ -388,7 +438,7 @@ suite("song video render persistence", () => {
 
   test("a controlled overlap really does raise a serialization failure", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-overlap" });
+      await bindPlan("plan-overlap");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-overlap-a", planId: "plan-overlap", generation: 1 },
@@ -460,7 +510,7 @@ suite("song video render persistence", () => {
 
   test("the retry path runs and then observes the committed winner", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-retry" });
+      await bindPlan("plan-retry");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-retry", planId: "plan-retry", generation: 1 },
@@ -519,7 +569,7 @@ suite("song video render persistence", () => {
 
   test("refuses to seal an attempt that is no longer started, and replays an identical seal", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-reseal" });
+      await bindPlan("plan-reseal");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-reseal", planId: "plan-reseal", generation: 1 },
@@ -558,7 +608,7 @@ suite("song video render persistence", () => {
 
   test("refuses to seal when the output cannot be verified, leaving no master", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-unverified" });
+      await bindPlan("plan-unverified");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-unverified", planId: "plan-unverified", generation: 1 },
@@ -576,7 +626,7 @@ suite("song video render persistence", () => {
       // No completed output at that key.
       const absent = await verifyAndSealMaster(
         client,
-        { store: { read: async () => null, readVersion: async () => null }, prober },
+        { store: { read: async () => null, readVersion: async () => null }, prober, soundtrack },
         request,
       );
       expect(absent).toMatchObject({
@@ -588,6 +638,7 @@ suite("song video render persistence", () => {
         client,
         {
           store,
+          soundtrack,
           prober: {
             probe: async () => ({
               videoDurationSamples: basePlan.clipDurationSamples,
@@ -616,12 +667,12 @@ suite("song video render persistence", () => {
           };
         })(),
       };
-      expect(await verifyAndSealMaster(client, { store: shifting, prober }, request)).toMatchObject(
-        {
-          sealed: false,
-          failure: { kind: "output_changed_during_seal" },
-        },
-      );
+      expect(
+        await verifyAndSealMaster(client, { store: shifting, prober, soundtrack }, request),
+      ).toMatchObject({
+        sealed: false,
+        failure: { kind: "output_changed_during_seal" },
+      });
 
       const masters = await client.query(
         "SELECT count(*)::int AS n FROM media_song_video_masters WHERE plan_id = 'plan-unverified'",
@@ -636,7 +687,7 @@ suite("song video render persistence", () => {
 
   test("refuses a master built from another attempt's output, even when durations match", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-crossed-output" });
+      await bindPlan("plan-crossed-output");
       for (const [attemptId, generation] of [
         ["attempt-out-a", 1],
         ["attempt-out-b", 2],
@@ -689,7 +740,7 @@ suite("song video render persistence", () => {
 
   test("refuses to seal when the verified version is no longer addressable", async () => {
     {
-      await persistRenderPlan(client, { ...basePlan, planId: "plan-version" });
+      await bindPlan("plan-version");
       await startRenderAttempt(
         client,
         { attemptId: "attempt-version", planId: "plan-version", generation: 1 },
@@ -709,7 +760,7 @@ suite("song video render persistence", () => {
       };
       const outcome = await verifyAndSealMaster(
         client,
-        { store: vanishing, prober },
+        { store: vanishing, prober, soundtrack },
         {
           masterRevisionId: "master-version",
           attempt: { attemptId: "attempt-version", planId: "plan-version", generation: 1 },
@@ -730,14 +781,87 @@ suite("song video render persistence", () => {
     }
   }, 60_000);
 
-  test("rejects a plan whose interval runs past the song, in the schema itself", async () => {
+  test("refuses a master whose soundtrack is not the frozen interval, leaving no master", async () => {
+    await bindPlan("plan-soundtrack");
+    await startRenderAttempt(
+      client,
+      { attemptId: "attempt-soundtrack", planId: "plan-soundtrack", generation: 1 },
+      dispatchFor("attempt-soundtrack"),
+    );
+    outputFor("attempt-soundtrack");
+    // Same length, same rate, same channels: only the decoded samples differ,
+    // as they would for another song or another interval of this one.
+    const outcome = await verifyAndSealMaster(
+      client,
+      {
+        store,
+        prober,
+        soundtrack: { ...soundtrack, decodedSoundtrackDigest: async () => "9".repeat(64) },
+      },
+      {
+        masterRevisionId: "master-soundtrack",
+        attempt: { attemptId: "attempt-soundtrack", planId: "plan-soundtrack", generation: 1 },
+        sourceImmutableRef,
+        claimedSourceSha256: storedSourceSha256,
+        decisionClipStartSamples: basePlan.clipStartSamples,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      },
+    );
+    expect(outcome).toEqual({
+      sealed: false,
+      failure: { kind: "soundtrack_not_canonical", planId: "plan-soundtrack" },
+    });
+    const masters = await client.query(
+      "SELECT count(*)::int AS n FROM media_song_video_masters WHERE plan_id = 'plan-soundtrack'",
+    );
+    expect(masters.rows[0]?.n).toBe(0);
+    // A sealed master records the verified soundtrack digest.
+    const sealed = await seal({
+      masterRevisionId: "master-soundtrack-canonical",
+      attempt: { attemptId: "attempt-soundtrack", planId: "plan-soundtrack", generation: 1 },
+      sourceImmutableRef,
+      claimedSourceSha256: storedSourceSha256,
+      decisionClipStartSamples: basePlan.clipStartSamples,
+      decisionClipDurationSamples: basePlan.clipDurationSamples,
+    });
+    expect(sealed).toMatchObject({ sealed: true });
+    const recorded = await client.query(
+      "SELECT soundtrack_sha256 FROM media_song_video_masters WHERE plan_id = 'plan-soundtrack'",
+    );
+    expect(recorded.rows[0]?.soundtrack_sha256).toBe(CANONICAL_INTERVAL);
+  }, 120_000);
+
+  test("refuses a render plan that is not its reservation's frozen plan", async () => {
+    const bound = await bindPlan("plan-frozen");
+    // Another interval of the same song, for the same submission.
     await expect(
       persistRenderPlan(client, {
         ...basePlan,
-        planId: "plan-uncontained",
-        clipStartSamples: basePlan.songDurationSamples,
-        clipDurationSamples: 5 * SAMPLE_RATE,
+        planId: "plan-not-frozen",
+        submissionId: bound.submissionId,
+        clipStartSamples: basePlan.clipStartSamples + 1,
       }),
-    ).rejects.toThrow(/song_video_plan_canonical_containment/);
-  }, 60_000);
+    ).rejects.toThrow(/reservation's frozen plan/);
+    // Any plan at all for an original-audio submission.
+    const original = await finalizedFixture(scoped.toString(), null, {
+      reservationId: "media-reservation-00000000-0000-4000-8000-0000000000ff",
+      submissionId: "media-submission-render-original",
+      operationId: "media-operation-render-original",
+    });
+    await expect(
+      persistRenderPlan(client, {
+        ...basePlan,
+        planId: "plan-original-audio",
+        submissionId: original.finalized.state.submissionId,
+      }),
+    ).rejects.toThrow(/reservation's frozen plan/);
+    // And one plan per submission.
+    await expect(
+      persistRenderPlan(client, {
+        ...basePlan,
+        planId: "plan-second",
+        submissionId: bound.submissionId,
+      }),
+    ).rejects.toThrow(/media_song_video_render_plans_one_per_submission/);
+  }, 120_000);
 });

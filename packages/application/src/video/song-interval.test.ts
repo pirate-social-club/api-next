@@ -24,6 +24,7 @@ import {
   type SongCanonicalTimingStore,
 } from "./song-canonical-timing.ts";
 import {
+  type FrozenSongReservationPlan,
   freezeSongReservationPlan,
   type PublishedCanonicalSong,
   preflightSongVideoInterval,
@@ -420,6 +421,8 @@ function videoServices(input: {
   songInterval?: SongVideoIntervalServices;
   created?: Parameters<VideoPublicationStore["createReservation"]>[0][];
   reservation?: VideoReservationRecord;
+  frozen?: FrozenSongReservationPlan;
+  submissions?: Parameters<VideoPublicationStore["createSubmission"]>[0][];
 }): VideoPublicationServices {
   const unused = async (): Promise<never> => {
     throw new Error("unused video publication method");
@@ -433,6 +436,12 @@ function videoServices(input: {
           return { kind: "none" };
         };
       if (key === "getReservationForAccount") return async () => input.reservation ?? null;
+      if (key === "getReservationSongPlan") return async () => input.frozen ?? null;
+      if (key === "createSubmission")
+        return async (value: Parameters<VideoPublicationStore["createSubmission"]>[0]) => {
+          input.submissions?.push(value);
+          return { kind: "none" };
+        };
       return unused;
     },
   });
@@ -536,7 +545,7 @@ describe("song-reference reservation through the request path", () => {
     expect(created).toHaveLength(0);
   });
 
-  test("a song-reference reservation cannot start an original-audio submission", async () => {
+  test("a song-reference reservation starts only the song-reference path, with its frozen plan", async () => {
     const reservation: VideoReservationRecord = {
       reservationId: "media-reservation-song",
       communityId: "community_video",
@@ -559,19 +568,64 @@ describe("song-reference reservation through the request path", () => {
       responseBytes: new Uint8Array([1]),
       updatedAt: "2026-09-10T12:00:00.000Z",
     };
-    const error = await createVideoSubmission(
-      {
-        communityId: "community_video",
-        actor,
-        body: {
-          persona_id: persona.persona_id,
-          version: "video-start-input-v1",
-          video_reservation_id: "media-reservation-song",
-          caption: "danced to a song",
-          idempotency_key: "create-song-video",
-        },
+    const frozen: FrozenSongReservationPlan = {
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 12 * SECOND + 7,
+      clipDurationSamples: 9 * SECOND + 11,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const body = {
+      persona_id: persona.persona_id,
+      version: "video-start-input-v1",
+      video_reservation_id: "media-reservation-song",
+      caption: "danced to a song",
+      idempotency_key: "create-song-video",
+    };
+    // With the path composed, the submission is a song reference whose plan
+    // is the reservation's, read back; nothing in the request could alter it.
+    const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+    const created = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen,
+        submissions,
+      }),
+    );
+    expect(created).toMatchObject({ intent: "song_reference", status: "processing" });
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]?.state).toMatchObject({
+      intent: "song_reference",
+      master: null,
+      songPlan: {
+        songPostId: "post_song",
+        songAssetId: "asset_song",
+        audioRevision: 3,
+        canonicalAudioSha256: "d".repeat(64),
+        songDurationSamples: 214 * SECOND,
+        clipStartSamples: 12 * SECOND + 7,
+        clipDurationSamples: 9 * SECOND + 11,
       },
-      videoServices({ songInterval: intervalServices(songStore().store), reservation }),
+    });
+    expect(submissions[0]?.state.songPlan?.planId).toBe(
+      `song-video-plan:${submissions[0]?.state.submissionId}`,
+    );
+    // With the path not composed, it is refused rather than started as
+    // original audio, which would publish the captured sound.
+    const error = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({ reservation, frozen }),
     ).catch((e) => e);
     expect(error).toBeInstanceOf(BadRequest);
     expect(error.details).toMatchObject({
