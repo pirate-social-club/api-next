@@ -1,6 +1,7 @@
 export * from "./age-access.ts";
 export * from "./auth.ts";
 export * from "./codegen.ts";
+export * from "./comment-thread.ts";
 export * from "./community-creation.ts";
 export * from "./community-creation-requirements.ts";
 export * from "./community-moderation-policy.ts";
@@ -31,6 +32,7 @@ export * from "./registry.ts";
 export * from "./rewards-qualification.ts";
 export * from "./rewards-song-offers.ts";
 export * from "./song-owner-video-policy.ts";
+export * from "./song-playback.ts";
 export * from "./study-v2.ts";
 export * from "./telegram.ts";
 export * from "./text-moderation.ts";

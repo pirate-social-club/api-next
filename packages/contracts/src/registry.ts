@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
+import { CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 
 export const Health = endpoint({
@@ -10,6 +11,7 @@ export const Health = endpoint({
   response: Schema.Struct({ status: Schema.Literal("ok") }),
 });
 
+import { ListPostComments } from "./comment-thread.ts";
 import {
   CommitCommunityCreationIntent,
   CreateCommunityCreationIntent,
@@ -202,6 +204,8 @@ export const registry = {
   GetPublicPostBySlug,
   GetPublicPostCanonicalRouteById,
   GetPublicPostSitemap,
+  ListPostComments,
+  CreateSongPlaybackAccess,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

@@ -24,6 +24,7 @@ const community = (overrides: Row = {}): Row => ({
 });
 
 const post = (index: number, overrides: Row = {}): Row => ({
+  post_type: "text",
   post_id: `post_${index.toString().padStart(2, "0")}`,
   community_id: "community-a",
   author_persona: {
@@ -83,6 +84,54 @@ const failureOf = <E>(exit: Exit.Exit<unknown, E>): E | undefined => {
 };
 
 describe("public community threads Postgres repository", () => {
+  test("returns a published song with real title while keeping viewer data anonymous", async () => {
+    const result = await runWith(
+      repositoryFor().listPublicCommunityThreads(input("community-a")),
+      fakeDb(
+        [[community()], [post(0, { post_type: "song", title: "Original song", body: null })]],
+        [],
+      ),
+    );
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (Exit.isSuccess(result))
+      expect(result.value?.items[0]).toMatchObject({
+        post: {
+          post_type: "song",
+          title: "Original song",
+          song_title: "Original song",
+          body: null,
+        },
+        viewer_vote: null,
+      });
+  });
+
+  test("redacts adult songs before exposing title or author", async () => {
+    const result = await runWith(
+      repositoryFor().listPublicCommunityThreads(input("community-a")),
+      fakeDb(
+        [
+          [community()],
+          [
+            post(0, {
+              post_type: "song",
+              content_rating: "adult_18",
+              rating_view_allowed: false,
+              title: "Private title",
+            }),
+          ],
+        ],
+        [],
+      ),
+    );
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (Exit.isSuccess(result))
+      expect(result.value?.items[0]).toEqual({
+        kind: "age_locked",
+        content_rating: "adult_18",
+        next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+      });
+  });
+
   test("resolves an underscore ID before rejecting its unsafe slug candidate", async () => {
     const calls: ControlPlaneStatement[] = [];
     const result = await runWith(
@@ -167,7 +216,7 @@ describe("public community threads Postgres repository", () => {
     if (Exit.isSuccess(unknown)) expect(unknown.value).toBeNull();
   });
 
-  test("filters to active-community public published text posts and orders newest-first", async () => {
+  test("filters to active-community public published text and song posts and orders newest-first", async () => {
     const calls: ControlPlaneStatement[] = [];
     const result = await runWith(
       repositoryFor().listPublicCommunityThreads(input("alpha")),
@@ -184,7 +233,7 @@ describe("public community threads Postgres repository", () => {
       });
       expect(result.value?.community.viewer_following).toBeUndefined();
     }
-    expect(calls[1]?.text).toContain("p.post_type = 'text'");
+    expect(calls[1]?.text).toContain("p.post_type IN ('text', 'song')");
     expect(calls[1]?.text).toContain("p.status = 'published'");
     expect(calls[1]?.text).toContain("p.visibility = 'public'");
     expect(calls[1]?.text).toContain("LEFT JOIN post_slug_aliases AS alias");

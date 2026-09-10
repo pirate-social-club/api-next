@@ -49,6 +49,10 @@
         "class_name": "HnsForwarderReplayStoreDO"
       },
       {
+        "name": "SONG_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
         "name": "VIDEO_PLAYBACK_RATE_LIMITER",
         "class_name": "VideoPlaybackRateLimiterDO"
       },
@@ -97,6 +101,10 @@
   "vars": {
     "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
+    "SONG_PLAYBACK_ENABLED": "false",
+    "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
+    "SONG_PLAYBACK_R2_BUCKET": "",
+    // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
     "VIDEO_STREAM_SIGNING_KEY_ID": "",
@@ -199,7 +207,11 @@
             "class_name": "HnsForwarderReplayStoreDO"
           },
           {
-            "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+            "name": "SONG_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
+        "name": "VIDEO_PLAYBACK_RATE_LIMITER",
         "class_name": "VideoPlaybackRateLimiterDO"
       },
       {
@@ -245,6 +257,10 @@
         "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
         "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
+    "SONG_PLAYBACK_ENABLED": "false",
+    "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
+    "SONG_PLAYBACK_R2_BUCKET": "",
+    // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
     "VIDEO_STREAM_SIGNING_KEY_ID": "",
@@ -445,6 +461,10 @@
       "vars": {
         "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
+    "SONG_PLAYBACK_ENABLED": "false",
+    "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
+    "SONG_PLAYBACK_R2_BUCKET": "",
+    // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
     "VIDEO_STREAM_SIGNING_KEY_ID": "",

@@ -102,6 +102,12 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
+          # Ephemeral instance, so durability buys nothing. DROP DATABASE forces
+          # an immediate checkpoint and waits for it, which makes a fixture that
+          # drops a database per test pay to flush every other suite's dirty
+          # buffers. Leaving fsync on made those teardowns exceed the per-test
+          # budget under I/O contention.
+          POSTGRES_INITDB_ARGS: --set=fsync=off
         ports:
           - 5432:5432
         options: >-
@@ -167,7 +173,12 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
-          POSTGRES_INITDB_ARGS: --set=max_locks_per_transaction=512
+          # Ephemeral instance, so durability buys nothing. DROP DATABASE forces
+          # an immediate checkpoint and waits for it, which makes a fixture that
+          # drops a database per test pay to flush every other suite's dirty
+          # buffers. Leaving fsync on made those teardowns exceed the per-test
+          # budget under I/O contention.
+          POSTGRES_INITDB_ARGS: --set=max_locks_per_transaction=512 --set=fsync=off
         ports:
           - 5432:5432
         options: >-
@@ -205,7 +216,12 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
           # Full removal plus 119-migration replay holds both object sets until commit.
-          POSTGRES_INITDB_ARGS: --set=max_locks_per_transaction=512
+          # Ephemeral instance, so durability buys nothing. DROP DATABASE forces
+          # an immediate checkpoint and waits for it, which makes a fixture that
+          # drops a database per test pay to flush every other suite's dirty
+          # buffers. Leaving fsync on made those teardowns exceed the per-test
+          # budget under I/O contention.
+          POSTGRES_INITDB_ARGS: --set=max_locks_per_transaction=512 --set=fsync=off
         ports:
           - 5432:5432
         options: >-
