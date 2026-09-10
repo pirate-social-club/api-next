@@ -156,7 +156,8 @@
     "./video-recognition-provider": "./src/video-recognition-provider.ts",
     "./video-safety-provider": "./src/video-safety-provider.ts",
     "./video-safety-frame-reader": "./src/video-safety-frame-reader.ts",
-    "./video-safety-evidence-repository": "./src/video-safety-evidence-repository.ts"
+    "./video-safety-evidence-repository": "./src/video-safety-evidence-repository.ts",
+    "./comment-thread-repository": "./src/comment-thread-repository.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",

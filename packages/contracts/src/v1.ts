@@ -730,6 +730,7 @@ const HomeFeedResponse = Schema.Struct({
   next_cursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
+/** Public community discussion includes published text and song posts; never viewer state. */
 const PublicCommunityThreadsResponse = Schema.Struct({
   community: CommunityPreview,
   items: Schema.Array(TextPostProjection),

@@ -231,6 +231,7 @@ const listTextPostsStatement = (input: {
   text: `SELECT p.post_id,
                 p.community_id,
                 public_persona_projection(p.author_persona_id) AS author_persona,
+                p.post_type,
                 p.body,
                 p.title,
                 p.content_rating,
@@ -256,7 +257,7 @@ const listTextPostsStatement = (input: {
            LEFT JOIN post_slug_aliases AS alias
              ON alias.post_id = p.post_id
           WHERE p.community_id = $1
-            AND p.post_type = 'text'
+            AND p.post_type IN ('text', 'song')
             AND p.status = 'published'
             AND p.visibility = 'public'
             AND p.created_at <= to_timestamp($2::double precision / 1000)
@@ -331,6 +332,7 @@ const localizedTextPostFromRow = (
   const postId = stringValue(row, "post_id");
   const communityId = stringValue(row, "community_id");
   const authorPersona = publicPersonaFromSql(row.author_persona);
+  const postType = stringValue(row, "post_type");
   const body = nullableStringValue(row, "body");
   const title = nullableStringValue(row, "title");
   const created = timestampMillis(row.created_at);
@@ -341,6 +343,7 @@ const localizedTextPostFromRow = (
   const ratingViewAllowed = row.rating_view_allowed;
   const canonicalSlug = nullableStringValue(row, "canonical_slug");
   if (
+    (postType !== "text" && postType !== "song") ||
     postId === null ||
     communityId === null ||
     communityId !== expectedCommunityId ||
@@ -377,7 +380,8 @@ const localizedTextPostFromRow = (
       identity_mode: "public",
       anonymous_scope: null,
       anonymous_label: null,
-      post_type: "text",
+      post_type: postType,
+      ...(postType === "song" ? { song_title: title } : {}),
       status: "published",
       visibility: "public",
       title,
