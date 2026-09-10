@@ -429,6 +429,120 @@ describe("community HNS root import", () => {
     });
   });
 
+  test("classifies the current-view gather outcome at the application boundary", async () => {
+    const ready = {
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      revision: 5,
+      expires_at: "2099-01-01T00:00:00.000Z",
+      replayed: false,
+      status: "ready" as const,
+      publish_plan: {
+        version: "pirate-hns-root-import-publish-plan-v1" as const,
+        replacement_semantics: "complete_resource" as const,
+        current_records: [],
+        preserved_records: [],
+        removed_conflicts: [],
+        added_records: [],
+        replacement_records: [],
+        preserved_unknown_record_types: [],
+        encoded_resource_sha256: "abababababababababababababababababababababababababababababababab",
+        acknowledgement_required: true as const,
+      },
+      publish_plan_sha256: "a".repeat(64),
+      readiness_result_sha256: "b".repeat(64),
+      retry_after_seconds: null,
+    };
+    const authority = {
+      session: ready,
+      ceremony_intent_id: "ceremony-1",
+      namespace_session_id: "namespace-1",
+      ownership_expected_revision: 1,
+      challenge_txt_value: "pirate-verification=challenge",
+      provision_job_id: "provision-1",
+      ownership_result_sha256: "c".repeat(64),
+      provision_result_sha256: "d".repeat(64),
+    };
+    const request = {
+      actor_id: "actor-1",
+      actor_kind: "user" as const,
+      community_id: "community-1",
+      root_import_session_id: "root-import-1",
+      expected_revision: 5,
+      idempotency_key: "activate-classify",
+      publish_plan_sha256: "a".repeat(64),
+      readiness_result_sha256: "b".repeat(64),
+      acknowledged_complete_resource_replacement: true as const,
+    };
+    const activationInputs: { readonly current_evidence: unknown }[] = [];
+    const run = async (currentView: () => Effect.Effect<unknown, unknown>) => {
+      try {
+        await Effect.runPromise(
+          activateHnsCommunityRootImport(request, {
+            currentView: currentView as never,
+            store: {
+              get: () => Effect.succeed(ready),
+              loadPollAuthority: () => Effect.succeed(authority),
+              beginProvisioning: () => Effect.succeed({ kind: "conflict" as const }),
+              beginObservation: () => Effect.succeed({ kind: "conflict" as const }),
+              activate: (input) => {
+                activationInputs.push(input);
+                return Effect.succeed({ kind: "conflict" as const });
+              },
+            },
+          }),
+        );
+        return null;
+      } catch (error) {
+        return error as { readonly reason?: string; readonly current_view_classification?: string };
+      }
+    };
+    const binding = {
+      lifecycle_revision: 4,
+      lifecycle_generation: 1,
+      observed_at_epoch_ms: 1_770_000_060_000,
+      resource_sha256: "e".repeat(64),
+      qualifying: true,
+    };
+
+    expect(await run(() => Effect.succeed({ kind: "gathered", binding } as never))).toMatchObject({
+      reason: "conflict",
+    });
+    expect(activationInputs[0]?.current_evidence).toEqual(binding);
+
+    activationInputs.length = 0;
+    expect(
+      await run(() =>
+        Effect.succeed({ kind: "conflict", classification: "resource_mismatch" } as never),
+      ),
+    ).toMatchObject({ reason: "conflict" });
+    expect(activationInputs).toHaveLength(0);
+
+    expect(
+      await run(() =>
+        Effect.succeed({ kind: "unavailable", classification: "node_unavailable" } as never),
+      ),
+    ).toMatchObject({
+      reason: "provider_unavailable",
+      current_view_classification: "node_unavailable",
+    });
+    expect(activationInputs).toHaveLength(0);
+
+    expect(await run(() => Effect.succeed({ kind: "operation_absent" } as never))).toMatchObject({
+      reason: "conflict",
+    });
+    expect(activationInputs[0]?.current_evidence).toBeNull();
+
+    activationInputs.length = 0;
+    expect(await run(() => Effect.fail(new Error("RPC unavailable")))).toMatchObject({
+      reason: "provider_unavailable",
+      current_view_classification: "transport_failure",
+    });
+    expect(activationInputs).toHaveLength(0);
+  });
+
   test("does not disclose a session outside its community origin", async () => {
     await expect(
       Effect.runPromise(

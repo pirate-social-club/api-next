@@ -12,6 +12,7 @@ import {
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnboundRejected,
 } from "./adapter.ts";
+import type { HnsActivationCurrentViewGatherResultV1 } from "./hns-activation-current-view.ts";
 import {
   decodeHnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
@@ -317,22 +318,14 @@ export interface HnsCommunityRootImportActivationServices {
   /**
    * Reads the current chain view and binds it to the operation's lifecycle
    * revision and generation. The activation transaction revalidates that
-   * binding under its locks; a missing or failed read yields null, which
-   * refuses a lifecycle-managed activation rather than inventing evidence.
+   * binding under its locks; a missing or failed read yields classified
+   * evidence, and a lifecycle-managed activation is refused rather than
+   * accepted on invented evidence.
    */
   readonly currentView?: (input: {
     readonly root_import_session_id: string;
     readonly root_label: string;
-  }) => Effect.Effect<
-    Readonly<{
-      readonly lifecycle_revision: number;
-      readonly lifecycle_generation: number;
-      readonly observed_at_epoch_ms: number;
-      readonly resource_sha256: string;
-      readonly qualifying: boolean;
-    }> | null,
-    unknown
-  >;
+  }) => Effect.Effect<HnsActivationCurrentViewGatherResultV1, unknown>;
   readonly ids?: Readonly<{
     readonly routeBinding?: () => string;
     readonly dnsActivation?: () => string;
@@ -352,8 +345,15 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
     | "not_found"
     | "ownership_unavailable"
     | "ownership_misconfigured"
+    | "provider_unavailable"
     | "rate_limited";
   readonly retry_after_seconds?: number;
+  /**
+   * The chain-observation classification behind a `provider_unavailable`
+   * refusal. Bounded to the observation model's classes; never a provider
+   * message or a row value.
+   */
+  readonly current_view_classification?: string;
 }> {}
 
 /**
@@ -747,10 +747,14 @@ export const activateHnsCommunityRootImport = Effect.fn("activateHnsCommunityRoo
     const requestSha256 = yield* Effect.promise(() =>
       sha256({ version: "pirate-hns-community-root-import-activation-v1", ...input }),
     );
-    // The current-view read runs outside the activation transaction. A missing
-    // port or a failed read yields null; the lifecycle gate then refuses a
-    // lifecycle-managed activation rather than accepting stale control.
-    const currentEvidence =
+    // The current-view read runs outside the activation transaction. The
+    // gather outcome is classified rather than collapsed: a confirmed conflict
+    // refuses as Conflict, unavailable evidence refuses as a provider failure
+    // with the exact classification retained for diagnostics, an operation
+    // with no lifecycle row passes no evidence so the repository keeps its
+    // missing-lifecycle handling, and only a gathered observation becomes the
+    // binding the transaction revalidates under its locks.
+    const gathered =
       services.currentView === undefined
         ? null
         : yield* services
@@ -758,7 +762,25 @@ export const activateHnsCommunityRootImport = Effect.fn("activateHnsCommunityRoo
               root_import_session_id: session.root_import_session_id,
               root_label: session.root_label,
             })
-            .pipe(Effect.catch(() => Effect.succeed(null)));
+            .pipe(
+              Effect.catch(() =>
+                Effect.succeed({
+                  kind: "unavailable",
+                  classification: "transport_failure",
+                } as const),
+              ),
+            );
+    if (gathered !== null && gathered.kind === "conflict") {
+      return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
+    }
+    if (gathered !== null && gathered.kind === "unavailable") {
+      return yield* new HnsCommunityRootImportRejected({
+        reason: "provider_unavailable",
+        current_view_classification: gathered.classification,
+      });
+    }
+    const currentEvidence =
+      gathered !== null && gathered.kind === "gathered" ? gathered.binding : null;
     const outcome = yield* services.store.activate({
       input,
       attachment_intent_id: session.attachment_intent_id,

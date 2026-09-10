@@ -56,6 +56,13 @@ function wireFailure(error: unknown): Error {
     return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")
     return new ProviderUnavailable({ message: "HNS ownership provider is unavailable" });
+  if (tagged.reason === "provider_unavailable")
+    return new ProviderUnavailable({
+      message: "HNS activation current-view evidence is unavailable",
+      // The typed domain failure carries the exact observation classification;
+      // toErrorBody never reads a cause, so it stays in server diagnostics.
+      cause: error,
+    });
   return new BadRequest({ message: "HNS community root import request is invalid" });
 }
 
