@@ -2,6 +2,8 @@ import type {
   ConfirmDataRegistrationInput,
   DataRegistrationArtifact,
   DataRegistrationArtifactKind,
+  DataRegistrationAttemptFailureCode,
+  DataRegistrationFailureCode,
   DataRegistrationOperation,
   DataRegistrationPinVerification,
   DataRegistrationReceiptInput,
@@ -10,6 +12,7 @@ import type {
   ReserveDataRegistrationAttemptInput,
 } from "./registration-persistence";
 import {
+  dataLicensePresetAllowsDerivatives,
   deterministicDataRegistrationAttemptId,
   deterministicDataRegistrationReceiptId,
   deterministicDataRegistrationSigningIntentId,
@@ -91,7 +94,13 @@ export type DataRegistrationReceiptResult =
   | Readonly<{
       status: "reverted" | "orphaned";
       observation: DataRegistrationReceiptInput;
-    }>;
+    }>
+  /**
+   * A successful receipt that does not carry the events this registration
+   * must produce, or carries them for something else. It was mined, so it is
+   * reconciled rather than retried.
+   */
+  | Readonly<{ status: "invalid"; evidenceRef: string }>;
 
 export interface DataRegistrationChainPipeline {
   readonly plan: (
@@ -198,19 +207,21 @@ const planMatchesAttempt = (
   );
 };
 
+const ATTEMPT_FAILURE_CODES: ReadonlySet<DataRegistrationFailureCode> = new Set([
+  "signing_failed",
+  "broadcast_failed",
+  "receipt_reverted",
+  "confirmation_timeout",
+  "chain_reorganization",
+  "invalid_receipt",
+] satisfies DataRegistrationAttemptFailureCode[]);
+
 const failOperation = async (
   dependencies: DataRegistrationWorkflowDependencies,
   operation: DataRegistrationOperation,
   attempt: DataRegistrationSigningAttempt | null,
   state: "failed" | "reconciliation_required",
-  failureCode:
-    | "pin_verification_failed"
-    | "signing_failed"
-    | "broadcast_failed"
-    | "receipt_reverted"
-    | "chain_reorganization"
-    | "invalid_receipt"
-    | "configuration_invalid",
+  failureCode: Exclude<DataRegistrationFailureCode, "confirmation_timeout">,
   evidenceRef: string,
 ): Promise<DataRegistrationWorkflowResult> => {
   await dependencies.store.failRegistration({
@@ -219,14 +230,143 @@ const failOperation = async (
     operationState: state,
     operationFailureCode: failureCode,
     attemptFailureCode:
-      attempt === null ||
-      failureCode === "pin_verification_failed" ||
-      failureCode === "configuration_invalid"
+      attempt === null || !ATTEMPT_FAILURE_CODES.has(failureCode)
         ? null
-        : failureCode,
+        : (failureCode as DataRegistrationAttemptFailureCode),
     evidenceRef,
   });
   return { outcome: "failed" };
+};
+
+/**
+ * Spec 008 section 3A. A song-reference video registers against its parent
+ * song's attached terms, read only from the parent's confirmed ledger row. It
+ * waits while the parent is unconfirmed, fails with the parent's failure, and
+ * never substitutes: a license that differs from the one frozen at
+ * publication, terms that forbid derivatives, or a parent confirmed without
+ * its terms recorded each end the child with its own code.
+ */
+const resolveParent = async (
+  dependencies: DataRegistrationWorkflowDependencies,
+  operation: DataRegistrationOperation,
+): Promise<DataRegistrationWorkflowResult> => {
+  const reference = await dependencies.store.getParentReference(operation.registrationOperationId);
+  if (
+    reference === null ||
+    reference.registrationOperationId !== operation.registrationOperationId
+  ) {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "configuration_invalid",
+      "data-registration://parent-reference-missing",
+    );
+  }
+  const parent = await dependencies.store.getOperation(reference.parentRegistrationOperationId);
+  if (
+    parent === null ||
+    parent.mediaKind !== "song" ||
+    parent.assetId !== reference.parentAssetId ||
+    parent.chainId !== operation.chainId
+  ) {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "configuration_invalid",
+      "data-registration://parent-operation-invalid",
+    );
+  }
+  const parentEvidence = `data-registration://parent/${parent.registrationOperationId}`;
+  if (parent.state === "failed") {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "parent_registration_failed",
+      `${parentEvidence}/failed`,
+    );
+  }
+  if (parent.state !== "registered") {
+    if (operation.state === "pending") {
+      await dependencies.store.awaitParent(operation.registrationOperationId);
+    }
+    return { outcome: "waiting" };
+  }
+  const attached = parent.attachedLicense;
+  if (attached === null) {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "parent_terms_unrecorded",
+      `${parentEvidence}/terms-unrecorded`,
+    );
+  }
+  if (
+    attached.preset !== reference.expectedLicense.preset ||
+    attached.commercialRevShareBps !== reference.expectedLicense.commercialRevShareBps
+  ) {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "parent_license_mismatch",
+      `${parentEvidence}/license-mismatch`,
+    );
+  }
+  if (!dataLicensePresetAllowsDerivatives(attached.preset)) {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "parent_derivatives_not_permitted",
+      `${parentEvidence}/derivatives-not-permitted`,
+    );
+  }
+  if (
+    parent.registeredIpId === null ||
+    parent.confirmedTransactionHash === null ||
+    parent.confirmedBlockNumber === null ||
+    parent.confirmedBlockHash === null ||
+    parent.confirmedLogIndex === null
+  ) {
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "configuration_invalid",
+      `${parentEvidence}/confirmation-incomplete`,
+    );
+  }
+  await dependencies.store.resolveParent({
+    registrationOperationId: operation.registrationOperationId,
+    parentRegistrationOperationId: parent.registrationOperationId,
+    parentRegistrationRevision: parent.registrationRevision,
+    parentIpId: parent.registeredIpId,
+    consumedLicense: {
+      licenseTemplate: attached.licenseTemplate,
+      licenseTermsId: attached.licenseTermsId,
+      preset: attached.preset,
+      commercialRevShareBps: attached.commercialRevShareBps,
+    },
+    parentRegistration: {
+      transactionHash: parent.confirmedTransactionHash,
+      blockNumber: parent.confirmedBlockNumber,
+      blockHash: parent.confirmedBlockHash,
+      logIndex: parent.confirmedLogIndex,
+    },
+    termsAttachment: attached.attachment,
+  });
+  return { outcome: "progress" };
 };
 
 const recordPins = async (
@@ -334,6 +474,15 @@ export async function advanceDataRegistrationWorkflow(
   if (operation.state === "registered") return { outcome: "registered" };
   if (operation.state === "failed" || operation.state === "reconciliation_required") {
     return { outcome: "failed" };
+  }
+
+  // The parent is resolved before anything is pinned: the metadata documents
+  // and the calldata both name the parent's IP and consumed terms.
+  if (operation.mediaKind === "video" && operation.rightsBasis === "derivative") {
+    const resolution = await dependencies.store.getParentResolution(
+      operation.registrationOperationId,
+    );
+    if (resolution === null) return resolveParent(dependencies, operation);
   }
 
   if (!(await dependencies.store.pinsReady(operation.registrationOperationId))) {
@@ -564,6 +713,16 @@ export async function advanceDataRegistrationWorkflow(
     const receipt = await dependencies.chain.observeReceipt(operation, attempt);
     if (receipt.status === "pending" || receipt.status === "retryable") {
       return { outcome: "waiting" };
+    }
+    if (receipt.status === "invalid") {
+      return failOperation(
+        dependencies,
+        operation,
+        attempt,
+        "reconciliation_required",
+        "invalid_receipt",
+        receipt.evidenceRef,
+      );
     }
     await dependencies.store.recordReceipt(receipt.observation);
     if (receipt.status === "mined") {

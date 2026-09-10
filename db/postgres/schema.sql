@@ -7505,6 +7505,24 @@ BEGIN
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'DATA registration operation timestamp must advance';
   END IF;
+  -- Terms evidence is written with a registration and cleared only when the
+  -- registration itself is withdrawn; nothing else may rewrite it.
+  IF ROW(
+    NEW.attached_license_template, NEW.attached_license_terms_id,
+    NEW.attached_license_preset, NEW.attached_commercial_rev_share_bps,
+    NEW.terms_attachment_transaction_hash, NEW.terms_attachment_block_number,
+    NEW.terms_attachment_block_hash, NEW.terms_attachment_log_index
+  ) IS DISTINCT FROM ROW(
+    OLD.attached_license_template, OLD.attached_license_terms_id,
+    OLD.attached_license_preset, OLD.attached_commercial_rev_share_bps,
+    OLD.terms_attachment_transaction_hash, OLD.terms_attachment_block_number,
+    OLD.terms_attachment_block_hash, OLD.terms_attachment_log_index
+  ) AND NOT (
+    (OLD.state <> 'registered' AND NEW.state = 'registered')
+    OR (OLD.state = 'registered' AND NEW.state <> 'registered')
+  ) THEN
+    RAISE EXCEPTION 'DATA attached terms evidence changes only with registration';
+  END IF;
   IF NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
      OR NEW.workflow_instance_id IS DISTINCT FROM OLD.workflow_instance_id THEN
     IF OLD.state = 'registered'
@@ -7527,7 +7545,8 @@ BEGIN
     RETURN NEW;
   END IF;
   IF NOT (
-    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed'))
+    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed', 'waiting_parent'))
+    OR (OLD.state = 'waiting_parent' AND NEW.state IN ('pending', 'failed'))
     OR (OLD.state = 'signing' AND NEW.state IN (
       'broadcast', 'failed', 'reconciliation_required'
     ))
@@ -7544,6 +7563,15 @@ BEGIN
     OR (OLD.state = 'registered' AND NEW.state IN ('failed', 'reconciliation_required'))
   ) THEN
     RAISE EXCEPTION 'invalid DATA registration operation transition';
+  END IF;
+  -- Only a derivative waits on a parent.
+  IF NEW.state = 'waiting_parent' AND NEW.rights_basis <> 'derivative' THEN
+    RAISE EXCEPTION 'only a derivative DATA registration waits for its parent';
+  END IF;
+  -- A song registers only with the terms it attached.
+  IF NEW.state = 'registered' AND OLD.state <> 'registered'
+     AND NEW.media_kind = 'song' AND NEW.attached_license_terms_id IS NULL THEN
+    RAISE EXCEPTION 'a song DATA registration confirms only with its attached terms';
   END IF;
   RETURN NEW;
 END;
@@ -15106,6 +15134,74 @@ BEGIN
     ELSIF NEW.verified_by_actor_id IS NOT NULL THEN
       RAISE EXCEPTION 'system revalidation evidence cannot name an owner principal';
     END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_attempt_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM data_registration_operations operation
+     WHERE operation.registration_operation_id = NEW.registration_operation_id
+       AND operation.media_kind = 'video' AND operation.rights_basis = 'derivative'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM data_registration_parent_resolutions resolution
+     WHERE resolution.registration_operation_id = NEW.registration_operation_id
+  ) THEN
+    RAISE EXCEPTION 'a derivative DATA registration signs only after its parent resolves';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_parent_resolution_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  child_state TEXT;
+BEGIN
+  SELECT state INTO child_state FROM data_registration_operations
+   WHERE registration_operation_id = NEW.registration_operation_id
+     AND media_kind = 'video' AND rights_basis = 'derivative'
+   FOR UPDATE;
+  IF child_state IS NULL OR child_state NOT IN ('pending', 'waiting_parent') THEN
+    RAISE EXCEPTION 'a DATA parent resolution needs a derivative video awaiting it';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_operations parent
+     WHERE parent.registration_operation_id = NEW.parent_registration_operation_id
+       AND parent.state = 'registered'
+       AND parent.media_kind = 'song'
+       AND parent.registration_revision = NEW.parent_registration_revision
+       AND parent.registered_ip_id = NEW.parent_ip_id
+       AND parent.confirmed_transaction_hash = NEW.parent_registration_transaction_hash
+       AND parent.confirmed_block_number = NEW.parent_registration_block_number
+       AND parent.confirmed_block_hash = NEW.parent_registration_block_hash
+       AND parent.confirmed_log_index = NEW.parent_registration_log_index
+       AND parent.attached_license_template = NEW.license_template
+       AND parent.attached_license_terms_id = NEW.license_terms_id
+       AND parent.attached_license_preset = NEW.license_preset
+       AND parent.attached_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.commercial_rev_share_bps
+       AND parent.terms_attachment_transaction_hash = NEW.terms_attachment_transaction_hash
+       AND parent.terms_attachment_block_number = NEW.terms_attachment_block_number
+       AND parent.terms_attachment_block_hash = NEW.terms_attachment_block_hash
+       AND parent.terms_attachment_log_index = NEW.terms_attachment_log_index
+     FOR SHARE
+  ) THEN
+    RAISE EXCEPTION 'a DATA parent resolution must restate the parent''s confirmed row';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_parent_references reference
+     WHERE reference.registration_operation_id = NEW.registration_operation_id
+       AND reference.parent_registration_operation_id = NEW.parent_registration_operation_id
+       AND reference.expected_parent_license_preset = NEW.license_preset
+       AND reference.expected_parent_commercial_rev_share_bps
+         IS NOT DISTINCT FROM NEW.commercial_rev_share_bps
+  ) THEN
+    RAISE EXCEPTION 'a DATA parent resolution must consume the expected parent license';
   END IF;
   RETURN NEW;
 END;
@@ -24315,17 +24411,30 @@ CREATE TABLE data_registration_operations (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     media_kind text DEFAULT 'song'::text NOT NULL,
     rights_basis text DEFAULT 'original'::text NOT NULL,
+    attached_license_template text,
+    attached_license_terms_id text,
+    attached_license_preset text,
+    attached_commercial_rev_share_bps integer,
+    terms_attachment_transaction_hash text,
+    terms_attachment_block_number bigint,
+    terms_attachment_block_hash text,
+    terms_attachment_log_index integer,
+    CONSTRAINT data_registration_attached_license_shape CHECK ((((attached_license_template IS NULL) AND (attached_license_terms_id IS NULL) AND (attached_license_preset IS NULL) AND (attached_commercial_rev_share_bps IS NULL) AND (terms_attachment_transaction_hash IS NULL) AND (terms_attachment_block_number IS NULL) AND (terms_attachment_block_hash IS NULL) AND (terms_attachment_log_index IS NULL)) OR ((state = 'registered'::text) AND (media_kind = 'song'::text) AND (attached_license_template IS NOT NULL) AND (attached_license_terms_id IS NOT NULL) AND (attached_license_preset IS NOT NULL) AND (terms_attachment_transaction_hash IS NOT NULL) AND (terms_attachment_block_number IS NOT NULL) AND (terms_attachment_block_hash IS NOT NULL) AND (terms_attachment_log_index IS NOT NULL) AND ((attached_license_preset = 'commercial-remix'::text) = (attached_commercial_rev_share_bps IS NOT NULL))))),
     CONSTRAINT data_registration_operation_identity CHECK (((registration_operation_id = ((((('data-registration:'::text || (chain_id)::text) || ':'::text) || asset_id) || ':'::text) || (registration_revision)::text)) AND (asset_id = post_id) AND (workflow_instance_id = ((('data-registration-workflow:'::text || registration_operation_id) || ':r'::text) || (workflow_revision)::text)))),
     CONSTRAINT data_registration_operation_media_shape CHECK ((((media_kind = 'song'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))) OR ((media_kind = 'video'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))))),
     CONSTRAINT data_registration_operation_outcome_shape CHECK ((((state = 'registered'::text) AND (current_attempt_id IS NOT NULL) AND (registered_ip_id IS NOT NULL) AND (btrim(registered_ip_id) <> ''::text) AND (confirmed_transaction_hash IS NOT NULL) AND (confirmed_block_number IS NOT NULL) AND (confirmed_block_hash IS NOT NULL) AND (confirmed_log_index IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'failed'::text) AND (failure_code IS NOT NULL) AND (failure_evidence_ref IS NOT NULL) AND (confirmed_at IS NULL)) OR ((state <> ALL (ARRAY['registered'::text, 'failed'::text])) AND (registered_ip_id IS NULL) AND (confirmed_transaction_hash IS NULL) AND (confirmed_block_number IS NULL) AND (confirmed_block_hash IS NULL) AND (confirmed_log_index IS NULL) AND (confirmed_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)))),
     CONSTRAINT data_registration_operations_asset_id_check CHECK (((btrim(asset_id) <> ''::text) AND (asset_id = btrim(asset_id)) AND (octet_length(asset_id) <= 256))),
+    CONSTRAINT data_registration_operations_attached_commercial_rev_shar_check CHECK (((attached_commercial_rev_share_bps IS NULL) OR ((attached_commercial_rev_share_bps >= 0) AND (attached_commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_operations_attached_license_preset_check CHECK (((attached_license_preset IS NULL) OR (attached_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])))),
+    CONSTRAINT data_registration_operations_attached_license_template_check CHECK (((attached_license_template IS NULL) OR (attached_license_template ~ '^0x[0-9a-f]{40}$'::text))),
+    CONSTRAINT data_registration_operations_attached_license_terms_id_check CHECK (((attached_license_terms_id IS NULL) OR (attached_license_terms_id ~ '^[1-9][0-9]{0,77}$'::text))),
     CONSTRAINT data_registration_operations_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT data_registration_operations_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT data_registration_operations_confirmed_block_hash_check CHECK (((confirmed_block_hash IS NULL) OR (confirmed_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_operations_confirmed_block_number_check CHECK (((confirmed_block_number IS NULL) OR (confirmed_block_number >= 0))),
     CONSTRAINT data_registration_operations_confirmed_log_index_check CHECK (((confirmed_log_index IS NULL) OR (confirmed_log_index >= 0))),
     CONSTRAINT data_registration_operations_confirmed_transaction_hash_check CHECK (((confirmed_transaction_hash IS NULL) OR (confirmed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
-    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text])))),
+    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text, 'parent_registration_failed'::text, 'parent_license_mismatch'::text, 'parent_derivatives_not_permitted'::text, 'parent_terms_unrecorded'::text])))),
     CONSTRAINT data_registration_operations_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR ((btrim(failure_evidence_ref) <> ''::text) AND (failure_evidence_ref = btrim(failure_evidence_ref))))),
     CONSTRAINT data_registration_operations_publication_analysis_revisio_check CHECK ((publication_analysis_revision > 0)),
     CONSTRAINT data_registration_operations_publication_audio_revision_check CHECK ((publication_audio_revision > 0)),
@@ -24333,7 +24442,11 @@ CREATE TABLE data_registration_operations (
     CONSTRAINT data_registration_operations_publication_decision_revisio_check CHECK ((publication_decision_revision > 0)),
     CONSTRAINT data_registration_operations_registration_operation_id_check CHECK (((btrim(registration_operation_id) <> ''::text) AND (registration_operation_id = btrim(registration_operation_id)) AND (octet_length(registration_operation_id) <= 512))),
     CONSTRAINT data_registration_operations_registration_revision_check CHECK ((registration_revision > 0)),
-    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'waiting_parent'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_terms_attachment_block_hash_check CHECK (((terms_attachment_block_hash IS NULL) OR (terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_operations_terms_attachment_block_numbe_check CHECK (((terms_attachment_block_number IS NULL) OR (terms_attachment_block_number >= 0))),
+    CONSTRAINT data_registration_operations_terms_attachment_log_index_check CHECK (((terms_attachment_log_index IS NULL) OR (terms_attachment_log_index >= 0))),
+    CONSTRAINT data_registration_operations_terms_attachment_transaction_check CHECK (((terms_attachment_transaction_hash IS NULL) OR (terms_attachment_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_operations_workflow_instance_id_check CHECK (((btrim(workflow_instance_id) <> ''::text) AND (workflow_instance_id = btrim(workflow_instance_id)))),
     CONSTRAINT data_registration_operations_workflow_revision_check CHECK ((workflow_revision > 0))
 );
@@ -24390,6 +24503,42 @@ CREATE TABLE data_registration_parent_references (
     CONSTRAINT data_registration_parent_references_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
     CONSTRAINT data_registration_parent_references_parent_asset_id_check CHECK ((btrim(parent_asset_id) <> ''::text)),
     CONSTRAINT data_registration_parent_references_relationship_check CHECK ((relationship = 'references_song'::text))
+);
+
+CREATE TABLE data_registration_parent_resolutions (
+    registration_operation_id text NOT NULL,
+    parent_registration_operation_id text NOT NULL,
+    parent_registration_revision bigint NOT NULL,
+    parent_ip_id text NOT NULL,
+    license_template text NOT NULL,
+    license_terms_id text NOT NULL,
+    license_preset text NOT NULL,
+    commercial_rev_share_bps integer,
+    parent_registration_transaction_hash text NOT NULL,
+    parent_registration_block_number bigint NOT NULL,
+    parent_registration_block_hash text NOT NULL,
+    parent_registration_log_index integer NOT NULL,
+    terms_attachment_transaction_hash text NOT NULL,
+    terms_attachment_block_number bigint NOT NULL,
+    terms_attachment_block_hash text NOT NULL,
+    terms_attachment_log_index integer NOT NULL,
+    resolved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_parent_res_parent_registration_block_ha_check CHECK ((parent_registration_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_res_parent_registration_block_nu_check CHECK ((parent_registration_block_number >= 0)),
+    CONSTRAINT data_registration_parent_res_parent_registration_log_inde_check CHECK ((parent_registration_log_index >= 0)),
+    CONSTRAINT data_registration_parent_res_parent_registration_revision_check CHECK ((parent_registration_revision >= 1)),
+    CONSTRAINT data_registration_parent_res_parent_registration_transact_check CHECK ((parent_registration_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_res_terms_attachment_block_numbe_check CHECK ((terms_attachment_block_number >= 0)),
+    CONSTRAINT data_registration_parent_res_terms_attachment_transaction_check CHECK ((terms_attachment_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_reso_terms_attachment_block_hash_check CHECK ((terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_resol_terms_attachment_log_index_check CHECK ((terms_attachment_log_index >= 0)),
+    CONSTRAINT data_registration_parent_resolut_commercial_rev_share_bps_check CHECK (((commercial_rev_share_bps IS NULL) OR ((commercial_rev_share_bps >= 0) AND (commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_parent_resolution_license_shape CHECK (((license_preset = 'commercial-remix'::text) = (commercial_rev_share_bps IS NOT NULL))),
+    CONSTRAINT data_registration_parent_resolutions_license_preset_check CHECK ((license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text]))),
+    CONSTRAINT data_registration_parent_resolutions_license_template_check CHECK ((license_template ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_license_terms_id_check CHECK ((license_terms_id ~ '^[1-9][0-9]{0,77}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_parent_ip_id_check CHECK ((parent_ip_id ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_resolved_at_check CHECK (isfinite(resolved_at))
 );
 
 CREATE TABLE data_registration_pin_verifications (
@@ -31035,7 +31184,13 @@ ALTER TABLE ONLY data_registration_outbox
     ADD CONSTRAINT data_registration_outbox_registration_operation_id_workflow_key UNIQUE (registration_operation_id, workflow_revision, event_type);
 
 ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_reference_pair UNIQUE (registration_operation_id, parent_registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_references
     ADD CONSTRAINT data_registration_parent_references_pkey PRIMARY KEY (registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_resolutions
+    ADD CONSTRAINT data_registration_parent_resolutions_pkey PRIMARY KEY (registration_operation_id);
 
 ALTER TABLE ONLY data_registration_pin_verifications
     ADD CONSTRAINT data_registration_pin_verific_registration_operation_id_art_key UNIQUE (registration_operation_id, artifact_id, role, provider_id, attempt_number);
@@ -33359,11 +33514,17 @@ CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE O
 
 CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
 
+CREATE TRIGGER data_registration_attempt_parent BEFORE INSERT ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION require_data_registration_attempt_parent();
+
 CREATE TRIGGER data_registration_operation_update_guard BEFORE DELETE OR UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_operation_update();
 
 CREATE TRIGGER data_registration_outbox_update_guard BEFORE DELETE OR UPDATE ON data_registration_outbox FOR EACH ROW EXECUTE FUNCTION guard_data_registration_outbox_update();
 
 CREATE TRIGGER data_registration_parent_reference_guard BEFORE DELETE OR UPDATE ON data_registration_parent_references FOR EACH ROW EXECUTE FUNCTION guard_data_registration_parent_reference();
+
+CREATE TRIGGER data_registration_parent_resolution_evidence BEFORE INSERT ON data_registration_parent_resolutions FOR EACH ROW EXECUTE FUNCTION require_data_registration_parent_resolution_evidence();
+
+CREATE TRIGGER data_registration_parent_resolutions_append_only BEFORE DELETE OR UPDATE ON data_registration_parent_resolutions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_pins_append_only BEFORE DELETE OR UPDATE ON data_registration_pin_verifications FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
@@ -34942,6 +35103,9 @@ ALTER TABLE ONLY data_registration_parent_references
 
 ALTER TABLE ONLY data_registration_parent_references
     ADD CONSTRAINT data_registration_parent_referen_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY data_registration_parent_resolutions
+    ADD CONSTRAINT data_registration_parent_reso_registration_operation_id_pa_fkey FOREIGN KEY (registration_operation_id, parent_registration_operation_id) REFERENCES data_registration_parent_references(registration_operation_id, parent_registration_operation_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY data_registration_pin_verifications
     ADD CONSTRAINT data_registration_pin_verifi_registration_operation_id_ar_fkey1 FOREIGN KEY (registration_operation_id, artifact_id) REFERENCES data_registration_artifacts(registration_operation_id, artifact_id);

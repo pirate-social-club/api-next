@@ -145,6 +145,7 @@ TRUNCATE TABLE
   "data_registration_operations",
   "data_registration_outbox",
   "data_registration_parent_references",
+  "data_registration_parent_resolutions",
   "data_registration_pin_verifications",
   "data_registration_receipt_observations",
   "data_registration_signing_attempts",

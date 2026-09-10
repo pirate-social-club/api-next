@@ -135,7 +135,11 @@ export const resolveDataRegistrationOperationKind = (
             DATA_REGISTRATION_AENEID_TARGETS.original.toLowerCase() &&
           attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.original
         ? "original"
-        : null;
+        : attempt.targetAddress.toLowerCase() ===
+              DATA_REGISTRATION_AENEID_TARGETS.derivative.toLowerCase() &&
+            attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.derivative
+          ? "derivative"
+          : null;
 
 export function makeDataRegistrationComposition(
   env: DataRegistrationRuntimeEnv,

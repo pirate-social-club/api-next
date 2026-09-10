@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  DataParentReference,
+  DataParentResolution,
   DataRegistrationArtifact,
   DataRegistrationOperation,
   DataRegistrationOutbox,
@@ -57,7 +59,21 @@ const operation = (): DataRegistrationOperation => ({
   confirmedAt: null,
   failureCode: null,
   failureEvidenceRef: null,
+  attachedLicense: null,
 });
+
+const ATTACHED_LICENSE = {
+  licenseTemplate: `0x${"2e".repeat(20)}`,
+  licenseTermsId: "1894",
+  preset: "commercial-remix" as const,
+  commercialRevShareBps: 500,
+  attachment: {
+    transactionHash: `0x${"d".repeat(64)}`,
+    blockNumber: 10n,
+    blockHash: `0x${"e".repeat(64)}`,
+    logIndex: 7,
+  },
+};
 
 const reservation = (): ReserveDataRegistrationAttemptInput => ({
   registrationOperationId: OPERATION_ID,
@@ -303,7 +319,11 @@ function harness(
         return receipt === "confirmed"
           ? {
               status: "confirmed" as const,
-              observation: { ...common, outcome: "confirmed" as const },
+              observation: {
+                ...common,
+                outcome: "confirmed" as const,
+                attachedLicense: ATTACHED_LICENSE,
+              },
             }
           : {
               status: "orphaned" as const,
@@ -516,5 +536,270 @@ describe("DATA registration Workflow interpreter", () => {
       ),
     ).toEqual({ outcome: "failed" });
     expect(state.calls).toEqual([]);
+  });
+});
+
+const CHILD_ID = "data-registration:1315:video-post-1:1";
+const PARENT_ID = "data-registration:1315:song-post-1:1";
+const childPayload: DataRegistrationWorkflowPayload = {
+  outboxId: `${CHILD_ID}:outbox:r1`,
+  registrationOperationId: CHILD_ID,
+  workflowRevision: 1n,
+};
+
+/** A song-reference video whose parent song is controlled by the test. */
+function derivativeHarness(parentOverrides: Partial<DataRegistrationOperation>) {
+  const child: DataRegistrationOperation = {
+    ...operation(),
+    registrationOperationId: CHILD_ID,
+    postId: "video-post-1",
+    assetId: "video-post-1",
+    mediaKind: "video",
+    rightsBasis: "derivative",
+    workflowInstanceId: deterministicDataRegistrationWorkflowId(CHILD_ID, 1n),
+  };
+  let parent: DataRegistrationOperation = {
+    ...operation(),
+    registrationOperationId: PARENT_ID,
+    postId: "song-post-1",
+    assetId: "song-post-1",
+    workflowInstanceId: deterministicDataRegistrationWorkflowId(PARENT_ID, 1n),
+    ...parentOverrides,
+  };
+  let current = child;
+  let resolution: DataParentResolution | null = null;
+  const calls: string[] = [];
+  const reference: DataParentReference = {
+    registrationOperationId: CHILD_ID,
+    relationship: "references_song",
+    parentAssetId: "song-post-1",
+    parentRegistrationOperationId: PARENT_ID,
+    expectedLicense: { preset: "commercial-remix", commercialRevShareBps: 500 },
+    ownerPolicy: { revision: 1n, hash: "f".repeat(64), derivativeVideo: "allowed" },
+  };
+  const outbox: DataRegistrationOutbox = {
+    outboxId: childPayload.outboxId,
+    registrationOperationId: CHILD_ID,
+    workflowRevision: 1n,
+    workflowInstanceId: child.workflowInstanceId,
+    eventType: "registration_launch",
+    effectIdentity: "effect-child",
+    state: "delivered",
+    deliveryAttempts: 1,
+    claimOwner: null,
+    claimFence: 1n,
+    leaseExpiresAt: null,
+    nextEligibleAt: null,
+    failureCode: null,
+  };
+  const store = {
+    getOperation: async (id: string) =>
+      id === CHILD_ID ? current : id === PARENT_ID ? parent : null,
+    getOutbox: async (id: string) => (id === outbox.outboxId ? outbox : null),
+    getParentReference: async () => reference,
+    getParentResolution: async () => resolution,
+    awaitParent: async () => {
+      calls.push("await-parent");
+      current = { ...current, state: "waiting_parent" };
+      return current;
+    },
+    resolveParent: async (input: Omit<DataParentResolution, "resolvedAt">) => {
+      calls.push("resolve-parent");
+      resolution = { ...input, resolvedAt: "2026-09-11T00:00:00.000Z" };
+      current = { ...current, state: "pending" };
+      return { kind: "created" as const, resolution };
+    },
+    pinsReady: async () => false,
+    failRegistration: async (input: {
+      operationState: "failed" | "reconciliation_required";
+      operationFailureCode: DataRegistrationOperation["failureCode"];
+      evidenceRef: string;
+    }) => {
+      calls.push(`fail:${input.operationFailureCode}`);
+      current = {
+        ...current,
+        state: input.operationState,
+        failureCode: input.operationFailureCode,
+        failureEvidenceRef: input.evidenceRef,
+      };
+      return current;
+    },
+  } as unknown as DataRegistrationStore;
+  const unreachable = async (): Promise<never> => {
+    throw new Error("nothing past the parent stage runs before resolution");
+  };
+  const dependencies: DataRegistrationWorkflowDependencies = {
+    store,
+    signingReader: { getSigningAttempt: async () => null },
+    pinReader: { listPinVerifications: async () => [] },
+    artifacts: {
+      prepare: async () => {
+        calls.push("prepare");
+        return [];
+      },
+      pinAndVerify: unreachable,
+    },
+    chain: {
+      plan: unreachable,
+      readNonce: unreachable,
+      broadcast: unreachable,
+      observeReceipt: unreachable,
+    },
+    signer: { sign: unreachable },
+    options: { enabled: true },
+  };
+  return {
+    calls,
+    dependencies,
+    child: () => current,
+    resolution: () => resolution,
+    setParent: (next: Partial<DataRegistrationOperation>) => {
+      parent = { ...parent, ...next };
+    },
+  };
+}
+
+const REGISTERED_PARENT: Partial<DataRegistrationOperation> = {
+  state: "registered",
+  currentAttemptId: `${PARENT_ID}:attempt:1`,
+  registeredIpId: `0x${"a1".repeat(20)}`,
+  confirmedTransactionHash: `0x${"d".repeat(64)}`,
+  confirmedBlockNumber: 10n,
+  confirmedBlockHash: `0x${"e".repeat(64)}`,
+  confirmedLogIndex: 4,
+  confirmedAt: "2026-09-11T00:00:00.000Z",
+  attachedLicense: ATTACHED_LICENSE,
+};
+
+describe("DATA registration of a song-reference video", () => {
+  test("waits for an unconfirmed parent without pinning, then resolves from its confirmed row", async () => {
+    const state = derivativeHarness({ state: "signing" });
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    expect(state.child().state).toBe("waiting_parent");
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    expect(state.calls).toEqual(["await-parent"]);
+
+    state.setParent(REGISTERED_PARENT);
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "progress",
+    });
+    expect(state.child().state).toBe("pending");
+    expect(state.resolution()).toMatchObject({
+      registrationOperationId: CHILD_ID,
+      parentRegistrationOperationId: PARENT_ID,
+      parentRegistrationRevision: 1n,
+      parentIpId: `0x${"a1".repeat(20)}`,
+      consumedLicense: {
+        licenseTemplate: ATTACHED_LICENSE.licenseTemplate,
+        licenseTermsId: "1894",
+        preset: "commercial-remix",
+        commercialRevShareBps: 500,
+      },
+      parentRegistration: {
+        transactionHash: `0x${"d".repeat(64)}`,
+        blockNumber: 10n,
+        blockHash: `0x${"e".repeat(64)}`,
+        logIndex: 4,
+      },
+      termsAttachment: ATTACHED_LICENSE.attachment,
+    });
+    expect(state.calls).not.toContain("prepare");
+
+    // Resolved, the child moves on to its artifacts.
+    await advanceDataRegistrationWorkflow(childPayload, state.dependencies);
+    expect(state.calls).toContain("prepare");
+  });
+
+  test("keeps waiting while the parent awaits reconciliation", async () => {
+    const state = derivativeHarness({ state: "reconciliation_required" });
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    expect(state.child().state).toBe("waiting_parent");
+  });
+
+  test.each([
+    [
+      "the parent's registration failed",
+      {
+        state: "failed",
+        failureCode: "receipt_reverted",
+        failureEvidenceRef: "evidence://reverted",
+      } as Partial<DataRegistrationOperation>,
+      "parent_registration_failed",
+    ],
+    [
+      "the parent attached a different license",
+      {
+        ...REGISTERED_PARENT,
+        attachedLicense: { ...ATTACHED_LICENSE, commercialRevShareBps: 1_000 },
+      },
+      "parent_license_mismatch",
+    ],
+    [
+      "the parent confirmed before its terms were recorded",
+      { ...REGISTERED_PARENT, attachedLicense: null },
+      "parent_terms_unrecorded",
+    ],
+  ] as const)("fails, never substitutes, when %s", async (_case, parent, code) => {
+    const state = derivativeHarness(parent);
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "failed",
+    });
+    expect(state.child()).toMatchObject({ state: "failed", failureCode: code });
+    expect(state.resolution()).toBeNull();
+    expect(state.calls).not.toContain("prepare");
+  });
+
+  test("fails a reference to commercial-use terms, which allow no derivatives", async () => {
+    const state = derivativeHarness({
+      ...REGISTERED_PARENT,
+      attachedLicense: {
+        ...ATTACHED_LICENSE,
+        preset: "commercial-use",
+        commercialRevShareBps: null,
+      },
+    });
+    const reference = await state.dependencies.store.getParentReference(CHILD_ID);
+    if (reference === null) throw new Error("reference fixture missing");
+    // The frozen expectation matches, so only the terms themselves refuse it.
+    (reference as { expectedLicense: unknown }).expectedLicense = {
+      preset: "commercial-use",
+      commercialRevShareBps: null,
+    };
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "failed",
+    });
+    expect(state.child()).toMatchObject({
+      state: "failed",
+      failureCode: "parent_derivatives_not_permitted",
+    });
+  });
+});
+
+describe("DATA registration receipts", () => {
+  test("reconciles a mined receipt that lacks the registration's events", async () => {
+    const state = harness();
+    for (let index = 0; index < 5; index += 1) {
+      await advanceDataRegistrationWorkflow(payload, state.dependencies);
+    }
+    expect(state.attempt()?.state).toBe("broadcast");
+    const invalid: DataRegistrationWorkflowDependencies = {
+      ...state.dependencies,
+      chain: {
+        ...state.dependencies.chain,
+        observeReceipt: async () => ({
+          status: "invalid" as const,
+          evidenceRef: "data-registration://aeneid/receipt-events-invalid",
+        }),
+      },
+    };
+    expect(await advanceDataRegistrationWorkflow(payload, invalid)).toEqual({ outcome: "failed" });
+    expect(state.operation()).toMatchObject({ state: "reconciliation_required" });
+    expect(state.calls).not.toContain("record-receipt");
   });
 });
