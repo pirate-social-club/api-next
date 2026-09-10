@@ -554,6 +554,10 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid HNS recovery evidence freshness bound';
   END IF;
+  -- The row lock is held for the whole application: the generation check, the
+  -- transition, the rebinding, and the single-use consumption are one
+  -- serialized unit, so a concurrent application cannot interleave between
+  -- them.
   SELECT * INTO lifecycle FROM hns_root_import_lifecycle
    WHERE root_import_session_id = input_session_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -617,19 +621,14 @@ BEGIN
                           lifecycle.generation;
       RETURN;
     END IF;
-    UPDATE hns_root_import_lifecycle
-       SET generation = lifecycle.generation + 1,
-           plan_encoded_resource_sha256 = finding.covenant_resource_sha256,
-           first_current_observation_at = NULL,
-           finality_deadline_at = NULL,
-           readiness_observed_at = NULL,
-           updated_at = database_now
-     WHERE root_import_session_id = input_session_id
-    RETURNING hns_root_import_lifecycle.generation INTO rebound;
-  ELSE
-    rebound := lifecycle.generation;
   END IF;
 
+  -- Decide first, and only then rebind. The commit function returns a
+  -- non-raising `replay` outcome when the event identity already exists; a
+  -- replay must not move the generation, rewrite the digest, clear the
+  -- anchors, or spend the authorization. Gating every rebinding on an
+  -- explicit `transition` keeps that invariant local to this function rather
+  -- than resting on which outcome the callee happens to return.
   SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
     input_session_id,
     lifecycle.revision,
@@ -642,8 +641,22 @@ BEGIN
     coalesce(input_requested_work, '[]'::jsonb)
   );
   IF committed.outcome IS DISTINCT FROM 'transition' THEN
-    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, rebound;
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, lifecycle.generation;
     RETURN;
+  END IF;
+
+  IF recovery_grant.action = 'adopt' THEN
+    UPDATE hns_root_import_lifecycle
+       SET generation = lifecycle.generation + 1,
+           plan_encoded_resource_sha256 = finding.covenant_resource_sha256,
+           first_current_observation_at = NULL,
+           finality_deadline_at = NULL,
+           readiness_observed_at = NULL,
+           updated_at = database_now
+     WHERE root_import_session_id = input_session_id
+    RETURNING hns_root_import_lifecycle.generation INTO rebound;
+  ELSE
+    rebound := lifecycle.generation;
   END IF;
   UPDATE hns_root_import_recovery_authorizations
      SET consumed_at = database_now
@@ -13655,25 +13668,44 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone) RETURNS text
+CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone, input_decision_event_id text, input_expected_generation bigint, input_freshness_seconds integer) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
 DECLARE
   job hns_root_import_lifecycle_jobs%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  decision hns_root_import_lifecycle_history%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
+  expected_job_kind TEXT;
 BEGIN
-  IF input_view NOT IN ('current', 'safe')
+  expected_job_kind := CASE input_view
+    WHEN 'current' THEN 'observe_current'
+    WHEN 'safe' THEN 'observe_safe'
+  END;
+  IF expected_job_kind IS NULL
     OR input_resource_sha256 !~ '^[0-9a-f]{64}$'
     OR input_tip_height IS NULL
     OR input_tip_height <= 0
     OR input_observed_at IS NULL
+    OR input_decision_event_id IS NULL
+    OR btrim(input_decision_event_id) <> input_decision_event_id
+    OR input_expected_generation IS NULL
+    OR input_expected_generation < 1
+    OR input_freshness_seconds IS NULL
+    OR input_freshness_seconds NOT BETWEEN 1 AND 86400
   THEN
     RAISE EXCEPTION 'invalid HNS lifecycle observation evidence';
   END IF;
-  -- The same fence the decision itself commits under: state, holder, fence and
-  -- expiry. Evidence recorded by a worker that has lost its lease describes an
-  -- observation nobody can vouch for.
+  -- The reading is the server's own; an observation cannot have happened in
+  -- the future. The tolerance bounds clock skew between the observer and the
+  -- database rather than extending the window.
+  IF input_observed_at > database_now + interval '30 seconds' THEN
+    RETURN 'observation_in_future';
+  END IF;
+  IF input_observed_at <= database_now - input_freshness_seconds * interval '1 second' THEN
+    RETURN 'observation_stale';
+  END IF;
   SELECT * INTO job FROM hns_root_import_lifecycle_jobs
    WHERE lifecycle_job_id = input_lifecycle_job_id
    FOR UPDATE;
@@ -13686,6 +13718,26 @@ BEGIN
   THEN
     RETURN 'lease_conflict';
   END IF;
+  IF job.job_kind <> expected_job_kind THEN
+    RETURN 'job_kind_mismatch';
+  END IF;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN RETURN 'lifecycle_absent'; END IF;
+  IF lifecycle.generation <> input_expected_generation THEN
+    RETURN 'generation_conflict';
+  END IF;
+  SELECT * INTO decision FROM hns_root_import_lifecycle_history
+   WHERE root_import_session_id = input_session_id
+     AND event_id = input_decision_event_id;
+  IF NOT FOUND
+    OR decision.outcome NOT IN ('transition', 'pending')
+    OR decision.revision_after IS DISTINCT FROM lifecycle.revision
+    OR decision.new_phase IS DISTINCT FROM lifecycle.phase
+  THEN
+    RETURN 'decision_conflict';
+  END IF;
   UPDATE hns_root_import_lifecycle
      SET last_observation_view = input_view,
          last_observation_resource_sha256 = input_resource_sha256,
@@ -13693,6 +13745,7 @@ BEGIN
          last_observation_update_inclusion_height = input_update_inclusion_height,
          last_observation_commitment_height = input_commitment_height,
          last_observation_at = input_observed_at,
+         last_observation_recorded_at = database_now,
          updated_at = database_now
    WHERE root_import_session_id = input_session_id;
   IF NOT FOUND THEN RETURN 'lifecycle_absent'; END IF;
@@ -24345,10 +24398,11 @@ CREATE TABLE hns_root_import_lifecycle (
     last_observation_update_inclusion_height bigint,
     last_observation_commitment_height bigint,
     last_observation_at timestamp with time zone,
+    last_observation_recorded_at timestamp with time zone,
     CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
     CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
     CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
-    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at) = ANY (ARRAY[0, 4])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
+    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at, last_observation_recorded_at) = ANY (ARRAY[0, 5])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
     CONSTRAINT hns_root_import_lifecycle_phase_check CHECK ((phase = ANY (ARRAY['preparing'::text, 'awaiting_publication'::text, 'checking_publication'::text, 'waiting_safe_commitment'::text, 'checking_authority'::text, 'ready'::text, 'activated'::text, 'recovery_required'::text, 'failed'::text]))),
     CONSTRAINT hns_root_import_lifecycle_phase_deadline_shape CHECK ((((phase = 'awaiting_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL) AND (first_current_observation_at IS NULL) AND (finality_deadline_at IS NULL)) OR ((phase = 'checking_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL)) OR ((phase = ANY (ARRAY['waiting_safe_commitment'::text, 'checking_authority'::text])) AND (first_current_observation_at IS NOT NULL) AND (finality_deadline_at IS NOT NULL)) OR ((phase = 'ready'::text) AND (readiness_observed_at IS NOT NULL)) OR ((phase = 'activated'::text) AND (readiness_observed_at IS NOT NULL)) OR (phase = ANY (ARRAY['preparing'::text, 'recovery_required'::text, 'failed'::text])))),
     CONSTRAINT hns_root_import_lifecycle_plan_digest_shape CHECK (((plan_encoded_resource_sha256 IS NULL) OR (plan_encoded_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),

@@ -34,6 +34,15 @@ const JOB_KINDS = [
   "retention_review",
 ] as const;
 
+/**
+ * How old an observation may be when the transaction that persists it runs.
+ * The policy's observation cadence is 900 s and the runner observes inside a
+ * 60 s lease, so this is the cadence rather than the lease: it bounds a
+ * reading that sat across a stalled transaction without refusing an
+ * observation that was simply produced a little earlier than the commit.
+ */
+const OBSERVATION_EVIDENCE_FRESHNESS_SECONDS = 900;
+
 type JobKind = (typeof JOB_KINDS)[number];
 
 function isJobKind(value: unknown): value is JobKind {
@@ -134,9 +143,16 @@ export function makePostgresHnsRootImportLifecycleQueue(
         };
       }),
     observe,
-    record_observation: async (client, job, executorId, summary) => {
+    record_observation: async (
+      client,
+      job,
+      executorId,
+      expectedGeneration,
+      decisionEventId,
+      summary,
+    ) => {
       const result = await client.query<Record<string, unknown>>(
-        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) AS outcome`,
+        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) AS outcome`,
         [
           job.root_import_session_id,
           job.lifecycle_job_id,
@@ -148,12 +164,16 @@ export function makePostgresHnsRootImportLifecycleQueue(
           summary.update_inclusion_height,
           summary.commitment_height,
           new Date(summary.observed_at_epoch_ms),
+          decisionEventId,
+          expectedGeneration,
+          OBSERVATION_EVIDENCE_FRESHNESS_SECONDS,
         ],
       );
       if (result.rows[0]?.outcome !== "recorded") {
         // Throwing rolls the decision back with it: a committed transition
         // whose evidence was not persisted would project a phase the server
-        // cannot account for.
+        // cannot account for, and a refusal that was silently ignored would
+        // hide a decision the operation did not actually accept.
         throw new Error("HNS lifecycle observation evidence was not recorded");
       }
     },

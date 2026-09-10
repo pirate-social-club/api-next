@@ -133,7 +133,8 @@ async function seed(admin: Client, options: { readonly lifecycle: boolean }): Pr
          policy_name, policy_digest,
          last_observation_view, last_observation_resource_sha256,
          last_observation_tip_height, last_observation_update_inclusion_height,
-         last_observation_commitment_height, last_observation_at
+         last_observation_commitment_height, last_observation_at,
+         last_observation_recorded_at
        ) VALUES (
          $1,$2,'waiting_safe_commitment',7,1,
          TIMESTAMPTZ '2026-09-10T11:00:00Z', TIMESTAMPTZ '2026-09-24T11:00:00Z',
@@ -141,7 +142,8 @@ async function seed(admin: Client, options: { readonly lifecycle: boolean }): Pr
          'waiting_safe_commitment', TIMESTAMPTZ '2026-09-10T12:15:00Z', 2,
          'hns_root_import_lifecycle_v1','projection',
          'current',$3,
-         3260, 3248, NULL, TIMESTAMPTZ '2026-09-10T11:59:00Z'
+         3260, 3248, NULL, TIMESTAMPTZ '2026-09-10T11:59:00Z',
+         TIMESTAMPTZ '2026-09-10T11:59:05Z'
        )`,
       [sessionId, rootLabel, "3".repeat(64)],
     );
@@ -245,16 +247,30 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         );
         const job = claimed.rows[0];
         expect(job).toBeDefined();
+        // The observation the runner writes is bound to the accepted decision
+        // that consumed it. Here that decision is a pending hold — the safe
+        // view did not move the operation — which is exactly the case the
+        // projection used to report with no decision behind it.
+        const decisionEventId = "projection-observation-event";
+        await admin.query(
+          `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1(
+             $1, 7, $2, 'safe_observation', 'pending', 'safe_resource_mismatch_hold',
+             'waiting_safe_commitment',
+             '{"pending_reason":"waiting_safe_commitment","next_check_at":"2026-09-10T12:15:00Z"}'::jsonb,
+             '[]'::jsonb)`,
+          [sessionId, decisionEventId],
+        );
         const written = await admin.query<{ readonly outcome: string }>(
           `SELECT record_hns_root_import_lifecycle_observation_v1(
              $1,$2,$3,$4,'safe',$5,3300,3248,3295,
-             TIMESTAMPTZ '2026-09-10T11:59:30Z') AS outcome`,
+             clock_timestamp() - interval '30 seconds',$6,1,3600) AS outcome`,
           [
             sessionId,
             job?.lifecycle_job_id,
             "projection-executor",
             Number(job?.lease_fence),
             "4".repeat(64),
+            decisionEventId,
           ],
         );
         expect(written.rows[0]?.outcome).toBe("recorded");
@@ -263,13 +279,15 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         // can never report evidence nobody can vouch for.
         const stale = await admin.query<{ readonly outcome: string }>(
           `SELECT record_hns_root_import_lifecycle_observation_v1(
-             $1,$2,$3,$4,'current',$5,9999,NULL,NULL, clock_timestamp()) AS outcome`,
+             $1,$2,$3,$4,'current',$5,9999,NULL,NULL, clock_timestamp(),
+             $6,1,3600) AS outcome`,
           [
             sessionId,
             job?.lifecycle_job_id,
             "projection-executor",
             Number(job?.lease_fence) - 1,
             "9".repeat(64),
+            decisionEventId,
           ],
         );
         expect(stale.rows[0]?.outcome).toBe("lease_conflict");
@@ -305,7 +323,8 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         await expect(
           admin.query(
             `SELECT record_hns_root_import_lifecycle_observation_v1(
-               $1,1,'projection-executor',1,'sideways',$2,3300,NULL,NULL, clock_timestamp())`,
+               $1,1,'projection-executor',1,'sideways',$2,3300,NULL,NULL, clock_timestamp(),
+               'projection-observation-event',1,3600)`,
             [sessionId, "4".repeat(64)],
           ),
         ).rejects.toThrow(/invalid HNS lifecycle observation evidence/u);

@@ -123,13 +123,18 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
    */
   /**
    * Persists the accepted observation summary inside the runner's own
-   * transaction. Optional so a caller that only decides — the composed-path
-   * harness — needs no store.
+   * transaction. The decision event identity and the generation the
+   * observation was taken under are part of the write, because the SQL fence
+   * binds the summary to that specific accepted decision and refuses an
+   * old-generation lease. Optional so a caller that only decides — the
+   * composed-path harness — needs no store.
    */
   readonly record_observation?: (
     client: LifecycleTransactionClient,
     job: HnsLifecycleClaimV1,
     executorId: string,
+    expectedGeneration: number,
+    decisionEventId: string,
     summary: HnsLifecycleObservationSummaryV1,
   ) => Promise<void>;
   readonly review?: (
@@ -320,8 +325,22 @@ export async function runHnsRootImportLifecycleJobOnce(
       HNS_ROOT_IMPORT_POLICY_V1,
       nowEpochMs,
     );
+    const summary =
+      evidence.kind === "current_observation" || evidence.kind === "safe_observation"
+        ? evidence.summary
+        : undefined;
     let committed = 0;
     let lastReason = "no_decision";
+    // The accepted observation and the revision its own decision committed at.
+    // The summary is persisted only when that decision is the last change to
+    // the operation in this batch: a later transition has superseded it, and
+    // the SQL fence refuses a summary bound to a revision the operation has
+    // already moved past.
+    let recordableObservation: Readonly<{
+      readonly decision_event_id: string;
+      readonly revision_after: number;
+      readonly summary: HnsLifecycleObservationSummaryV1;
+    }> | null = null;
     for (const [index, decision] of decisions.entries()) {
       const event = [...events].sort((left, right) => {
         const qualifying = (candidate: HnsRootImportLifecycleEventV1): number =>
@@ -333,6 +352,22 @@ export async function runHnsRootImportLifecycleJobOnce(
         return byKind === 0 ? left.occurred_at_epoch_ms - right.occurred_at_epoch_ms : byKind;
       })[index];
       if (event === undefined) break;
+      const accepted =
+        decision.outcome.kind === "transition" || decision.outcome.kind === "pending";
+      if (
+        observed !== null &&
+        event.event_id === observed.event_id &&
+        accepted &&
+        summary !== undefined
+      ) {
+        recordableObservation = {
+          decision_event_id: event.event_id,
+          revision_after: state.revision + 1,
+          summary,
+        };
+      } else {
+        recordableObservation = null;
+      }
       const next = decision.next_state;
       await client.query(
         "SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
@@ -359,15 +394,23 @@ export async function runHnsRootImportLifecycleJobOnce(
     }
     // The accepted observation is persisted with the decision that accepted
     // it, so the public projection reports server evidence rather than the
-    // client's inference. Nothing is written when no decision was committed.
-    if (committed > 0 && ports.record_observation !== undefined) {
-      const summary =
-        evidence.kind === "current_observation" || evidence.kind === "safe_observation"
-          ? evidence.summary
-          : undefined;
-      if (summary !== undefined) {
-        await ports.record_observation(client, job, executorId, summary);
-      }
+    // client's inference. Nothing is written when no decision was committed,
+    // when the observation was replayed or refused, or when a later decision
+    // in the same batch already superseded its revision.
+    if (
+      committed > 0 &&
+      ports.record_observation !== undefined &&
+      recordableObservation !== null &&
+      recordableObservation.revision_after === state.revision
+    ) {
+      await ports.record_observation(
+        client,
+        job,
+        executorId,
+        identity.generation,
+        recordableObservation.decision_event_id,
+        recordableObservation.summary,
+      );
     }
     const outcome = evidence.kind === "provider_failure" ? "retry" : "completed";
     const finalized = await client.query<{ readonly outcome: string }>(

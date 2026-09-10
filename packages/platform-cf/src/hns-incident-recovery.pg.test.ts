@@ -488,6 +488,154 @@ suite("HNS incident recovery on PostgreSQL 17", () => {
   );
 
   test(
+    "adoption without attributed covenant bytes is refused before any rebinding",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedRecovery(admin);
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET first_current_observation_at = clock_timestamp() - interval '3 days',
+                  finality_deadline_at = clock_timestamp() - interval '2 days',
+                  readiness_observed_at = clock_timestamp() - interval '2 days'
+            WHERE root_import_session_id = $1`,
+          [session],
+        );
+        // An adopt finding with no attributed transaction. The table allows
+        // it — "the published resource references our authority" can be
+        // classified before the transaction is resolved — but the application
+        // must refuse rather than bind to nothing.
+        const unbound: Finding = {
+          evidence_ref: "recovery:adopt-unbound",
+          classification: "matching_authority_available",
+          reason: "published_resource_references_authority",
+          supported_action: "adopt",
+          inclusion: false,
+        };
+        await recordFinding(admin, unbound);
+        await authorize(admin, unbound.evidence_ref, "adopt");
+        const refused = await apply(admin, unbound.evidence_ref, 1, "checking_publication");
+        expect(refused.rows[0]?.outcome).toBe("adoption_evidence_missing");
+        expect(refused.rows[0]?.generation).toBe("1");
+        const state = await phaseOf(admin);
+        expect(state).toMatchObject({ phase: "recovery_required", revision: "1", generation: "1" });
+        const unspent = await admin.query<Record<string, unknown>>(
+          `SELECT consumed_at FROM hns_root_import_recovery_authorizations
+            WHERE root_import_session_id = $1`,
+          [session],
+        );
+        expect(unspent.rows[0]?.consumed_at).toBeNull();
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "an existing recovery event identity replays without rebinding or spending permission",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedRecovery(admin);
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET first_current_observation_at = clock_timestamp() - interval '3 days',
+                  finality_deadline_at = clock_timestamp() - interval '2 days',
+                  readiness_observed_at = clock_timestamp() - interval '2 days'
+            WHERE root_import_session_id = $1`,
+          [session],
+        );
+        const adopted: Finding = {
+          evidence_ref: "recovery:adopt-replayed",
+          classification: "matching_authority_available",
+          reason: "published_resource_references_authority",
+          supported_action: "adopt",
+        };
+        await admin.query<Record<string, unknown>>(
+          `SELECT * FROM record_hns_root_import_recovery_finding_v1(
+             $1,1,$2,'matching_authority_available','published_resource_references_authority',
+             'adopt',$3,3301,$4,$5,NULL,NULL,true,true)`,
+          [session, adopted.evidence_ref, txid, otherDigest, planDigest],
+        );
+        await authorize(admin, adopted.evidence_ref, "adopt");
+        // Something already committed this recovery identity — the exact
+        // condition under which the commit function returns its non-raising
+        // replay outcome. The old ordering rebound the operation before it
+        // asked, so generation, digest and anchors moved while the phase did
+        // not and the authorization stayed unspent.
+        const eventId = `recovery:${adopted.evidence_ref}`;
+        await admin.query(
+          `INSERT INTO hns_root_import_lifecycle_history (
+             root_import_session_id, event_id, event_name, outcome, prior_phase,
+             new_phase, decision_reason, requested_work, revision_after
+           ) VALUES ($1,$2,'recovery_decided','transition','recovery_required',
+             'recovery_required','prior recovery decision','[]'::jsonb,1)`,
+          [session, eventId],
+        );
+        const replayed = await apply(admin, adopted.evidence_ref, 1, "checking_publication");
+        expect(replayed.rows[0]?.outcome).toBe("replay");
+        expect(replayed.rows[0]?.generation).toBe("1");
+        const row = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision, generation, plan_encoded_resource_sha256,
+                  first_current_observation_at, finality_deadline_at, readiness_observed_at
+             FROM hns_root_import_lifecycle WHERE root_import_session_id = $1`,
+          [session],
+        );
+        const state = row.rows[0];
+        expect(state?.generation).toBe("1");
+        expect(state?.plan_encoded_resource_sha256).toBe(planDigest);
+        expect(state?.phase).toBe("recovery_required");
+        expect(state?.revision).toBe("1");
+        expect(state?.first_current_observation_at).not.toBeNull();
+        expect(state?.finality_deadline_at).not.toBeNull();
+        expect(state?.readiness_observed_at).not.toBeNull();
+        const unspent = await admin.query<Record<string, unknown>>(
+          `SELECT consumed_at FROM hns_root_import_recovery_authorizations
+            WHERE root_import_session_id = $1`,
+          [session],
+        );
+        expect(unspent.rows[0]?.consumed_at).toBeNull();
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "concurrent applications serialize on the operation row",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedRecovery(admin);
+        await recordFinding(admin, matching);
+        await authorize(admin, matching.evidence_ref, "resume");
+        const schema = (
+          await admin.query<{ readonly schema: string }>("SELECT current_schema() AS schema")
+        ).rows[0]?.schema;
+        if (schema === undefined) throw new Error("schema was not established");
+        const second = new Client({ connectionString });
+        await second.connect();
+        await second.query(`SET search_path TO ${quote(schema)}`);
+        try {
+          const [first, other] = await Promise.all([
+            apply(admin, matching.evidence_ref, 1),
+            apply(second, matching.evidence_ref, 1),
+          ]);
+          const outcomes = [first.rows[0]?.outcome, other.rows[0]?.outcome].sort();
+          // One application wins; the other sees the phase it moved to.
+          expect(outcomes).toEqual(["applied", "phase_conflict"]);
+          const state = await phaseOf(admin);
+          expect(state).toMatchObject({ phase: "checking_publication", revision: "2" });
+          const consumption = await admin.query<{ readonly count: string }>(
+            `SELECT count(*)::text AS count FROM hns_root_import_recovery_authorizations
+              WHERE root_import_session_id = $1 AND consumed_at IS NOT NULL`,
+            [session],
+          );
+          expect(consumption.rows[0]?.count).toBe("1");
+        } finally {
+          await second.end().catch(() => undefined);
+        }
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
     "a worker holding a stale lease cannot commit across an applied recovery",
     async () => {
       await withSchema(async (admin) => {
