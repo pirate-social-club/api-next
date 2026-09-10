@@ -1,8 +1,74 @@
+import { Client } from "pg";
 import {
   freshSchemaPostgresTestSuites,
   noBaselinePostgresTestSuites,
   reusablePostgresTestSuites,
 } from "./postgres-test-suite-manifest.ts";
+
+/**
+ * The staging rehearsal established this lower bound: a full removal plus the
+ * complete migration replay holds both object sets until commit, and the
+ * persona reset suite refuses to run below it with
+ * `reset_lock_capacity_below_rehearsal`. A default `postgres:17` container
+ * gives 64 * 100 = 6,400 entries, which presents as three test failures that
+ * look like code defects. CI provisions 512 * 100 = 51,200 through
+ * `POSTGRES_INITDB_ARGS=--set=max_locks_per_transaction=512`; local runs need
+ * the same capacity or this preflight refuses before any suite starts.
+ */
+export const requiredPostgresLockTableEntries = 51_200;
+
+export type PostgresLockSettings = Readonly<{
+  readonly max_locks_per_transaction: number;
+  readonly max_connections: number;
+  readonly max_prepared_transactions: number;
+}>;
+
+export function postgresLockTableEntries(settings: PostgresLockSettings): number {
+  return (
+    settings.max_locks_per_transaction *
+    (settings.max_connections + settings.max_prepared_transactions)
+  );
+}
+
+export function postgresLockCapacityError(settings: PostgresLockSettings): string | null {
+  const entries = postgresLockTableEntries(settings);
+  if (Number.isSafeInteger(entries) && entries >= requiredPostgresLockTableEntries) return null;
+  return [
+    `PostgreSQL lock-table capacity is ${entries} entries, below the required ${requiredPostgresLockTableEntries}.`,
+    "Start the server with a larger lock table before running this gate, for example",
+    "`docker run ... -e POSTGRES_INITDB_ARGS=--set=max_locks_per_transaction=512 postgres:17`",
+    "(512 * 100 = 51,200) or add `-c max_locks_per_transaction=1024 -c max_connections=200`",
+    "to the server's start arguments. A capacity failure is configuration, not a code defect.",
+  ].join(" ");
+}
+
+export async function verifyPostgresLockCapacity(connectionString: string): Promise<void> {
+  const client = new Client({ connectionString });
+  await client.connect();
+  try {
+    const result = await client.query<Record<string, unknown>>(
+      `SELECT current_setting('max_locks_per_transaction')::bigint AS max_locks_per_transaction,
+              current_setting('max_connections')::bigint AS max_connections,
+              current_setting('max_prepared_transactions')::bigint AS max_prepared_transactions`,
+    );
+    const row = result.rows[0];
+    const settings: PostgresLockSettings = {
+      max_locks_per_transaction: Number(row?.max_locks_per_transaction),
+      max_connections: Number(row?.max_connections),
+      max_prepared_transactions: Number(row?.max_prepared_transactions),
+    };
+    const failure = postgresLockCapacityError(settings);
+    if (failure !== null) throw new Error(failure);
+    console.log(
+      `PostgreSQL lock capacity: ${postgresLockTableEntries(settings)} entries ` +
+        `(max_locks_per_transaction=${settings.max_locks_per_transaction}, ` +
+        `max_connections=${settings.max_connections}, ` +
+        `max_prepared_transactions=${settings.max_prepared_transactions})`,
+    );
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
 
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
@@ -175,12 +241,11 @@ function requiredShardCoordinate(name: string): number {
 }
 
 export async function runPostgresTests(): Promise<void> {
-  if (process.env.CONTROL_PLANE_POSTGRES_TEST_URL?.trim() === "") {
+  const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
+  if (connectionString === undefined || connectionString.trim() === "") {
     throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
   }
-  if (process.env.CONTROL_PLANE_POSTGRES_TEST_URL === undefined) {
-    throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
-  }
+  await verifyPostgresLockCapacity(connectionString);
   const partition = partitionPostgresTestFiles(await trackedPostgresTestFiles());
   const mode = process.env.CONTROL_PLANE_POSTGRES_TEST_PARTITION?.trim() || "all";
   if (mode === "all" || mode === "isolated") {
