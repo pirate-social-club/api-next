@@ -736,17 +736,20 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
         await queueJob(admin, "refresh-session", "observe_readiness");
         const job = await requireClaimLifecycle(admin);
         const before = await admin.query<Record<string, unknown>>(
-          `SELECT readiness_observed_at FROM hns_root_import_lifecycle
-            WHERE root_import_session_id='refresh-session'`,
+          `SELECT readiness_observed_at, first_current_observation_at, finality_deadline_at
+             FROM hns_root_import_lifecycle WHERE root_import_session_id='refresh-session'`,
         );
+        const firstResult = readinessResult("refresh-session");
         const accepted = await commitReadiness(admin, {
           session: "refresh-session",
           job,
           revision: 1,
+          result: firstResult,
         });
         expect(accepted.row?.outcome).toBe("ready");
         const after = await admin.query<Record<string, unknown>>(
-          `SELECT phase, revision, readiness_observed_at
+          `SELECT phase, revision, readiness_observed_at, first_current_observation_at,
+                  finality_deadline_at
              FROM hns_root_import_lifecycle WHERE root_import_session_id='refresh-session'`,
         );
         const afterRow = after.rows[0];
@@ -759,6 +762,12 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
         expect((afterRow.readiness_observed_at as Date).getTime()).toBeGreaterThan(
           (beforeRow.readiness_observed_at as Date).getTime(),
         );
+        // The refresh moves readiness evidence only: the publication and
+        // finality anchors are untouched.
+        expect(afterRow.first_current_observation_at).toEqual(
+          beforeRow.first_current_observation_at,
+        );
+        expect(afterRow.finality_deadline_at).toEqual(beforeRow.finality_deadline_at);
         const session = await admin.query<Record<string, unknown>>(
           `SELECT status, revision, readiness_result_sha256 FROM hns_root_import_sessions
             WHERE root_import_session_id='refresh-session'`,
@@ -770,6 +779,32 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
           [job.lifecycle_job_id],
         );
         expect(completed.rows[0]?.state).toBe("completed");
+
+        // Re-delivering the identical job, fence and digest is a replay: the
+        // completed job's event already exists, so nothing moves.
+        const replayed = await commitReadiness(admin, {
+          session: "refresh-session",
+          job,
+          revision: 1,
+          result: firstResult,
+        });
+        expect(replayed.row?.outcome).toBe("replayed");
+        expect(replayed.row?.readiness_result_sha256).toBe(accepted.sha);
+        const afterReplay = await admin.query<Record<string, unknown>>(
+          `SELECT revision, readiness_observed_at FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='refresh-session'`,
+        );
+        const replayRow = afterReplay.rows[0];
+        if (replayRow === undefined) throw new Error("replay state was not read");
+        expect(replayRow.revision).toBe("2");
+        expect((replayRow.readiness_observed_at as Date).getTime()).toBe(
+          (afterRow.readiness_observed_at as Date).getTime(),
+        );
+        const replaySession = await admin.query<Record<string, unknown>>(
+          `SELECT revision FROM hns_root_import_sessions
+            WHERE root_import_session_id='refresh-session'`,
+        );
+        expect(replaySession.rows[0]?.revision).toBe("5");
 
         // A second refresh with a different reading is a new accepted
         // decision, not a replay of the first.

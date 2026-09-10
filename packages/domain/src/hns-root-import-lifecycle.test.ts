@@ -139,7 +139,7 @@ describe("HNS root-import lifecycle transition policy", () => {
       checking_publication: "R R T T P P T X X P T X",
       waiting_safe_commitment: "R R R T P P X T X P T X",
       checking_authority: "R R R R T P X X X P T X",
-      ready: "P R R R R P X X T P T X",
+      ready: "P R R R T P X X T P T X",
       activated: "P R R R R P X X R P P X",
       recovery_required: "P P P P P P R R X P R T",
     };
@@ -416,6 +416,93 @@ describe("HNS root-import lifecycle transition policy", () => {
       kind: "rejection",
       reason: "activation_not_permitted_in_phase",
     });
+  });
+
+  test("a qualifying readiness refresh advances revision in place and leaves the anchors unchanged", () => {
+    const anchors = {
+      first_current_observation_at_epoch_ms: now - 3_600 * SECOND,
+      finality_deadline_at_epoch_ms: now + 23 * 3_600 * SECOND,
+    };
+    const before = exposedState("ready", {
+      ...anchors,
+      readiness_observed_at_epoch_ms: now - 2_000 * SECOND,
+      pending_reason: "readiness_evidence_stale",
+      next_check_at_epoch_ms: now - 1_000 * SECOND,
+    });
+    const decision = decideHnsRootImportLifecycleV1(
+      before,
+      event({ event: "readiness_observed", occurred_at_epoch_ms: now }),
+      undefined,
+      now,
+    );
+    expect(decision.outcome).toEqual({ kind: "transition", reason: "readiness_refreshed" });
+    expect(decision.next_state?.phase).toBe("ready");
+    expect(decision.next_state?.revision).toBe(before.revision + 1);
+    expect(decision.next_state?.readiness_observed_at_epoch_ms).toBe(now);
+    expect(decision.next_state?.next_check_at_epoch_ms).toBe(
+      now + HNS_ROOT_IMPORT_POLICY_V1.readiness_freshness_seconds * SECOND,
+    );
+    expect(decision.next_state?.pending_reason).toBeNull();
+    // The refresh moves readiness evidence only: publication and finality
+    // anchors are untouched.
+    expect(decision.next_state?.first_current_observation_at_epoch_ms).toBe(
+      anchors.first_current_observation_at_epoch_ms,
+    );
+    expect(decision.next_state?.finality_deadline_at_epoch_ms).toBe(
+      anchors.finality_deadline_at_epoch_ms,
+    );
+    expect(decision.requested_work).toEqual([]);
+  });
+
+  test("a re-delivered readiness identity replays, and activated readiness replays", () => {
+    const first = event({ event: "readiness_observed" });
+    const alreadyApplied = exposedState("ready", {
+      applied_event_ids: new Set([first.event_id]),
+      readiness_observed_at_epoch_ms: now - 60 * SECOND,
+    });
+    const redelivered = decideHnsRootImportLifecycleV1(alreadyApplied, first, undefined, now);
+    expect(redelivered.outcome.kind).toBe("replay");
+    expect(redelivered.next_state).toBeNull();
+    expect(redelivered.requested_work).toEqual([]);
+
+    const activated = decideHnsRootImportLifecycleV1(
+      exposedState("activated", { readiness_observed_at_epoch_ms: now - 60 * SECOND }),
+      event({ event: "readiness_observed" }),
+      undefined,
+      now,
+    );
+    expect(activated.outcome).toEqual({ kind: "replay", reason: "readiness_already_retained" });
+    expect(activated.next_state).toBeNull();
+    expect(activated.requested_work).toEqual([]);
+  });
+
+  test("repeated stale activation requests schedule one readiness observation", () => {
+    const stale = exposedState("ready", {
+      readiness_observed_at_epoch_ms: now - 1_801 * SECOND,
+    });
+    const first = decideHnsRootImportLifecycleV1(
+      stale,
+      event({ event: "activation_requested" }),
+      undefined,
+      now,
+    );
+    expect(first.outcome).toEqual({ kind: "pending", reason: "readiness_evidence_stale" });
+    expect(first.requested_work.map((work) => work.kind)).toEqual(["observe_readiness"]);
+    const afterFirst = first.next_state;
+    if (afterFirst === null) throw new Error("expected the stale pending hold");
+
+    const second = decideHnsRootImportLifecycleV1(
+      afterFirst,
+      event({ event: "activation_requested" }),
+      undefined,
+      now + SECOND,
+    );
+    expect(second.outcome).toEqual({
+      kind: "replay",
+      reason: "readiness_refresh_already_pending",
+    });
+    expect(second.requested_work).toEqual([]);
+    expect(second.next_state).toBeNull();
   });
 
   test("recovery exit moves to the evidenced phase or terminal failed with a retention review", () => {

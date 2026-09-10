@@ -492,7 +492,28 @@ export function decideHnsRootImportLifecycleV1(
           [],
         );
       }
-      if (state.phase === "ready" || state.phase === "activated") {
+      if (state.phase === "ready") {
+        // A new qualifying readiness event in `ready` is a refresh. It
+        // advances the accepted readiness evidence in place while the phase
+        // stays `ready`; the publication and finality anchors are untouched
+        // and only the readiness timestamp and next check move. A re-delivery
+        // of the same event identity replays above through the applied-event
+        // set, and activated roots keep replaying so renewal stays on its own
+        // path.
+        return withState(
+          state,
+          {
+            phase: "ready",
+            readiness_observed_at_epoch_ms: event.occurred_at_epoch_ms,
+            pending_reason: null,
+            next_check_at_epoch_ms:
+              event.occurred_at_epoch_ms + policy.readiness_freshness_seconds * 1_000,
+          },
+          "readiness_refreshed",
+          [],
+        );
+      }
+      if (state.phase === "activated") {
         return replay("readiness_already_retained");
       }
       return pending(state, "readiness_evidence_out_of_phase", null);
@@ -558,7 +579,15 @@ export function decideHnsRootImportLifecycleV1(
           state.readiness_observed_at_epoch_ms === null ||
           readinessAgeMs > policy.readiness_freshness_seconds * 1_000
         ) {
-          // Stale evidence re-enters checking_authority observation.
+          if (state.pending_reason === "readiness_evidence_stale") {
+            // The refresh this hold scheduled is still outstanding. A second
+            // request while stale records its own event identity and changes
+            // nothing, so it cannot queue a duplicate readiness observation.
+            return replay("readiness_refresh_already_pending");
+          }
+          // Stale evidence re-enters readiness observation: the phase stays
+          // `ready` and the accepted evidence is refreshed in place by the
+          // scheduled observation, never by activation itself.
           return pending(state, "readiness_evidence_stale", nowEpochMs + cadenceMs, [
             { kind: "observe_readiness", due_at_epoch_ms: nowEpochMs + cadenceMs },
           ]);
