@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MediaUploadSealer } from "@pirate/application/media/submission-sealing";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
-import type { VideoStreamObservation } from "@pirate/domain";
+import { VIDEO_POSTER_POLICY_V1, type VideoStreamObservation } from "@pirate/domain";
 import { Effect } from "effect";
 import type { Client } from "pg";
 import { Client as PgClient } from "pg";
@@ -23,6 +23,7 @@ import { measurePendingSongTimings } from "../packages/application/src/video/son
 import { preflightSongVideoInterval } from "../packages/application/src/video/song-interval.ts";
 import type { SongVideoRenderer } from "../packages/application/src/video/song-render.ts";
 import { consumeVideoStreamIngest } from "../packages/application/src/video/stream-ingest.ts";
+import { consumeVideoThumbnail } from "../packages/application/src/video/thumbnail-enrichment.ts";
 import {
   runVideoAnalysisWorkflow,
   type VideoWorkflowServices,
@@ -38,6 +39,8 @@ import { makeSongVideoRenderStore } from "../packages/platform-cf/src/song-video
 import { makeVideoPublicationAuthorization } from "../packages/platform-cf/src/video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "../packages/platform-cf/src/video-analysis-outbox-repository.ts";
 import { makeVideoPlaybackAuthority } from "../packages/platform-cf/src/video-playback-authority.ts";
+import { makeVideoPosterAuthority } from "../packages/platform-cf/src/video-poster-authority.ts";
+import { streamVideoPoster } from "../packages/platform-cf/src/video-poster-stream.ts";
 import {
   actor,
   community,
@@ -56,6 +59,8 @@ import {
 } from "../packages/platform-cf/src/video-stage-artifact-head.ts";
 import { makeControlPlaneVideoStageFactStore } from "../packages/platform-cf/src/video-stage-fact-repository.ts";
 import { makeVideoStreamIngestStore } from "../packages/platform-cf/src/video-stream-ingest-repository.ts";
+import { makeVideoThumbnailStore } from "../packages/platform-cf/src/video-thumbnail-repository.ts";
+import { makeVideoThumbnailVerifier } from "../packages/platform-cf/src/video-thumbnail-verifier.ts";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
@@ -301,6 +306,125 @@ async function attemptsOf(composed: Composed) {
       ORDER BY generation`,
   );
   return result.rows.map((row) => `${row.state}:${row.execution_phase}`);
+}
+
+/**
+ * Delivery after publication, through the real stores and authorities: Stream
+ * encodes the accepted master (a fake that verifies it was handed the master),
+ * the sealed poster is verified for the thumbnail, then a viewer asks for
+ * playback and for the poster as the HTTP routes do.
+ */
+async function deliver(composed: Composed, operationId: string, postId: string) {
+  const providerVideoId = "0123456789abcdef0123456789abcdef";
+  const copied: string[] = [];
+  const ingest = await consumeVideoStreamIngest(`video-enrichment:${operationId}:stream`, {
+    store: makeVideoStreamIngestStore(composed.layer, { leaseOwner: "composed", leaseMs: 60_000 }),
+    transport: {
+      copy: async (input) => {
+        const object = await composed.masters.read(input.sealedSourceRef);
+        if (object === null) throw new Error("Stream was handed a ref with no master");
+        if ((await mediaSha256Bytes(object.bytes)) !== input.identity.sourceSha256)
+          throw new Error("Stream was handed bytes that are not the identity");
+        copied.push(input.identity.sourceSha256);
+      },
+      observe: async (identity): Promise<readonly VideoStreamObservation[]> => [
+        {
+          providerVideoId,
+          creator: identity.creator,
+          sourceSha256: identity.sourceSha256,
+          encoding: "ready",
+          requireSignedURLs: true,
+          downloadsEnabled: false,
+        },
+      ],
+    },
+    nowMs: () => Date.now(),
+    deadlines: (now) => ({
+      acceptanceDeadlineMs: now + 600_000,
+      encodingDeadlineMs: now + 3_600_000,
+    }),
+  });
+  // The derived bucket as sealed: poster metadata names the capture as source.
+  const sealed = (key: string) => {
+    const artifact = composed.objects.derived.get(key);
+    if (artifact === undefined) return null;
+    return {
+      artifact,
+      metadata: {
+        key,
+        size: artifact.bytes.byteLength,
+        httpEtag: `"${artifact.sha256.slice(0, 16)}"`,
+        httpMetadata: { contentType: artifact.contentType },
+        customMetadata: {
+          sha256: artifact.sha256,
+          sourceSha256: composed.captureSha256,
+          policyRevision: String(VIDEO_POSTER_POLICY_V1.policyRevision),
+        },
+      },
+    };
+  };
+  const resolveArtifact = makeVideoPosterAuthority(composed.layer);
+  const thumbnail = await consumeVideoThumbnail(`video-enrichment:${operationId}:thumbnail`, {
+    store: makeVideoThumbnailStore(composed.layer, { leaseMs: 60_000 }),
+    verify: makeVideoThumbnailVerifier({
+      resolveArtifact,
+      bucket: { head: async (key) => sealed(key)?.metadata ?? null },
+    }),
+  });
+  const contentStore = makeControlPlaneContentStore(composed.layer);
+  const authorizePublication = makeVideoPublicationAuthorization(composed.layer);
+  const playback = await Effect.runPromise(
+    getVideoPlaybackAccess(
+      { postId, viewerUserId: actor, trustedSource: "composed-test" },
+      {
+        contentStore,
+        authorizePublication,
+        resolveApprovedPlayback: makeVideoPlaybackAuthority(composed.layer),
+        customerHost: "customer-composed123.cloudflarestream.com",
+        nowMs: Effect.sync(() => Date.now()),
+        limit: () => Effect.succeed({ allowed: true, retryAfterSeconds: 0 }),
+        sign: () => Effect.succeed("header.payload.signature"),
+      },
+    ),
+  );
+  const poster = await Effect.runPromise(
+    streamVideoPoster(
+      { postId, viewerUserId: actor },
+      {
+        contentStore,
+        authorizePublication,
+        resolveArtifact,
+        bucket: {
+          get: async (key) => {
+            const found = sealed(key);
+            return found === null
+              ? null
+              : {
+                  ...found.metadata,
+                  body: new Response(found.artifact.bytes).body as ReadableStream<Uint8Array>,
+                };
+          },
+        },
+      },
+    ),
+  );
+  return { ingest, copied, thumbnail, playbackUrl: playback.playback_url, poster };
+}
+
+async function loseMembership(composed: Composed) {
+  await composed.admin.query(
+    `UPDATE "${composed.schema}".community_memberships SET status='left',left_at=clock_timestamp()
+      WHERE community_id=$1 AND user_id=$2`,
+    [community, actor],
+  );
+}
+
+async function rejoin(composed: Composed) {
+  await composed.admin.query(
+    `UPDATE "${composed.schema}".community_memberships SET status='member',left_at=NULL
+      WHERE community_id=$1 AND user_id=$2`,
+    [community, actor],
+  );
 }
 
 type Composed = Awaited<ReturnType<typeof compose>>;
@@ -866,6 +990,11 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       expect(access.playback_url).toBe(
         "https://customer-composed123.cloudflarestream.com/header.payload.signature/manifest/video.m3u8",
       );
+      // The poster is a capture frame inside the interval. It verifies and
+      // serves although the published video is the master, not the capture.
+      const delivered = await deliver(composed, operationId, postId);
+      expect(delivered.thumbnail).toBe("ready");
+      expect(delivered.poster.status).toBe(200);
     });
   }, 600_000);
 
@@ -1191,6 +1320,156 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       );
       // Decided general before the change; published at the song's floor.
       expect(ratings.rows[0]).toEqual({ decided: "general", published: "adult_18" });
+    });
+  }, 600_000);
+
+  test("a publication retry after lost membership publishes on its decision, then plays and serves its poster", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "membership-retry");
+      // Membership lapses after rendering, before the commit.
+      const step: VideoWorkflowStep = {
+        ...plainStep,
+        do: async (name, run) => {
+          if (name === "render-publish") await loseMembership(composed);
+          return run();
+        },
+      };
+      expect(
+        await runVideoAnalysisWorkflow(submitted.effectIdentity, step, composed.workflow),
+      ).toEqual({ status: "stopped" });
+      expect(
+        await getVideoSubmission(
+          { submissionId: submitted.submissionId, actor: composed.author },
+          composed.services,
+        ),
+      ).toMatchObject({ status: "processing_failed", reason_code: "membership_required" });
+      await rejoin(composed);
+      expect(
+        await retryVideoSubmission(
+          {
+            submissionId: submitted.submissionId,
+            actor: composed.author,
+            body: {
+              persona_id: persona,
+              idempotency_key: "membership-retry-1",
+              expected_creation_revision: 1,
+            },
+          },
+          composed.services,
+        ),
+      ).toMatchObject({ status: "processing", phase: "publish", creation_revision: 2 });
+      expect(
+        await runVideoAnalysisWorkflow(
+          `video-analysis:${submitted.operationId}:v1:c2`,
+          plainStep,
+          composed.workflow,
+        ),
+      ).toEqual({ status: "published" });
+      const published = await getVideoSubmission(
+        { submissionId: submitted.submissionId, actor: composed.author },
+        composed.services,
+      );
+      if (published.status !== "published") throw new Error("retry did not publish");
+      const postId = published.published_resource.post_id;
+      const facts = await admin.query(
+        `SELECT
+           (SELECT row_to_json(p) FROM (SELECT creation_revision::int AS created,
+               decision_revision::int AS decided FROM "${schema}".media_publication_projections
+             WHERE post_id=$1) p) AS anchor,
+           (SELECT array_agg(observed_at_transition || ':' || creation_revision || ':' || permitted
+                             ORDER BY creation_revision, observed_at_transition)
+              FROM "${schema}".song_derivative_video_policy_observations WHERE operation_id=$2) AS observations,
+           (SELECT count(*)::int FROM "${schema}".media_song_video_render_attempts) AS attempts`,
+        [postId, submitted.operationId],
+      );
+      // One render, one decision; the owner policy observed again for the
+      // retried revision at publication_allowed and at commit.
+      expect(facts.rows[0]).toEqual({
+        anchor: { created: 2, decided: 1 },
+        observations: [
+          "publication_allowed:1:true",
+          "publication_allowed:2:true",
+          "publication_committed:2:true",
+        ],
+        attempts: 1,
+      });
+      const delivered = await deliver(composed, submitted.operationId, postId);
+      expect(delivered.ingest).toBe("ready");
+      expect(delivered.thumbnail).toBe("ready");
+      expect(delivered.playbackUrl).toContain("/header.payload.signature/manifest/video.m3u8");
+      expect(delivered.poster.status).toBe(200);
+      expect(delivered.copied).toHaveLength(1);
+    });
+  }, 600_000);
+
+  test("an owner revocation before a publication retry blocks it at the retried revision", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "revoked-retry");
+      const step: VideoWorkflowStep = {
+        ...plainStep,
+        do: async (name, run) => {
+          if (name === "render-publish") await loseMembership(composed);
+          return run();
+        },
+      };
+      expect(
+        await runVideoAnalysisWorkflow(submitted.effectIdentity, step, composed.workflow),
+      ).toEqual({ status: "stopped" });
+      // While the author is away, the owner blocks derivative video.
+      await admin.query(
+        `SELECT * FROM "${schema}".append_song_owner_policy_revision_v1($1,$2,$3,1,'allowed','allowed','blocked')`,
+        [community, SONG_POST, songOwner],
+      );
+      await rejoin(composed);
+      await retryVideoSubmission(
+        {
+          submissionId: submitted.submissionId,
+          actor: composed.author,
+          body: {
+            persona_id: persona,
+            idempotency_key: "revoked-retry-1",
+            expected_creation_revision: 1,
+          },
+        },
+        composed.services,
+      );
+      expect(
+        await runVideoAnalysisWorkflow(
+          `video-analysis:${submitted.operationId}:v1:c2`,
+          plainStep,
+          composed.workflow,
+        ),
+      ).toEqual({ status: "stopped" });
+      expect(
+        await getVideoSubmission(
+          { submissionId: submitted.submissionId, actor: composed.author },
+          composed.services,
+        ),
+      ).toMatchObject({
+        status: "blocked",
+        creation_revision: 2,
+        reason_code: "song_reference_invalid",
+        song_reason_code: "derivative_video_blocked",
+      });
+      const facts = await admin.query(
+        `SELECT
+           (SELECT array_agg(observed_at_transition || ':' || creation_revision || ':' || permitted
+                             ORDER BY creation_revision, observed_at_transition)
+              FROM "${schema}".song_derivative_video_policy_observations WHERE operation_id=$1) AS observations,
+           (SELECT array_agg(creation_revision || ':' || outcome ORDER BY creation_revision)
+              FROM "${schema}".media_video_publication_decisions WHERE submission_id=$2) AS decisions,
+           (SELECT count(*)::int FROM "${schema}".posts WHERE post_type='video') AS videos,
+           (SELECT count(*)::int FROM "${schema}".media_song_video_accepted_masters) AS accepted`,
+        [submitted.operationId, submitted.submissionId],
+      );
+      expect(facts.rows[0]).toEqual({
+        observations: ["publication_allowed:1:true", "publication_allowed:2:false"],
+        decisions: ["1:publish", "2:block"],
+        videos: 0,
+        accepted: 1,
+      });
     });
   }, 600_000);
 

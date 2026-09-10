@@ -15311,6 +15311,24 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_video_publication_decision_anchor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.decision_revision > NEW.creation_revision OR NOT EXISTS (
+    SELECT 1 FROM media_video_publication_decisions d
+     WHERE d.submission_id = NEW.submission_id
+       AND d.creation_revision = NEW.decision_revision
+       AND d.video_revision = NEW.video_revision
+       AND d.analysis_revision = NEW.analysis_revision
+       AND d.outcome IN ('publish', 'review')
+  ) THEN
+    RAISE EXCEPTION 'a video publication must rest on a publishing decision';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
 CREATE FUNCTION reserve_hns_dns_zone_activation_v1(input_operation_id text, input_idempotency_key text, input_activation_document_digest text, input_dns_zone_activation_id text, input_expected_activation_generation bigint, input_lease_seconds integer) RETURNS TABLE(outcome text, operation_id text, dns_zone_activation_id text, fence_token bigint, lease_expires_at timestamp with time zone, activation_generation bigint)
     LANGUAGE plpgsql
     AS $$
@@ -33644,6 +33662,8 @@ CREATE CONSTRAINT TRIGGER media_publication_projection_rating_guard_v1 AFTER INS
 CREATE CONSTRAINT TRIGGER media_publication_projection_song_video_edge AFTER INSERT OR UPDATE ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'video'::text) AND (new.song_video_plan_id IS NOT NULL))) EXECUTE FUNCTION require_song_video_projection_edge();
 
 CREATE TRIGGER media_publication_projection_update_guard BEFORE UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION guard_media_publication_projection_update();
+
+CREATE CONSTRAINT TRIGGER media_publication_projection_video_decision_anchor AFTER INSERT ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'video'::text)) EXECUTE FUNCTION require_video_publication_decision_anchor();
 
 CREATE TRIGGER media_publication_song_owner_policy_initialize AFTER INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1();
 

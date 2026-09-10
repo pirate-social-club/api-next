@@ -4,6 +4,7 @@ import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import type {
   MediaTransformVideoAttemptContext,
   MediaTransformVideoAudioInput,
+  MediaTransformVideoBinding,
   MediaTransformVideoCapabilities,
   MediaTransformVideoFrame,
   MediaTransformVideoFramesInput,
@@ -318,7 +319,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
               const bytes = new Uint8Array(await readFile(outputPath));
               const canonicalSha256 = await mediaSha256Bytes(bytes);
               const stored = await options.artifactWriter.write({
-                artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/soundtrack.m4a`,
+                artifactKey: `${artifactPrefix(input.binding)}/soundtrack.m4a`,
                 bytes,
                 mediaType: "audio/mp4",
                 canonicalSha256,
@@ -407,7 +408,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
                 }
                 const canonicalSha256 = await mediaSha256Bytes(bytes);
                 const stored = await options.artifactWriter.write({
-                  artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/${request.role}.jpg`,
+                  artifactKey: `${artifactPrefix(input.binding)}/${request.role}.jpg`,
                   bytes,
                   mediaType: "image/jpeg",
                   canonicalSha256,
@@ -443,6 +444,14 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
           ),
   };
   return engine;
+}
+
+/**
+ * The same derived-artifact naming the production transform uses, so what the
+ * local engine seals resolves through the same poster and artifact authority.
+ */
+function artifactPrefix(binding: MediaTransformVideoBinding): string {
+  return `video-analysis/${binding.operationId}/v${binding.videoRevision}/c${binding.creationRevision}/a${binding.analysisRevision}`;
 }
 
 function validIdentifier(value: unknown): value is string {

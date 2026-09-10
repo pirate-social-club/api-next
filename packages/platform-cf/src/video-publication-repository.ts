@@ -22,6 +22,7 @@ import { Effect, type Layer } from "effect";
 import {
   attachImmutableVideo,
   redecideSongReferenceAfterCommitDenial,
+  refuseCarriedSongReference,
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   type VideoSubmissionState,
 } from "../../domain/src/video-submission.ts";
@@ -2176,7 +2177,9 @@ function publishTransaction(input: VideoPublishBundle) {
             postId,
             current.state.creationRevision,
             current.state.analysisRevision,
-            current.state.creationRevision,
+            // The revision whose decision, approvals and safety evidence this
+            // publication rests on; later than it only after a publication retry.
+            input.decision.creationRevision,
             current.state.videoRevision,
             current.state.caption,
             current.state.video.immutableRef,
@@ -2209,7 +2212,7 @@ function publishTransaction(input: VideoPublishBundle) {
             current.state.creationRevision,
             current.state.videoRevision,
             current.state.analysisRevision,
-            current.state.creationRevision,
+            input.decision.creationRevision,
             current.state.video.canonicalSha256,
             workflowInstanceId,
           ],
@@ -2281,6 +2284,36 @@ function publishTransaction(input: VideoPublishBundle) {
 /* ------------------------------------------------------------------ *
  * Spec 013 §5A: the song-reference decision fences and publication.
  * ------------------------------------------------------------------ */
+
+/** A decision row for a creation revision that has none yet. */
+function insertVideoDecision(
+  tx: Executor,
+  state: VideoSubmissionState,
+  decision: VideoPublishBundle["decision"],
+) {
+  return tx.execute({
+    label: "video-publication.song-decision-insert",
+    text: `INSERT INTO media_video_publication_decisions
+      (submission_id,community_id,actor_user_id,operation_id,creation_revision,
+       video_revision,analysis_revision,outcome,effective_content_rating,
+       decision_snapshot,decided_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`,
+    values: [
+      state.submissionId,
+      state.communityId,
+      state.actorAccountId,
+      state.operationId,
+      decision.creationRevision,
+      decision.videoRevision,
+      decision.acceptedAnalysisRevision,
+      decision.outcome.kind,
+      decision.effectiveContentRating,
+      JSON.stringify(decision),
+      decision.decidedAt,
+    ],
+    readonly: false,
+  });
+}
 
 /** The chain the video lane registers on; the parent's deterministic id uses it too. */
 const VIDEO_DATA_CHAIN_ID = 1315n;
@@ -2580,10 +2613,59 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
           throw new Error("song video publication fence rejected");
         const membership = yield* membershipFailure(tx, current, input.observedEventSequence);
         if (membership !== null) return membership;
+        const decision = current.state.decision;
+        if (decision.creationRevision > current.state.creationRevision)
+          throw new Error("song video publication decision is from a later revision");
+
+        const song = yield* readPublishedSong(tx, plan.songPostId);
+        // A publication retry publishes at a later creation revision on the
+        // decision it already has. The owner policy is observed again for that
+        // revision at publication_allowed; a revocation blocks it there, with
+        // nothing published and the accepted master kept for its disposition.
+        if (decision.creationRevision < current.state.creationRevision) {
+          const allowed =
+            song === null || song.audioRevision !== plan.audioRevision
+              ? null
+              : yield* observeDerivativePolicy(tx, {
+                  state: current.state,
+                  transition: "publication_allowed",
+                  creationRevision: current.state.creationRevision,
+                  song,
+                });
+          if (allowed === null || !allowed.permitted) {
+            const reason =
+              song === null
+                ? ("song_not_published" as const)
+                : allowed === null
+                  ? ("song_audio_revision_missing" as const)
+                  : allowed.denialReason;
+            if (reason === null) throw new Error("refusal without a reason");
+            const refused = refuseCarriedSongReference(
+              current.state,
+              reason,
+              new Date().toISOString(),
+            );
+            yield* insertVideoDecision(tx, current.state, refused.decision);
+            const updated = yield* updateSubmissionSnapshot(tx, {
+              prior: current.state,
+              next: refused.state,
+              observedEventSequence: input.observedEventSequence,
+            });
+            if (updated.rows.length !== 1) throw new Error("song video refusal fence rejected");
+            return {
+              kind: "song_reference_invalid" as const,
+              record: {
+                ...current,
+                state: refused.state,
+                eventSequence: current.eventSequence + 1,
+                updatedAt: new Date().toISOString(),
+              },
+            };
+          }
+        }
 
         // The owner policy again, at publication_committed, inside this
         // transaction. A refusal publishes nothing and re-decides against it.
-        const song = yield* readPublishedSong(tx, plan.songPostId);
         const committed =
           song === null || song.audioRevision !== plan.audioRevision
             ? null
@@ -2614,27 +2696,7 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
               song,
             });
           }
-          yield* tx.execute({
-            label: "video-publication.song-redecision-insert",
-            text: `INSERT INTO media_video_publication_decisions
-              (submission_id,community_id,actor_user_id,operation_id,creation_revision,
-               video_revision,analysis_revision,outcome,effective_content_rating,
-               decision_snapshot,decided_at)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,'block',$8,$9::jsonb,$10)`,
-            values: [
-              current.state.submissionId,
-              current.state.communityId,
-              current.state.actorAccountId,
-              current.state.operationId,
-              redecided.decision.creationRevision,
-              redecided.decision.videoRevision,
-              redecided.decision.acceptedAnalysisRevision,
-              redecided.decision.effectiveContentRating,
-              JSON.stringify(redecided.decision),
-              redecided.decision.decidedAt,
-            ],
-            readonly: false,
-          });
+          yield* insertVideoDecision(tx, current.state, redecided.decision);
           const updated = yield* updateSubmissionSnapshot(tx, {
             prior: current.state,
             next: redecided.state,
@@ -2769,7 +2831,7 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             postId,
             current.state.creationRevision,
             current.state.analysisRevision,
-            current.state.creationRevision,
+            decision.creationRevision,
             current.state.videoRevision,
             current.state.caption,
             master.masterRef,
@@ -2877,7 +2939,7 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             current.state.creationRevision,
             current.state.videoRevision,
             current.state.analysisRevision,
-            current.state.creationRevision,
+            decision.creationRevision,
             master.masterSha256,
             workflowInstanceId,
           ],

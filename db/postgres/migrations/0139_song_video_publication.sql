@@ -277,6 +277,52 @@ ALTER TABLE media_publication_projections
   FOREIGN KEY (song_video_master_revision_id, canonical_video_sha256)
   REFERENCES media_song_video_masters (master_revision_id, master_sha256) ON DELETE RESTRICT;
 
+-- Every video publication rests on one decision. Its decision_revision names
+-- the creation revision whose decision, moderator approvals and safety
+-- evidence authorize it: the publication's own revision, or an earlier one
+-- when a publication-only retry published at a later revision on the same
+-- decision. Delivery reads those facts at that revision, so it must exist.
+CREATE FUNCTION require_video_publication_decision_anchor() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.decision_revision > NEW.creation_revision OR NOT EXISTS (
+    SELECT 1 FROM media_video_publication_decisions d
+     WHERE d.submission_id = NEW.submission_id
+       AND d.creation_revision = NEW.decision_revision
+       AND d.video_revision = NEW.video_revision
+       AND d.analysis_revision = NEW.analysis_revision
+       AND d.outcome IN ('publish', 'review')
+  ) THEN
+    RAISE EXCEPTION 'a video publication must rest on a publishing decision';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER media_publication_projection_video_decision_anchor
+  AFTER INSERT ON media_publication_projections
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW.media_kind = 'video')
+  EXECUTE FUNCTION require_video_publication_decision_anchor();
+
+-- Publication evidence is immutable, so an existing video publication cannot be
+-- re-anchored here. Video is disabled in every environment and none should
+-- exist; one that does not rest on a publishing decision needs an operator.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM media_publication_projections p
+     WHERE p.media_kind = 'video' AND NOT EXISTS (
+       SELECT 1 FROM media_video_publication_decisions d
+        WHERE d.submission_id = p.submission_id
+          AND d.creation_revision = p.decision_revision
+          AND d.video_revision = p.video_revision
+          AND d.analysis_revision = p.analysis_revision
+          AND d.outcome IN ('publish', 'review'))
+  ) THEN
+    RAISE EXCEPTION 'a video publication does not rest on a publishing decision';
+  END IF;
+END;
+$$;
+
 -- A song-reference projection exists only with its edge, checked at commit.
 CREATE FUNCTION require_song_video_projection_edge() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

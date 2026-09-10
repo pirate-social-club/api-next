@@ -1017,6 +1017,44 @@ export function redecideSongReferenceAfterCommitDenial(
   };
 }
 
+/**
+ * A publication retry reaches `publication_allowed` at a later creation
+ * revision on the decision it already has. When the owner policy observed for
+ * that revision no longer permits this account, the retry is blocked at that
+ * same revision. The earlier decision, its approvals and its evidence are left
+ * as they were; the accepted master is kept for its disposition.
+ */
+export function refuseCarriedSongReference(
+  state: VideoSubmissionState,
+  reasonCode: SongReferenceInvalidReason,
+  decidedAt: string,
+): Readonly<{ state: VideoSubmissionState; decision: VideoPublicationDecision }> {
+  const plan = state.songPlan;
+  const prior = state.decision;
+  if (
+    state.intent !== "song_reference" ||
+    plan === null ||
+    prior === null ||
+    prior.creationRevision >= state.creationRevision ||
+    state.status !== "processing" ||
+    state.phase !== "publish"
+  )
+    throw new Error("song-reference refusal is not allowed");
+  const decision: VideoPublicationDecision = {
+    ...prior,
+    creationRevision: state.creationRevision,
+    outcome: {
+      kind: "block",
+      reasonCode: "song_reference_invalid",
+      publicReason: "song_reference_invalid",
+      songPostId: plan.songPostId,
+      songReasonCode: reasonCode,
+    },
+    decidedAt,
+  };
+  return { decision, state: { ...state, status: "blocked", phase: null, decision } };
+}
+
 export type SongReferencePublication = Readonly<{
   songPostId: string;
   audioRevision: number;
