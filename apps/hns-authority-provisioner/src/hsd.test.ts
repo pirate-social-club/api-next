@@ -89,7 +89,10 @@ describe("HSD root resource observer", () => {
     ]);
     expect(result.observation.view).toBe("current");
     expect(result.observation.tip_height).toBe(812_345);
-    expect(result.observation.update_inclusion_height).toBe(800_000);
+    // `info.height` is the name's opening height, not the height the current
+    // resource was included at, so a routine observation reports no inclusion
+    // height at all rather than a plausible wrong one.
+    expect(result.observation.update_inclusion_height).toBeNull();
     expect(result.observation.commitment).toBeNull();
     expect(result.observation.anchor.height).toBe(812_345);
     expect(calls).toEqual([
@@ -191,7 +194,7 @@ describe("HSD root resource observer", () => {
     expect(result.kind).toBe("observed");
     if (result.kind !== "observed") throw new Error("unreachable");
     expect(result.observation.records).toEqual([]);
-    expect(result.observation.update_inclusion_height).toBe(800_002);
+    expect(result.observation.update_inclusion_height).toBeNull();
   });
 
   test("diverges between the current and safe view on the same name without conflating them", async () => {

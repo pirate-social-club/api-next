@@ -54,9 +54,11 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-execution-ownership.pg.test.ts",
   "packages/platform-cf/src/hns-retention-reviewer.pg.test.ts",
   "packages/platform-cf/src/hns-lifecycle-projection.pg.test.ts",
+  "packages/platform-cf/src/hns-incident-recovery.pg.test.ts",
   // Creates its own schema and additionally needs a reachable regtest node;
   // it skips itself when either is absent.
   "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
+  "packages/platform-cf/src/hns-incident-evidence.pg.test.ts",
   // Drives the provisioner's own entrypoint as a subprocess against a fresh
   // database and a regtest node; it skips itself when either is absent.
   "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",

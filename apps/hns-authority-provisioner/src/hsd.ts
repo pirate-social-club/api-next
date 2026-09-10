@@ -273,8 +273,16 @@ export function makeHsdRootResourceObserver(
       if (info.state !== "CLOSED" || info.registered !== true) {
         throw new HsdObservationFinding("resource_absent");
       }
-      const inclusionHeight = safeInteger(info.height);
-      if (inclusionHeight === null || inclusionHeight < 0) {
+      // `info.height` is the height the name was opened at, not the height the
+      // current resource was included at. Verified on hsd 8.0.0 regtest: after
+      // a fresh UPDATE mined at tip 3301, `height` stayed 2586 and `renewal`
+      // stayed 2612 while `owner` and `data` changed. Reporting it as the
+      // inclusion height told an owner the wrong block for their publication.
+      // A routine observation cannot establish inclusion — that needs the
+      // owning outpoint's transaction and its block — so this reports the
+      // registration height only as a sanity bound and leaves inclusion null.
+      const registrationHeight = safeInteger(info.height);
+      if (registrationHeight === null || registrationHeight < 0) {
         throw new HsdObservationUnavailable("malformed_response");
       }
       let commitment: HnsSafeCommitmentSelectionV1 | null = null;
@@ -343,7 +351,7 @@ export function makeHsdRootResourceObserver(
           genesis_block_hash: config.genesis_block_hash,
           anchor: anchorB,
           tip_height: anchorB.height,
-          update_inclusion_height: inclusionHeight,
+          update_inclusion_height: null,
           commitment,
           observed_at_epoch_ms: now(),
           records,

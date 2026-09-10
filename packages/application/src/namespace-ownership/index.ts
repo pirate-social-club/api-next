@@ -412,6 +412,7 @@ export {
   hnsProviderIdentityDigest,
   hnsProviderIdentityPreimage,
 } from "./hns-evidence.ts";
+export * from "./hns-incident-recovery.ts";
 export {
   decodeHnsPrivateDriverAuthoritativeAxfrResponseV1,
   decodeHnsPrivateDriverErrorV1,
