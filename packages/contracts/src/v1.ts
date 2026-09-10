@@ -2225,6 +2225,7 @@ export const v1Registry = {
   FollowCommunity,
   UnfollowCommunity,
   CreatePost,
+  PreflightSongVideoInterval,
   CreateMediaUploadReservation,
   CreateMediaPostSubmission,
   BindMediaPostSubmissionTerms,
