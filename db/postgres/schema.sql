@@ -608,15 +608,11 @@ BEGIN
 
   IF recovery_grant.action = 'adopt' THEN
     IF finding.covenant_resource_sha256 IS NULL THEN
-      -- Adoption binds to attributed bytes. Without them there is nothing to
-      -- bind to, and a finding that supports adoption should never lack them.
       RETURN QUERY SELECT 'adoption_evidence_missing'::TEXT, lifecycle.revision,
                           lifecycle.generation;
       RETURN;
     END IF;
     IF input_target_phase <> 'checking_publication' THEN
-      -- Every later phase asserts evidence this rebinding has just discarded.
-      -- Adoption re-enters the checking phase and earns the rest again.
       RETURN QUERY SELECT 'adoption_target_invalid'::TEXT, lifecycle.revision,
                           lifecycle.generation;
       RETURN;
@@ -626,9 +622,7 @@ BEGIN
   -- Decide first, and only then rebind. The commit function returns a
   -- non-raising `replay` outcome when the event identity already exists; a
   -- replay must not move the generation, rewrite the digest, clear the
-  -- anchors, or spend the authorization. Gating every rebinding on an
-  -- explicit `transition` keeps that invariant local to this function rather
-  -- than resting on which outcome the callee happens to return.
+  -- anchors, or spend the authorization.
   SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
     input_session_id,
     lifecycle.revision,
@@ -638,7 +632,10 @@ BEGIN
     'recovery_' || recovery_grant.action || ':' || finding.reason,
     input_target_phase,
     '{}'::jsonb,
-    coalesce(input_requested_work, '[]'::jsonb)
+    coalesce(input_requested_work, '[]'::jsonb),
+    NULL,
+    NULL,
+    CASE WHEN recovery_grant.action = 'adopt' THEN lifecycle.generation + 1 ELSE NULL END
   );
   IF committed.outcome IS DISTINCT FROM 'transition' THEN
     RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, lifecycle.generation;
@@ -1766,7 +1763,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION claim_hns_root_import_lifecycle_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(lifecycle_job_id bigint, root_import_session_id text, job_kind text, due_at timestamp with time zone, lease_fence bigint, lease_expires_at timestamp with time zone)
+CREATE FUNCTION claim_hns_root_import_lifecycle_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(lifecycle_job_id bigint, root_import_session_id text, job_kind text, due_at timestamp with time zone, lease_fence bigint, lease_expires_at timestamp with time zone, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
@@ -1774,16 +1771,44 @@ DECLARE
   candidate hns_root_import_lifecycle_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
-  IF btrim(input_executor_id) <> input_executor_id
+  IF input_executor_id IS NULL
+    OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
     OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
     OR input_executor_id ~ '[[:cntrl:]]'
+    OR input_lease_seconds IS NULL
     OR input_lease_seconds NOT BETWEEN 4 AND 120 THEN
     RAISE EXCEPTION 'invalid HNS lifecycle job claim';
   END IF;
+
+  -- A job scheduled for an earlier authority generation describes a
+  -- different operation. It is failed with a named disposition rather than
+  -- left queued forever, which would also keep the due-job wait loop awake.
+  -- SKIP LOCKED keeps a concurrent claim from blocking on a row it is about
+  -- to handle itself; the skipped row is disposed by the next claim.
+  UPDATE hns_root_import_lifecycle_jobs AS stale
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'generation_superseded', completed_at = database_now,
+         updated_at = database_now
+   WHERE stale.lifecycle_job_id IN (
+     SELECT job.lifecycle_job_id
+       FROM hns_root_import_lifecycle_jobs AS job
+       JOIN hns_root_import_lifecycle AS lifecycle
+         ON lifecycle.root_import_session_id = job.root_import_session_id
+      WHERE job.generation < lifecycle.generation
+        AND (
+          job.state = 'queued'
+          OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+        )
+      FOR UPDATE OF job SKIP LOCKED
+   );
+
   SELECT job.* INTO candidate
     FROM hns_root_import_lifecycle_jobs AS job
+    JOIN hns_root_import_lifecycle AS lifecycle
+      ON lifecycle.root_import_session_id = job.root_import_session_id
    WHERE ((job.state = 'queued' AND job.due_at <= database_now)
       OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
+     AND job.generation = lifecycle.generation
      -- The reciprocal of the observation exclusion. A legacy readiness lease
      -- taken before the lifecycle row existed is still in flight, so the
      -- lifecycle runner waits for it to drain rather than observing the same
@@ -1811,7 +1836,8 @@ BEGIN
     candidate.lifecycle_job_id, candidate.root_import_session_id,
     candidate.job_kind, candidate.due_at,
     candidate.lease_fence + 1,
-    database_now + input_lease_seconds * interval '1 second';
+    database_now + input_lease_seconds * interval '1 second',
+    candidate.generation;
 END;
 $$;
 
@@ -2010,7 +2036,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION commit_hns_root_import_lifecycle_decision_v1(input_session_id text, input_expected_revision bigint, input_event_id text, input_event_name text, input_outcome text, input_decision_reason text, input_new_phase text, input_deadline_patch jsonb, input_requested_work jsonb) RETURNS TABLE(outcome text, revision bigint, replayed boolean)
+CREATE FUNCTION commit_hns_root_import_lifecycle_decision_v1(input_session_id text, input_expected_revision bigint, input_event_id text, input_event_name text, input_outcome text, input_decision_reason text, input_new_phase text, input_deadline_patch jsonb, input_requested_work jsonb, input_lifecycle_job_id bigint DEFAULT NULL::bigint, input_lease_fence bigint DEFAULT NULL::bigint, input_scheduled_generation bigint DEFAULT NULL::bigint) RETURNS TABLE(outcome text, revision bigint, replayed boolean)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
@@ -2021,11 +2047,26 @@ DECLARE
   index_ INTEGER;
   kind TEXT;
   due TIMESTAMPTZ;
+  requested_generation BIGINT;
 BEGIN
-  IF btrim(input_session_id) IS NULL OR btrim(input_event_id) IS NULL
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_event_id IS NULL
+    OR length(btrim(input_event_id)) = 0
+    OR btrim(input_event_id) IS DISTINCT FROM input_event_id
+    OR input_outcome IS NULL
     OR input_outcome NOT IN ('transition', 'replay', 'pending', 'rejection')
-    OR btrim(input_decision_reason) IS NULL
-    OR octet_length(input_decision_reason) > 512 THEN
+    OR input_decision_reason IS NULL
+    OR btrim(input_decision_reason) IS DISTINCT FROM input_decision_reason
+    OR octet_length(input_decision_reason) > 512
+    -- Provenance is a pair: a job identity without its fence, or the reverse,
+    -- cannot describe a claimed job and is refused rather than half-recorded.
+    OR ((input_lifecycle_job_id IS NULL) <> (input_lease_fence IS NULL))
+    OR (input_lifecycle_job_id IS NOT NULL AND input_lifecycle_job_id <= 0)
+    OR (input_lease_fence IS NOT NULL AND input_lease_fence < 0)
+    OR (input_scheduled_generation IS NOT NULL AND input_scheduled_generation <= 0)
+  THEN
     RAISE EXCEPTION 'invalid HNS lifecycle decision input';
   END IF;
 
@@ -2048,6 +2089,12 @@ BEGIN
     RAISE EXCEPTION 'HNS lifecycle revision conflict'
       USING ERRCODE = '40001';
   END IF;
+
+  -- Requested work is stamped with the generation it was scheduled under.
+  -- The default is the generation the decision applies to; adoption passes
+  -- the post-rebinding generation explicitly, because the jobs it requests
+  -- describe the operation after the rebinding, not before it.
+  requested_generation := coalesce(input_scheduled_generation, lifecycle.generation);
 
   IF input_outcome = 'transition' OR input_outcome = 'pending' THEN
     IF input_new_phase IS NULL OR input_new_phase <> lifecycle.phase THEN
@@ -2104,16 +2151,18 @@ BEGIN
         RAISE EXCEPTION 'invalid HNS lifecycle requested work';
       END IF;
       INSERT INTO hns_root_import_lifecycle_jobs(
-        root_import_session_id, job_kind, due_at
-      ) VALUES (input_session_id, kind, due);
+        root_import_session_id, job_kind, due_at, generation
+      ) VALUES (input_session_id, kind, due, requested_generation);
     END LOOP;
     INSERT INTO hns_root_import_lifecycle_history(
       root_import_session_id, event_id, event_name, outcome,
-      prior_phase, new_phase, decision_reason, requested_work, revision_after
+      prior_phase, new_phase, decision_reason, requested_work, revision_after,
+      lifecycle_job_id, lease_fence, generation
     ) VALUES (
       input_session_id, input_event_id, input_event_name, input_outcome,
       lifecycle.phase, input_new_phase, input_decision_reason,
-      input_requested_work, lifecycle.revision + 1
+      input_requested_work, lifecycle.revision + 1,
+      input_lifecycle_job_id, input_lease_fence, lifecycle.generation
     );
     RETURN QUERY SELECT input_outcome::TEXT, lifecycle.revision + 1, FALSE;
     RETURN;
@@ -2121,10 +2170,12 @@ BEGIN
 
   INSERT INTO hns_root_import_lifecycle_history(
     root_import_session_id, event_id, event_name, outcome,
-    prior_phase, new_phase, decision_reason, requested_work, revision_after
+    prior_phase, new_phase, decision_reason, requested_work, revision_after,
+    lifecycle_job_id, lease_fence, generation
   ) VALUES (
     input_session_id, input_event_id, input_event_name, input_outcome,
-    lifecycle.phase, NULL, input_decision_reason, '[]'::jsonb, lifecycle.revision
+    lifecycle.phase, NULL, input_decision_reason, '[]'::jsonb, lifecycle.revision,
+    input_lifecycle_job_id, input_lease_fence, lifecycle.generation
   );
   RETURN QUERY SELECT input_outcome::TEXT, lifecycle.revision, FALSE;
 END;
@@ -2889,6 +2940,26 @@ BEGIN
          END,
          updated_at = GREATEST(updated_at, input_occurred_at)
    WHERE persona_id = input_persona_id;
+END;
+$$;
+
+CREATE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.generation IS NULL THEN
+    SELECT lifecycle.generation INTO NEW.generation
+      FROM hns_root_import_lifecycle AS lifecycle
+     WHERE lifecycle.root_import_session_id = NEW.root_import_session_id;
+  END IF;
+  IF NEW.generation IS NULL THEN
+    RAISE EXCEPTION 'HNS lifecycle job requires an operation generation';
+  END IF;
+  IF NEW.generation <= 0 THEN
+    RAISE EXCEPTION 'HNS lifecycle job generation must be positive';
+  END IF;
+  RETURN NEW;
 END;
 $$;
 
@@ -13668,7 +13739,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone, input_decision_event_id text, input_expected_generation bigint, input_freshness_seconds integer) RETURNS text
+CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone, input_decision_event_id text, input_freshness_seconds integer) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
@@ -13676,57 +13747,90 @@ DECLARE
   job hns_root_import_lifecycle_jobs%ROWTYPE;
   lifecycle hns_root_import_lifecycle%ROWTYPE;
   decision hns_root_import_lifecycle_history%ROWTYPE;
-  database_now TIMESTAMPTZ := clock_timestamp();
   expected_job_kind TEXT;
+  expected_event_name TEXT;
+  database_now TIMESTAMPTZ;
 BEGIN
   expected_job_kind := CASE input_view
     WHEN 'current' THEN 'observe_current'
     WHEN 'safe' THEN 'observe_safe'
   END;
-  IF expected_job_kind IS NULL
+  expected_event_name := CASE input_view
+    WHEN 'current' THEN 'current_observation'
+    WHEN 'safe' THEN 'safe_observation'
+  END;
+  -- Every argument is validated for NULL explicitly. A NULL comparison result
+  -- is not TRUE and would otherwise fall through an OR chain, which is how a
+  -- NULL lease fence could once have passed the fence.
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_lifecycle_job_id IS NULL
+    OR input_lifecycle_job_id <= 0
+    OR input_executor_id IS NULL
+    OR length(btrim(input_executor_id)) = 0
+    OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR input_lease_fence IS NULL
+    OR input_lease_fence < 0
+    OR expected_job_kind IS NULL
+    OR input_resource_sha256 IS NULL
     OR input_resource_sha256 !~ '^[0-9a-f]{64}$'
     OR input_tip_height IS NULL
     OR input_tip_height <= 0
+    OR input_update_inclusion_height IS NOT NULL AND (
+      input_update_inclusion_height <= 0 OR input_update_inclusion_height > input_tip_height
+    )
+    OR input_commitment_height IS NOT NULL AND (
+      input_commitment_height <= 0 OR input_commitment_height > input_tip_height
+    )
     OR input_observed_at IS NULL
     OR input_decision_event_id IS NULL
-    OR btrim(input_decision_event_id) <> input_decision_event_id
-    OR input_expected_generation IS NULL
-    OR input_expected_generation < 1
+    OR length(btrim(input_decision_event_id)) = 0
+    OR btrim(input_decision_event_id) IS DISTINCT FROM input_decision_event_id
     OR input_freshness_seconds IS NULL
     OR input_freshness_seconds NOT BETWEEN 1 AND 86400
   THEN
     RAISE EXCEPTION 'invalid HNS lifecycle observation evidence';
   END IF;
-  -- The reading is the server's own; an observation cannot have happened in
-  -- the future. The tolerance bounds clock skew between the observer and the
-  -- database rather than extending the window.
-  IF input_observed_at > database_now + interval '30 seconds' THEN
-    RETURN 'observation_in_future';
-  END IF;
-  IF input_observed_at <= database_now - input_freshness_seconds * interval '1 second' THEN
-    RETURN 'observation_stale';
-  END IF;
+
+  -- Lock the job first, then the operation, the same order the runner uses.
   SELECT * INTO job FROM hns_root_import_lifecycle_jobs
    WHERE lifecycle_job_id = input_lifecycle_job_id
    FOR UPDATE;
-  IF NOT FOUND
-    OR job.root_import_session_id <> input_session_id
-    OR job.state <> 'leased'
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  -- The clock is read only after both locks are held, so every check below is
+  -- measured against the moment the fence actually executes.
+  database_now := clock_timestamp();
+
+  IF NOT FOUND OR job.root_import_session_id IS DISTINCT FROM input_session_id
+    OR job.state IS DISTINCT FROM 'leased'
     OR job.leased_by IS DISTINCT FROM input_executor_id
-    OR job.lease_fence <> input_lease_fence
+    OR job.lease_fence IS DISTINCT FROM input_lease_fence
     OR job.lease_expires_at <= database_now
   THEN
     RETURN 'lease_conflict';
   END IF;
-  IF job.job_kind <> expected_job_kind THEN
+  IF job.job_kind IS DISTINCT FROM expected_job_kind THEN
     RETURN 'job_kind_mismatch';
   END IF;
-  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
-   WHERE root_import_session_id = input_session_id
-   FOR UPDATE;
-  IF NOT FOUND THEN RETURN 'lifecycle_absent'; END IF;
-  IF lifecycle.generation <> input_expected_generation THEN
+  IF lifecycle.root_import_session_id IS NULL THEN
+    RETURN 'lifecycle_absent';
+  END IF;
+  -- The job's own generation, stamped at scheduling, must be the operation's
+  -- current generation. The caller cannot assert a generation the job does
+  -- not have.
+  IF job.generation IS DISTINCT FROM lifecycle.generation THEN
     RETURN 'generation_conflict';
+  END IF;
+  -- Any future observation is refused. No clock-skew allowance: the producer
+  -- and this database share the clock discipline the lane is built on.
+  IF input_observed_at > database_now THEN
+    RETURN 'observation_in_future';
+  END IF;
+  IF input_observed_at <= database_now - input_freshness_seconds * interval '1 second' THEN
+    RETURN 'observation_stale';
   END IF;
   SELECT * INTO decision FROM hns_root_import_lifecycle_history
    WHERE root_import_session_id = input_session_id
@@ -13735,6 +13839,10 @@ BEGIN
     OR decision.outcome NOT IN ('transition', 'pending')
     OR decision.revision_after IS DISTINCT FROM lifecycle.revision
     OR decision.new_phase IS DISTINCT FROM lifecycle.phase
+    OR decision.event_name IS DISTINCT FROM expected_event_name
+    OR decision.lifecycle_job_id IS DISTINCT FROM input_lifecycle_job_id
+    OR decision.lease_fence IS DISTINCT FROM input_lease_fence
+    OR decision.generation IS DISTINCT FROM lifecycle.generation
   THEN
     RETURN 'decision_conflict';
   END IF;
@@ -24421,7 +24529,11 @@ CREATE TABLE hns_root_import_lifecycle_history (
     requested_work jsonb DEFAULT '[]'::jsonb NOT NULL,
     revision_after bigint,
     recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT hns_root_import_lifecycle_history_outcome_check CHECK ((outcome = ANY (ARRAY['transition'::text, 'replay'::text, 'pending'::text, 'rejection'::text])))
+    lifecycle_job_id bigint,
+    lease_fence bigint,
+    generation bigint,
+    CONSTRAINT hns_root_import_lifecycle_history_outcome_check CHECK ((outcome = ANY (ARRAY['transition'::text, 'replay'::text, 'pending'::text, 'rejection'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_history_provenance_shape CHECK ((((lifecycle_job_id IS NULL) = (lease_fence IS NULL)) AND ((lifecycle_job_id IS NULL) OR (lifecycle_job_id > 0)) AND ((lease_fence IS NULL) OR (lease_fence >= 0)) AND ((generation IS NULL) OR (generation > 0)) AND ((lifecycle_job_id IS NULL) OR (generation IS NOT NULL))))
 );
 
 ALTER TABLE hns_root_import_lifecycle_history ALTER COLUMN history_id ADD GENERATED ALWAYS AS IDENTITY (
@@ -24447,7 +24559,9 @@ CREATE TABLE hns_root_import_lifecycle_jobs (
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    generation bigint NOT NULL,
     CONSTRAINT hns_root_import_lifecycle_jobs_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_jobs_generation_positive CHECK ((generation > 0)),
     CONSTRAINT hns_root_import_lifecycle_jobs_job_kind_check CHECK ((job_kind = ANY (ARRAY['observe_current'::text, 'observe_safe'::text, 'observe_readiness'::text, 'reconcile_provider'::text, 'schedule_activation_window'::text, 'retention_review'::text]))),
     CONSTRAINT hns_root_import_lifecycle_jobs_lease_fence_check CHECK ((lease_fence >= 0)),
     CONSTRAINT hns_root_import_lifecycle_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'completed'::text, 'failed'::text])))
@@ -32186,6 +32300,8 @@ CREATE TRIGGER hns_root_health_renewal_jobs_retain BEFORE DELETE ON hns_root_hea
 CREATE TRIGGER hns_root_import_activation_operations_retain BEFORE DELETE OR UPDATE ON hns_root_import_activation_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_import_lifecycle FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_lifecycle_anchor_v1();
+
+CREATE TRIGGER hns_root_import_lifecycle_jobs_generation_fill BEFORE INSERT ON hns_root_import_lifecycle_jobs FOR EACH ROW EXECUTE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1();
 
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 

@@ -329,6 +329,7 @@ suite("the retention reviewer and the teardown it gates on PostgreSQL 17", () =>
         root_import_session_id: String(row.root_import_session_id),
         job_kind: "retention_review",
         lease_fence: Number(row.lease_fence) + fenceOffset,
+        generation: Number(row.generation),
       },
       executorId,
       ports,

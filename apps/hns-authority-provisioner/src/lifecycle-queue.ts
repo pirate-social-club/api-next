@@ -95,11 +95,13 @@ export function makePostgresHnsRootImportLifecycleQueue(
         const row = result.rows[0];
         const leaseFence = safePositiveInteger(row?.lease_fence);
         const jobId = safePositiveInteger(row?.lifecycle_job_id);
+        const generation = safePositiveInteger(row?.generation);
         if (
           jobId === null ||
           typeof row?.root_import_session_id !== "string" ||
           !isJobKind(row.job_kind) ||
-          leaseFence === null
+          leaseFence === null ||
+          generation === null
         ) {
           throw new Error("HNS lifecycle queue returned an invalid job");
         }
@@ -108,6 +110,7 @@ export function makePostgresHnsRootImportLifecycleQueue(
           root_import_session_id: row.root_import_session_id,
           job_kind: row.job_kind,
           lease_fence: leaseFence,
+          generation,
         };
       }),
     identity: (rootImportSessionId) =>
@@ -143,16 +146,9 @@ export function makePostgresHnsRootImportLifecycleQueue(
         };
       }),
     observe,
-    record_observation: async (
-      client,
-      job,
-      executorId,
-      expectedGeneration,
-      decisionEventId,
-      summary,
-    ) => {
+    record_observation: async (client, job, executorId, decisionEventId, summary) => {
       const result = await client.query<Record<string, unknown>>(
-        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) AS outcome`,
+        `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) AS outcome`,
         [
           job.root_import_session_id,
           job.lifecycle_job_id,
@@ -165,7 +161,6 @@ export function makePostgresHnsRootImportLifecycleQueue(
           summary.commitment_height,
           new Date(summary.observed_at_epoch_ms),
           decisionEventId,
-          expectedGeneration,
           OBSERVATION_EVIDENCE_FRESHNESS_SECONDS,
         ],
       );

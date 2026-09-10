@@ -257,13 +257,13 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
              $1, 7, $2, 'safe_observation', 'pending', 'safe_resource_mismatch_hold',
              'waiting_safe_commitment',
              '{"pending_reason":"waiting_safe_commitment","next_check_at":"2026-09-10T12:15:00Z"}'::jsonb,
-             '[]'::jsonb)`,
-          [sessionId, decisionEventId],
+             '[]'::jsonb, $3::bigint, $4::bigint)`,
+          [sessionId, decisionEventId, job?.lifecycle_job_id, Number(job?.lease_fence)],
         );
         const written = await admin.query<{ readonly outcome: string }>(
           `SELECT record_hns_root_import_lifecycle_observation_v1(
              $1,$2,$3,$4,'safe',$5,3300,3248,3295,
-             clock_timestamp() - interval '30 seconds',$6,1,3600) AS outcome`,
+             clock_timestamp() - interval '30 seconds',$6,3600) AS outcome`,
           [
             sessionId,
             job?.lifecycle_job_id,
@@ -280,7 +280,7 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         const stale = await admin.query<{ readonly outcome: string }>(
           `SELECT record_hns_root_import_lifecycle_observation_v1(
              $1,$2,$3,$4,'current',$5,9999,NULL,NULL, clock_timestamp(),
-             $6,1,3600) AS outcome`,
+             $6,3600) AS outcome`,
           [
             sessionId,
             job?.lifecycle_job_id,
@@ -324,7 +324,7 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
           admin.query(
             `SELECT record_hns_root_import_lifecycle_observation_v1(
                $1,1,'projection-executor',1,'sideways',$2,3300,NULL,NULL, clock_timestamp(),
-               'projection-observation-event',1,3600)`,
+               'projection-observation-event',3600)`,
             [sessionId, "4".repeat(64)],
           ),
         ).rejects.toThrow(/invalid HNS lifecycle observation evidence/u);

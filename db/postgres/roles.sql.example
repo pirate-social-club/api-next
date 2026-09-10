@@ -64,7 +64,7 @@ GRANT EXECUTE ON FUNCTION finalize_hns_root_import_lifecycle_job_v1(
   BIGINT, TEXT, BIGINT, TEXT, TEXT
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_lifecycle_decision_v1(
-  TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB
+  TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BIGINT, BIGINT, BIGINT
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION record_hns_root_import_lifecycle_observation_v1(
   TEXT, BIGINT, TEXT, BIGINT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, TIMESTAMPTZ, TEXT, BIGINT, INTEGER

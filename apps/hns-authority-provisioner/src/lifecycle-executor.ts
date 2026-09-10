@@ -37,6 +37,8 @@ export type HnsLifecycleClaimV1 = Readonly<{
   readonly root_import_session_id: string;
   readonly job_kind: HnsLifecycleJobKindV1;
   readonly lease_fence: number;
+  /** The operation generation the job was scheduled under. */
+  readonly generation: number;
 }>;
 
 /** What the runner needs about the operation before it observes anything. */
@@ -123,17 +125,15 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
    */
   /**
    * Persists the accepted observation summary inside the runner's own
-   * transaction. The decision event identity and the generation the
-   * observation was taken under are part of the write, because the SQL fence
-   * binds the summary to that specific accepted decision and refuses an
-   * old-generation lease. Optional so a caller that only decides — the
-   * composed-path harness — needs no store.
+   * transaction, bound to the decision event identity that accepted it. The
+   * SQL fence compares the claimed job's own scheduled generation to the
+   * operation row, so no caller-supplied generation participates. Optional so
+   * a caller that only decides — the composed-path harness — needs no store.
    */
   readonly record_observation?: (
     client: LifecycleTransactionClient,
     job: HnsLifecycleClaimV1,
     executorId: string,
-    expectedGeneration: number,
     decisionEventId: string,
     summary: HnsLifecycleObservationSummaryV1,
   ) => Promise<void>;
@@ -370,7 +370,7 @@ export async function runHnsRootImportLifecycleJobOnce(
       }
       const next = decision.next_state;
       await client.query(
-        "SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        "SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::bigint,$11::bigint)",
         [
           job.root_import_session_id,
           state.revision,
@@ -386,6 +386,8 @@ export async function runHnsRootImportLifecycleJobOnce(
               due_at: new Date(work.due_at_epoch_ms).toISOString(),
             })),
           ),
+          job.lifecycle_job_id,
+          job.lease_fence,
         ],
       );
       if (next !== null) state = { ...next, revision: state.revision + 1 };
@@ -407,7 +409,6 @@ export async function runHnsRootImportLifecycleJobOnce(
         client,
         job,
         executorId,
-        identity.generation,
         recordableObservation.decision_event_id,
         recordableObservation.summary,
       );
