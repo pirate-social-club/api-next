@@ -948,7 +948,7 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
         );
         const baseEvidence = {
           observedAt: new Date(Date.now() - 5_000).toISOString(),
-          resourceSha: "c".repeat(64),
+          resourceSha: planEncodedSha,
           qualifying: true,
           lifecycleRevision: 1,
           generation: 1,
@@ -1007,6 +1007,12 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
             })
           ).rows[0]?.outcome,
         ).toBe("current_stale");
+        // The observed wire digest must be the operation's generation-bound
+        // encoded-resource digest, not merely a well-formed hash.
+        expect(
+          (await call({ evidence: { ...baseEvidence, resourceSha: "d".repeat(64) } })).rows[0]
+            ?.outcome,
+        ).toBe("current_conflict");
         const before = await admin.query<Record<string, unknown>>(
           `SELECT phase, revision FROM hns_root_import_lifecycle
             WHERE root_import_session_id='activate-session'`,
@@ -1030,6 +1036,14 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
         // update is the repository's, in the same transaction.
         const accepted = await call();
         expect(accepted.rows[0]).toMatchObject({ outcome: "activated", revision: "2" });
+        // Successful activation schedules the policy's initial retention
+        // review in the same decision.
+        const reviewJob = await admin.query<Record<string, unknown>>(
+          `SELECT job_kind, state FROM hns_root_import_lifecycle_jobs
+            WHERE root_import_session_id='activate-session' AND job_kind='retention_review'`,
+        );
+        expect(reviewJob.rows).toHaveLength(1);
+        expect(reviewJob.rows[0]).toMatchObject({ state: "queued" });
         const after = await admin.query<Record<string, unknown>>(
           `SELECT phase, revision FROM hns_root_import_lifecycle
             WHERE root_import_session_id='activate-session'`,
@@ -1133,6 +1147,113 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
           `SELECT phase FROM hns_root_import_lifecycle WHERE root_import_session_id='unbound-session'`,
         );
         expect(after.rows[0]).toMatchObject({ phase: "ready" });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "stale activation records one pending refresh and authorization follows the refresh",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "stale-activation-session",
+          rootLabel: "staleactivationroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        const readinessBytes = Buffer.from('{"ready":true}');
+        const readinessSha = createHash("sha256").update(readinessBytes).digest("hex");
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready', readiness_result_bytes=$1,
+                  readiness_result_sha256=$2, revision=4
+            WHERE root_import_session_id='stale-activation-session'`,
+          [readinessBytes, readinessSha],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready', readiness_observed_at=clock_timestamp() - interval '2 hours'
+            WHERE root_import_session_id='stale-activation-session'`,
+        );
+        const authorize = (identity: string, lifecycleRevision: number) =>
+          admin.query<Record<string, unknown>>(
+            `SELECT * FROM authorize_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [
+              "stale-activation-session",
+              4,
+              lifecycleRevision,
+              1,
+              planSha,
+              readinessSha,
+              identity,
+              new Date(Date.now() - 5_000).toISOString(),
+              planEncodedSha,
+              true,
+            ],
+          );
+
+        const first = await authorize("stale-command-1", 1);
+        expect(first.rows[0]).toMatchObject({ outcome: "readiness_pending", revision: "2" });
+        const lifecycle = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision, pending_reason FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='stale-activation-session'`,
+        );
+        expect(lifecycle.rows[0]).toMatchObject({
+          phase: "ready",
+          revision: "2",
+          pending_reason: "readiness_evidence_stale",
+        });
+        const jobs = await admin.query<Record<string, unknown>>(
+          `SELECT state FROM hns_root_import_lifecycle_jobs
+            WHERE root_import_session_id='stale-activation-session'
+              AND job_kind='observe_readiness'`,
+        );
+        expect(jobs.rows).toHaveLength(1);
+        expect(jobs.rows[0]).toMatchObject({ state: "queued" });
+
+        // A second stale command records its identity but schedules no second
+        // refresh and does not advance the revision again.
+        const second = await authorize("stale-command-2", 2);
+        expect(second.rows[0]).toMatchObject({ outcome: "readiness_pending", revision: "2" });
+        const stillOne = await admin.query<{ readonly count: string }>(
+          `SELECT count(*)::text AS count FROM hns_root_import_lifecycle_jobs
+            WHERE root_import_session_id='stale-activation-session'
+              AND job_kind='observe_readiness'`,
+        );
+        expect(stillOne.rows[0]?.count).toBe("1");
+        const revisionAfter = await admin.query<Record<string, unknown>>(
+          `SELECT revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='stale-activation-session'`,
+        );
+        expect(revisionAfter.rows[0]?.revision).toBe("2");
+
+        // After the refresh, authorization returns without writing, and the
+        // committing half accepts at the new revision.
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET readiness_observed_at=clock_timestamp() - interval '30 seconds'
+            WHERE root_import_session_id='stale-activation-session'`,
+        );
+        const authorized = await authorize("stale-command-3", 2);
+        expect(authorized.rows[0]).toMatchObject({ outcome: "authorized", revision: "2" });
+        const committed = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            "stale-activation-session",
+            4,
+            2,
+            1,
+            planSha,
+            readinessSha,
+            "stale-command-3",
+            new Date(Date.now() - 5_000).toISOString(),
+            planEncodedSha,
+            true,
+          ],
+        );
+        expect(committed.rows[0]).toMatchObject({ outcome: "activated", revision: "3" });
       });
     },
     BUDGET_MS,

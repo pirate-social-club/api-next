@@ -93,6 +93,11 @@ GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_activation_v1(
   TEXT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN
 ) TO api_next_app;
+-- The policy pre-flight: it records the stale-readiness pending hold and
+-- refresh work, or authorizes the effects transaction without writing.
+GRANT EXECUTE ON FUNCTION authorize_hns_root_import_activation_v1(
+  TEXT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN
+) TO api_next_app;
 
 -- The operator role is the only writer that can produce an authorization to
 -- delete retained authority or to apply a recovery decision. Its functions

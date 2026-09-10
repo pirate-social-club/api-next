@@ -152,6 +152,7 @@
     "0149_hns_observation_provenance_fence.sql": "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700",
     "0150_hns_readiness_ownership_handover.sql": "4e4b6436b2c483453fce346723909803b0f1df09d34d54b20ed2dab341a8ddf0",
     "0151_hns_readiness_ownership_corrections.sql": "9de4683d329d386da963c9b442313e41c71c28b07da93348eec89f24863afbad",
-    "0152_hns_lifecycle_activation.sql": "9ac2995e6a552c8d99a2fbeccdf7587d2af929c1f845bc609833513b83f77342"
+    "0152_hns_lifecycle_activation.sql": "9ac2995e6a552c8d99a2fbeccdf7587d2af929c1f845bc609833513b83f77342",
+    "0153_hns_activation_policy.sql": "525b67fc6e379ecc33183cad0bc3451f2bcf96820d86984033daa3ffded7821c"
   }
 }

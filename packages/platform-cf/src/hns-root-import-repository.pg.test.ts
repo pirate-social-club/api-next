@@ -1150,12 +1150,28 @@ suite("Postgres 17 HNS root-import repository", () => {
               SET phase='ready', readiness_observed_at=clock_timestamp()
             WHERE root_import_session_id='root-import-session'`,
         );
-        const lifecycleState = await admin.query<{ revision: string; generation: string }>(
-          `SELECT revision, generation FROM hns_root_import_lifecycle
+        // The exposure step records the plan's encoded-resource digest; this
+        // fixture drives the legacy readiness writer, so it writes the digest
+        // the production exposure transaction would have persisted.
+        const lifecyclePlan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
+          encoded_resource_sha256: string;
+        };
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256=$1
+            WHERE root_import_session_id='root-import-session'`,
+          [lifecyclePlan.encoded_resource_sha256],
+        );
+        const lifecycleState = await admin.query<{
+          revision: string;
+          generation: string;
+          plan_encoded_resource_sha256: string;
+        }>(
+          `SELECT revision, generation, plan_encoded_resource_sha256 FROM hns_root_import_lifecycle
             WHERE root_import_session_id='root-import-session'`,
         );
         const lifecycleRevision = Number(lifecycleState.rows[0]?.revision);
         const lifecycleGeneration = Number(lifecycleState.rows[0]?.generation);
+        const lifecyclePlanDigest = String(lifecycleState.rows[0]?.plan_encoded_resource_sha256);
 
         const activationInput = {
           actor_id: provisioned.record.actor_id,
@@ -1184,7 +1200,7 @@ suite("Postgres 17 HNS root-import repository", () => {
             lifecycle_revision: lifecycleRevision,
             lifecycle_generation: lifecycleGeneration,
             observed_at_epoch_ms: Date.now() - 5_000,
-            resource_sha256: "c".repeat(64),
+            resource_sha256: lifecyclePlanDigest,
             qualifying: true,
           },
         };
@@ -1623,12 +1639,28 @@ suite("Postgres 17 HNS root-import repository", () => {
             SET phase='ready', readiness_observed_at=clock_timestamp()
           WHERE root_import_session_id='root-import-session'`,
       );
-      const lifecycleState = await admin.query<{ revision: string; generation: string }>(
-        `SELECT revision, generation FROM hns_root_import_lifecycle
+      // The exposure step records the plan's encoded-resource digest; this
+      // fixture drives the legacy readiness writer, so it writes the digest
+      // the production exposure transaction would have persisted.
+      const lifecyclePlan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
+        encoded_resource_sha256: string;
+      };
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256=$1
+          WHERE root_import_session_id='root-import-session'`,
+        [lifecyclePlan.encoded_resource_sha256],
+      );
+      const lifecycleState = await admin.query<{
+        revision: string;
+        generation: string;
+        plan_encoded_resource_sha256: string;
+      }>(
+        `SELECT revision, generation, plan_encoded_resource_sha256 FROM hns_root_import_lifecycle
           WHERE root_import_session_id='root-import-session'`,
       );
       const lifecycleRevision = Number(lifecycleState.rows[0]?.revision);
       const lifecycleGeneration = Number(lifecycleState.rows[0]?.generation);
+      const lifecyclePlanDigest = String(lifecycleState.rows[0]?.plan_encoded_resource_sha256);
 
       const activationRecord = {
         input: {
@@ -1652,7 +1684,7 @@ suite("Postgres 17 HNS root-import repository", () => {
           lifecycle_revision: lifecycleRevision,
           lifecycle_generation: lifecycleGeneration,
           observed_at_epoch_ms: Date.now() - 5_000,
-          resource_sha256: "c".repeat(64),
+          resource_sha256: lifecyclePlanDigest,
           qualifying: true,
         },
         community_origin: {
