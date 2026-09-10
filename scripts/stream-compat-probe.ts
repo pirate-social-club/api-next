@@ -9,17 +9,26 @@
  * format and authorizes no substitute AAC input. Feature flags stay disabled.
  *
  * Phases are separate so nothing is repeated on uncertainty:
- *   prepare   render and prove the inputs locally (no network)
- *   capacity  read-only account and Stream capacity checks
- *   upload    create each upload with signed URLs required, then send bytes once
- *   observe   poll encoding state
- *   play      mint a signed token, decode the delivered HLS, measure
- *   delete    delete each video and verify it is gone
+ *   prepare      render and prove the inputs locally (no network)
+ *   capacity     read-only account and Stream capacity checks
+ *   upload       record the intent, create each upload with signed URLs
+ *                required, record its id, then send the bytes once
+ *   investigate  find probe uploads by name when a creation outcome was lost
+ *   observe      poll encoding state
+ *   decode       mint a signed token; FFmpeg decodes the delivered HLS
+ *   browser      headless Chromium plays the signed HLS through hls.js
+ *   delete       delete each video and confirm Stream reports it not found
  *
- * Credentials come from the environment (`infisical run`) and are never
- * printed. The state file records only identifiers, digests and measurements.
+ * FFmpeg decoding establishes that the delivery decodes and where its samples
+ * and frames fall. It does not establish browser or phone playback; the browser
+ * phase checks a desktop browser, and a phone remains a separate check.
+ *
+ * The Stream token is `VIDEO_STREAM_API_TOKEN` from the environment
+ * (`infisical run`) and is never printed. Tool errors never carry stderr, which
+ * can contain a signed playback URL; a redacted copy goes to the probe
+ * directory. The state file records only identifiers, digests and measurements.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import {
@@ -43,11 +52,28 @@ type ProbeFile = {
   byteLength: number;
   contentType: string;
   proof: InputProof;
+  /**
+   * The creation of the Stream upload, recorded before the request. Only a
+   * definite refusal lets it be created again; an intended or uncertain
+   * creation is investigated by name first.
+   */
+  creation?: {
+    state: "intended" | "created" | "refused" | "uncertain" | "adopted";
+    at: string;
+    status?: number;
+  };
   uid?: string;
   uploadStatus?: number | "uncertain";
+  browser?: Record<string, unknown>;
   encoding?: Record<string, unknown>;
   delivered?: Record<string, unknown>;
-  deleted?: { status: number; verifiedGone: boolean; at: string };
+  deleted?: {
+    status: number;
+    afterStatus: number;
+    afterErrors: unknown;
+    verifiedGone: boolean;
+    at: string;
+  };
 };
 
 type InputProof = {
@@ -72,6 +98,9 @@ const directory = process.env.PROBE_DIR ?? "";
 if (directory === "") throw new Error("PROBE_DIR is required");
 const statePath = join(directory, "state.json");
 
+/** Any URL, signed playback tokens included, is removed from diagnostics. */
+const redact = (text: string) => text.replaceAll(/https?:\/\/\S+/gu, "<url>");
+
 async function run(command: string[]): Promise<string> {
   const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
   const [code, out, err] = await Promise.all([
@@ -79,7 +108,14 @@ async function run(command: string[]): Promise<string> {
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  if (code !== 0) throw new Error(`${command[0]} failed: ${err.slice(0, 400)}`);
+  if (code !== 0) {
+    // stderr can name a signed playback URL; it never reaches an error.
+    await appendFile(
+      join(directory, "tool-errors.log"),
+      `${new Date().toISOString()} ${command[0]} exit ${code}\n${redact(err).slice(0, 2_000)}\n`,
+    ).catch(() => undefined);
+    throw new Error(`${command[0]} failed with exit ${code}; redacted detail in tool-errors.log`);
+  }
   return out;
 }
 
@@ -282,9 +318,9 @@ async function prepare(): Promise<void> {
 
 function credentials() {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+  const token = process.env.VIDEO_STREAM_API_TOKEN ?? "";
   if (account !== CANONICAL_ACCOUNT_ID) throw new Error("account is not the canonical account");
-  if (token === "") throw new Error("no Cloudflare API token in the environment");
+  if (token === "") throw new Error("VIDEO_STREAM_API_TOKEN is not in the environment");
   return { account, token };
 }
 
@@ -328,31 +364,63 @@ async function capacity(): Promise<void> {
 
 async function upload(): Promise<void> {
   const state = await loadState();
-  const pending = state.files.filter((file) => file.uid === undefined);
-  const already = state.files.length - pending.length;
-  if (already + pending.length > MAX_UPLOADS) throw new Error("more than two uploads");
-  for (const file of pending) {
-    // The upload is created, and its id recorded, before any bytes are sent, so
-    // an uncertain transfer is investigated by id rather than repeated.
-    const created = await api("/stream/direct_upload", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        maxDurationSeconds: 10,
-        requireSignedURLs: true,
-        meta: { name: `pirate-stream-compat-probe-${file.label}` },
-      }),
-    });
-    const result = created.body.result as { uid?: string; uploadURL?: string } | undefined;
-    if (!created.body.success || result?.uid === undefined || result.uploadURL === undefined) {
-      state.log.push(`${file.label}: direct upload not created (${created.status})`);
+  if (state.files.length > MAX_UPLOADS) throw new Error("more than two uploads");
+  for (const file of state.files) {
+    if (file.uid !== undefined) continue;
+    if (file.creation !== undefined && file.creation.state !== "refused") {
+      // A creation that may have happened is found by name, never repeated.
+      state.log.push(
+        `${file.label}: creation ${file.creation.state}; investigate, not created again`,
+      );
       await saveState(state);
-      throw new Error(`direct upload refused: ${JSON.stringify(created.body.errors)}`);
+      throw new Error(`${file.label} creation is ${file.creation.state}: run investigate`);
     }
-    file.uid = result.uid;
-    file.uploadStatus = "uncertain";
-    state.log.push(`${file.label}: created ${file.uid}`);
+    file.creation = { state: "intended", at: new Date().toISOString() };
+    state.log.push(`${file.label}: creation intended`);
     await saveState(state);
+    let created: Awaited<ReturnType<typeof api>>;
+    try {
+      created = await api("/stream/direct_upload", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          maxDurationSeconds: 10,
+          requireSignedURLs: true,
+          meta: { name: `pirate-stream-compat-probe-${file.label}` },
+        }),
+      });
+    } catch {
+      file.creation = { state: "uncertain", at: new Date().toISOString() };
+      state.log.push(`${file.label}: creation response lost`);
+      await saveState(state);
+      throw new Error(`${file.label} creation is uncertain: run investigate`);
+    }
+    const result = created.body.result as { uid?: string; uploadURL?: string } | undefined;
+    if (
+      created.body.success === true &&
+      result?.uid !== undefined &&
+      result.uploadURL !== undefined
+    ) {
+      file.creation = { state: "created", at: new Date().toISOString(), status: created.status };
+      file.uid = result.uid;
+      file.uploadStatus = "uncertain";
+      state.log.push(`${file.label}: created ${file.uid}`);
+      await saveState(state);
+    } else {
+      // A definite client-side refusal created nothing. Anything else might have.
+      const definite =
+        created.body.success === false && created.status >= 400 && created.status < 500;
+      file.creation = {
+        state: definite ? "refused" : "uncertain",
+        at: new Date().toISOString(),
+        status: created.status,
+      };
+      state.log.push(`${file.label}: creation ${file.creation.state} (${created.status})`);
+      await saveState(state);
+      throw new Error(
+        `${file.label} creation ${file.creation.state}: ${JSON.stringify(created.body.errors)}`,
+      );
+    }
     try {
       const form = new FormData();
       form.append(
@@ -363,15 +431,56 @@ async function upload(): Promise<void> {
       const sent = await fetch(result.uploadURL, { method: "POST", body: form });
       file.uploadStatus = sent.status;
       state.log.push(`${file.label}: bytes sent (${sent.status})`);
-    } catch (error) {
-      state.log.push(`${file.label}: transfer uncertain (${String(error).slice(0, 120)})`);
+    } catch {
+      state.log.push(`${file.label}: transfer uncertain; observe by id, do not resend`);
     }
     await saveState(state);
   }
   console.log(
     JSON.stringify(
-      state.files.map(({ label, uid, uploadStatus }) => ({ label, uid, uploadStatus })),
+      state.files.map(({ label, creation, uid, uploadStatus }) => ({
+        label,
+        creation,
+        uid,
+        uploadStatus,
+      })),
     ),
+  );
+}
+
+/** Probe uploads found by name; one match for an unresolved creation is adopted. */
+async function investigate(): Promise<void> {
+  const state = await loadState();
+  const listed = await api("/stream?search=pirate-stream-compat-probe");
+  const videos = ((listed.body.result as Record<string, unknown>[] | undefined) ?? []).map(
+    (video) => ({
+      uid: String(video.uid),
+      name: String((video.meta as Record<string, unknown> | undefined)?.name ?? ""),
+      created: video.created,
+      state: (video.status as Record<string, unknown> | undefined)?.state,
+    }),
+  );
+  for (const file of state.files) {
+    if (file.uid !== undefined || file.creation === undefined) continue;
+    if (file.creation.state !== "intended" && file.creation.state !== "uncertain") continue;
+    const matches = videos.filter(
+      (video) => video.name === `pirate-stream-compat-probe-${file.label}`,
+    );
+    if (matches.length === 1 && matches[0] !== undefined) {
+      file.uid = matches[0].uid;
+      file.creation = { state: "adopted", at: new Date().toISOString() };
+      state.log.push(`${file.label}: adopted ${file.uid} found by name`);
+    } else {
+      state.log.push(`${file.label}: ${matches.length} uploads found by name; left unresolved`);
+    }
+  }
+  await saveState(state);
+  console.log(
+    JSON.stringify({
+      status: listed.status,
+      videos,
+      files: state.files.map(({ label, creation, uid }) => ({ label, creation, uid })),
+    }),
   );
 }
 
@@ -417,167 +526,181 @@ function clickOnsets(pcm: Uint8Array, rate: number): number[] {
   return onsets;
 }
 
-async function play(): Promise<void> {
+/**
+ * FFmpeg's HLS client over a manifest URL: every segment of the lowest
+ * rendition is fetched and decoded, audio to PCM and video to per-frame luma.
+ * This establishes decoding and timing, not browser or phone playback.
+ */
+async function measureDelivered(
+  manifestUrl: string,
+  base: string,
+): Promise<Record<string, unknown>> {
+  const master = await fetch(manifestUrl);
+  const masterText = await master.text();
+  const lines = masterText.split("\n");
+  const audioUri = /TYPE=AUDIO[^\n]*URI="([^"]+)"/u.exec(masterText)?.[1];
+  const variants = lines
+    .map((line, index) => ({ line, next: lines[index + 1] ?? "" }))
+    .filter(({ line }) => line.startsWith("#EXT-X-STREAM-INF"))
+    .map(({ line, next }) => ({
+      bandwidth: Number(/BANDWIDTH=(\d+)/u.exec(line)?.[1] ?? 0),
+      uri: next.trim(),
+    }))
+    .sort((left, right) => left.bandwidth - right.bandwidth);
+  const resolve = (uri: string) => new URL(uri, manifestUrl).toString();
+  const variant = variants[0];
+  const audioUrl = audioUri === undefined ? undefined : resolve(audioUri);
+  const videoUrl = variant === undefined ? undefined : resolve(variant.uri);
+  const audioSource = audioUrl ?? videoUrl;
+  if (audioSource === undefined || videoUrl === undefined) {
+    return { decoded: false, reason: "manifest without renditions" };
+  }
+  // FFmpeg's HLS client fetches every segment over the signed URL and decodes
+  // it, audio to PCM and video to per-frame luma.
+  await ffmpeg([
+    "-i",
+    audioSource,
+    "-map",
+    "0:a:0",
+    "-ac",
+    "2",
+    "-ar",
+    "48000",
+    "-c:a",
+    "pcm_s16le",
+    "-f",
+    "s16le",
+    `${base}.pcm`,
+  ]);
+  const audioProbe = JSON.parse(
+    await run([
+      "ffprobe",
+      "-v",
+      "error",
+      "-show_entries",
+      "stream=codec_name,sample_rate,channels,start_time,duration:format=start_time,duration",
+      "-select_streams",
+      "a:0",
+      "-of",
+      "json",
+      audioSource,
+    ]),
+  );
+  const videoProbe = JSON.parse(
+    await run([
+      "ffprobe",
+      "-v",
+      "error",
+      "-show_entries",
+      "stream=codec_name,width,height,start_time,duration,avg_frame_rate",
+      "-select_streams",
+      "v:0",
+      "-of",
+      "json",
+      videoUrl,
+    ]),
+  );
+  // Frame timestamps and durations on the delivered timeline, then per-frame
+  // mean luma. Blank lines are dropped before parsing: Number("") is zero.
+  const frameRows = (
+    await run([
+      "ffprobe",
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "frame=best_effort_timestamp_time,duration_time",
+      "-of",
+      "csv=p=0",
+      videoUrl,
+    ])
+  )
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [time, duration] = line.split(",");
+      return {
+        time: Number(time),
+        duration: duration === undefined ? Number.NaN : Number(duration),
+      };
+    });
+  if (frameRows.some((row) => !Number.isFinite(row.time)))
+    throw new Error("a delivered frame has no timestamp");
+  const frameTimes = frameRows.map((row) => row.time);
+  await ffmpeg([
+    "-i",
+    videoUrl,
+    "-map",
+    "0:v:0",
+    "-vf",
+    "scale=8:8,format=gray",
+    "-f",
+    "rawvideo",
+    `${base}.gray`,
+  ]);
+  const gray = new Uint8Array(await readFile(`${base}.gray`));
+  const frameCount = gray.byteLength / 64;
+  const flashes: number[] = [];
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    let sum = 0;
+    for (let pixel = 0; pixel < 64; pixel += 1) sum += gray[frame * 64 + pixel] ?? 0;
+    if (sum / 64 > 230) flashes.push(frameTimes[frame] ?? Number.NaN);
+  }
+  if (frameCount !== frameRows.length)
+    throw new Error("decoded frames and frame timestamps disagree");
+  const pcm = new Uint8Array(await readFile(`${base}.pcm`));
+  const audioStart = Number(audioProbe.streams?.[0]?.start_time ?? Number.NaN);
+  const firstFrame = frameTimes[0] ?? Number.NaN;
+  const last = frameRows.at(-1);
+  const round = (value: number) => Math.round(value * 1e6) / 1e6;
+  // Everything relative to the first delivered video frame.
+  const clicks = clickOnsets(pcm, SECOND).map((onset) => round(audioStart + onset - firstFrame));
+  const flashTimes = flashes.map((time) => round(time - firstFrame));
+  return {
+    decoded: true,
+    signedManifestStatus: master.status,
+    renditions: variants.length,
+    separateAudioRendition: audioUri !== undefined,
+    audio: audioProbe.streams?.[0],
+    video: videoProbe.streams?.[0],
+    decodedAudioSamples: pcm.byteLength / 4,
+    decodedVideoFrames: frameCount,
+    audioStartSeconds: round(audioStart - firstFrame),
+    audioEndSeconds: round(audioStart + pcm.byteLength / 4 / SECOND - firstFrame),
+    // The delivered final frame's own duration, not an assumed frame rate.
+    videoEndSeconds:
+      last === undefined || !Number.isFinite(last.duration)
+        ? null
+        : round(last.time + last.duration - firstFrame),
+    clickSeconds: clicks,
+    flashSeconds: flashTimes,
+    syncErrorMs: flashTimes.map((flash, index) =>
+      clicks[index] === undefined ? null : round((clicks[index] - flash) * 1_000),
+    ),
+    expectedMarkerSeconds: MARKER_FRAMES.map((frame) => round(frame / FPS)),
+    inputDurationSeconds: round(CLIP_DURATION / SECOND),
+  };
+}
+
+async function decode(): Promise<void> {
   const state = await loadState();
   for (const file of state.files) {
     if (file.uid === undefined) continue;
-    const details = await api(`/stream/${file.uid}`);
-    const video = details.body.result as
-      | { playback?: { hls?: string }; readyToStream?: boolean }
-      | undefined;
-    if (!video?.readyToStream || video.playback?.hls === undefined) {
-      file.delivered = { playable: false, reason: "not ready to stream" };
+    const signed = await signedManifest(file.uid);
+    if ("reason" in signed) {
+      file.delivered = { decoded: false, reason: signed.reason };
       continue;
     }
-    const minted = await api(`/stream/${file.uid}/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 1_800 }),
-    });
-    const token = (minted.body.result as { token?: string } | undefined)?.token;
-    if (token === undefined) {
-      file.delivered = { playable: false, reason: `token refused (${minted.status})` };
-      continue;
-    }
-    const manifestUrl = video.playback.hls.replace(`/${file.uid}/`, `/${token}/`);
     // Unsigned playback must be refused for a signed-URL video.
-    const unsigned = await fetch(video.playback.hls);
-    const master = await fetch(manifestUrl);
-    const masterText = await master.text();
-    const lines = masterText.split("\n");
-    const audioUri = /TYPE=AUDIO[^\n]*URI="([^"]+)"/u.exec(masterText)?.[1];
-    const variants = lines
-      .map((line, index) => ({ line, next: lines[index + 1] ?? "" }))
-      .filter(({ line }) => line.startsWith("#EXT-X-STREAM-INF"))
-      .map(({ line, next }) => ({
-        bandwidth: Number(/BANDWIDTH=(\d+)/u.exec(line)?.[1] ?? 0),
-        uri: next.trim(),
-      }))
-      .sort((left, right) => left.bandwidth - right.bandwidth);
-    const resolve = (uri: string) => new URL(uri, manifestUrl).toString();
-    const variant = variants[0];
-    const audioUrl = audioUri === undefined ? undefined : resolve(audioUri);
-    const videoUrl = variant === undefined ? undefined : resolve(variant.uri);
-    const base = join(state.directory, `delivered-${file.label}`);
-    const audioSource = audioUrl ?? videoUrl;
-    if (audioSource === undefined || videoUrl === undefined) {
-      file.delivered = {
-        playable: false,
-        reason: "manifest without renditions",
-        unsignedStatus: unsigned.status,
-      };
-      continue;
-    }
-    // Played by FFmpeg's HLS client over the signed URL: every segment is
-    // fetched and decoded, audio to PCM and video to per-frame luma.
-    await ffmpeg([
-      "-i",
-      audioSource,
-      "-map",
-      "0:a:0",
-      "-ac",
-      "2",
-      "-ar",
-      "48000",
-      "-c:a",
-      "pcm_s16le",
-      "-f",
-      "s16le",
-      `${base}.pcm`,
-    ]);
-    const audioProbe = JSON.parse(
-      await run([
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "stream=codec_name,sample_rate,channels,start_time,duration:format=start_time,duration",
-        "-select_streams",
-        "a:0",
-        "-of",
-        "json",
-        audioSource,
-      ]),
-    );
-    const videoProbe = JSON.parse(
-      await run([
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "stream=codec_name,width,height,start_time,duration,avg_frame_rate",
-        "-select_streams",
-        "v:0",
-        "-of",
-        "json",
-        videoUrl,
-      ]),
-    );
-    // Frame timestamps on the delivered timeline, then per-frame mean luma.
-    const frameTimes = (
-      await run([
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "frame=best_effort_timestamp_time",
-        "-of",
-        "csv=p=0",
-        videoUrl,
-      ])
-    )
-      .split("\n")
-      .map((line) => Number(line.trim().replace(/,$/u, "")))
-      .filter((value) => Number.isFinite(value) && value >= 0);
-    await ffmpeg([
-      "-i",
-      videoUrl,
-      "-map",
-      "0:v:0",
-      "-vf",
-      "scale=8:8,format=gray",
-      "-f",
-      "rawvideo",
-      `${base}.gray`,
-    ]);
-    const gray = new Uint8Array(await readFile(`${base}.gray`));
-    const frameCount = gray.byteLength / 64;
-    const flashes: number[] = [];
-    for (let frame = 0; frame < frameCount; frame += 1) {
-      let sum = 0;
-      for (let pixel = 0; pixel < 64; pixel += 1) sum += gray[frame * 64 + pixel] ?? 0;
-      if (sum / 64 > 230) flashes.push(frameTimes[frame] ?? Number.NaN);
-    }
-    const pcm = new Uint8Array(await readFile(`${base}.pcm`));
-    const audioStart = Number(audioProbe.streams?.[0]?.start_time ?? Number.NaN);
-    const firstFrame = frameTimes[0] ?? Number.NaN;
-    const lastFrame = frameTimes.at(-1) ?? Number.NaN;
-    const round = (value: number) => Math.round(value * 1e6) / 1e6;
-    // Everything relative to the first delivered video frame.
-    const clicks = clickOnsets(pcm, SECOND).map((onset) => round(audioStart + onset - firstFrame));
-    const flashTimes = flashes.map((time) => round(time - firstFrame));
+    const unsigned = await fetch(signed.unsignedUrl);
     file.delivered = {
-      playable: true,
       unsignedStatus: unsigned.status,
-      signedManifestStatus: master.status,
-      renditions: variants.length,
-      separateAudioRendition: audioUri !== undefined,
-      audio: audioProbe.streams?.[0],
-      video: videoProbe.streams?.[0],
-      decodedAudioSamples: pcm.byteLength / 4,
-      decodedVideoFrames: frameCount,
-      audioStartSeconds: round(audioStart - firstFrame),
-      audioEndSeconds: round(audioStart + pcm.byteLength / 4 / SECOND - firstFrame),
-      videoEndSeconds: round(lastFrame + 1 / FPS - firstFrame),
-      clickSeconds: clicks,
-      flashSeconds: flashTimes,
-      syncErrorMs: flashTimes.map((flash, index) =>
-        clicks[index] === undefined ? null : round((clicks[index] - flash) * 1_000),
-      ),
-      expectedMarkerSeconds: MARKER_FRAMES.map((frame) => round(frame / FPS)),
-      inputDurationSeconds: round(CLIP_DURATION / SECOND),
+      ...(await measureDelivered(
+        signed.manifestUrl,
+        join(state.directory, `delivered-${file.label}`),
+      )),
     };
   }
   await saveState(state);
@@ -590,15 +713,185 @@ async function play(): Promise<void> {
   );
 }
 
+/** A signed manifest URL for a ready video; the token lives for 30 minutes. */
+async function signedManifest(
+  uid: string,
+): Promise<{ manifestUrl: string; unsignedUrl: string } | { reason: string }> {
+  const details = await api(`/stream/${uid}`);
+  const video = details.body.result as
+    | { playback?: { hls?: string }; readyToStream?: boolean }
+    | undefined;
+  if (!video?.readyToStream || video.playback?.hls === undefined)
+    return { reason: "not ready to stream" };
+  const minted = await api(`/stream/${uid}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 1_800 }),
+  });
+  const token = (minted.body.result as { token?: string } | undefined)?.token;
+  if (token === undefined) return { reason: `token refused (${minted.status})` };
+  return {
+    manifestUrl: video.playback.hls.replace(`/${uid}/`, `/${token}/`),
+    unsignedUrl: video.playback.hls,
+  };
+}
+
+/**
+ * Desktop browser playback, delegated to `stream-compat-probe-browser.mjs`
+ * under Node: headless Chromium plays the HLS through hls.js with sound. The
+ * signed URL is passed in the environment, never in argv, and nothing the
+ * helper prints carries a URL. A phone is not covered.
+ */
+async function playInBrowser(
+  manifestUrl: string,
+  origin: string,
+  localDelivery: boolean,
+): Promise<Record<string, unknown>> {
+  const playwrightModule = process.env.PLAYWRIGHT_MODULE ?? "";
+  const hlsPath = process.env.HLS_JS_PATH ?? "";
+  if (playwrightModule === "" || hlsPath === "")
+    throw new Error("PLAYWRIGHT_MODULE and HLS_JS_PATH are required");
+  const child = Bun.spawn(["node", join(import.meta.dir, "stream-compat-probe-browser.mjs")], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      PROBE_MANIFEST_URL: manifestUrl,
+      PROBE_PAGE_ORIGIN: origin,
+      PLAYWRIGHT_MODULE: playwrightModule,
+      HLS_JS_PATH: hlsPath,
+      ...(localDelivery ? { PROBE_LOCAL_DELIVERY: "1" } : {}),
+    },
+  });
+  const [code, out, err] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (err.trim() !== "")
+    await appendFile(
+      join(directory, "tool-errors.log"),
+      `${new Date().toISOString()} browser exit ${code}\n${redact(err).slice(0, 2_000)}\n`,
+    ).catch(() => undefined);
+  const line = out.trim().split("\n").at(-1) ?? "";
+  try {
+    return JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return { played: false, reason: `browser helper exit ${code}` };
+  }
+}
+
+async function browser(): Promise<void> {
+  const state = await loadState();
+  for (const file of state.files) {
+    if (file.uid === undefined) continue;
+    const signed = await signedManifest(file.uid);
+    file.browser =
+      "reason" in signed
+        ? { played: false, reason: signed.reason }
+        : await playInBrowser(signed.manifestUrl, "https://probe.invalid/", false);
+  }
+  await saveState(state);
+  console.log(
+    JSON.stringify(
+      state.files.map(({ label, browser: seen }) => ({ label, browser: seen })),
+      null,
+      2,
+    ),
+  );
+}
+
+/**
+ * Offline rehearsal of the measuring tools, with no upload: the proven FLAC
+ * master is packaged locally as HLS with AAC audio, served on localhost with
+ * permissive cross-origin headers, then measured by FFmpeg and played in the
+ * browser exactly as the live phases do. It checks the tools, not Stream.
+ */
+async function rehearse(): Promise<void> {
+  const state = await loadState();
+  const master = state.files.find((file) => file.label === "flac-mp4");
+  if (master === undefined) throw new Error("prepare first");
+  const hlsDirectory = join(state.directory, "rehearsal");
+  await mkdir(hlsDirectory, { recursive: true });
+  await ffmpeg([
+    "-i",
+    master.path,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "160k",
+    "-f",
+    "hls",
+    "-hls_time",
+    "2",
+    "-hls_playlist_type",
+    "vod",
+    "-hls_segment_filename",
+    join(hlsDirectory, "segment%03d.ts"),
+    join(hlsDirectory, "media.m3u8"),
+  ]);
+  await writeFile(
+    join(hlsDirectory, "manifest.m3u8"),
+    '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="avc1.64001e,mp4a.40.2"\nmedia.m3u8\n',
+  );
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const name = new URL(request.url).pathname.split("/").pop() ?? "";
+      if (!/^[a-z0-9]+\.(m3u8|ts)$/u.test(name)) return new Response(null, { status: 404 });
+      const file = Bun.file(join(hlsDirectory, name));
+      if (!(await file.exists())) return new Response(null, { status: 404 });
+      return new Response(file, {
+        headers: {
+          "access-control-allow-origin": "*",
+          "content-type": name.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t",
+        },
+      });
+    },
+  });
+  const manifestUrl = `http://127.0.0.1:${server.port}/manifest.m3u8`;
+  try {
+    const delivered = await measureDelivered(
+      manifestUrl,
+      join(state.directory, "rehearsal-delivered"),
+    );
+    const played = await playInBrowser(manifestUrl, "http://probe.invalid/", true);
+    const report = { delivered, browser: played };
+    await writeFile(
+      join(state.directory, "rehearsal.json"),
+      `${JSON.stringify(report, null, 2)}\n`,
+    );
+    console.log(JSON.stringify(report, null, 2));
+  } finally {
+    server.stop(true);
+  }
+}
+
 async function remove(): Promise<void> {
   const state = await loadState();
   for (const file of state.files) {
     if (file.uid === undefined) continue;
     const deleted = await api(`/stream/${file.uid}`, { method: "DELETE" });
     const after = await api(`/stream/${file.uid}`);
+    // Only an explicit not-found confirms deletion. A 403, a server failure or
+    // any other refusal leaves the video unaccounted for.
+    const notFound =
+      after.status === 404 &&
+      after.body.success === false &&
+      (after.body.errors ?? []).some((error) => /not found/iu.test(error.message));
     file.deleted = {
       status: deleted.status,
-      verifiedGone: after.status === 404 || after.body.success === false,
+      afterStatus: after.status,
+      afterErrors: after.body.errors,
+      verifiedGone: notFound,
       at: new Date().toISOString(),
     };
     state.log.push(`${file.label}: delete ${deleted.status}, afterwards ${after.status}`);
@@ -614,8 +907,11 @@ const phases: Record<string, () => Promise<void>> = {
   prepare,
   capacity,
   upload,
+  investigate,
   observe,
-  play,
+  decode,
+  browser,
+  rehearse,
   delete: remove,
 };
 const selected = phase === undefined ? undefined : phases[phase];
