@@ -1739,4 +1739,397 @@ suite("Postgres 17 HNS root-import repository", () => {
       });
     });
   }, 30_000);
+
+  type ProvisionedRootImport = Awaited<ReturnType<typeof provisionRootImport>>;
+  type ReadinessArtifact = Awaited<ReturnType<typeof makeReadinessArtifact>>;
+  type ReadyActivation = Readonly<{
+    readonly provisioned: ProvisionedRootImport;
+    readonly readiness: ReadinessArtifact;
+    readonly lifecycleRevision: number;
+    readonly lifecycleGeneration: number;
+    readonly lifecyclePlanDigest: string;
+  }>;
+
+  /**
+   * Brings one creation-path operation to the ready state the activation gate
+   * accepts: the legacy readiness writer persists the session result and the
+   * lifecycle row is brought to ready the way the production performer would,
+   * with the plan's encoded-resource digest recorded. The readiness handover
+   * that makes that performer live is a later deliverable.
+   */
+  async function prepareReadyActivation(
+    store: ReturnType<typeof makeControlPlaneHnsRootImportStore>,
+    admin: Client,
+  ): Promise<ReadyActivation> {
+    const provisioned = await provisionRootImport(store, admin);
+    const observationRequestBytes = new TextEncoder().encode(
+      canonicalJson({
+        version: "pirate-hns-root-readiness-observation-request-v1",
+        root_import_session_id: provisioned.record.root_import_session_id,
+        namespace_session_id: provisioned.record.namespace_session_id,
+        root_label: provisioned.record.root_label,
+      }),
+    );
+    const observation = await Effect.runPromise(
+      Effect.scoped(
+        store.beginObservation({
+          poll: {
+            actor_id: provisioned.record.actor_id,
+            creation_intent_id: provisioned.record.creation_intent_id,
+            root_import_session_id: provisioned.record.root_import_session_id,
+            expected_revision: 3,
+            idempotency_key: "observe-root-import",
+          },
+          poll_request_sha256: SHA_A,
+          ownership_result_sha256: provisioned.ownershipResultHash,
+          observation_job_id: "observation-root-import",
+          observation_request_bytes: observationRequestBytes,
+          observation_request_sha256: sha256(observationRequestBytes),
+        }),
+      ),
+    );
+    expect(observation).toMatchObject({ kind: "observing" });
+    const claim = await admin.query<{ lease_fence: string; request_sha256: string }>(
+      "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
+      ["authority-executor", 60],
+    );
+    const readiness = await makeReadinessArtifact({
+      ownershipResultHash: provisioned.ownershipResultHash,
+      publishPlanSha256: sha256(provisioned.planBytes),
+      provisionResultSha256: sha256(provisioned.resultBytes),
+    });
+    const finalized = await admin.query<{ outcome: string; session_revision: string }>(
+      "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)",
+      [
+        "observation-root-import",
+        "authority-executor",
+        Number(claim.rows[0]?.lease_fence),
+        claim.rows[0]?.request_sha256,
+        "ready",
+        Buffer.from(readiness.result_bytes),
+        readiness.result_sha256,
+        null,
+      ],
+    );
+    expect(finalized.rows).toMatchObject([{ outcome: "ready", session_revision: "5" }]);
+    await admin.query(
+      `UPDATE hns_root_import_lifecycle
+          SET phase='ready', readiness_observed_at=clock_timestamp()
+        WHERE root_import_session_id='root-import-session'`,
+    );
+    const plan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
+      encoded_resource_sha256: string;
+    };
+    await admin.query(
+      `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256=$1
+        WHERE root_import_session_id='root-import-session'`,
+      [plan.encoded_resource_sha256],
+    );
+    const lifecycle = await admin.query<{ revision: string; generation: string }>(
+      `SELECT revision, generation FROM hns_root_import_lifecycle
+        WHERE root_import_session_id='root-import-session'`,
+    );
+    return {
+      provisioned,
+      readiness,
+      lifecycleRevision: Number(lifecycle.rows[0]?.revision),
+      lifecycleGeneration: Number(lifecycle.rows[0]?.generation),
+      lifecyclePlanDigest: plan.encoded_resource_sha256,
+    };
+  }
+
+  function activationRecordFor(
+    ready: ReadyActivation,
+    overrides: {
+      readonly expected_revision?: number;
+      readonly idempotency_key?: string;
+      readonly readiness_result_sha256?: string;
+      readonly current_evidence?: HnsRootImportActivationRecord["current_evidence"];
+    } = {},
+  ): HnsRootImportActivationRecord {
+    const input = {
+      actor_id: ready.provisioned.record.actor_id,
+      actor_kind: "user" as const,
+      creation_intent_id: ready.provisioned.record.creation_intent_id,
+      root_import_session_id: ready.provisioned.record.root_import_session_id,
+      expected_revision: overrides.expected_revision ?? 5,
+      idempotency_key: overrides.idempotency_key ?? "activate-root-import",
+      publish_plan_sha256: sha256(ready.provisioned.planBytes),
+      readiness_result_sha256: overrides.readiness_result_sha256 ?? ready.readiness.result_sha256,
+      acknowledged_complete_resource_replacement: true as const,
+    };
+    return {
+      input,
+      request_sha256: sha256(
+        new TextEncoder().encode(
+          canonicalJson({ version: "root-activation-v1", activationInput: input }),
+        ),
+      ),
+      community_id: "community-root-import",
+      dns_zone_activation_id: "dns-root-import",
+      app_host_activation_id: "app-root-import",
+      sale_namespace_activation_id: "sale-root-import",
+      operation_id: "root-import-activation-operation",
+      current_evidence:
+        overrides.current_evidence === undefined
+          ? {
+              lifecycle_revision: ready.lifecycleRevision,
+              lifecycle_generation: ready.lifecycleGeneration,
+              observed_at_epoch_ms: Date.now() - 5_000,
+              resource_sha256: ready.lifecyclePlanDigest,
+              qualifying: true,
+            }
+          : overrides.current_evidence,
+    };
+  }
+
+  async function activationState(admin: Client) {
+    const session = await admin.query<{ status: string; revision: string }>(
+      `SELECT status, revision FROM hns_root_import_sessions
+        WHERE root_import_session_id='root-import-session'`,
+    );
+    const lifecycle = await admin.query<{
+      phase: string;
+      revision: string;
+      pending_reason: string | null;
+      readiness_observed_at: string;
+    }>(
+      `SELECT phase, revision, pending_reason, readiness_observed_at
+         FROM hns_root_import_lifecycle WHERE root_import_session_id='root-import-session'`,
+    );
+    const operations = await admin.query<{ count: number }>(
+      "SELECT count(*)::integer AS count FROM hns_root_import_activation_operations",
+    );
+    const history = await admin.query<{ count: number }>(
+      `SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_history
+        WHERE root_import_session_id='root-import-session'
+          AND event_id LIKE 'activation:%'`,
+    );
+    return {
+      session: session.rows[0],
+      lifecycle: lifecycle.rows[0],
+      operations: operations.rows[0]?.count ?? -1,
+      activationHistory: history.rows[0]?.count ?? -1,
+    };
+  }
+
+  test("rolls back every effect when a post-decision activation write fails", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      await admin.query(
+        `CREATE FUNCTION test_reject_activation_operation() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'forced post-decision failure'; END $$`,
+      );
+      await admin.query(
+        `CREATE TRIGGER test_reject_activation_operation BEFORE INSERT
+           ON hns_root_import_activation_operations
+           FOR EACH ROW EXECUTE FUNCTION test_reject_activation_operation()`,
+      );
+      await expect(
+        Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).rejects.toMatchObject({ _tag: "HnsRootImportStorageFailed" });
+      const state = await activationState(admin);
+      expect(state.lifecycle).toMatchObject({ phase: "ready" });
+      expect(state.session).toEqual({ status: "ready", revision: "5" });
+      expect(state.operations).toBe(0);
+      expect(state.activationHistory).toBe(0);
+      await admin.query(
+        "DROP TRIGGER test_reject_activation_operation ON hns_root_import_activation_operations",
+      );
+      await admin.query("DROP FUNCTION test_reject_activation_operation()");
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+    });
+  }, 30_000);
+
+  test("preserves protected state when the lifecycle row is absent", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "DELETE FROM hns_root_import_lifecycle WHERE root_import_session_id='root-import-session'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toEqual({ kind: "conflict" });
+      const state = await activationState(admin);
+      expect(state.session).toEqual({ status: "ready", revision: "5" });
+      expect(state.operations).toBe(0);
+      expect(state.activationHistory).toBe(0);
+    });
+  }, 30_000);
+
+  test("survives and reuses a stale-readiness hold without duplicating refresh work", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle
+            SET readiness_observed_at=clock_timestamp() - interval '1 hour'
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toEqual({ kind: "conflict" });
+      const firstHold = await activationState(admin);
+      expect(firstHold.lifecycle).toMatchObject({
+        phase: "ready",
+        pending_reason: "readiness_evidence_stale",
+      });
+      const refreshJobs = await admin.query<{ count: number }>(
+        `SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs
+          WHERE root_import_session_id='root-import-session'
+            AND job_kind='observe_readiness'`,
+      );
+      expect(refreshJobs.rows[0]?.count).toBe(1);
+      // A repeated stale command reuses the pending hold rather than
+      // scheduling a second refresh.
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await admin.query<{ count: number }>(
+            `SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs
+              WHERE root_import_session_id='root-import-session'
+                AND job_kind='observe_readiness'`,
+          )
+        ).rows[0]?.count,
+      ).toBe(1);
+      // A completed refresh lets the same operation activate.
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle
+            SET readiness_observed_at=clock_timestamp(), pending_reason=NULL
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const refreshedRevision = Number(firstHold.lifecycle?.revision ?? 0);
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.activate(
+              activationRecordFor(ready, {
+                idempotency_key: "activate-after-refresh",
+                current_evidence: {
+                  lifecycle_revision: refreshedRevision,
+                  lifecycle_generation: ready.lifecycleGeneration,
+                  observed_at_epoch_ms: Date.now() - 5_000,
+                  resource_sha256: ready.lifecyclePlanDigest,
+                  qualifying: true,
+                },
+              }),
+            ),
+          ),
+        ),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+    });
+  }, 30_000);
+
+  test("serializes a real activation behind a real readiness refresh", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      await admin.query(
+        `UPDATE hns_root_import_execution_ownership
+            SET enabled=TRUE, enabled_at=clock_timestamp(), evidence_ref='refresh-test',
+                updated_at=clock_timestamp()
+          WHERE responsibility='readiness'`,
+      );
+      await admin.query(
+        `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
+          VALUES ('root-import-session','observe_readiness',clock_timestamp() - interval '1 second')`,
+      );
+      const job = (
+        await admin.query<{ lifecycle_job_id: string; lease_fence: string }>(
+          "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+          ["lifecycle-executor", 60],
+        )
+      ).rows[0];
+      if (job === undefined) throw new Error("no readiness refresh job was claimable");
+      const refresh = await makeReadinessArtifact({
+        ownershipResultHash: ready.provisioned.ownershipResultHash,
+        publishPlanSha256: sha256(ready.provisioned.planBytes),
+        provisionResultSha256: sha256(ready.provisioned.resultBytes),
+      });
+      const holder = new Client({ connectionString: connection });
+      await holder.connect();
+      try {
+        await holder.query("BEGIN");
+        const written = await holder.query<{ outcome: string }>(
+          "SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)",
+          [
+            "root-import-session",
+            Number(job.lifecycle_job_id),
+            "lifecycle-executor",
+            Number(job.lease_fence),
+            ready.lifecycleRevision,
+            refresh.result_bytes,
+            refresh.result_sha256,
+          ],
+        );
+        expect(written.rows[0]).toMatchObject({ outcome: "ready" });
+        // The real repository path blocks behind the refresh's row lock and
+        // then refuses the now-stale binding rather than corrupting state.
+        const activation = Effect.runPromise(
+          Effect.scoped(
+            store.activate(
+              activationRecordFor(ready, { idempotency_key: "activate-behind-refresh" }),
+            ),
+          ),
+        );
+        const settled = await Promise.race([
+          activation.then(() => "settled" as const),
+          new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 500)),
+        ]);
+        expect(settled).toBe("blocked");
+        await holder.query("COMMIT");
+        expect(await activation).toEqual({ kind: "conflict" });
+        const refreshed = await activationState(admin);
+        expect(refreshed.lifecycle).toMatchObject({ phase: "ready" });
+        expect(Number(refreshed.lifecycle?.revision)).toBeGreaterThan(ready.lifecycleRevision);
+        expect(refreshed.session).toEqual({ status: "ready", revision: "6" });
+        const freshRevision = Number(refreshed.lifecycle?.revision ?? 0);
+        expect(
+          await Effect.runPromise(
+            Effect.scoped(
+              store.activate(
+                activationRecordFor(ready, {
+                  expected_revision: 6,
+                  idempotency_key: "activate-after-refresh",
+                  readiness_result_sha256: refresh.result_sha256,
+                  current_evidence: {
+                    lifecycle_revision: freshRevision,
+                    lifecycle_generation: ready.lifecycleGeneration,
+                    observed_at_epoch_ms: Date.now() - 5_000,
+                    resource_sha256: ready.lifecyclePlanDigest,
+                    qualifying: true,
+                  },
+                }),
+              ),
+            ),
+          ),
+        ).toMatchObject({ kind: "activated", response: { status: "activated", revision: 7 } });
+      } finally {
+        await holder.end().catch(() => undefined);
+      }
+    });
+  }, 30_000);
 });
