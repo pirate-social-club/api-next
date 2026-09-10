@@ -1,3 +1,4 @@
+import type { HnsRetainedAuthorityReferenceV1 } from "@pirate/application/namespace-ownership";
 import type { HnsIncidentNameStateV1, HnsIncidentTransactionV1 } from "./incident-evidence.ts";
 
 /**
@@ -97,5 +98,75 @@ export function makeHnsIncidentHsdReadsV1(
         ? height
         : null;
     },
+  };
+}
+
+/**
+ * The retained plan, read from whichever tables the deployment actually has.
+ *
+ * A deployment that predates the lifecycle tables still holds the exposed plan
+ * in the older session tables, and four of the five evidence questions are
+ * answered by the chain and the provider anyway. Reading such an operation and
+ * classifying it is useful; persisting a finding against it is not possible,
+ * and the report says so rather than failing.
+ */
+export function makeHnsIncidentRetainedPlanReadV1(
+  query: <Row = Record<string, unknown>>(
+    text: string,
+    values?: readonly unknown[],
+  ) => Promise<{ readonly rows: Row[] }>,
+  planAuthority: (planBytes: Uint8Array) => HnsRetainedAuthorityReferenceV1,
+  planEncodedDigest: (planBytes: Uint8Array) => string | null,
+) {
+  return async (rootImportSessionId: string) => {
+    const lifecycle = await query<Record<string, unknown>>(
+      `SELECT root_label, generation, revision, plan_encoded_resource_sha256
+         FROM hns_root_import_lifecycle WHERE root_import_session_id = $1`,
+      [rootImportSessionId],
+    ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    const session = await query<Record<string, unknown>>(
+      `SELECT root_label, ownership_generation, revision, publish_plan_bytes
+         FROM hns_root_import_sessions WHERE root_import_session_id = $1`,
+      [rootImportSessionId],
+    );
+    const sessionRow = session.rows[0];
+    if (sessionRow === undefined && lifecycle.rows[0] === undefined) return null;
+    const planBytes =
+      sessionRow?.publish_plan_bytes instanceof Uint8Array ? sessionRow.publish_plan_bytes : null;
+    let authority: HnsRetainedAuthorityReferenceV1 | null = null;
+    let derivedDigest: string | null = null;
+    if (planBytes !== null) {
+      try {
+        authority = planAuthority(planBytes);
+        derivedDigest = planEncodedDigest(planBytes);
+      } catch {
+        authority = null;
+        derivedDigest = null;
+      }
+    }
+    const row = lifecycle.rows[0];
+    if (row !== undefined) {
+      return {
+        root_label: String(row.root_label),
+        generation: Number(row.generation),
+        revision: Number(row.revision),
+        // The lifecycle's own digest is authoritative when it has one; the
+        // plan document is the fallback for operations recorded before it.
+        plan_encoded_sha256:
+          typeof row.plan_encoded_resource_sha256 === "string"
+            ? row.plan_encoded_resource_sha256
+            : derivedDigest,
+        authority,
+        lifecycle_present: true,
+      };
+    }
+    return {
+      root_label: String(sessionRow?.root_label ?? ""),
+      generation: Number(sessionRow?.ownership_generation ?? 0),
+      revision: Number(sessionRow?.revision ?? 0),
+      plan_encoded_sha256: derivedDigest,
+      authority,
+      lifecycle_present: false,
+    };
   };
 }

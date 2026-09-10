@@ -58,13 +58,22 @@ export type HnsIncidentEvidencePortsV1 = Readonly<{
     readonly zone_present: boolean;
     readonly signing_keys_present: boolean;
   }> | null>;
-  /** The operation's retained plan digest and what it asserts on the name. */
+  /**
+   * The operation's retained plan digest and what it asserts on the name.
+   *
+   * `lifecycle_present` says whether the operation has a lifecycle row. A
+   * deployment that predates the lifecycle tables can still be read and
+   * classified — the chain and the provider answer four of the five questions,
+   * and the plan lives in the older session tables — but a finding cannot be
+   * persisted against an operation the lifecycle does not know about.
+   */
   readonly retained_plan: (rootImportSessionId: string) => Promise<Readonly<{
     readonly root_label: string;
     readonly generation: number;
     readonly revision: number;
     readonly plan_encoded_sha256: string | null;
     readonly authority: HnsRetainedAuthorityReferenceV1 | null;
+    readonly lifecycle_present: boolean;
   }> | null>;
   readonly decode_resource: (hex: string) => readonly HnsRootResourceRecordV1[];
   readonly sha256_hex: (hex: string) => Promise<string>;
@@ -75,6 +84,8 @@ export type HnsIncidentEvidenceReportV1 = Readonly<{
   readonly root_label: string;
   readonly generation: number;
   readonly revision: number;
+  /** False when no finding can be persisted for this operation. */
+  readonly recordable: boolean;
   readonly evidence: HnsRecoveryEvidenceV1;
   readonly evidence_ref: string;
   readonly finding: HnsRecoveryFindingV1;
@@ -148,6 +159,7 @@ export async function gatherHnsIncidentEvidenceV1(
     root_label: rootLabel,
     generation: operation.generation,
     revision: operation.revision,
+    recordable: operation.lifecycle_present,
     evidence,
     evidence_ref: hnsRecoveryEvidenceRefV1(evidence),
     finding: classifyHnsRecoveryEvidenceV1(evidence),
