@@ -2151,6 +2151,10 @@ BEGIN
        OR (
          cleanup_session.status IN ('awaiting_owner_update', 'observing', 'ready')
          AND cleanup_session.expires_at <= database_now
+         AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = cleanup_session.root_import_session_id
+         )
        )
      )
      AND EXISTS (
@@ -2210,6 +2214,10 @@ BEGIN
        OR (
          cleanup_session.status IN ('awaiting_owner_update', 'observing', 'ready')
          AND cleanup_session.expires_at <= database_now
+         AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = cleanup_session.root_import_session_id
+         )
        )
      )
      AND EXISTS (
@@ -2252,7 +2260,13 @@ BEGIN
        OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
      )
      AND selected_session.status = 'observing'
-     AND selected_session.expires_at > database_now
+     AND (
+       selected_session.expires_at > database_now
+       OR EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = selected_session.root_import_session_id
+         )
+     )
      AND NOT (
        job.operation_kind = 'observe_root_v1'
        AND readiness_enabled
@@ -2290,7 +2304,13 @@ BEGIN
        OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
      )
      AND selected_session.status = 'observing'
-     AND selected_session.expires_at > database_now
+     AND (
+       selected_session.expires_at > database_now
+       OR EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = selected_session.root_import_session_id
+         )
+     )
      AND NOT (
        job.operation_kind = 'observe_root_v1'
        AND readiness_enabled
@@ -2729,8 +2749,15 @@ BEGIN
     RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
-  IF session.expires_at <= database_now THEN
-    RETURN QUERY SELECT 'session_expired'::TEXT, lifecycle.revision, NULL::TEXT;
+  -- The retired single expiry does not gate readiness (spec 012, "Expiry
+  -- consumers"). The phase deadline governs: an operation in
+  -- checking_authority past its finality deadline is recovery evidence, and
+  -- `ready` has no active deadline and refreshes in place.
+  IF lifecycle.phase = 'checking_authority'
+    AND lifecycle.finality_deadline_at IS NOT NULL
+    AND lifecycle.finality_deadline_at <= database_now
+  THEN
+    RETURN QUERY SELECT 'deadline_expired'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
 
@@ -4170,6 +4197,10 @@ BEGIN
         OR (
           session.status IN ('awaiting_owner_update', 'observing', 'ready')
           AND session.expires_at <= database_now
+          AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = session.root_import_session_id
+         )
         )
       )
       OR input_outcome = 'ready'
@@ -4281,7 +4312,13 @@ BEGIN
     OR job.lease_expires_at <= database_now
     OR job.request_sha256 <> input_request_sha256
     OR session.status <> 'observing'
-    OR session.expires_at <= database_now
+    OR (
+      session.expires_at <= database_now
+      AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = session.root_import_session_id
+         )
+    )
   THEN
     RETURN QUERY SELECT 'lost'::TEXT, session.root_import_session_id, session.revision;
     RETURN;

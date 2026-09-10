@@ -718,6 +718,20 @@ export function makeControlPlaneHnsRootImportRepository(
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
+              // Common lock order: the lifecycle row first, then the session.
+              // The pre-flight, the readiness writer and every lifecycle
+              // writer order lifecycle before session, so an activation
+              // transaction that locked the session first could deadlock
+              // against a pre-flight holding lifecycle and waiting on the
+              // session.
+              yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lock-lifecycle",
+                text: `SELECT root_import_session_id FROM hns_root_import_lifecycle
+                        WHERE root_import_session_id=$1
+                        FOR UPDATE`,
+                values: [input.input.root_import_session_id],
+                readonly: false,
+              });
               const replayResult = yield* transaction.execute<Row>({
                 label: "hns.root-import.activate.find-replay",
                 text: `SELECT *
@@ -856,15 +870,18 @@ export function makeControlPlaneHnsRootImportRepository(
                 readinessBytes === null
                   ? null
                   : yield* Effect.promise(() => sha256Bytes(readinessBytes));
-              const sessionExpiresAt = instant(session.expires_at);
+              // The retired single expiry does not gate activation (spec 012,
+              // "Expiry consumers"); the lifecycle decision's phase, revision,
+              // generation and readiness-freshness checks govern, and the
+              // application service has already validated the caller's
+              // authorization.
               if (
                 session.status !== "ready" ||
                 positiveInteger(session.revision) !== input.input.expected_revision ||
                 session.publish_plan_sha256 !== input.input.publish_plan_sha256 ||
                 session.readiness_result_sha256 !== input.input.readiness_result_sha256 ||
                 readinessBytes === null ||
-                readinessDigest !== session.readiness_result_sha256 ||
-                sessionExpiresAt === null
+                readinessDigest !== session.readiness_result_sha256
               ) {
                 return yield* Effect.fail(
                   new HnsRootImportActivationRefused({ reason: "conflict" }),
@@ -1110,7 +1127,8 @@ export function makeControlPlaneHnsRootImportRepository(
               if (
                 nowRow === undefined ||
                 databaseNow === null ||
-                Date.parse(sessionExpiresAt) <= Date.parse(databaseNow) ||
+                // The retired session expiry does not gate activation; the
+                // readiness evidence's own window does.
                 Date.parse(readiness.result.observed_at) > Date.parse(databaseNow) ||
                 Date.parse(readiness.result.valid_until) <= Date.parse(databaseNow)
               ) {

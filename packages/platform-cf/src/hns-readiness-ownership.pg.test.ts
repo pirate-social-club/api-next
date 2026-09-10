@@ -66,6 +66,11 @@ type SeedOptions = Readonly<{
   readonly rootLabel: string;
   readonly withLifecycle: boolean;
   readonly lifecyclePhase?: "checking_authority" | "checking_publication";
+  /** SQL interval expressions, for a passed expiry or an exhausted deadline. */
+  readonly sessionExpiresAt?: string;
+  readonly sessionCreatedAt?: string;
+  readonly firstCurrentAt?: string;
+  readonly finalityDeadlineAt?: string;
 }>;
 
 async function seedOwners(admin: Client): Promise<void> {
@@ -105,7 +110,7 @@ async function seedOperation(admin: Client, options: SeedOptions): Promise<void>
        provision_idempotency_key, provision_poll_request_sha256,
        publish_plan_bytes, publish_plan_sha256, ownership_result_sha256,
        observation_job_id, observation_idempotency_key, observation_request_sha256,
-       community_id, attachment_intent_id, origin_kind, expires_at
+       community_id, attachment_intent_id, origin_kind, created_at, expires_at
      ) VALUES (
        $1,$2,
        'namespace-' || $1,1,1,$3,$4,'observing',3,
@@ -114,7 +119,8 @@ async function seedOperation(admin: Client, options: SeedOptions): Promise<void>
        $6,$7,$5,
        'observation-' || $1,'obs-idem-' || $1,$5,
        $8,'attachment-' || $1,'community_attachment',
-       clock_timestamp() + interval '30 days'
+       ${options.sessionCreatedAt ?? "clock_timestamp()"},
+       ${options.sessionExpiresAt ?? "clock_timestamp() + interval '30 days'"}
      )`,
     [
       options.session,
@@ -137,8 +143,8 @@ async function seedOperation(admin: Client, options: SeedOptions): Promise<void>
          policy_name, policy_digest, plan_encoded_resource_sha256
        ) VALUES ($1,$2,$3,1,1,
          clock_timestamp() - interval '1 day', clock_timestamp() + interval '13 days',
-         CASE WHEN $4 THEN clock_timestamp() - interval '1 hour' END,
-         CASE WHEN $4 THEN clock_timestamp() + interval '23 hours' END,
+         CASE WHEN $4 THEN ${options.firstCurrentAt ?? "clock_timestamp() - interval '1 hour'"} END,
+         CASE WHEN $4 THEN ${options.finalityDeadlineAt ?? "clock_timestamp() + interval '23 hours'"} END,
          'hns_root_import_lifecycle_v1','readiness',$5)`,
       [
         options.session,
@@ -1254,6 +1260,269 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
           ],
         );
         expect(committed.rows[0]).toMatchObject({ outcome: "activated", revision: "3" });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the retired session expiry no longer gates readiness or activation",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "expired-session",
+          rootLabel: "expiredroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+          // The retired single expiry has passed; the publication and
+          // finality windows remain valid.
+          sessionCreatedAt: "clock_timestamp() - interval '3 hours'",
+          sessionExpiresAt: "clock_timestamp() - interval '2 hours'",
+        });
+        await enableMarker(admin);
+        await queueJob(admin, "expired-session", "observe_readiness");
+        const job = await requireClaimLifecycle(admin);
+        const readiness = readinessResult("expired-session");
+        const accepted = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            "expired-session",
+            job.lifecycle_job_id,
+            "lifecycle-executor",
+            Number(job.lease_fence),
+            1,
+            readiness.bytes,
+            readiness.sha,
+          ],
+        );
+        expect(accepted.rows[0]?.outcome).toBe("ready");
+        const session = await admin.query<Record<string, unknown>>(
+          `SELECT status, revision FROM hns_root_import_sessions
+            WHERE root_import_session_id='expired-session'`,
+        );
+        expect(session.rows[0]).toMatchObject({ status: "ready", revision: "4" });
+        const lifecycle = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='expired-session'`,
+        );
+        expect(lifecycle.rows[0]).toMatchObject({ phase: "ready", revision: "2" });
+        // Activation follows the same clocks: fresh readiness and qualifying
+        // current evidence at the current generation.
+        const activation = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            "expired-session",
+            4,
+            2,
+            1,
+            planSha,
+            readiness.sha,
+            "expired-session-activation",
+            new Date(Date.now() - 5_000).toISOString(),
+            planEncodedSha,
+            true,
+          ],
+        );
+        expect(activation.rows[0]).toMatchObject({ outcome: "activated", revision: "3" });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "an exhausted finality deadline refuses readiness acceptance",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "deadline-session",
+          rootLabel: "deadlineroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+          firstCurrentAt: "clock_timestamp() - interval '2 days'",
+          finalityDeadlineAt: "clock_timestamp() - interval '1 hour'",
+        });
+        await enableMarker(admin);
+        await queueJob(admin, "deadline-session", "observe_readiness");
+        const job = await requireClaimLifecycle(admin);
+        const readiness = readinessResult("deadline-session");
+        const refused = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            "deadline-session",
+            job.lifecycle_job_id,
+            "lifecycle-executor",
+            Number(job.lease_fence),
+            1,
+            readiness.bytes,
+            readiness.sha,
+          ],
+        );
+        expect(refused.rows[0]?.outcome).toBe("deadline_expired");
+        const lifecycle = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='deadline-session'`,
+        );
+        // Authority is retained and the phase is unchanged; the domain's
+        // deadline event moves the operation to recovery with its own
+        // retained-authority semantics.
+        expect(lifecycle.rows[0]).toMatchObject({ phase: "checking_authority", revision: "1" });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "an activation preflight and the effects transaction serialize on the lifecycle lock",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "lock-activation-session",
+          rootLabel: "lockactivationroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        const readinessBytes = Buffer.from('{"ready":true}');
+        const readinessSha = createHash("sha256").update(readinessBytes).digest("hex");
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready', readiness_result_bytes=$1,
+                  readiness_result_sha256=$2, revision=4
+            WHERE root_import_session_id='lock-activation-session'`,
+          [readinessBytes, readinessSha],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready', readiness_observed_at=clock_timestamp() - interval '60 seconds'
+            WHERE root_import_session_id='lock-activation-session'`,
+        );
+        const schema = (
+          await admin.query<{ readonly schema: string }>("SELECT current_schema() AS schema")
+        ).rows[0]?.schema;
+        if (schema === undefined) throw new Error("schema was not established");
+        const holder = new Client({ connectionString });
+        await holder.connect();
+        try {
+          await holder.query(`SET search_path TO ${quote(schema)}`);
+          await holder.query("BEGIN");
+          await holder.query(
+            `SELECT root_import_session_id FROM hns_root_import_lifecycle
+              WHERE root_import_session_id='lock-activation-session' FOR UPDATE`,
+          );
+          // The preflight locks lifecycle then session; it must wait for the
+          // holder's lifecycle lock rather than proceed out of order.
+          const preflight = admin.query<Record<string, unknown>>(
+            `SELECT * FROM authorize_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [
+              "lock-activation-session",
+              4,
+              1,
+              1,
+              planSha,
+              readinessSha,
+              "lock-identity-b",
+              new Date(Date.now() - 5_000).toISOString(),
+              planEncodedSha,
+              true,
+            ],
+          );
+          const settled = await Promise.race([
+            preflight.then(() => "settled" as const),
+            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 500)),
+          ]);
+          expect(settled).toBe("blocked");
+          // The holder runs the activation decision itself, then commits; the
+          // preflight then sees the moved phase and changes nothing.
+          await holder.query(
+            `SELECT * FROM commit_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [
+              "lock-activation-session",
+              4,
+              1,
+              1,
+              planSha,
+              readinessSha,
+              "lock-identity-a",
+              new Date(Date.now() - 5_000).toISOString(),
+              planEncodedSha,
+              true,
+            ],
+          );
+          await holder.query("COMMIT");
+          const resolved = await preflight;
+          expect(resolved.rows[0]?.outcome).toBe("phase_conflict");
+          const history = await admin.query<Record<string, unknown>>(
+            `SELECT event_id FROM hns_root_import_lifecycle_history
+              WHERE root_import_session_id='lock-activation-session'
+                AND event_name='activation_requested'`,
+          );
+          expect(history.rows).toHaveLength(1);
+          expect(history.rows[0]?.event_id).toBe("activation:lock-identity-a");
+        } finally {
+          await holder.end().catch(() => undefined);
+        }
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a readiness refresh and an activation serialize on the lifecycle lock",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "lock-readiness-session",
+          rootLabel: "lockreadinessroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await enableMarker(admin);
+        await queueJob(admin, "lock-readiness-session", "observe_readiness");
+        const job = await requireClaimLifecycle(admin);
+        const readiness = readinessResult("lock-readiness-session");
+        const schema = (
+          await admin.query<{ readonly schema: string }>("SELECT current_schema() AS schema")
+        ).rows[0]?.schema;
+        if (schema === undefined) throw new Error("schema was not established");
+        const holder = new Client({ connectionString });
+        await holder.connect();
+        try {
+          await holder.query(`SET search_path TO ${quote(schema)}`);
+          await holder.query("BEGIN");
+          await holder.query(
+            `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
+            [
+              "lock-readiness-session",
+              job.lifecycle_job_id,
+              "lifecycle-executor",
+              Number(job.lease_fence),
+              1,
+              readiness.bytes,
+              readiness.sha,
+            ],
+          );
+          const lock = admin.query<Record<string, unknown>>(
+            `SELECT root_import_session_id FROM hns_root_import_lifecycle
+              WHERE root_import_session_id='lock-readiness-session' FOR UPDATE`,
+          );
+          const settled = await Promise.race([
+            lock.then(() => "settled" as const),
+            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 500)),
+          ]);
+          expect(settled).toBe("blocked");
+          await holder.query("COMMIT");
+          await lock;
+          const lifecycle = await admin.query<Record<string, unknown>>(
+            `SELECT phase, revision FROM hns_root_import_lifecycle
+              WHERE root_import_session_id='lock-readiness-session'`,
+          );
+          expect(lifecycle.rows[0]).toMatchObject({ phase: "ready", revision: "2" });
+        } finally {
+          await holder.end().catch(() => undefined);
+        }
       });
     },
     BUDGET_MS,

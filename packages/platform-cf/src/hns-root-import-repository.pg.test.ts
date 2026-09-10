@@ -720,7 +720,7 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 20_000);
 
-  test("leases teardown before expiring a provisioned root abandoned before broadcast", async () => {
+  test("does not expire a lifecycle-managed operation whose phase deadlines remain open", async () => {
     await withSchema(async (connection, admin) => {
       const store = makeControlPlaneHnsRootImportStore(
         makeDirectPostgresControlPlaneLayer(connection),
@@ -738,45 +738,21 @@ suite("Postgres 17 HNS root-import repository", () => {
         await admin.query("SET session_replication_role = origin");
       }
       const claim = await admin.query<{
-        observation_job_id: string;
         operation_kind: string;
-        request_sha256: string;
-        lease_fence: string;
       }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
         "authority-executor",
         60,
       ]);
-      expect(claim.rows).toHaveLength(1);
-      expect(claim.rows[0]).toMatchObject({ operation_kind: "teardown_root_v1" });
-      const finalized = await admin.query<{
-        outcome: string;
-        root_import_session_id: string;
-        session_revision: string;
-      }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
-        claim.rows[0]?.observation_job_id,
-        "authority-executor",
-        Number(claim.rows[0]?.lease_fence),
-        claim.rows[0]?.request_sha256,
-        "failed",
-        null,
-        null,
-        "session_expired",
-      ]);
-      expect(finalized.rows).toEqual([
-        {
-          outcome: "failed",
-          root_import_session_id: "root-import-session",
-          session_revision: "4",
-        },
-      ]);
-      const state = await admin.query<{ teardown_state: string; session_status: string }>(
-        `SELECT teardown.state AS teardown_state,session.status AS session_status
-           FROM hns_root_import_teardown_jobs AS teardown
-           JOIN hns_root_import_sessions AS session
-             ON session.root_import_session_id=teardown.root_import_session_id
-          WHERE teardown.root_import_session_id='root-import-session'`,
+      // The retired expiry no longer authorizes teardown for a
+      // lifecycle-managed operation: the phase deadlines govern. The legacy
+      // readiness performer may still take the observation job while the
+      // ownership marker is disabled.
+      expect(claim.rows.every((row) => row.operation_kind !== "teardown_root_v1")).toBe(true);
+      const state = await admin.query<{ session_status: string }>(
+        `SELECT status AS session_status FROM hns_root_import_sessions
+          WHERE root_import_session_id='root-import-session'`,
       );
-      expect(state.rows).toEqual([{ teardown_state: "completed", session_status: "expired" }]);
+      expect(state.rows[0]?.session_status).not.toBe("expired");
     });
   }, 20_000);
 
