@@ -45,17 +45,20 @@ export function makeLocalVersionedMasterStore(): LocalVersionedMasterStore {
 }
 
 /**
- * The engine as the render stage's renderer. It writes the master to the
- * attempt's dispatched output address and reports only completion; whether
- * that output becomes a master is decided by sealing, from the bytes.
+ * The engine as the render stage's renderer. Locally a submission renders to
+ * completion before it returns; the stage still observes the outcome from the
+ * output store, exactly as it would a remote render host, so a lost response
+ * is resolved by what was written rather than by rendering again. Refusals are
+ * kept per output address so an observation after a lost refusal reports it.
  */
 export function makeLocalSongVideoRenderer(
   input: Readonly<{ engine: LocalSongVideoEngine; output: LocalVersionedMasterStore }>,
 ): SongVideoRenderer {
+  const refusals = new Map<string, string>();
   return {
     identity: input.engine.identity,
     policyRevision: input.engine.policyRevision,
-    render: async (request) => {
+    submit: async (request) => {
       const result = await input.engine.render({
         source: {
           reference: request.source.immutableRef,
@@ -70,9 +73,17 @@ export function makeLocalSongVideoRenderer(
         clipStartSamples: request.clipStartSamples,
         clipDurationSamples: request.clipDurationSamples,
       });
-      if (!result.ok) return { status: "refused", reason: result.reason };
+      if (!result.ok) {
+        refusals.set(request.outputObjectKey, result.reason);
+        return { status: "refused", reason: result.reason };
+      }
       input.output.write(request.outputObjectKey, result.masterBytes);
-      return { status: "completed" };
+      return { status: "submitted" };
+    },
+    observe: async ({ outputObjectKey }) => {
+      if ((await input.output.read(outputObjectKey)) !== null) return { status: "completed" };
+      const reason = refusals.get(outputObjectKey);
+      return reason === undefined ? { status: "pending" } : { status: "refused", reason };
     },
   };
 }

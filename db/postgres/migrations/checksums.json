@@ -160,6 +160,6 @@
     "0157_recovery_inspection_cursors.sql": "9a50753f346f224f65faaf77db3f34965ce88d394dd525c64d341233f0257bb4",
     "0137_song_video_render_identities.sql": "f95400045d8475937173fc0dd4c1616a53452eeb9227249d7c4bd3f08727a1e7",
     "0138_song_video_interval_reservation.sql": "a35a2ed408a7cca9eba6a7b8b78beed6387ae37e743f9dec9f5449d43b8e24ab",
-    "0139_song_video_publication.sql": "cda807fc5047efe6482744230454343ada61d8d2729aed86e85a94009f41e5da"
+    "0139_song_video_publication.sql": "a1bc43c5625a61eeb08115701e7f61e867c006ddf0cbad2aec7248221ec06614"
   }
 }

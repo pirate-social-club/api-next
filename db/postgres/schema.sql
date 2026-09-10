@@ -11390,6 +11390,24 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_video_render_attempt_execution() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.execution_phase IS DISTINCT FROM OLD.execution_phase AND NOT (
+    (OLD.execution_phase = 'recorded' AND NEW.execution_phase = 'submitting')
+    OR (OLD.execution_phase = 'submitting' AND NEW.execution_phase = 'submitted')
+  ) THEN
+    RAISE EXCEPTION 'a song-video render execution cannot move backwards';
+  END IF;
+  IF OLD.execution_started_at IS NOT NULL
+    AND NEW.execution_started_at IS DISTINCT FROM OLD.execution_started_at THEN
+    RAISE EXCEPTION 'a song-video render execution start is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_song_video_render_plan() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -15151,6 +15169,26 @@ BEGIN
        AND e.master_revision_id = NEW.song_video_master_revision_id
   ) THEN
     RAISE EXCEPTION 'a song-reference video projection requires its song edge';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_rating_floor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM media_post_submissions s
+      JOIN posts video ON video.community_id = s.community_id AND video.post_id = NEW.post_id
+      JOIN posts song ON song.community_id = NEW.song_community_id AND song.post_id = NEW.song_post_id
+     WHERE s.submission_id = NEW.submission_id
+       AND video.post_type = 'video'
+       AND song.post_type = 'song'
+       AND (song.content_rating <> 'adult_18' OR video.content_rating = 'adult_18')
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video must be rated at least as its song';
   END IF;
   RETURN NULL;
 END;
@@ -26578,11 +26616,16 @@ CREATE TABLE media_song_video_render_attempts (
     dispatch_renderer_policy_revision integer NOT NULL,
     disposition text,
     started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    execution_phase text DEFAULT 'recorded'::text NOT NULL,
+    execution_started_at timestamp with time zone,
     CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
     CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempt_execution_shape CHECK (((execution_phase = 'recorded'::text) = (execution_started_at IS NULL))),
     CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK (((length(attempt_id) >= 1) AND (length(attempt_id) <= 128) AND (btrim(attempt_id) = attempt_id))),
     CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
     CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_execution_phase_check CHECK ((execution_phase = ANY (ARRAY['recorded'::text, 'submitting'::text, 'submitted'::text]))),
+    CONSTRAINT media_song_video_render_attempts_execution_started_at_check CHECK (((execution_started_at IS NULL) OR isfinite(execution_started_at))),
     CONSTRAINT media_song_video_render_attempts_generation_check CHECK ((generation >= 1)),
     CONSTRAINT media_song_video_render_attempts_started_at_check CHECK (isfinite(started_at)),
     CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text])))
@@ -33620,6 +33663,8 @@ CREATE TRIGGER media_song_reservation_update_guard BEFORE UPDATE ON media_upload
 
 CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update();
 
+CREATE TRIGGER media_song_video_render_attempt_execution_guard BEFORE UPDATE ON media_song_video_render_attempts FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_attempt_execution();
+
 CREATE TRIGGER media_song_video_render_plan_frozen BEFORE INSERT ON media_song_video_render_plans FOR EACH ROW EXECUTE FUNCTION require_song_video_render_plan_frozen();
 
 CREATE TRIGGER media_song_video_render_plan_guard BEFORE DELETE OR UPDATE ON media_song_video_render_plans FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_plan();
@@ -33665,6 +33710,8 @@ CREATE CONSTRAINT TRIGGER media_video_rights_basis_matches_intent AFTER INSERT O
 CREATE TRIGGER media_video_safety_evidence_immutable BEFORE UPDATE ON media_video_safety_evidence FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
 CREATE TRIGGER media_video_song_reference_guard BEFORE DELETE OR UPDATE ON media_video_song_references FOR EACH ROW EXECUTE FUNCTION guard_media_video_song_reference();
+
+CREATE CONSTRAINT TRIGGER media_video_song_reference_rating_floor AFTER INSERT ON media_video_song_references DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_song_video_rating_floor();
 
 CREATE TRIGGER media_video_stage_fact_immutable BEFORE UPDATE ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 

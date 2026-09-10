@@ -88,6 +88,37 @@ CREATE TRIGGER media_song_video_render_plan_guard
   BEFORE UPDATE OR DELETE ON media_song_video_render_plans
   FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_plan();
 
+-- Execution of an attempt, kept apart from its outcome. The intent to execute
+-- is recorded before the renderer is invoked, so an attempt whose execution may
+-- have begun is afterwards only observed, never started again: a lost response
+-- or a retried step cannot render the same attempt twice.
+ALTER TABLE media_song_video_render_attempts
+  ADD COLUMN execution_phase TEXT NOT NULL DEFAULT 'recorded'
+    CHECK (execution_phase IN ('recorded', 'submitting', 'submitted')),
+  ADD COLUMN execution_started_at TIMESTAMPTZ
+    CHECK (execution_started_at IS NULL OR isfinite(execution_started_at)),
+  ADD CONSTRAINT media_song_video_render_attempt_execution_shape
+    CHECK ((execution_phase = 'recorded') = (execution_started_at IS NULL));
+
+CREATE FUNCTION guard_song_video_render_attempt_execution() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.execution_phase IS DISTINCT FROM OLD.execution_phase AND NOT (
+    (OLD.execution_phase = 'recorded' AND NEW.execution_phase = 'submitting')
+    OR (OLD.execution_phase = 'submitting' AND NEW.execution_phase = 'submitted')
+  ) THEN
+    RAISE EXCEPTION 'a song-video render execution cannot move backwards';
+  END IF;
+  IF OLD.execution_started_at IS NOT NULL
+    AND NEW.execution_started_at IS DISTINCT FROM OLD.execution_started_at THEN
+    RAISE EXCEPTION 'a song-video render execution start is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER media_song_video_render_attempt_execution_guard
+  BEFORE UPDATE ON media_song_video_render_attempts
+  FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_attempt_execution();
+
 -- The master's decoded audio, established at seal by decoding the verified
 -- bytes and the canonical song under the one pinned chain and finding them
 -- identical. Duration and sample rate alone cannot tell two songs apart.
@@ -174,6 +205,31 @@ CREATE TABLE media_video_song_references (
     derivative_video, permitted
   ) ON DELETE RESTRICT
 );
+
+-- The song's rating is a lower bound on the video's at commit. Checked when the
+-- transaction commits, against the song as it is then, so a song made
+-- adult-only while its master rendered cannot publish a general video.
+CREATE FUNCTION require_song_video_rating_floor() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM media_post_submissions s
+      JOIN posts video ON video.community_id = s.community_id AND video.post_id = NEW.post_id
+      JOIN posts song ON song.community_id = NEW.song_community_id AND song.post_id = NEW.song_post_id
+     WHERE s.submission_id = NEW.submission_id
+       AND video.post_type = 'video'
+       AND song.post_type = 'song'
+       AND (song.content_rating <> 'adult_18' OR video.content_rating = 'adult_18')
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video must be rated at least as its song';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER media_video_song_reference_rating_floor
+  AFTER INSERT ON media_video_song_references
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION require_song_video_rating_floor();
 
 CREATE FUNCTION guard_media_video_song_reference() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

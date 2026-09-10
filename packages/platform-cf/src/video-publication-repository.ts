@@ -1569,6 +1569,7 @@ export function makeControlPlaneVideoPublicationStore(
                 status: "processing_failed",
                 phase: null,
                 failureCode: input.failureCode,
+                reconciliationRequired: input.reconciliationRequired === true,
               };
               const updated = yield* updateSubmissionSnapshot(tx, {
                 prior: current.state,
@@ -1579,7 +1580,7 @@ export function makeControlPlaneVideoPublicationStore(
                 extraValues: [
                   input.evidenceRef,
                   current.state.retryCount,
-                  current.state.retryCount < 3,
+                  !next.reconciliationRequired && current.state.retryCount < 3,
                   current.state.phase,
                 ],
               });
@@ -1742,9 +1743,11 @@ export function makeControlPlaneVideoPublicationStore(
                 status: "processing",
                 phase: publicationOnly ? "publish" : "analysis",
                 failureCode: null,
+                // Re-analysed unless only publication failed: an accepted
+                // analysis is not decided again under a new creation revision.
                 ...(publicationOnly
                   ? {}
-                  : { decision: null, reviewReasons: [], approvedHolds: [] }),
+                  : { analysis: null, decision: null, reviewReasons: [], approvedHolds: [] }),
               };
               yield* updateSubmissionSnapshot(tx, {
                 prior: current.state,
@@ -2288,7 +2291,11 @@ type SongPublicationRow = Readonly<{
   contentRating: "general" | "adult_18";
 }>;
 
-/** The referenced song as currently published, or null when it no longer is. */
+/**
+ * The referenced song as currently published, or null when it no longer is.
+ * Its Post is share-locked, so its rating and state cannot change until the
+ * transaction that read them commits.
+ */
 function readPublishedSong(tx: Executor, songPostId: string) {
   return Effect.gen(function* () {
     const result = yield* tx.execute<Row>({
@@ -2297,9 +2304,10 @@ function readPublishedSong(tx: Executor, songPostId: string) {
                FROM media_publication_projections p
                JOIN posts post ON post.community_id=p.community_id AND post.post_id=p.post_id
               WHERE p.post_id=$1 AND p.media_kind='song'
-                AND post.post_type='song' AND post.status='published' AND post.visibility='public'`,
+                AND post.post_type='song' AND post.status='published' AND post.visibility='public'
+              FOR SHARE OF post`,
       values: [songPostId],
-      readonly: true,
+      readonly: false,
     });
     if (result.rows.length === 0) return null;
     if (result.rows.length !== 1 || result.rows[0] === undefined)
@@ -2657,6 +2665,13 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
         const video = current.state.video;
+        // The song's rating is a lower bound at commit, not only at decision: a
+        // song that became adult-only while the master rendered makes this
+        // video adult-only too. The song's Post is locked above.
+        const contentRating =
+          input.decision.effectiveContentRating === "adult_18" || song.contentRating === "adult_18"
+            ? "adult_18"
+            : "general";
         yield* tx.execute({
           label: "video-publication.post-insert",
           text: `INSERT INTO posts
@@ -2674,7 +2689,7 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             current.state.caption,
             `video-publication:${current.state.operationId}`,
             current.state.authorDeclaredRating,
-            input.decision.effectiveContentRating,
+            contentRating,
           ],
           readonly: false,
         });

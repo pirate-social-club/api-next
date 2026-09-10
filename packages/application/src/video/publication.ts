@@ -380,6 +380,11 @@ export interface VideoPublicationStore {
     observedEventSequence: number;
     failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
     evidenceRef: string;
+    /**
+     * An execution whose outcome is unknown: the failure is not retryable
+     * until it is reconciled, so nothing can start the same work twice.
+     */
+    reconciliationRequired?: true;
   }) => Promise<VideoSubmissionRecord>;
   readonly publish: (
     input: VideoPublishBundle,
@@ -1517,7 +1522,9 @@ export async function retryVideoSubmission(
     status: "processing",
     phase: publicationOnly ? "publish" : "analysis",
     failureCode: null,
-    ...(publicationOnly ? {} : { decision: null, reviewReasons: [], approvedHolds: [] }),
+    ...(publicationOnly
+      ? {}
+      : { analysis: null, decision: null, reviewReasons: [], approvedHolds: [] }),
   };
   const response = await snapshot(
     projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),

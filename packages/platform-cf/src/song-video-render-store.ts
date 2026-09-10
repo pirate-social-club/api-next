@@ -23,7 +23,44 @@ import {
  * It runs on a dedicated PostgreSQL connection per operation because sealing
  * and acceptance manage their own transactions. That makes it a host-side
  * adapter: the renderer it serves runs FFmpeg, which a Worker cannot.
+ *
+ * Execution is fenced here: `beginExecution` is a compare-and-set from
+ * `recorded`, so an attempt whose execution may have begun is never started
+ * again, whatever retried the step.
  */
+
+type AttemptRow = {
+  attempt_id: string;
+  generation: number;
+  state: string;
+  dispatch_output_key: string;
+  execution_phase: string;
+  execution_started_ms: string | null;
+};
+
+const ATTEMPT_COLUMNS = `attempt_id, generation, state, dispatch_output_key, execution_phase,
+  floor(extract(epoch FROM execution_started_at) * 1000)::bigint::text AS execution_started_ms`;
+
+function attemptFromRow(planId: string, row: AttemptRow): SongVideoRenderAttempt {
+  const phase =
+    row.state === "sealed"
+      ? "sealed"
+      : row.execution_phase === "recorded" ||
+          row.execution_phase === "submitting" ||
+          row.execution_phase === "submitted"
+        ? row.execution_phase
+        : null;
+  if (phase === null) throw new Error("invalid song video render attempt");
+  return {
+    attemptId: row.attempt_id,
+    planId,
+    generation: row.generation,
+    outputObjectKey: row.dispatch_output_key,
+    phase,
+    executionStartedAtMs:
+      row.execution_started_ms === null ? null : Number(row.execution_started_ms),
+  };
+}
 export function makeSongVideoRenderStore(
   input: Readonly<{
     connect: () => Promise<Client>;
@@ -78,34 +115,25 @@ export function makeSongVideoRenderStore(
     dispatch: (request) =>
       withClient(async (client) => {
         for (let tries = 0; tries < 3; tries += 1) {
-          const latest = await client.query<{
-            attempt_id: string;
-            generation: number;
-            state: string;
-            dispatch_output_key: string;
-          }>(
-            `SELECT attempt_id, generation, state, dispatch_output_key
+          const latest = await client.query<AttemptRow>(
+            `SELECT ${ATTEMPT_COLUMNS}
                FROM media_song_video_render_attempts
               WHERE plan_id = $1 ORDER BY generation DESC LIMIT 1`,
             [request.planId],
           );
           const row = latest.rows[0];
-          // A started or sealed attempt is resumed, never duplicated.
-          if (row !== undefined && (row.state === "started" || row.state === "sealed")) {
-            const attempt: SongVideoRenderAttempt = {
-              attemptId: row.attempt_id,
-              planId: request.planId,
-              generation: row.generation,
-              outputObjectKey: row.dispatch_output_key,
-            };
-            return attempt;
-          }
+          // A started or sealed attempt is resumed, never duplicated; whether
+          // it may execute is decided by its execution phase, not here.
+          if (row !== undefined && (row.state === "started" || row.state === "sealed"))
+            return attemptFromRow(request.planId, row);
           const generation = (row?.generation ?? 0) + 1;
           const attempt: SongVideoRenderAttempt = {
             attemptId: `${request.planId}:g${generation}`,
             planId: request.planId,
             generation,
             outputObjectKey: `song-video-masters/${request.planId}/g${generation}`,
+            phase: "recorded",
+            executionStartedAtMs: null,
           };
           try {
             await startRenderAttempt(
@@ -124,6 +152,49 @@ export function makeSongVideoRenderStore(
           }
         }
         throw new Error("song video render attempt could not be recorded");
+      }),
+
+    readAttempt: (attempt) =>
+      withClient(async (client) => {
+        const result = await client.query<AttemptRow>(
+          `SELECT ${ATTEMPT_COLUMNS} FROM media_song_video_render_attempts
+            WHERE attempt_id = $1 AND plan_id = $2 AND generation = $3`,
+          [attempt.attemptId, attempt.planId, attempt.generation],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw new Error("song video render attempt is not recorded");
+        return attemptFromRow(attempt.planId, row);
+      }),
+
+    beginExecution: (attempt) =>
+      withClient(async (client) => {
+        const result = await client.query(
+          `UPDATE media_song_video_render_attempts
+              SET execution_phase = 'submitting', execution_started_at = clock_timestamp()
+            WHERE attempt_id = $1 AND plan_id = $2 AND generation = $3
+              AND state = 'started' AND execution_phase = 'recorded'`,
+          [attempt.attemptId, attempt.planId, attempt.generation],
+        );
+        return result.rowCount === 1;
+      }),
+
+    markSubmitted: (attempt) =>
+      withClient(async (client) => {
+        await client.query(
+          `UPDATE media_song_video_render_attempts SET execution_phase = 'submitted'
+            WHERE attempt_id = $1 AND plan_id = $2 AND generation = $3
+              AND execution_phase = 'submitting'`,
+          [attempt.attemptId, attempt.planId, attempt.generation],
+        );
+      }),
+
+    abandon: (attempt, disposition) =>
+      withClient(async (client) => {
+        await client.query(
+          `UPDATE media_song_video_render_attempts SET state = 'abandoned', disposition = $4
+            WHERE attempt_id = $1 AND plan_id = $2 AND generation = $3 AND state = 'started'`,
+          [attempt.attemptId, attempt.planId, attempt.generation, disposition],
+        );
       }),
 
     sealAndAccept: (request) =>

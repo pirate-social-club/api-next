@@ -562,12 +562,17 @@ export async function runVideoAnalysisWorkflow(
           throw new Superseded();
         return { record, plan, video: record.state.video };
       };
-      const renderFailure = async (record: VideoSubmissionRecord, evidenceRef: string) => {
+      const renderFailure = async (
+        record: VideoSubmissionRecord,
+        evidenceRef: string,
+        reconciliationRequired = false,
+      ) => {
         await services.store.recordProcessingFailure({
           submission: record.state,
           observedEventSequence: record.eventSequence,
           failureCode: "transform_failed",
           evidenceRef,
+          ...(reconciliationRequired ? { reconciliationRequired: true } : {}),
         });
       };
       const attempt = await step.do("render-dispatch", async () => {
@@ -580,11 +585,22 @@ export async function runVideoAnalysisWorkflow(
           rendererPolicyRevision: render.renderer.policyRevision,
         });
       });
-      if (attempt !== null) {
-        const rendered = await step.do("render-execute", async () => {
+      // A sealed attempt's output is already a verified master: it resumes at
+      // acceptance and is never rendered again.
+      if (attempt !== null && attempt.phase !== "sealed") {
+        const refused = async (record: VideoSubmissionRecord, reason: string) => {
+          // Explicit and final for this attempt; a retry starts a new one.
+          await render.store.abandon(attempt, `renderer_refused:${reason}`);
+          await renderFailure(record, `song-video-render:${attempt.attemptId}:${reason}`);
+        };
+        const submitted = await step.do("render-submit", async () => {
           const { record, plan, video } = await rendering();
           if ((await render.store.acceptedMaster(plan.planId)) !== null) return "accepted";
-          const outcome = await render.renderer.render({
+          // The intent is recorded before the renderer is invoked. When it was
+          // recorded before — a lost response, a retried step, a new Workflow
+          // continuation — the execution may have begun and is only observed.
+          if (!(await render.store.beginExecution(attempt))) return "observe";
+          const outcome = await render.renderer.submit({
             outputObjectKey: attempt.outputObjectKey,
             source: {
               immutableRef: video.immutableRef,
@@ -600,12 +616,61 @@ export async function runVideoAnalysisWorkflow(
             clipDurationSamples: plan.clipDurationSamples,
           });
           if (outcome.status === "refused") {
-            await renderFailure(record, `song-video-render:${attempt.attemptId}:${outcome.reason}`);
+            await refused(record, outcome.reason);
             return "failed";
           }
-          return "rendered";
+          await render.store.markSubmitted(attempt);
+          return "observe";
         });
-        if (rendered === "failed") return { status: "stopped" };
+        if (submitted === "failed") return { status: "stopped" };
+        if (submitted === "observe") {
+          let completed = false;
+          for (let index = 0; index < VIDEO_WORKFLOW_MAX_OBSERVATIONS; index += 1) {
+            const name = `render-observe-${index}`;
+            const observed = await step.do(name, async () => {
+              const { record, plan } = await rendering();
+              if ((await render.store.acceptedMaster(plan.planId)) !== null) return "completed";
+              const outcome = await render.renderer.observe({
+                outputObjectKey: attempt.outputObjectKey,
+              });
+              if (outcome.status === "completed") return "completed";
+              if (outcome.status === "refused") {
+                await refused(record, outcome.reason);
+                return "failed";
+              }
+              const current = await render.store.readAttempt(attempt);
+              if (current.executionStartedAtMs === null) return "pending";
+              return Date.parse(services.nowIso()) >=
+                current.executionStartedAtMs + VIDEO_WORKFLOW_CAPABILITY_MS
+                ? "deadline"
+                : "pending";
+            });
+            if (observed === "failed") return { status: "stopped" };
+            if (observed === "completed") {
+              completed = true;
+              break;
+            }
+            if (observed === "deadline") break;
+            await step.sleep(`${name}-sleep`, VIDEO_WORKFLOW_POLL_MS);
+          }
+          if (!completed) {
+            // No output and no refusal within the window: the execution is
+            // uncertain. It stays pending for reconciliation and is never
+            // rendered again; the submission cannot be retried until then.
+            await step.do("render-reconciliation-required", async () => {
+              const { record } = await rendering();
+              await renderFailure(
+                record,
+                `song-video-render:${attempt.attemptId}:unconfirmed`,
+                true,
+              );
+              return attempt.attemptId;
+            });
+            return { status: "reconciliation_required" };
+          }
+        }
+      }
+      if (attempt !== null) {
         const sealed = await step.do("render-seal", async () => {
           const { record, plan, video } = await rendering();
           if ((await render.store.acceptedMaster(plan.planId)) !== null) return "accepted";

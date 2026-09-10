@@ -14,22 +14,26 @@ import {
   finalizeVideoSubmission,
   getVideoSubmission,
   reserveVideoUpload,
+  retryVideoSubmission,
   type VideoMultipartUploadGateway,
   type VideoPublicationServices,
   videoIngressObjectKey,
 } from "../packages/application/src/video/publication.ts";
 import { measurePendingSongTimings } from "../packages/application/src/video/song-canonical-timing.ts";
 import { preflightSongVideoInterval } from "../packages/application/src/video/song-interval.ts";
+import type { SongVideoRenderer } from "../packages/application/src/video/song-render.ts";
 import { consumeVideoStreamIngest } from "../packages/application/src/video/stream-ingest.ts";
 import {
   runVideoAnalysisWorkflow,
   type VideoWorkflowServices,
   type VideoWorkflowStep,
 } from "../packages/application/src/video/workflow.ts";
+import { VideoWorkflowTerminalError } from "../packages/application/src/video/workflow-errors.ts";
 import { makeControlPlaneContentStore } from "../packages/platform-cf/src/content-repository.ts";
 import { makeControlPlanePersonaStore } from "../packages/platform-cf/src/persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
 import { makeControlPlaneSongVideoIntervalStore } from "../packages/platform-cf/src/song-video-interval-repository.ts";
+import { verifyAndSealMaster } from "../packages/platform-cf/src/song-video-render-repository.ts";
 import { makeSongVideoRenderStore } from "../packages/platform-cf/src/song-video-render-store.ts";
 import { makeVideoPublicationAuthorization } from "../packages/platform-cf/src/video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "../packages/platform-cf/src/video-analysis-outbox-repository.ts";
@@ -246,6 +250,58 @@ const plainStep: VideoWorkflowStep = {
     throw new Error("the composed flow holds no review");
   },
 };
+
+/** Retries a thrown step the way the Worker's step options do; terminal errors stop. */
+const retryingStep: VideoWorkflowStep = {
+  ...plainStep,
+  do: async (_name, run) => {
+    let failure: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await run();
+      } catch (error) {
+        if (error instanceof VideoWorkflowTerminalError) throw error;
+        failure = error;
+      }
+    }
+    throw failure;
+  },
+};
+
+/** Counts every call the render stage makes into the renderer. */
+function countingRenderer(
+  inner: SongVideoRenderer,
+  override: Partial<Pick<SongVideoRenderer, "submit" | "observe">> = {},
+) {
+  const calls = { submit: 0, observe: 0 };
+  const renderer: SongVideoRenderer = {
+    identity: inner.identity,
+    policyRevision: inner.policyRevision,
+    submit: async (request) => {
+      calls.submit += 1;
+      return (override.submit ?? inner.submit)(request);
+    },
+    observe: async (input) => {
+      calls.observe += 1;
+      return (override.observe ?? inner.observe)(input);
+    },
+  };
+  return { renderer, calls };
+}
+
+function withRenderer(composed: Composed, renderer: SongVideoRenderer): VideoWorkflowServices {
+  const render = composed.workflow.songRender;
+  if (render === undefined) throw new Error("render stage is not composed");
+  return { ...composed.workflow, songRender: { ...render, renderer } };
+}
+
+async function attemptsOf(composed: Composed) {
+  const result = await composed.admin.query<{ state: string; execution_phase: string }>(
+    `SELECT state,execution_phase FROM "${composed.schema}".media_song_video_render_attempts
+      ORDER BY generation`,
+  );
+  return result.rows.map((row) => `${row.state}:${row.execution_phase}`);
+}
 
 type Composed = Awaited<ReturnType<typeof compose>>;
 
@@ -870,7 +926,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
           ...render,
           renderer: {
             ...render.renderer,
-            render: async () => ({ status: "refused", reason: "master_not_exact" }),
+            submit: async () => ({ status: "refused", reason: "master_not_exact" }),
           },
         },
       };
@@ -896,15 +952,245 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
            (SELECT count(*)::int FROM "${schema}".posts WHERE post_type='video') AS videos`,
         [submitted.submissionId],
       );
-      // The attempt was recorded before the renderer ran and stays started, so
-      // a retry resumes it rather than orphaning it.
+      // An explicit refusal is final for its attempt: it is abandoned, so a
+      // retry starts a new generation rather than re-running this one.
       expect(facts.rows[0]).toMatchObject({
         phase: "render",
-        attempts: ["started"],
+        attempts: ["abandoned"],
         masters: 0,
         videos: 0,
       });
       expect(String(facts.rows[0]?.evidence)).toEndWith(":master_not_exact");
+    });
+  }, 600_000);
+
+  test("a lost render response is observed, not rendered again, and publishes", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "lost-response");
+      const render = composed.workflow.songRender;
+      if (render === undefined) throw new Error("render stage is not composed");
+      // The render runs and writes its output; the response is then lost, and
+      // the step is retried as the Worker retries a thrown step.
+      const { renderer, calls } = countingRenderer(render.renderer, {
+        submit: async (request) => {
+          await render.renderer.submit(request);
+          throw new Error("render response lost");
+        },
+      });
+      expect(
+        await runVideoAnalysisWorkflow(
+          submitted.effectIdentity,
+          retryingStep,
+          withRenderer(composed, renderer),
+        ),
+      ).toEqual({ status: "published" });
+      expect(calls.submit).toBe(1);
+      expect(calls.observe).toBe(1);
+      // Never acknowledged, so still submitting; its output was sealed anyway.
+      expect(await attemptsOf(composed)).toEqual(["accepted:submitting"]);
+    });
+  }, 600_000);
+
+  test("an execution with no output stays pending for reconciliation and is never re-run", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "uncertain");
+      const render = composed.workflow.songRender;
+      if (render === undefined) throw new Error("render stage is not composed");
+      // The submission's fate is unknown: no output, no refusal, no answer.
+      const { renderer, calls } = countingRenderer(render.renderer, {
+        submit: async () => {
+          throw new Error("render host did not answer");
+        },
+      });
+      expect(
+        await runVideoAnalysisWorkflow(
+          submitted.effectIdentity,
+          retryingStep,
+          withRenderer(composed, renderer),
+        ),
+      ).toEqual({ status: "reconciliation_required" });
+      expect(calls.submit).toBe(1);
+      expect(calls.observe).toBe(60);
+      expect(await attemptsOf(composed)).toEqual(["started:submitting"]);
+      expect(
+        await getVideoSubmission(
+          { submissionId: submitted.submissionId, actor: composed.author },
+          composed.services,
+        ),
+      ).toMatchObject({
+        status: "processing_failed",
+        reason_code: "provider_submission_unconfirmed",
+        retryable: false,
+      });
+      // The author cannot start the same work a second time behind it.
+      await expect(
+        retryVideoSubmission(
+          {
+            submissionId: submitted.submissionId,
+            actor: composed.author,
+            body: {
+              persona_id: persona,
+              idempotency_key: "uncertain-retry",
+              expected_creation_revision: 1,
+            },
+          },
+          composed.services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "retry_not_allowed" } });
+    });
+  }, 600_000);
+
+  test("a worker stopped after sealing resumes at acceptance without rendering again", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "sealed-resume");
+      const render = composed.workflow.songRender;
+      if (render === undefined) throw new Error("render stage is not composed");
+      const { renderer, calls } = countingRenderer(render.renderer);
+      let stopped = false;
+      const workflow: VideoWorkflowServices = {
+        ...composed.workflow,
+        songRender: {
+          renderer,
+          store: {
+            ...render.store,
+            // The first time, the master is sealed and the worker stops before
+            // acceptance, so the plan has a sealed, unaccepted attempt.
+            sealAndAccept: async (request) => {
+              if (stopped) return render.store.sealAndAccept(request);
+              stopped = true;
+              const client = new PgClient({ connectionString: composed.connection });
+              await client.connect();
+              try {
+                const sealed = await verifyAndSealMaster(
+                  client,
+                  {
+                    store: composed.masters,
+                    prober: { probe: (bytes) => composed.songEngine.probeMaster(bytes) },
+                    soundtrack: composed.songEngine,
+                  },
+                  {
+                    masterRevisionId: `${request.attempt.attemptId}:master`,
+                    attempt: {
+                      attemptId: request.attempt.attemptId,
+                      planId: request.attempt.planId,
+                      generation: request.attempt.generation,
+                    },
+                    sourceImmutableRef: request.sourceImmutableRef,
+                    claimedSourceSha256: request.claimedSourceSha256,
+                    decisionClipStartSamples: request.clipStartSamples,
+                    decisionClipDurationSamples: request.clipDurationSamples,
+                  },
+                );
+                expect(sealed).toMatchObject({ sealed: true });
+              } finally {
+                await client.end();
+              }
+              throw new Error("worker stopped after sealing");
+            },
+          },
+        },
+      };
+      await expect(
+        runVideoAnalysisWorkflow(submitted.effectIdentity, plainStep, workflow),
+      ).rejects.toThrow("worker stopped after sealing");
+      expect(await attemptsOf(composed)).toEqual(["sealed:submitted"]);
+      // A new run of the same intent resumes the sealed attempt.
+      expect(await runVideoAnalysisWorkflow(submitted.effectIdentity, plainStep, workflow)).toEqual(
+        { status: "published" },
+      );
+      expect(calls.submit).toBe(1);
+      expect(await attemptsOf(composed)).toEqual(["accepted:submitted"]);
+    });
+  }, 600_000);
+
+  test("after an explicit refusal the author's retry renders a new attempt and publishes", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "explicit-retry");
+      const render = composed.workflow.songRender;
+      if (render === undefined) throw new Error("render stage is not composed");
+      const refusing = countingRenderer(render.renderer, {
+        submit: async () => ({ status: "refused", reason: "master_not_exact" }),
+      });
+      expect(
+        await runVideoAnalysisWorkflow(
+          submitted.effectIdentity,
+          plainStep,
+          withRenderer(composed, refusing.renderer),
+        ),
+      ).toEqual({ status: "stopped" });
+      expect(await attemptsOf(composed)).toEqual(["abandoned:submitting"]);
+      const retried = await retryVideoSubmission(
+        {
+          submissionId: submitted.submissionId,
+          actor: composed.author,
+          body: {
+            persona_id: persona,
+            idempotency_key: "explicit-retry-1",
+            expected_creation_revision: 1,
+          },
+        },
+        composed.services,
+      );
+      expect(retried).toMatchObject({ status: "processing", creation_revision: 2 });
+      // The retry is a new creation revision: analysed again, decided again
+      // against the owner policy as it is now, and rendered by a new attempt.
+      const rendering = countingRenderer(render.renderer);
+      expect(
+        await runVideoAnalysisWorkflow(
+          `video-analysis:${submitted.operationId}:v1:c2`,
+          plainStep,
+          withRenderer(composed, rendering.renderer),
+        ),
+      ).toEqual({ status: "published" });
+      expect(refusing.calls.submit).toBe(1);
+      expect(rendering.calls.submit).toBe(1);
+      expect(await attemptsOf(composed)).toEqual(["abandoned:submitting", "accepted:submitted"]);
+      const decisions = await admin.query(
+        `SELECT array_agg(creation_revision || ':' || outcome ORDER BY creation_revision) AS decisions
+           FROM "${schema}".media_video_publication_decisions WHERE submission_id=$1`,
+        [submitted.submissionId],
+      );
+      expect(decisions.rows[0]?.decisions).toEqual(["1:publish", "2:publish"]);
+    });
+  }, 600_000);
+
+  test("a song made adult-only while its master renders publishes the video adult-only", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "rating-floor");
+      const step: VideoWorkflowStep = {
+        ...plainStep,
+        do: async (name, run) => {
+          if (name === "render-publish") {
+            // Whatever made the song adult-only did so after the decision.
+            await admin.query("SET session_replication_role = replica");
+            await admin.query(
+              `UPDATE "${schema}".posts SET content_rating='adult_18' WHERE post_id=$1`,
+              [SONG_POST],
+            );
+            await admin.query("SET session_replication_role = origin");
+          }
+          return run();
+        },
+      };
+      expect(
+        await runVideoAnalysisWorkflow(submitted.effectIdentity, step, composed.workflow),
+      ).toEqual({ status: "published" });
+      const ratings = await admin.query(
+        `SELECT
+           (SELECT d.effective_content_rating FROM "${schema}".media_video_publication_decisions d
+             WHERE d.submission_id=$1) AS decided,
+           (SELECT p.content_rating FROM "${schema}".posts p
+             JOIN "${schema}".media_video_song_references e ON e.post_id=p.post_id
+             WHERE e.submission_id=$1) AS published`,
+        [submitted.submissionId],
+      );
+      // Decided general before the change; published at the song's floor.
+      expect(ratings.rows[0]).toEqual({ decided: "general", published: "adult_18" });
     });
   }, 600_000);
 

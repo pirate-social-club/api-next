@@ -9,6 +9,11 @@ import type { AcceptedSongVideoMaster } from "../../../domain/src/video-submissi
  * a master only through sealing, which verifies the bytes it reads back rather
  * than anything the renderer reported. Acceptance is a compare-and-set on the
  * plan, so exactly one master can be published for it.
+ *
+ * An attempt executes at most once. The intent to execute is recorded before
+ * the renderer is invoked; once recorded, the execution may have begun, so a
+ * lost response or a retried step only observes it. A new attempt is started
+ * only after an explicit refusal abandons the old one.
  */
 
 /** One render attempt, recorded before its renderer runs. */
@@ -17,6 +22,14 @@ export type SongVideoRenderAttempt = Readonly<{
   planId: string;
   generation: number;
   outputObjectKey: string;
+  /**
+   * `recorded`: never executed. `submitting` or `submitted`: may have executed,
+   * so only observed from now on. `sealed`: its output is a sealed master that
+   * has not been accepted yet, resumed at acceptance without rendering again.
+   */
+  phase: "recorded" | "submitting" | "submitted" | "sealed";
+  /** When execution was first begun; the observation window runs from here. */
+  executionStartedAtMs: number | null;
 }>;
 
 export type SongVideoSealOutcome =
@@ -27,12 +40,24 @@ export interface SongVideoRenderStore {
   /** The master the plan's compare-and-set accepted, exactly as it was sealed. */
   readonly acceptedMaster: (planId: string) => Promise<AcceptedSongVideoMaster | null>;
   /**
-   * The plan's started attempt, or a new one recorded at the next generation.
-   * Recorded before dispatch, so a stopped worker is always attributable.
+   * The plan's live attempt (started or sealed), or a new one recorded at the
+   * next generation when the last was abandoned or lost. Recorded before any
+   * execution, so a stopped worker is always attributable.
    */
   readonly dispatch: (
     input: Readonly<{ planId: string; rendererIdentity: string; rendererPolicyRevision: number }>,
   ) => Promise<SongVideoRenderAttempt>;
+  /** The attempt as currently recorded. */
+  readonly readAttempt: (attempt: SongVideoRenderAttempt) => Promise<SongVideoRenderAttempt>;
+  /**
+   * Records the intent to execute, once. False when execution may already have
+   * begun: the caller must then observe the attempt and never execute it.
+   */
+  readonly beginExecution: (attempt: SongVideoRenderAttempt) => Promise<boolean>;
+  /** The renderer acknowledged the submission. */
+  readonly markSubmitted: (attempt: SongVideoRenderAttempt) => Promise<void>;
+  /** An explicit refusal: the attempt is finished and a retry starts a new one. */
+  readonly abandon: (attempt: SongVideoRenderAttempt, disposition: string) => Promise<void>;
   /**
    * Verifies the attempt's output against the frozen plan and the sealed
    * source, seals it as a master, and accepts it for the plan.
@@ -48,23 +73,37 @@ export interface SongVideoRenderStore {
   ) => Promise<SongVideoSealOutcome>;
 }
 
+export type SongVideoRenderRequest = Readonly<{
+  outputObjectKey: string;
+  source: Readonly<{ immutableRef: string; sha256: string; byteLength: number }>;
+  song: Readonly<{ assetRef: string; sha256: string; durationSamples: number }>;
+  clipStartSamples: number;
+  clipDurationSamples: number;
+}>;
+
 export interface SongVideoRenderer {
   readonly identity: string;
   readonly policyRevision: number;
   /**
-   * Renders the interval of the canonical song over the capture's picture and
-   * writes the master to `outputObjectKey`. A refusal is a responsibility
-   * failure; nothing is padded, stretched or substituted to avoid one.
+   * Starts rendering the interval of the canonical song over the capture's
+   * picture into `outputObjectKey`. Called at most once per attempt. A refusal
+   * is a responsibility failure; nothing is padded, stretched or substituted to
+   * avoid one.
    */
-  readonly render: (
-    input: Readonly<{
-      outputObjectKey: string;
-      source: Readonly<{ immutableRef: string; sha256: string; byteLength: number }>;
-      song: Readonly<{ assetRef: string; sha256: string; durationSamples: number }>;
-      clipStartSamples: number;
-      clipDurationSamples: number;
-    }>,
-  ) => Promise<Readonly<{ status: "completed" }> | Readonly<{ status: "refused"; reason: string }>>;
+  readonly submit: (
+    request: SongVideoRenderRequest,
+  ) => Promise<Readonly<{ status: "submitted" }> | Readonly<{ status: "refused"; reason: string }>>;
+  /**
+   * Reports an attempt from durable evidence only: its output exists, it was
+   * refused, or neither yet. An absent output is pending, never a refusal.
+   */
+  readonly observe: (
+    input: Readonly<{ outputObjectKey: string }>,
+  ) => Promise<
+    | Readonly<{ status: "completed" }>
+    | Readonly<{ status: "pending" }>
+    | Readonly<{ status: "refused"; reason: string }>
+  >;
 }
 
 export type SongVideoRenderServices = Readonly<{
