@@ -44,6 +44,14 @@ export type HnsLifecycleReadinessPortsV1 = Readonly<{
   readonly context: (rootImportSessionId: string) => Promise<HnsLifecycleReadinessContextV1 | null>;
   readonly observe: HnsRootReadinessObservationPorts;
   readonly config: HnsRootReadinessObservationConfig;
+  /**
+   * The probe runner. Defaults to the real readiness observation; the seam
+   * exists so the performer's outcome handling is testable without a live
+   * DNS authority or gateway.
+   */
+  readonly observe_readiness?: (
+    input: Parameters<typeof observeHnsRootReadinessV1>[0],
+  ) => ReturnType<typeof observeHnsRootReadinessV1>;
   /** The atomic acceptance. Nothing is written on any other outcome. */
   readonly record: (
     input: Readonly<{
@@ -75,12 +83,17 @@ const TERMINAL_REFUSALS = new Set([
   "lease_conflict",
   "phase_conflict",
   "session_conflict",
-  "session_expired",
   "plan_absent",
   "invalid_result",
   "lifecycle_absent",
   "conflict",
 ]);
+// The readiness writer must not return `deadline_expired` or
+// `session_expired` for a lifecycle-managed operation: the finality window is
+// active only in waiting_safe_commitment, and the retired session expiry is
+// not a readiness gate. They are deliberately absent from this set; a future
+// writer that reintroduced one would not be treating it as a terminal
+// refusal without a matching policy change.
 
 const encoder = new TextEncoder();
 
@@ -124,7 +137,8 @@ export async function runHnsRootImportReadinessOnce(
 
   let artifact: Awaited<ReturnType<typeof observeHnsRootReadinessV1>>;
   try {
-    artifact = await observeHnsRootReadinessV1({
+    const probe = ports.observe_readiness ?? observeHnsRootReadinessV1;
+    artifact = await probe({
       operation_kind: "observe_root_v1",
       observation_attempt: {
         job_id: job.lifecycle_job_id,

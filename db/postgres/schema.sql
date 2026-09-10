@@ -2749,17 +2749,6 @@ BEGIN
     RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
-  -- The retired single expiry does not gate readiness (spec 012, "Expiry
-  -- consumers"). The phase deadline governs: an operation in
-  -- checking_authority past its finality deadline is recovery evidence, and
-  -- `ready` has no active deadline and refreshes in place.
-  IF lifecycle.phase = 'checking_authority'
-    AND lifecycle.finality_deadline_at IS NOT NULL
-    AND lifecycle.finality_deadline_at <= database_now
-  THEN
-    RETURN QUERY SELECT 'deadline_expired'::TEXT, lifecycle.revision, NULL::TEXT;
-    RETURN;
-  END IF;
 
   BEGIN
     result := convert_from(input_result_bytes, 'UTF8')::jsonb;

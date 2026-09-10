@@ -1331,10 +1331,14 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
   );
 
   test(
-    "an exhausted finality deadline refuses readiness acceptance",
+    "a historical finality deadline does not refuse readiness after safe commitment",
     async () => {
       await withSchema(async (admin) => {
         await seedOwners(admin);
+        // The safe commitment landed late: the phase is already
+        // checking_authority while the finality deadline it left behind is in
+        // the past. The finality window is active only in
+        // waiting_safe_commitment, so readiness must still be accepted.
         await seedOperation(admin, {
           session: "deadline-session",
           rootLabel: "deadlineroot",
@@ -1343,11 +1347,15 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
           firstCurrentAt: "clock_timestamp() - interval '2 days'",
           finalityDeadlineAt: "clock_timestamp() - interval '1 hour'",
         });
+        const before = await admin.query<Record<string, unknown>>(
+          `SELECT first_current_observation_at, finality_deadline_at
+             FROM hns_root_import_lifecycle WHERE root_import_session_id='deadline-session'`,
+        );
         await enableMarker(admin);
         await queueJob(admin, "deadline-session", "observe_readiness");
         const job = await requireClaimLifecycle(admin);
         const readiness = readinessResult("deadline-session");
-        const refused = await admin.query<Record<string, unknown>>(
+        const accepted = await admin.query<Record<string, unknown>>(
           `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
           [
             "deadline-session",
@@ -1359,15 +1367,20 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
             readiness.sha,
           ],
         );
-        expect(refused.rows[0]?.outcome).toBe("deadline_expired");
+        expect(accepted.rows[0]).toMatchObject({ outcome: "ready", revision: "2" });
         const lifecycle = await admin.query<Record<string, unknown>>(
-          `SELECT phase, revision FROM hns_root_import_lifecycle
-            WHERE root_import_session_id='deadline-session'`,
+          `SELECT phase, revision, first_current_observation_at, finality_deadline_at
+             FROM hns_root_import_lifecycle WHERE root_import_session_id='deadline-session'`,
         );
-        // Authority is retained and the phase is unchanged; the domain's
-        // deadline event moves the operation to recovery with its own
-        // retained-authority semantics.
-        expect(lifecycle.rows[0]).toMatchObject({ phase: "checking_authority", revision: "1" });
+        expect(lifecycle.rows[0]).toMatchObject({ phase: "ready", revision: "2" });
+        // The historical anchor and deadline are history: the refresh moves
+        // readiness only.
+        expect(lifecycle.rows[0]?.first_current_observation_at).toEqual(
+          before.rows[0]?.first_current_observation_at,
+        );
+        expect(lifecycle.rows[0]?.finality_deadline_at).toEqual(
+          before.rows[0]?.finality_deadline_at,
+        );
       });
     },
     BUDGET_MS,
