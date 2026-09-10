@@ -2,19 +2,20 @@ import {
   BadRequest,
   Conflict,
   EligibilityFailed,
+  InternalError,
   NotFound,
   type ReserveVideoUploadV1,
   RetryableConflict,
   SongVideoIntervalPreflightInputV1,
   type SongVideoIntervalPreflightV1,
 } from "@pirate/contracts";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import {
   checkSongVideoInterval,
   SONG_VIDEO_INTERVAL_POLICY_V1,
 } from "../../../domain/src/video-submission.ts";
 import { requireMediaHumanActor } from "../media/submission-service.ts";
-import type { M2Actor } from "../ports.ts";
+import type { ContentStoreService, M2Actor } from "../ports.ts";
 
 /**
  * Spec 013 §5A song-backed interval: server-authoritative preflight, and the
@@ -80,6 +81,12 @@ export interface SongVideoIntervalStore {
 
 export type SongVideoIntervalServices = Readonly<{
   store: SongVideoIntervalStore;
+  /**
+   * The same post read the post endpoint and video playback use, as the viewer.
+   * It decides visibility, membership, age gating and holds; nothing here
+   * re-derives any of that from the song's own publication row.
+   */
+  contentStore: Pick<ContentStoreService, "resolvePost" | "getPost">;
   /** How long a client should wait before asking again while a song is measured. */
   measuringRetryAfterMs?: number;
 }>;
@@ -143,6 +150,53 @@ function requireDerivativeVideoPermission(
   return { ...policy, derivativeVideo: policy.derivativeVideo };
 }
 
+/**
+ * Viewer access to the source song, decided exactly as the post endpoint and
+ * video playback decide it: resolve the post, then read it as this viewer. It
+ * runs before any song metadata is returned and before any measurement is
+ * requested, because owner permission and a public row say nothing about
+ * whether this viewer may see the song — an adult-rated song is locked for an
+ * account without age access however open its policy is.
+ *
+ * An inaccessible song is answered as absent; an age-locked one is refused as
+ * age-restricted, which the post read already discloses to the same viewer.
+ */
+async function requireAccessibleSongSource(
+  contentStore: SongVideoIntervalServices["contentStore"],
+  songPostId: string,
+  actor: M2Actor,
+): Promise<void> {
+  const unavailable = () => new InternalError({ message: "Song access is unavailable" });
+  const location = await Effect.runPromise(
+    contentStore.resolvePost({ postId: songPostId }).pipe(Effect.mapError(unavailable)),
+  );
+  if (location === null || location.postId !== songPostId) {
+    throw new NotFound({ message: "Song not found", details: { reason_code: "song_not_found" } });
+  }
+  const result = await Effect.runPromise(
+    contentStore
+      .getPost({ ...location, viewerUserId: actor.userId })
+      .pipe(Effect.mapError(unavailable)),
+  );
+  if (result === null) {
+    throw new NotFound({ message: "Song not found", details: { reason_code: "song_not_found" } });
+  }
+  if (!("post" in result)) {
+    throw new EligibilityFailed({
+      message: "This song is age restricted",
+      details: { reason_code: "age_restricted" },
+    });
+  }
+  if (
+    result.post.id !== songPostId ||
+    result.post.community !== location.communityId ||
+    result.post.post_type !== "song" ||
+    result.post.status !== "published"
+  ) {
+    throw new NotFound({ message: "Song not found", details: { reason_code: "song_not_found" } });
+  }
+}
+
 async function requirePublishedSong(
   store: SongVideoIntervalStore,
   songPostId: string,
@@ -176,6 +230,7 @@ export async function preflightSongVideoInterval(
   } catch {
     throw new BadRequest({ message: "Invalid request body" });
   }
+  await requireAccessibleSongSource(services.contentStore, body.song_post_id, input.actor);
   const song = await requirePublishedSong(services.store, body.song_post_id);
   requireDerivativeVideoPermission(await services.store.getOwnerPolicy(song), input.actor);
 
@@ -234,6 +289,7 @@ export async function freezeSongReservationPlan(
   services: SongVideoIntervalServices,
 ): Promise<FrozenSongReservationPlan> {
   const { body } = input;
+  await requireAccessibleSongSource(services.contentStore, body.song_post_id, input.actor);
   const song = await requirePublishedSong(services.store, body.song_post_id);
   if (song.audioRevision !== body.audio_revision) {
     throw new Conflict({

@@ -9,6 +9,7 @@ import {
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { SONG_VIDEO_SAMPLE_RATE_HZ } from "../../../domain/src/video-submission.ts";
+import type { ContentStoreService } from "../ports.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
 import {
   createVideoSubmission,
@@ -74,8 +75,37 @@ function songStore(
   return { store, state, requested };
 }
 
-const intervalServices = (store: SongVideoIntervalStore): SongVideoIntervalServices => ({
+type Access = "readable" | "hidden" | "age_locked";
+
+/**
+ * The post read as the viewer. `readable` is a published song post; `hidden`
+ * is what an inaccessible post reads as; `age_locked` is the locked projection
+ * an adult-rated post reads as for an account without age access.
+ */
+function contentStoreFor(access: Access = "readable", songCommunity = "community_song") {
+  const reads: string[] = [];
+  const contentStore: Pick<ContentStoreService, "resolvePost" | "getPost"> = {
+    resolvePost: ({ postId }) =>
+      Effect.succeed(postId === "post_song" ? { postId, communityId: songCommunity } : null),
+    getPost: ({ postId, viewerUserId }) => {
+      reads.push(`${postId}:${viewerUserId}`);
+      if (access === "hidden") return Effect.succeed(null);
+      // SAFETY: only the fields the access rule reads are modelled here.
+      if (access === "age_locked") return Effect.succeed({ kind: "age_locked" } as never);
+      return Effect.succeed({
+        post: { id: postId, community: songCommunity, post_type: "song", status: "published" },
+      } as never);
+    },
+  };
+  return { contentStore, reads };
+}
+
+const intervalServices = (
+  store: SongVideoIntervalStore,
+  access: Access = "readable",
+): SongVideoIntervalServices => ({
   store,
+  contentStore: contentStoreFor(access).contentStore,
   measuringRetryAfterMs: 1_500,
 });
 
@@ -210,6 +240,69 @@ const songBody = {
   clip_start_samples: 40 * SECOND,
   clip_duration_samples: 45 * SECOND,
 };
+
+describe("viewer access to the source song", () => {
+  test("an age-locked song is refused before any metadata or measurement", async () => {
+    const world = songStore();
+    let songRead = false;
+    const store = {
+      ...world.store,
+      getPublishedSong: async (id: string) => {
+        songRead = true;
+        return world.store.getPublishedSong(id);
+      },
+    };
+    const error = await preflightSongVideoInterval(
+      { communityId: "community_video", actor, body: { song_post_id: "post_song" } },
+      intervalServices(store, "age_locked"),
+    ).catch((e) => e);
+    expect(error).toBeInstanceOf(EligibilityFailed);
+    expect(error.details).toEqual({ reason_code: "age_restricted" });
+    // Nothing about the song was read, and no measurement was queued.
+    expect(songRead).toBe(false);
+    expect(world.requested).toEqual([]);
+  });
+
+  test("an inaccessible song reads as absent, whatever its owner allows", async () => {
+    const world = songStore();
+    await expect(
+      preflightSongVideoInterval(
+        { communityId: "community_video", actor, body: { song_post_id: "post_song" } },
+        intervalServices(world.store, "hidden"),
+      ),
+    ).rejects.toBeInstanceOf(NotFound);
+    expect(world.requested).toEqual([]);
+  });
+
+  test("reservation applies the same access rule first", async () => {
+    const world = songStore();
+    await expect(
+      freezeSongReservationPlan(
+        { actor, body: songBody, observedAt: "2026-09-10T12:00:00.000Z" },
+        intervalServices(world.store, "age_locked"),
+      ),
+    ).rejects.toBeInstanceOf(EligibilityFailed);
+    expect(world.requested).toEqual([]);
+  });
+
+  test("reads the song as this viewer, not as its owner", async () => {
+    const { contentStore, reads } = contentStoreFor();
+    await preflightSongVideoInterval(
+      { communityId: "community_video", actor, body: { song_post_id: "post_song" } },
+      { store: songStore().store, contentStore },
+    );
+    expect(reads).toEqual([`post_song:${actor.userId}`]);
+  });
+
+  test("a readable public song from another community is usable", async () => {
+    // The song lives in community_song; the video is posted to community_video.
+    const result = await preflightSongVideoInterval(
+      { communityId: "community_video", actor, body: { song_post_id: "post_song" } },
+      intervalServices(songStore().store),
+    );
+    expect(result.state).toBe("ready");
+  });
+});
 
 describe("freezing the render plan at reservation", () => {
   const freeze = (

@@ -1,3 +1,15 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "operationId": "post_communitiesCommunityIdMediaUploadReservations",
+      "kind": "clean-break",
+      "reason": "Spec 013 song-backed interval, owner decisions of 2026-09-10: the song_reference reservation variant gains required audio_revision, clip_start_samples and clip_duration_samples so the render plan can be frozen at reservation. The detector reports the variant as removed because it no longer matches the old shape. The old variant was always refused as capability_unavailable, so no working client depended on it, and original_audio requests are unchanged. Pending independent review for the coordinated 0.69.0 client cut; not yet reviewed.",
+      "expectedViolations": [
+        "request POST /communities/{communityId}/media-upload-reservations: enum value removed: \"song_reference\"",
+        "request POST /communities/{communityId}/media-upload-reservations: response/request property removed: selected_from",
+        "request POST /communities/{communityId}/media-upload-reservations: response/request property removed: song_post_id"
+      ]
+    }
+  ]
 }

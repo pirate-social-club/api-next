@@ -832,7 +832,14 @@ export async function createProductionHttpWorker(
       personaServices: { personaStore },
       nowIso: () => new Date().toISOString(),
       ...(bindings.VIDEO_SONG_REFERENCE_ENABLED === "true"
-        ? { songInterval: { store: makeControlPlaneSongVideoIntervalStore(controlPlane) } }
+        ? {
+            songInterval: {
+              store: makeControlPlaneSongVideoIntervalStore(controlPlane),
+              // The post read as the viewer: the same access rule as the post
+              // endpoint and video playback.
+              contentStore: makeControlPlaneContentStore(controlPlane),
+            },
+          }
         : {}),
     } satisfies VideoPublicationServices;
   })();
