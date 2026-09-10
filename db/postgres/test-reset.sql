@@ -196,6 +196,8 @@ TRUNCATE TABLE
   "hns_root_import_lifecycle_jobs",
   "hns_root_import_name_proof_observations",
   "hns_root_import_observation_jobs",
+  "hns_root_import_recovery_authorizations",
+  "hns_root_import_recovery_findings",
   "hns_root_import_retention_reviews",
   "hns_root_import_sessions",
   "hns_root_import_teardown_jobs",

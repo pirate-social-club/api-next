@@ -537,6 +537,140 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb) RETURNS TABLE(outcome text, revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding hns_root_import_recovery_findings%ROWTYPE;
+  recovery_grant hns_root_import_recovery_authorizations%ROWTYPE;
+  committed RECORD;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF lifecycle.phase <> 'recovery_required' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.revision <> input_expected_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  SELECT * INTO finding FROM hns_root_import_recovery_findings
+   WHERE root_import_session_id = input_session_id AND evidence_ref = input_evidence_ref;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'finding_absent'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF finding.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  SELECT * INTO recovery_grant FROM hns_root_import_recovery_authorizations
+   WHERE recovery_finding_id = finding.recovery_finding_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'authorization_absent'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF recovery_grant.consumed_at IS NOT NULL THEN
+    -- Single use. A second application of the same authorization is refused
+    -- rather than replayed, because the first one already moved the operation.
+    RETURN QUERY SELECT 'authorization_consumed'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF recovery_grant.expires_at <= database_now THEN
+    RETURN QUERY SELECT 'authorization_expired'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF recovery_grant.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  UPDATE hns_root_import_recovery_authorizations
+     SET consumed_at = database_now
+   WHERE recovery_authorization_id = recovery_grant.recovery_authorization_id;
+
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    'recovery:' || input_evidence_ref,
+    'recovery_decided',
+    'transition',
+    'recovery_' || recovery_grant.action || ':' || finding.reason,
+    input_target_phase,
+    '{}'::jsonb,
+    coalesce(input_requested_work, '[]'::jsonb)
+  );
+  IF committed.outcome IS DISTINCT FROM 'transition' THEN
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT 'applied'::TEXT, committed.revision;
+END;
+$$;
+
+CREATE FUNCTION authorize_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_action text, input_ttl_seconds integer) RETURNS TABLE(outcome text, recovery_authorization_id bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding hns_root_import_recovery_findings%ROWTYPE;
+  existing BIGINT;
+  inserted BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_ttl_seconds IS NULL OR input_ttl_seconds NOT BETWEEN 60 AND 86400 THEN
+    RAISE EXCEPTION 'invalid HNS recovery recovery_grant window';
+  END IF;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT * INTO finding FROM hns_root_import_recovery_findings
+   WHERE root_import_session_id = input_session_id AND evidence_ref = input_evidence_ref;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'finding_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF finding.authority_generation <> lifecycle.generation THEN
+    -- The evidence describes infrastructure the operation no longer holds.
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF finding.supported_action IS DISTINCT FROM input_action THEN
+    -- An operator may only authorize what the evidence supports. Authorizing
+    -- past a conflicting or insufficient finding is the whole failure mode.
+    RETURN QUERY SELECT 'action_unsupported'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT recovery_grant.recovery_authorization_id INTO existing
+    FROM hns_root_import_recovery_authorizations AS recovery_grant
+   WHERE recovery_grant.recovery_finding_id = finding.recovery_finding_id;
+  IF FOUND THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, existing;
+    RETURN;
+  END IF;
+  INSERT INTO hns_root_import_recovery_authorizations (
+    recovery_finding_id, root_import_session_id, authority_generation,
+    action, authorized_at, expires_at
+  ) VALUES (
+    finding.recovery_finding_id, input_session_id, finding.authority_generation,
+    input_action, database_now, database_now + input_ttl_seconds * interval '1 second'
+  ) RETURNING hns_root_import_recovery_authorizations.recovery_authorization_id INTO inserted;
+  RETURN QUERY SELECT 'recorded'::TEXT, inserted;
+END;
+$$;
+
 CREATE FUNCTION authorize_hns_root_import_retirement_v1(input_session_id text, input_freshness_seconds integer) RETURNS TABLE(kind text, recorded_at timestamp with time zone, evidence_ref text, authority_generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -13514,6 +13648,50 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION record_hns_root_import_recovery_finding_v1(input_session_id text, input_expected_generation bigint, input_evidence_ref text, input_classification text, input_reason text, input_supported_action text, input_inclusion_txid text, input_inclusion_block_height bigint, input_covenant_resource_sha256 text, input_plan_encoded_sha256 text, input_current_resource_sha256 text, input_safe_resource_sha256 text, input_zone_present boolean, input_signing_keys_present boolean) RETURNS TABLE(outcome text, recovery_finding_id bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  existing BIGINT;
+  inserted BIGINT;
+BEGIN
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF lifecycle.generation <> input_expected_generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT finding.recovery_finding_id INTO existing
+    FROM hns_root_import_recovery_findings AS finding
+   WHERE finding.root_import_session_id = input_session_id
+     AND finding.evidence_ref = input_evidence_ref;
+  IF FOUND THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, existing;
+    RETURN;
+  END IF;
+  INSERT INTO hns_root_import_recovery_findings (
+    root_import_session_id, authority_generation, evidence_ref,
+    classification, reason, supported_action,
+    inclusion_txid, inclusion_block_height, covenant_resource_sha256,
+    plan_encoded_sha256, current_resource_sha256, safe_resource_sha256,
+    zone_present, signing_keys_present
+  ) VALUES (
+    input_session_id, lifecycle.generation, input_evidence_ref,
+    input_classification, input_reason, input_supported_action,
+    input_inclusion_txid, input_inclusion_block_height, input_covenant_resource_sha256,
+    input_plan_encoded_sha256, input_current_resource_sha256, input_safe_resource_sha256,
+    input_zone_present, input_signing_keys_present
+  ) RETURNING hns_root_import_recovery_findings.recovery_finding_id INTO inserted;
+  RETURN QUERY SELECT 'recorded'::TEXT, inserted;
+END;
+$$;
+
 CREATE FUNCTION record_hns_root_import_retention_review_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_expected_generation bigint, input_reason text, input_evidence_ref text, input_current_observed_at timestamp with time zone, input_safe_observed_at timestamp with time zone, input_current_resource_sha256 text, input_safe_resource_sha256 text, input_next_review_at timestamp with time zone) RETURNS TABLE(outcome text, retention_review_id bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -13733,6 +13911,30 @@ CREATE FUNCTION reject_hns_operator_control_promotion_receipt_change() RETURNS t
     AS $$
 BEGIN
   RAISE EXCEPTION 'HNS operator control promotion receipts are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_hns_recovery_record_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'hns_root_import_recovery_authorizations'
+    AND TG_OP = 'UPDATE'
+    AND OLD.consumed_at IS NULL
+    AND NEW.consumed_at IS NOT NULL
+    AND NEW.recovery_finding_id = OLD.recovery_finding_id
+    AND NEW.root_import_session_id = OLD.root_import_session_id
+    AND NEW.authority_generation = OLD.authority_generation
+    AND NEW.action = OLD.action
+    AND NEW.authorized_at = OLD.authorized_at
+    AND NEW.expires_at = OLD.expires_at
+  THEN
+    -- Marking an authorization consumed is the one permitted transition, and
+    -- only from unconsumed. It is what makes an authorization single use.
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'HNS recovery records are append-only';
 END;
 $$;
 
@@ -24191,6 +24393,70 @@ CREATE TABLE hns_root_import_observation_jobs (
     CONSTRAINT hns_root_import_observation_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
 );
 
+CREATE TABLE hns_root_import_recovery_authorizations (
+    recovery_authorization_id bigint NOT NULL,
+    recovery_finding_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    action text NOT NULL,
+    authorized_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    CONSTRAINT hns_recovery_authorization_window CHECK ((expires_at > authorized_at)),
+    CONSTRAINT hns_root_import_recovery_authorizati_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_recovery_authorizations_action_check CHECK ((action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text])))
+);
+
+ALTER TABLE hns_root_import_recovery_authorizations ALTER COLUMN recovery_authorization_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_recovery_authoriz_recovery_authorization_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE hns_root_import_recovery_findings (
+    recovery_finding_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    evidence_ref text NOT NULL,
+    classification text NOT NULL,
+    reason text NOT NULL,
+    supported_action text,
+    inclusion_txid text,
+    inclusion_block_height bigint,
+    covenant_resource_sha256 text,
+    plan_encoded_sha256 text,
+    current_resource_sha256 text,
+    safe_resource_sha256 text,
+    zone_present boolean,
+    signing_keys_present boolean,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_recovery_finding_action_shape CHECK (((supported_action IS NULL) OR (classification = ANY (ARRAY['matching_authority_available'::text, 'recoverable_authority_missing'::text])))),
+    CONSTRAINT hns_recovery_finding_inclusion_shape CHECK ((num_nulls(inclusion_txid, inclusion_block_height, covenant_resource_sha256) = ANY (ARRAY[0, 3]))),
+    CONSTRAINT hns_root_import_recovery_finding_covenant_resource_sha256_check CHECK (((covenant_resource_sha256 IS NULL) OR (covenant_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_recovery_findings_classification_check CHECK ((classification = ANY (ARRAY['matching_authority_available'::text, 'recoverable_authority_missing'::text, 'conflicting_publication'::text, 'insufficient_evidence'::text]))),
+    CONSTRAINT hns_root_import_recovery_findings_current_resource_sha256_check CHECK (((current_resource_sha256 IS NULL) OR (current_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_evidence_ref_check CHECK (((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 512)))),
+    CONSTRAINT hns_root_import_recovery_findings_inclusion_block_height_check CHECK (((inclusion_block_height IS NULL) OR (inclusion_block_height > 0))),
+    CONSTRAINT hns_root_import_recovery_findings_inclusion_txid_check CHECK (((inclusion_txid IS NULL) OR (inclusion_txid ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_plan_encoded_sha256_check CHECK (((plan_encoded_sha256 IS NULL) OR (plan_encoded_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_reason_check CHECK (((btrim(reason) = reason) AND ((octet_length(reason) >= 1) AND (octet_length(reason) <= 128)))),
+    CONSTRAINT hns_root_import_recovery_findings_safe_resource_sha256_check CHECK (((safe_resource_sha256 IS NULL) OR (safe_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_supported_action_check CHECK ((supported_action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text])))
+);
+
+ALTER TABLE hns_root_import_recovery_findings ALTER COLUMN recovery_finding_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_recovery_findings_recovery_finding_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 CREATE TABLE hns_root_import_retention_reviews (
     retention_review_id bigint NOT NULL,
     root_import_session_id text NOT NULL,
@@ -29695,6 +29961,12 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotion_receipts_pkey PRIMARY KEY (receipt_id);
 
+ALTER TABLE ONLY hns_root_import_recovery_authorizations
+    ADD CONSTRAINT hns_recovery_authorization_unique UNIQUE (recovery_finding_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_findings
+    ADD CONSTRAINT hns_recovery_finding_unique_evidence UNIQUE (root_import_session_id, evidence_ref);
+
 ALTER TABLE ONLY hns_root_import_retention_reviews
     ADD CONSTRAINT hns_retention_review_unique_evidence UNIQUE (root_import_session_id, evidence_ref);
 
@@ -29736,6 +30008,12 @@ ALTER TABLE ONLY hns_root_import_observation_jobs
 
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_root_import_session_id_key UNIQUE (root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_authorizations
+    ADD CONSTRAINT hns_root_import_recovery_authorizations_pkey PRIMARY KEY (recovery_authorization_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_findings
+    ADD CONSTRAINT hns_root_import_recovery_findings_pkey PRIMARY KEY (recovery_finding_id);
 
 ALTER TABLE ONLY hns_root_import_retention_reviews
     ADD CONSTRAINT hns_root_import_retention_reviews_pkey PRIMARY KEY (retention_review_id);
@@ -31119,6 +31397,8 @@ CREATE INDEX hns_root_import_lifecycle_root_label_idx ON hns_root_import_lifecyc
 
 CREATE INDEX hns_root_import_observation_jobs_claim_idx ON hns_root_import_observation_jobs USING btree (state, created_at, observation_job_id);
 
+CREATE INDEX hns_root_import_recovery_findings_session_idx ON hns_root_import_recovery_findings USING btree (root_import_session_id, recorded_at DESC);
+
 CREATE INDEX hns_root_import_retention_reviews_session_idx ON hns_root_import_retention_reviews USING btree (root_import_session_id, reviewed_at DESC);
 
 CREATE UNIQUE INDEX hns_root_import_sessions_active_root_unique ON hns_root_import_sessions USING btree (root_label) WHERE (status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text]));
@@ -31804,6 +32084,10 @@ CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_observation_jobs_retain BEFORE DELETE ON hns_root_import_observation_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
+
+CREATE TRIGGER hns_root_import_recovery_authorizations_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_recovery_authorizations FOR EACH ROW EXECUTE FUNCTION reject_hns_recovery_record_change_v1();
+
+CREATE TRIGGER hns_root_import_recovery_findings_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_recovery_findings FOR EACH ROW EXECUTE FUNCTION reject_hns_recovery_record_change_v1();
 
 CREATE TRIGGER hns_root_import_retention_reviews_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_retention_reviews FOR EACH ROW EXECUTE FUNCTION reject_hns_retention_review_change_v1();
 
@@ -33489,6 +33773,9 @@ ALTER TABLE ONLY hns_root_import_name_proof_observations
 
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_authorizations
+    ADD CONSTRAINT hns_root_import_recovery_authorization_recovery_finding_id_fkey FOREIGN KEY (recovery_finding_id) REFERENCES hns_root_import_recovery_findings(recovery_finding_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_activated_community_fk FOREIGN KEY (activated_community_id) REFERENCES communities(community_id);
