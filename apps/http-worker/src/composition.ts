@@ -5,8 +5,6 @@ import {
   completeNamespaceOwnership,
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
-  gatherHnsActivationCurrentViewV1,
-  preflightEncodeHnsResourceV1,
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
@@ -79,7 +77,6 @@ import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-aut
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
-import { makeControlPlaneHnsActivationCurrentViewIdentityRead } from "@pirate/platform-cf/hns-activation-current-view-repository";
 import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "@pirate/platform-cf/hns-community-root-import-repository";
 import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-status-kv";
@@ -119,7 +116,6 @@ import {
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
-import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import {
   type HnsOwnerServiceBinding,
   type HnsOwnerTransport,
@@ -213,6 +209,7 @@ import { makeProductionDanceAttemptServices } from "./dance-attempt-production-c
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
+import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
@@ -249,6 +246,20 @@ export interface HttpWorkerBindings extends VideoAccessBindings, TelegramBinding
   readonly OPENROUTER_API_KEY?: string;
   readonly STUDY_GENERATION_WORKFLOW?: CloudflareStudyGenerationWorkflowBinding<StudyGenerationWorkflowPayload>;
   readonly HNS_OWNER_VERIFIER?: HnsOwnerServiceBinding;
+  /**
+   * The activation current-view gatherer's configuration surface. Disabled
+   * unless explicitly enabled; the eight HNS_AUTHORITY_* settings are required
+   * and bounded when it is enabled.
+   */
+  readonly HNS_ACTIVATION_CURRENT_VIEW_ENABLED?: string;
+  readonly HNS_AUTHORITY_HSD_RPC_URL?: string;
+  readonly HNS_AUTHORITY_HSD_AUTHORIZATION?: string;
+  readonly HNS_AUTHORITY_CHAIN_NETWORK?: string;
+  readonly HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH?: string;
+  readonly HNS_AUTHORITY_TREE_INTERVAL_BLOCKS?: string;
+  readonly HNS_AUTHORITY_SAFE_CONFIRMATIONS?: string;
+  readonly HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS?: string;
+  readonly HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS?: string;
   readonly REGISTRATION_IP_LIMITER?: RegistrationRateLimiterNamespaces["ip"];
   readonly REGISTRATION_APPLICATION_LIMITER?: RegistrationRateLimiterNamespaces["application"];
   readonly API_NEXT_ENV?: string;
@@ -489,6 +500,15 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_EDGE_STATUS_ACCESS_ISSUER: bindings.HNS_EDGE_STATUS_ACCESS_ISSUER,
     HNS_EDGE_STATUS_ACCESS_JWKS_URL: bindings.HNS_EDGE_STATUS_ACCESS_JWKS_URL,
     HNS_EDGE_STATUS_ACCESS_AUDIENCE: bindings.HNS_EDGE_STATUS_ACCESS_AUDIENCE,
+    HNS_ACTIVATION_CURRENT_VIEW_ENABLED: bindings.HNS_ACTIVATION_CURRENT_VIEW_ENABLED,
+    HNS_AUTHORITY_HSD_RPC_URL: bindings.HNS_AUTHORITY_HSD_RPC_URL,
+    HNS_AUTHORITY_HSD_AUTHORIZATION: bindings.HNS_AUTHORITY_HSD_AUTHORIZATION,
+    HNS_AUTHORITY_CHAIN_NETWORK: bindings.HNS_AUTHORITY_CHAIN_NETWORK,
+    HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: bindings.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
+    HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: bindings.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
+    HNS_AUTHORITY_SAFE_CONFIRMATIONS: bindings.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
+    HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: bindings.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
+    HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: bindings.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -1016,43 +1036,13 @@ export async function createProductionHttpWorker(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
   const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
-  // The activation current-view gatherer. Disabled by default; the enabled
-  // composition validates the complete HNS_AUTHORITY_* group at construction
-  // and fails configuration clearly when any setting is missing or invalid.
-  // The observer performs no I/O when it is constructed.
-  let activationObserver: ReturnType<typeof makeHsdRootResourceObserver> | null = null;
-  if (config.HNS_ACTIVATION_CURRENT_VIEW_ENABLED) {
-    try {
-      activationObserver = makeHsdRootResourceObserver({
-        rpc_url: config.HNS_AUTHORITY_HSD_RPC_URL,
-        authorization: Redacted.value(config.HNS_AUTHORITY_HSD_AUTHORIZATION),
-        chain_network: config.HNS_AUTHORITY_CHAIN_NETWORK,
-        genesis_block_hash: config.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
-        tree_interval_blocks: config.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
-        safe_minimum_confirmations: config.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
-        maximum_tip_age_seconds: config.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
-        maximum_future_tip_seconds: config.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
-      });
-    } catch {
-      throw new Error("HNS activation current-view configuration is invalid");
-    }
-  }
-  const activationIdentityRead = makeControlPlaneHnsActivationCurrentViewIdentityRead(controlPlane);
-  const activationCurrentView = (input: { readonly root_import_session_id: string }) =>
-    activationObserver === null
-      ? Effect.succeed(null)
-      : Effect.promise(async () => {
-          const observer = activationObserver as NonNullable<typeof activationObserver>;
-          const gathered = await gatherHnsActivationCurrentViewV1(input.root_import_session_id, {
-            // The identity read is its own scope; it is released before the
-            // observer's network read below.
-            identity: (rootImportSessionId) =>
-              Effect.runPromise(activationIdentityRead(rootImportSessionId)),
-            observe_current: (rootLabel) => observer(rootLabel, "current"),
-            wire_digest: async (records) => (await preflightEncodeHnsResourceV1(records)).sha256,
-          });
-          return gathered.kind === "gathered" ? gathered.binding : null;
-        });
+  // The activation current-view gatherer. Disabled by default; disabled
+  // configuration stays an unavailable capability, and enabled configuration
+  // was already validated and bounded when the Worker config loaded.
+  const activationCurrentView = makeProductionHnsActivationCurrentView(
+    controlPlane,
+    config.HNS_ACTIVATION_CURRENT_VIEW,
+  );
   const hnsCommunityServices:
     | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">
     | undefined =

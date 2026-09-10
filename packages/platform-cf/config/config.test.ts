@@ -55,10 +55,7 @@ describe("config system (000 §9)", () => {
 
   test("the activation current-view group is disabled by default", () => {
     const configured = loadConfigFrom(HnsActivationCurrentViewConfig, {});
-    expect(configured.HNS_ACTIVATION_CURRENT_VIEW_ENABLED).toBe(false);
-    expect(configured.HNS_AUTHORITY_HSD_RPC_URL).toBe("");
-    expect(Redacted.value(configured.HNS_AUTHORITY_HSD_AUTHORIZATION)).toBe("");
-    expect(configured.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS).toBe(36);
+    expect(configured).toEqual({ enabled: false });
   });
 
   test("the activation current-view group parses a complete configuration and redacts authorization", () => {
@@ -73,9 +70,102 @@ describe("config system (000 §9)", () => {
       HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
       HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
     });
-    expect(configured.HNS_ACTIVATION_CURRENT_VIEW_ENABLED).toBe(true);
+    expect(configured.enabled).toBe(true);
+    if (!configured.enabled) throw new Error("expected enabled configuration");
+    expect(configured.HNS_AUTHORITY_HSD_RPC_URL).toBe("https://hsd.example/rpc");
+    expect(configured.HNS_AUTHORITY_CHAIN_NETWORK).toBe("main");
+    expect(configured.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH).toBe(`${"0".repeat(63)}1`);
+    expect(configured.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS).toBe(36);
+    expect(configured.HNS_AUTHORITY_SAFE_CONFIRMATIONS).toBe(12);
+    expect(configured.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS).toBe(600);
+    expect(configured.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS).toBe(60);
     expect(Redacted.value(configured.HNS_AUTHORITY_HSD_AUTHORIZATION)).toBe("Basic hunter2");
     expect(String(configured.HNS_AUTHORITY_HSD_AUTHORIZATION)).toBe("<redacted>");
+  });
+
+  test("every observer setting is required when the group is enabled", () => {
+    const complete: Readonly<Record<string, string>> = {
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+      HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
+    };
+    for (const name of Object.keys(complete)) {
+      if (name === "HNS_ACTIVATION_CURRENT_VIEW_ENABLED") continue;
+      const { [name]: _omitted, ...incomplete } = complete;
+      expect(() => loadConfigFrom(HnsActivationCurrentViewConfig, incomplete)).toThrow(name);
+    }
+    expect(() =>
+      loadConfigFrom(HnsActivationCurrentViewConfig, {
+        ...complete,
+        HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "maybe",
+      }),
+    ).toThrow();
+  });
+
+  test("malformed and whitespace-padded observer values are rejected when enabled", () => {
+    const complete: Readonly<Record<string, string>> = {
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+      HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
+    };
+    for (const [name, value] of [
+      ["HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", "thirty-six"],
+      ["HNS_AUTHORITY_SAFE_CONFIRMATIONS", "12.5"],
+      ["HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", ""],
+      ["HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH", "not-a-hash"],
+      ["HNS_AUTHORITY_CHAIN_NETWORK", " main"],
+    ] as const) {
+      expect(() =>
+        loadConfigFrom(HnsActivationCurrentViewConfig, { ...complete, [name]: value }),
+      ).toThrow();
+    }
+  });
+
+  test("observer bounds match the provisioner and reject out-of-range values", () => {
+    const complete: Readonly<Record<string, string>> = {
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+      HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
+    };
+    for (const [name, value] of [
+      ["HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", "0"],
+      ["HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", "2001"],
+      ["HNS_AUTHORITY_SAFE_CONFIRMATIONS", "1001"],
+      ["HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", "59"],
+      ["HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", "86401"],
+      ["HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS", "-1"],
+      ["HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS", "3601"],
+    ] as const) {
+      expect(() =>
+        loadConfigFrom(HnsActivationCurrentViewConfig, { ...complete, [name]: value }),
+      ).toThrow(name);
+    }
+    const boundary = loadConfigFrom(HnsActivationCurrentViewConfig, {
+      ...complete,
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "1",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "0",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "86400",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "3600",
+    });
+    expect(boundary.enabled).toBe(true);
   });
 
   test("HTTP composition fails before route construction when required config is absent", () => {
