@@ -118,6 +118,48 @@ export const JobsWorkerConfig = Config.all({
 });
 
 /**
+ * The activation current-view gatherer group. Disabled by default; the HTTP
+ * composition validates the complete HNS_AUTHORITY_* group when it is
+ * enabled and fails configuration clearly when any setting is missing or
+ * invalid. The authorization value is a Worker secret binding and is
+ * redacted like every other credential.
+ */
+export const HnsActivationCurrentViewConfigFields = {
+  HNS_ACTIVATION_CURRENT_VIEW_ENABLED: Config.boolean("HNS_ACTIVATION_CURRENT_VIEW_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  HNS_AUTHORITY_HSD_RPC_URL: Config.string("HNS_AUTHORITY_HSD_RPC_URL").pipe(
+    Config.withDefault(""),
+  ),
+  HNS_AUTHORITY_HSD_AUTHORIZATION: secret("HNS_AUTHORITY_HSD_AUTHORIZATION").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  HNS_AUTHORITY_CHAIN_NETWORK: Config.string("HNS_AUTHORITY_CHAIN_NETWORK").pipe(
+    Config.withDefault(""),
+  ),
+  HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: Config.string(
+    "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH",
+  ).pipe(Config.withDefault("")),
+  HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: Config.int("HNS_AUTHORITY_TREE_INTERVAL_BLOCKS").pipe(
+    Config.withDefault(36),
+  ),
+  HNS_AUTHORITY_SAFE_CONFIRMATIONS: Config.int("HNS_AUTHORITY_SAFE_CONFIRMATIONS").pipe(
+    Config.withDefault(12),
+  ),
+  HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: Config.int("HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS").pipe(
+    Config.withDefault(600),
+  ),
+  HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: Config.int(
+    "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS",
+  ).pipe(Config.withDefault(60)),
+} as const;
+
+export const HnsActivationCurrentViewConfig = Config.all(HnsActivationCurrentViewConfigFields);
+export type HnsActivationCurrentViewConfigValue = Config.Success<
+  typeof HnsActivationCurrentViewConfig
+>;
+
+/**
  * Configuration required before the HTTP application layer is constructed.
  * The Hyperdrive object is a Worker binding rather than an environment
  * variable and is checked by the composition root alongside this group.
@@ -273,6 +315,7 @@ export const HttpWorkerConfig = Config.all({
   OPENAI_MODERATION_TIMEOUT_MS: Config.int("OPENAI_MODERATION_TIMEOUT_MS").pipe(
     Config.withDefault(10_000),
   ),
+  ...HnsActivationCurrentViewConfigFields,
   ...MegapotRewardConfigFields,
   MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
 });

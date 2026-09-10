@@ -5,6 +5,8 @@ import {
   completeNamespaceOwnership,
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
+  gatherHnsActivationCurrentViewV1,
+  preflightEncodeHnsResourceV1,
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
@@ -77,6 +79,7 @@ import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-aut
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
+import { makeControlPlaneHnsActivationCurrentViewIdentityRead } from "@pirate/platform-cf/hns-activation-current-view-repository";
 import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "@pirate/platform-cf/hns-community-root-import-repository";
 import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-status-kv";
@@ -116,6 +119,7 @@ import {
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import {
   type HnsOwnerServiceBinding,
   type HnsOwnerTransport,
@@ -1012,6 +1016,43 @@ export async function createProductionHttpWorker(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
   const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
+  // The activation current-view gatherer. Disabled by default; the enabled
+  // composition validates the complete HNS_AUTHORITY_* group at construction
+  // and fails configuration clearly when any setting is missing or invalid.
+  // The observer performs no I/O when it is constructed.
+  let activationObserver: ReturnType<typeof makeHsdRootResourceObserver> | null = null;
+  if (config.HNS_ACTIVATION_CURRENT_VIEW_ENABLED) {
+    try {
+      activationObserver = makeHsdRootResourceObserver({
+        rpc_url: config.HNS_AUTHORITY_HSD_RPC_URL,
+        authorization: Redacted.value(config.HNS_AUTHORITY_HSD_AUTHORIZATION),
+        chain_network: config.HNS_AUTHORITY_CHAIN_NETWORK,
+        genesis_block_hash: config.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
+        tree_interval_blocks: config.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
+        safe_minimum_confirmations: config.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
+        maximum_tip_age_seconds: config.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
+        maximum_future_tip_seconds: config.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
+      });
+    } catch {
+      throw new Error("HNS activation current-view configuration is invalid");
+    }
+  }
+  const activationIdentityRead = makeControlPlaneHnsActivationCurrentViewIdentityRead(controlPlane);
+  const activationCurrentView = (input: { readonly root_import_session_id: string }) =>
+    activationObserver === null
+      ? Effect.succeed(null)
+      : Effect.promise(async () => {
+          const observer = activationObserver as NonNullable<typeof activationObserver>;
+          const gathered = await gatherHnsActivationCurrentViewV1(input.root_import_session_id, {
+            // The identity read is its own scope; it is released before the
+            // observer's network read below.
+            identity: (rootImportSessionId) =>
+              Effect.runPromise(activationIdentityRead(rootImportSessionId)),
+            observe_current: (rootLabel) => observer(rootLabel, "current"),
+            wire_digest: async (records) => (await preflightEncodeHnsResourceV1(records)).sha256,
+          });
+          return gathered.kind === "gathered" ? gathered.binding : null;
+        });
   const hnsCommunityServices:
     | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">
     | undefined =
@@ -1040,6 +1081,7 @@ export async function createProductionHttpWorker(
             environment: config.API_NEXT_ENV,
             provider_binding: communityHnsBinding,
           }),
+          currentView: activationCurrentView,
         };
   const hnsCommunityRootImportHandlers =
     hnsCommunityServices === undefined

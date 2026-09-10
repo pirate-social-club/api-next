@@ -22,6 +22,7 @@
     "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
     "./hns-community-publication-queue": "./src/hns-community-publication-queue.ts",
     "./hns-community-root-import-repository": "./src/hns-community-root-import-repository.ts",
+    "./hns-activation-current-view-repository": "./src/hns-activation-current-view-repository.ts",
     "./hns-active-lease-renewal-repository": "./src/hns-active-lease-renewal-repository.ts",
     "./hns-owner-recovery-start-repository": "./src/hns-owner-recovery-start-repository.ts",
     "./hns-owner-recovery-poll-repository": "./src/hns-owner-recovery-poll-repository.ts",

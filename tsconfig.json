@@ -38,6 +38,9 @@
       "@pirate/platform-cf/namespace-ownership-provider-registry": [
         "./packages/platform-cf/src/namespace-ownership/provider-registry.ts"
       ],
+      "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer": [
+        "./packages/platform-cf/src/namespace-ownership/hns-root-resource-observer.ts"
+      ],
       "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport": [
         "./packages/platform-cf/src/namespace-ownership/hns-control-observer-hsd-private-transport.ts"
       ],

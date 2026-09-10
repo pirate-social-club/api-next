@@ -4,6 +4,7 @@ import { Config, Redacted } from "effect";
 import {
   AppEnv,
   assertMegapotRewardRuntimePosture,
+  HnsActivationCurrentViewConfig,
   HttpWorkerConfig,
   JobsWorkerConfig,
   loadConfig,
@@ -50,6 +51,31 @@ describe("config system (000 §9)", () => {
     const value = loadConfig(secret("API_NEXT_TEST_SECRET"));
     expect(String(value)).toBe("<redacted>");
     delete process.env.API_NEXT_TEST_SECRET;
+  });
+
+  test("the activation current-view group is disabled by default", () => {
+    const configured = loadConfigFrom(HnsActivationCurrentViewConfig, {});
+    expect(configured.HNS_ACTIVATION_CURRENT_VIEW_ENABLED).toBe(false);
+    expect(configured.HNS_AUTHORITY_HSD_RPC_URL).toBe("");
+    expect(Redacted.value(configured.HNS_AUTHORITY_HSD_AUTHORIZATION)).toBe("");
+    expect(configured.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS).toBe(36);
+  });
+
+  test("the activation current-view group parses a complete configuration and redacts authorization", () => {
+    const configured = loadConfigFrom(HnsActivationCurrentViewConfig, {
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+      HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
+    });
+    expect(configured.HNS_ACTIVATION_CURRENT_VIEW_ENABLED).toBe(true);
+    expect(Redacted.value(configured.HNS_AUTHORITY_HSD_AUTHORIZATION)).toBe("Basic hunter2");
+    expect(String(configured.HNS_AUTHORITY_HSD_AUTHORIZATION)).toBe("<redacted>");
   });
 
   test("HTTP composition fails before route construction when required config is absent", () => {

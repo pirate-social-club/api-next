@@ -56,6 +56,7 @@ export {
   NamespaceOwnershipCompletionRejected,
   NamespaceOwnershipCompletionStorageFailed,
 } from "./completion.ts";
+export * from "./hns-activation-current-view.ts";
 export type {
   HnsActiveLeaseRenewalAuthorityV1,
   HnsActiveLeaseRenewalDecodedRequest,
