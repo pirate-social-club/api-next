@@ -14,23 +14,17 @@
 -- removes the guard; the marker, lease, decision, phase, revision and
 -- generation fences remain, and a `ready` refresh still commits in place.
 --
--- The `deadline_expired` outcome is also removed from the performer's
--- refusal set so a future writer cannot reintroduce the retry loop.
--- The retired single session expiry stops gating readiness and activation —
--- spec 012, "Expiry consumers":
+-- The loop is fixed by removing the SQL outcome itself. `deadline_expired`
+-- was already absent from the performer's terminal set; that absence was not
+-- a safeguard, and this migration does not rely on it. A future writer that
+-- reintroduces the outcome would retry again until the policy changes with
+-- it, which is why the guard had to go at the source.
 --
---   "The retired single import/challenge expiry is consumed by exactly these
---    consumers ... finalizers, readiness, activation ... each of which must
---    adopt the separated clocks and hns_root_import_policy_v1 by name and may
---    not re-derive any deadline from another window's remainder."
---
--- The readiness writer accepted only a session whose `expires_at` had not
--- passed, so a lifecycle-managed operation whose publication and finality
--- windows were still valid could not accept fresh readiness after the retired
--- expiry. The phase deadline governs instead: a checking-authority operation
--- past its finality deadline is refused as recovery evidence, and a ready
--- operation has no active deadline and refreshes in place. The marker,
--- lease, decision, phase, revision and generation fences are unchanged.
+-- Commentary correction, 2026-09-10: an earlier revision of this file still
+-- carried the 0154 header prose, which asserted the removed guard and
+-- described the performer's set as the fix. The file is undeployed, so under
+-- the migration-history policy it was amended in place and the checksum
+-- manifest regenerated; no forward SQL changed.
 
 CREATE OR REPLACE FUNCTION commit_hns_root_import_readiness_v1(
   input_session_id TEXT,
