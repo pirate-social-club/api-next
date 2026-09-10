@@ -198,6 +198,19 @@ export type HnsRootImportActivationRecord = Readonly<{
   readonly app_host_activation_id: string;
   readonly sale_namespace_activation_id: string;
   readonly operation_id: string;
+  /**
+   * The current-view evidence gathered before the activation transaction,
+   * bound to the lifecycle revision and generation it was read against. Null
+   * refuses a lifecycle-managed activation; the pre-lifecycle shape does not
+   * have the binding.
+   */
+  readonly current_evidence: Readonly<{
+    readonly lifecycle_revision: number;
+    readonly lifecycle_generation: number;
+    readonly observed_at_epoch_ms: number;
+    readonly resource_sha256: string;
+    readonly qualifying: boolean;
+  }> | null;
 }>;
 
 export type HnsRootImportActivationStoreOutcome =
@@ -697,6 +710,7 @@ export const activateHnsRootImport = Effect.fn("activateHnsRootImport")(function
     app_host_activation_id: activationId(services.ids, "appActivation"),
     sale_namespace_activation_id: activationId(services.ids, "saleActivation"),
     operation_id: activationId(services.ids, "activationOperation"),
+    current_evidence: null,
   });
   if (outcome.kind === "not_found") {
     return yield* new HnsRootImportRejected({ reason: "not_found" });

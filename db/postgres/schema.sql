@@ -2169,6 +2169,151 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION commit_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  database_now TIMESTAMPTZ;
+  committed RECORD;
+BEGIN
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_expected_session_revision IS NULL
+    OR input_expected_session_revision <= 0
+    OR (input_expected_lifecycle_revision IS NOT NULL AND input_expected_lifecycle_revision <= 0)
+    OR (input_expected_generation IS NOT NULL AND input_expected_generation <= 0)
+    OR input_publish_plan_sha256 IS NULL
+    OR input_publish_plan_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_readiness_result_sha256 IS NULL
+    OR input_readiness_result_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_activation_identity IS NULL
+    OR length(btrim(input_activation_identity)) = 0
+    OR btrim(input_activation_identity) IS DISTINCT FROM input_activation_identity
+    OR octet_length(input_activation_identity) > 256
+    OR (input_current_resource_sha256 IS NOT NULL AND input_current_resource_sha256 !~ '^[0-9a-f]{64}$')
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle activation input';
+  END IF;
+
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    -- The pre-lifecycle session shape, handled by the existing path.
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  database_now := clock_timestamp();
+  IF session.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  -- An activation identity that already committed is an idempotent replay,
+  -- whatever phase it left behind; the decision writer also recognises it,
+  -- but the phase gate below would otherwise turn a retry into a conflict.
+  IF EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_history
+     WHERE root_import_session_id = input_session_id
+       AND event_id = 'activation:' || input_activation_identity
+  ) THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  IF lifecycle.phase IS DISTINCT FROM 'ready' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  -- A lifecycle-managed activation requires the pre-gathered current-view
+  -- binding; without it the command refuses rather than activating on stale
+  -- control. The pre-lifecycle path returned above.
+  IF input_expected_lifecycle_revision IS NULL
+    OR input_expected_generation IS NULL
+    OR input_current_observed_at IS NULL
+    OR input_current_resource_sha256 IS NULL
+    OR input_current_qualifying IS NULL
+  THEN
+    RETURN QUERY SELECT 'evidence_required'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.revision IS DISTINCT FROM input_expected_lifecycle_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.generation IS DISTINCT FROM input_expected_generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.status IS DISTINCT FROM 'ready'
+    OR session.revision IS DISTINCT FROM input_expected_session_revision
+  THEN
+    RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.publish_plan_sha256 IS DISTINCT FROM input_publish_plan_sha256 THEN
+    RETURN QUERY SELECT 'plan_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.readiness_result_sha256 IS DISTINCT FROM input_readiness_result_sha256 THEN
+    RETURN QUERY SELECT 'readiness_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.readiness_observed_at IS NULL
+    OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+  THEN
+    RETURN QUERY SELECT 'readiness_stale'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  -- The pre-gathered current-view evidence must describe this operation's
+  -- current state: it qualified against the retained plan, it was observed in
+  -- the freshness window, it is not in the future, and it was taken against
+  -- the generation this transaction is activating.
+  IF input_current_qualifying IS DISTINCT FROM TRUE THEN
+    RETURN QUERY SELECT 'current_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_current_observed_at IS NULL
+    OR input_current_observed_at > database_now
+    OR input_current_observed_at <= database_now - interval '1800 seconds'
+    OR input_current_resource_sha256 IS NULL
+    OR input_current_resource_sha256 !~ '^[0-9a-f]{64}$'
+  THEN
+    RETURN QUERY SELECT 'current_stale'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    'activation:' || input_activation_identity,
+    'activation_requested',
+    'transition',
+    'activated',
+    'activated',
+    '{}'::jsonb,
+    '[]'::jsonb
+  );
+  IF committed.outcome = 'transition' THEN
+    RETURN QUERY SELECT 'activated'::TEXT, committed.revision;
+    RETURN;
+  END IF;
+  IF committed.outcome = 'replay' THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, committed.revision;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT committed.outcome::TEXT, committed.revision;
+END;
+$_$;
+
 CREATE FUNCTION commit_hns_root_import_lifecycle_decision_v1(input_session_id text, input_expected_revision bigint, input_event_id text, input_event_name text, input_outcome text, input_decision_reason text, input_new_phase text, input_deadline_patch jsonb, input_requested_work jsonb, input_lifecycle_job_id bigint DEFAULT NULL::bigint, input_lease_fence bigint DEFAULT NULL::bigint, input_scheduled_generation bigint DEFAULT NULL::bigint) RETURNS TABLE(outcome text, revision bigint, replayed boolean)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT

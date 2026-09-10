@@ -920,4 +920,221 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
     },
     BUDGET_MS,
   );
+
+  test(
+    "the lifecycle activation gate accepts fresh readiness and current evidence",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "activate-session",
+          rootLabel: "activateroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        const readinessBytes = Buffer.from('{"ready":true}');
+        const readinessSha = createHash("sha256").update(readinessBytes).digest("hex");
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready', readiness_result_bytes=$1,
+                  readiness_result_sha256=$2, revision=4
+            WHERE root_import_session_id='activate-session'`,
+          [readinessBytes, readinessSha],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready', readiness_observed_at=clock_timestamp() - interval '60 seconds'
+            WHERE root_import_session_id='activate-session'`,
+        );
+        const baseEvidence = {
+          observedAt: new Date(Date.now() - 5_000).toISOString(),
+          resourceSha: "c".repeat(64),
+          qualifying: true,
+          lifecycleRevision: 1,
+          generation: 1,
+        };
+        const call = (
+          overrides: Partial<{
+            evidence: typeof baseEvidence;
+            expectedSessionRevision: number;
+            planSha: string;
+            readinessSha: string;
+            identity: string;
+          }> = {},
+        ) => {
+          const evidence = overrides.evidence ?? baseEvidence;
+          return admin.query<Record<string, unknown>>(
+            `SELECT * FROM commit_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [
+              "activate-session",
+              overrides.expectedSessionRevision ?? 4,
+              evidence.lifecycleRevision,
+              evidence.generation,
+              overrides.planSha ?? planSha,
+              overrides.readinessSha ?? readinessSha,
+              overrides.identity ?? "activation-test-1",
+              evidence.observedAt,
+              evidence.resourceSha,
+              evidence.qualifying,
+            ],
+          );
+        };
+
+        // Refusals change nothing.
+        expect(
+          (await call({ evidence: { ...baseEvidence, lifecycleRevision: 9 } })).rows[0]?.outcome,
+        ).toBe("revision_conflict");
+        expect(
+          (await call({ evidence: { ...baseEvidence, generation: 2 } })).rows[0]?.outcome,
+        ).toBe("generation_conflict");
+        expect((await call({ planSha: "d".repeat(64) })).rows[0]?.outcome).toBe("plan_conflict");
+        expect((await call({ readinessSha: "e".repeat(64) })).rows[0]?.outcome).toBe(
+          "readiness_conflict",
+        );
+        await expect(call({ identity: "" })).rejects.toThrow(
+          /invalid HNS lifecycle activation input/u,
+        );
+        expect(
+          (await call({ evidence: { ...baseEvidence, qualifying: false } })).rows[0]?.outcome,
+        ).toBe("current_conflict");
+        expect(
+          (
+            await call({
+              evidence: {
+                ...baseEvidence,
+                observedAt: new Date(Date.now() - 7_200_000).toISOString(),
+              },
+            })
+          ).rows[0]?.outcome,
+        ).toBe("current_stale");
+        const before = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='activate-session'`,
+        );
+        expect(before.rows[0]).toMatchObject({ phase: "ready", revision: "1" });
+
+        // Freshness of the accepted readiness evidence is the database clock's.
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET readiness_observed_at=clock_timestamp() - interval '2 hours'
+            WHERE root_import_session_id='activate-session'`,
+        );
+        expect((await call()).rows[0]?.outcome).toBe("readiness_stale");
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET readiness_observed_at=clock_timestamp() - interval '60 seconds'
+            WHERE root_import_session_id='activate-session'`,
+        );
+
+        // The accepted activation commits the lifecycle decision; the session
+        // update is the repository's, in the same transaction.
+        const accepted = await call();
+        expect(accepted.rows[0]).toMatchObject({ outcome: "activated", revision: "2" });
+        const after = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='activate-session'`,
+        );
+        expect(after.rows[0]).toMatchObject({ phase: "activated", revision: "2" });
+        const session = await admin.query<Record<string, unknown>>(
+          `SELECT status, revision FROM hns_root_import_sessions
+            WHERE root_import_session_id='activate-session'`,
+        );
+        expect(session.rows[0]).toMatchObject({ status: "ready", revision: "4" });
+        const history = await admin.query<Record<string, unknown>>(
+          `SELECT outcome, lifecycle_job_id, lease_fence, generation
+             FROM hns_root_import_lifecycle_history
+            WHERE root_import_session_id='activate-session' AND event_name='activation_requested'`,
+        );
+        expect(history.rows).toHaveLength(1);
+        expect(history.rows[0]).toMatchObject({
+          outcome: "transition",
+          lifecycle_job_id: null,
+          lease_fence: null,
+          generation: "1",
+        });
+
+        // A re-delivered activation identity replays and changes nothing.
+        const replayed = await call();
+        expect(replayed.rows[0]).toMatchObject({ outcome: "replayed", revision: "2" });
+        const afterReplay = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='activate-session'`,
+        );
+        expect(afterReplay.rows[0]).toMatchObject({ phase: "activated", revision: "2" });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the lifecycle activation gate refuses a missing current-view binding and is absent for legacy sessions",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "old-session",
+          rootLabel: "oldroot",
+          withLifecycle: false,
+        });
+        const legacy = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            "old-session",
+            3,
+            null,
+            null,
+            planSha,
+            "a".repeat(64),
+            "legacy-activation",
+            null,
+            null,
+            null,
+          ],
+        );
+        expect(legacy.rows[0]).toMatchObject({ outcome: "lifecycle_absent", revision: null });
+
+        await seedOperation(admin, {
+          session: "unbound-session",
+          rootLabel: "unboundroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        const readinessBytes = Buffer.from('{"ready":true}');
+        const readinessSha = createHash("sha256").update(readinessBytes).digest("hex");
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready', readiness_result_bytes=$1,
+                  readiness_result_sha256=$2, revision=4
+            WHERE root_import_session_id='unbound-session'`,
+          [readinessBytes, readinessSha],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready', readiness_observed_at=clock_timestamp() - interval '60 seconds'
+            WHERE root_import_session_id='unbound-session'`,
+        );
+        const unbound = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM commit_hns_root_import_activation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            "unbound-session",
+            4,
+            null,
+            null,
+            planSha,
+            readinessSha,
+            "unbound-activation",
+            null,
+            null,
+            null,
+          ],
+        );
+        expect(unbound.rows[0]).toMatchObject({ outcome: "evidence_required", revision: "1" });
+        const after = await admin.query<Record<string, unknown>>(
+          `SELECT phase FROM hns_root_import_lifecycle WHERE root_import_session_id='unbound-session'`,
+        );
+        expect(after.rows[0]).toMatchObject({ phase: "ready" });
+      });
+    },
+    BUDGET_MS,
+  );
 });

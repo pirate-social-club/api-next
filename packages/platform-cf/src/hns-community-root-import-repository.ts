@@ -1360,6 +1360,7 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
           app_host_activation_id: input.app_host_activation_id,
           sale_namespace_activation_id: input.sale_namespace_activation_id,
           operation_id: input.operation_id,
+          current_evidence: input.current_evidence,
           community_origin: {
             attachment_intent_id: input.attachment_intent_id,
             route_binding_id: input.route_binding_id,

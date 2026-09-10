@@ -87,6 +87,12 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
   TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
 ) TO api_next_app;
+-- The lifecycle half of activation commits inside the existing activation
+-- transaction, revalidating phase, revision, generation, freshness and the
+-- pre-gathered current-view binding before the activation effects commit.
+GRANT EXECUTE ON FUNCTION commit_hns_root_import_activation_v1(
+  TEXT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN
+) TO api_next_app;
 
 -- The operator role is the only writer that can produce an authorization to
 -- delete retained authority or to apply a recovery decision. Its functions

@@ -240,6 +240,20 @@ export type HnsCommunityRootImportActivationRecord = Readonly<{
   readonly app_host_activation_id: string;
   readonly sale_namespace_activation_id: string;
   readonly operation_id: string;
+  /**
+   * The current-view evidence gathered before the activation transaction,
+   * bound to the lifecycle revision and generation it was read against. Null
+   * when no binding is available, which refuses activation for a
+   * lifecycle-managed operation; the pre-lifecycle session shape continues
+   * without it.
+   */
+  readonly current_evidence: Readonly<{
+    readonly lifecycle_revision: number;
+    readonly lifecycle_generation: number;
+    readonly observed_at_epoch_ms: number;
+    readonly resource_sha256: string;
+    readonly qualifying: boolean;
+  }> | null;
 }>;
 
 export type HnsCommunityRootImportActivationOutcome =
@@ -300,6 +314,25 @@ export interface HnsCommunityRootImportStartServices {
 
 export interface HnsCommunityRootImportActivationServices {
   readonly store: HnsCommunityRootImportPollStore & HnsCommunityRootImportActivationStore;
+  /**
+   * Reads the current chain view and binds it to the operation's lifecycle
+   * revision and generation. The activation transaction revalidates that
+   * binding under its locks; a missing or failed read yields null, which
+   * refuses a lifecycle-managed activation rather than inventing evidence.
+   */
+  readonly currentView?: (input: {
+    readonly root_import_session_id: string;
+    readonly root_label: string;
+  }) => Effect.Effect<
+    Readonly<{
+      readonly lifecycle_revision: number;
+      readonly lifecycle_generation: number;
+      readonly observed_at_epoch_ms: number;
+      readonly resource_sha256: string;
+      readonly qualifying: boolean;
+    }> | null,
+    unknown
+  >;
   readonly ids?: Readonly<{
     readonly routeBinding?: () => string;
     readonly dnsActivation?: () => string;
@@ -714,6 +747,18 @@ export const activateHnsCommunityRootImport = Effect.fn("activateHnsCommunityRoo
     const requestSha256 = yield* Effect.promise(() =>
       sha256({ version: "pirate-hns-community-root-import-activation-v1", ...input }),
     );
+    // The current-view read runs outside the activation transaction. A missing
+    // port or a failed read yields null; the lifecycle gate then refuses a
+    // lifecycle-managed activation rather than accepting stale control.
+    const currentEvidence =
+      services.currentView === undefined
+        ? null
+        : yield* services
+            .currentView({
+              root_import_session_id: session.root_import_session_id,
+              root_label: session.root_label,
+            })
+            .pipe(Effect.catch(() => Effect.succeed(null)));
     const outcome = yield* services.store.activate({
       input,
       attachment_intent_id: session.attachment_intent_id,
@@ -723,6 +768,7 @@ export const activateHnsCommunityRootImport = Effect.fn("activateHnsCommunityRoo
       app_host_activation_id: activationId(services.ids, "appActivation"),
       sale_namespace_activation_id: activationId(services.ids, "saleActivation"),
       operation_id: activationId(services.ids, "activationOperation"),
+      current_evidence: currentEvidence,
     });
     if (outcome.kind === "not_found") return yield* pollFailure("not_found");
     if (outcome.kind === "conflict") return yield* pollFailure("conflict");

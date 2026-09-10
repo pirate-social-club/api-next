@@ -802,6 +802,41 @@ export function makeControlPlaneHnsRootImportRepository(
             ) {
               return { kind: "conflict" } as const;
             }
+            // The lifecycle half of activation commits in this same
+            // transaction: under the lifecycle row lock it revalidates the
+            // phase, revision, generation, readiness freshness and the
+            // pre-gathered current-view binding, then commits
+            // `activation_requested`. A refusal rolls back everything below.
+            const currentEvidence = input.current_evidence;
+            const lifecycleResult = yield* transaction.execute<Row>({
+              label: "hns.root-import.activate.lifecycle",
+              text: `SELECT * FROM commit_hns_root_import_activation_v1(
+                       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+              values: [
+                input.input.root_import_session_id,
+                input.input.expected_revision,
+                currentEvidence?.lifecycle_revision ?? null,
+                currentEvidence?.lifecycle_generation ?? null,
+                input.input.publish_plan_sha256,
+                input.input.readiness_result_sha256,
+                input.request_sha256,
+                currentEvidence === null ? null : new Date(currentEvidence.observed_at_epoch_ms),
+                currentEvidence?.resource_sha256 ?? null,
+                currentEvidence?.qualifying ?? null,
+              ],
+              readonly: false,
+            });
+            const lifecycleRow = oneRow(lifecycleResult);
+            if (lifecycleRow === undefined || lifecycleRow === null) {
+              return yield* Effect.fail(storageFailure());
+            }
+            if (
+              lifecycleRow.outcome !== "lifecycle_absent" &&
+              lifecycleRow.outcome !== "activated" &&
+              lifecycleRow.outcome !== "replayed"
+            ) {
+              return { kind: "conflict" } as const;
+            }
             if (communityOrigin === undefined) {
               const intentResult = yield* transaction.execute<Row>({
                 label: "hns.root-import.activate.lock-committed-intent",

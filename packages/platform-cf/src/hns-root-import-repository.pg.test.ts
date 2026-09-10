@@ -1032,6 +1032,7 @@ suite("Postgres 17 HNS root-import repository", () => {
                 },
                 request_sha256: SHA_B,
                 community_id: "community-root-import",
+                current_evidence: null,
                 dns_zone_activation_id: "dns-before-ready",
                 app_host_activation_id: "app-before-ready",
                 sale_namespace_activation_id: "sale-before-ready",
@@ -1140,6 +1141,22 @@ suite("Postgres 17 HNS root-import repository", () => {
         ]);
         expect(finalized.rows).toMatchObject([{ outcome: "ready", session_revision: "5" }]);
 
+        // This harness exercises the legacy readiness writer; the fixture
+        // brings the operation's lifecycle row to the ready state the
+        // production runner would have produced and supplies the current-view
+        // binding the activation gate revalidates.
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready', readiness_observed_at=clock_timestamp()
+            WHERE root_import_session_id='root-import-session'`,
+        );
+        const lifecycleState = await admin.query<{ revision: string; generation: string }>(
+          `SELECT revision, generation FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='root-import-session'`,
+        );
+        const lifecycleRevision = Number(lifecycleState.rows[0]?.revision);
+        const lifecycleGeneration = Number(lifecycleState.rows[0]?.generation);
+
         const activationInput = {
           actor_id: provisioned.record.actor_id,
           actor_kind: "user" as const,
@@ -1163,6 +1180,13 @@ suite("Postgres 17 HNS root-import repository", () => {
           app_host_activation_id: "app-root-import",
           sale_namespace_activation_id: "sale-root-import",
           operation_id: "root-import-activation-operation",
+          current_evidence: {
+            lifecycle_revision: lifecycleRevision,
+            lifecycle_generation: lifecycleGeneration,
+            observed_at_epoch_ms: Date.now() - 5_000,
+            resource_sha256: "c".repeat(64),
+            qualifying: true,
+          },
         };
         const activated = await Effect.runPromise(Effect.scoped(store.activate(activation)));
         expect(activated).toMatchObject({
@@ -1591,6 +1615,21 @@ suite("Postgres 17 HNS root-import repository", () => {
           null,
         ],
       );
+      // This harness exercises the legacy readiness writer; the fixture brings
+      // the operation's lifecycle row to ready and supplies the current-view
+      // binding the activation gate revalidates.
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle
+            SET phase='ready', readiness_observed_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const lifecycleState = await admin.query<{ revision: string; generation: string }>(
+        `SELECT revision, generation FROM hns_root_import_lifecycle
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const lifecycleRevision = Number(lifecycleState.rows[0]?.revision);
+      const lifecycleGeneration = Number(lifecycleState.rows[0]?.generation);
+
       const activationRecord = {
         input: {
           actor_id: "actor-root-import",
@@ -1609,6 +1648,13 @@ suite("Postgres 17 HNS root-import repository", () => {
         app_host_activation_id: "app-community-import",
         sale_namespace_activation_id: "sale-community-import",
         operation_id: "community-import-activation",
+        current_evidence: {
+          lifecycle_revision: lifecycleRevision,
+          lifecycle_generation: lifecycleGeneration,
+          observed_at_epoch_ms: Date.now() - 5_000,
+          resource_sha256: "c".repeat(64),
+          qualifying: true,
+        },
         community_origin: {
           attachment_intent_id: "attachment-import",
           route_binding_id: "route-community-import",
