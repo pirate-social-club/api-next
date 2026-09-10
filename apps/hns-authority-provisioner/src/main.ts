@@ -7,6 +7,7 @@ import type {
 import { Client } from "pg";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
 import { makeHsdRootResourceObserver } from "./hsd.ts";
+import { runHnsIncidentReportCommandV1 } from "./incident-command.ts";
 import { makeHnsLifecycleObservePort } from "./lifecycle-evidence.ts";
 import { runHnsRootImportLifecycleJobOnce } from "./lifecycle-executor.ts";
 import {
@@ -462,14 +463,61 @@ async function main(serve: boolean): Promise<void> {
 
 if (import.meta.main) {
   const arguments_ = Bun.argv.slice(2);
-  const serve = arguments_.length === 1 && arguments_[0] === "--serve";
-  if (arguments_.length > (serve ? 1 : 0)) {
-    console.error("HNS authority provisioner arguments are invalid");
-    process.exitCode = 1;
-  } else {
-    main(serve).catch(() => {
-      console.error("HNS authority provisioner failed");
+  if (arguments_[0] === "--incident-report") {
+    // The read-only incident command reuses the same HSD and PowerDNS
+    // configuration as the serving path. It accepts either an exact root-import
+    // session id or a community plus root label, and it reports missing
+    // prerequisites by name instead of failing with a fixed sentence.
+    const connectionString = process.env.CONTROL_PLANE_POSTGRES_URL;
+    if (
+      connectionString === undefined ||
+      connectionString.trim() !== connectionString ||
+      connectionString.length === 0
+    ) {
+      console.error(
+        JSON.stringify({
+          command: "incident-report",
+          outcome: "configuration_missing",
+          missing: ["CONTROL_PLANE_POSTGRES_URL"],
+        }),
+      );
       process.exitCode = 1;
-    });
+    } else {
+      const client = new Client({ connectionString });
+      void (async () => {
+        await client.connect();
+        try {
+          process.exitCode = await runHnsIncidentReportCommandV1(arguments_.slice(1), {
+            env: process.env,
+            query: ((text: string, values?: readonly unknown[]) =>
+              client.query(text, values as never)) as never,
+            fetch,
+            write: (line) => console.log(line),
+          });
+        } finally {
+          await client.end().catch(() => undefined);
+        }
+      })().catch((error: unknown) => {
+        console.error(
+          JSON.stringify({
+            command: "incident-report",
+            outcome: "failed",
+            detail: error instanceof Error ? error.message : "incident report failed",
+          }),
+        );
+        process.exitCode = 1;
+      });
+    }
+  } else {
+    const serve = arguments_.length === 1 && arguments_[0] === "--serve";
+    if (arguments_.length > (serve ? 1 : 0)) {
+      console.error("HNS authority provisioner arguments are invalid");
+      process.exitCode = 1;
+    } else {
+      main(serve).catch(() => {
+        console.error("HNS authority provisioner failed");
+        process.exitCode = 1;
+      });
+    }
   }
 }

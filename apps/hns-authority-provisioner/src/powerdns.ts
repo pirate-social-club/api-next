@@ -568,6 +568,66 @@ export function makePowerDnsRootTeardown(
   };
 }
 
+/**
+ * Read-only zone and signing-key availability for incident evidence.
+ *
+ * Distinct from the reconciler: it asserts nothing about managed records and
+ * compares nothing, because the incident question is only whether the
+ * retained zone and its signing keys still exist. A 404 is a finding — the
+ * zone is gone. An unavailable authority or an unreadable key list is not a
+ * finding, and returns null so the classifier reports
+ * `provider_availability_unknown` rather than inventing an absence.
+ */
+export function makePowerDnsZoneAvailabilityReadV1(
+  config: Pick<PowerDnsRootProvisionConfig, "api_url" | "api_key" | "server_id">,
+  fetcher: PowerDnsFetch = fetch,
+): (input: {
+  readonly root_label: string;
+}) => Promise<{ readonly zone_present: boolean; readonly signing_keys_present: boolean } | null> {
+  if (
+    !validEndpoint(config.api_url) ||
+    config.api_key.length === 0 ||
+    config.server_id.length === 0
+  ) {
+    throw new Error("PowerDNS zone availability configuration is invalid");
+  }
+  const apiUrl = config.api_url.replace(/\/+$/u, "");
+  const get = (path: string): Promise<Response> =>
+    fetcher(`${apiUrl}/api/v1${path}`, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(requestTimeoutMs),
+      headers: { accept: "application/json", "x-api-key": config.api_key },
+    });
+  return async (input) => {
+    const zoneName = canonicalName(input.root_label);
+    const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
+    let zoneResponse: Response;
+    try {
+      zoneResponse = await get(zonePath);
+    } catch {
+      return null;
+    }
+    if (zoneResponse.status === 404) {
+      return { zone_present: false, signing_keys_present: false };
+    }
+    if (!zoneResponse.ok) return null;
+    let cryptokeys: unknown;
+    try {
+      const response = await get(`${zonePath}/cryptokeys`);
+      if (!response.ok) return null;
+      cryptokeys = await readBoundedJson(response);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(cryptokeys)) return null;
+    const signingKeysPresent = (cryptokeys as readonly ApiCryptokey[]).some(
+      (key) => key.active !== false && key.published !== false,
+    );
+    return { zone_present: true, signing_keys_present: signingKeysPresent };
+  };
+}
+
 /** Read-only reconciliation used after the owner broadcasts the replacement resource. */
 export function makePowerDnsRootInspector(
   config: PowerDnsRootProvisionConfig,
