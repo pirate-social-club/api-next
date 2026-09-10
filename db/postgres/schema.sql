@@ -1398,10 +1398,9 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Quiesce: a live legacy readiness lease on a lifecycle-managed operation
-  -- is a conflicting claim. The operator retries after it finishes or
-  -- expires; a stale observation cannot be accepted after handover anyway,
-  -- so the handover waits rather than racing it.
+  -- The marker's FOR UPDATE is held for the rest of this transaction, and
+  -- every claim takes FOR SHARE on the same row, so no claim can be granted
+  -- between this check and the marker update below.
   IF EXISTS (
     SELECT 1
       FROM hns_root_import_observation_jobs AS job
@@ -1420,9 +1419,6 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Obsolete queued or abandoned legacy readiness rows for operations the
-  -- lifecycle now owns receive a named disposition. Live rows were excluded
-  -- above; nothing is completed as though it had been performed.
   UPDATE hns_root_import_observation_jobs AS job
      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
          failure_code = 'readiness_ownership_transferred', completed_at = database_now,
@@ -1438,17 +1434,26 @@ BEGIN
      );
   GET DIAGNOSTICS dispositioned = ROW_COUNT;
 
-  -- Unfinished readiness work is queued for the operation's current
-  -- generation exactly once: only phases where readiness is the next
-  -- evidence, and only when no current-generation readiness job is already
-  -- queued or leased.
+  -- Replacement work for the current generation exactly once. Readiness is
+  -- the next evidence in `checking_authority`, and a `ready` operation with
+  -- absent or stale readiness needs the refresh the disposed legacy row would
+  -- have performed.
   INSERT INTO hns_root_import_lifecycle_jobs (
     root_import_session_id, job_kind, due_at, generation
   )
   SELECT lifecycle.root_import_session_id, 'observe_readiness',
          database_now, lifecycle.generation
     FROM hns_root_import_lifecycle AS lifecycle
-   WHERE lifecycle.phase = 'checking_authority'
+   WHERE (
+       lifecycle.phase = 'checking_authority'
+       OR (
+         lifecycle.phase = 'ready'
+         AND (
+           lifecycle.readiness_observed_at IS NULL
+           OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+         )
+       )
+     )
      AND NOT EXISTS (
        SELECT 1 FROM hns_root_import_lifecycle_jobs AS pending
         WHERE pending.root_import_session_id = lifecycle.root_import_session_id
@@ -1870,6 +1875,7 @@ CREATE FUNCTION claim_hns_root_import_lifecycle_job_v1(input_executor_id text, i
 DECLARE
   candidate hns_root_import_lifecycle_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
+  readiness_enabled BOOLEAN;
 BEGIN
   IF input_executor_id IS NULL
     OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
@@ -1880,11 +1886,16 @@ BEGIN
     RAISE EXCEPTION 'invalid HNS lifecycle job claim';
   END IF;
 
-  -- A job scheduled for an earlier authority generation describes a
-  -- different operation. It is failed with a named disposition rather than
-  -- left queued forever, which would also keep the due-job wait loop awake.
-  -- SKIP LOCKED keeps a concurrent claim from blocking on a row it is about
-  -- to handle itself; the skipped row is disposed by the next claim.
+  -- The common lock order with the handover transaction. FOR SHARE admits
+  -- concurrent claims and excludes the handover's FOR UPDATE, so a claim
+  -- cannot be granted in the window between the handover's lease check and
+  -- its marker update.
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
+
   UPDATE hns_root_import_lifecycle_jobs AS stale
      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
          failure_code = 'generation_superseded', completed_at = database_now,
@@ -1909,17 +1920,7 @@ BEGIN
    WHERE ((job.state = 'queued' AND job.due_at <= database_now)
       OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
      AND job.generation = lifecycle.generation
-     AND (
-       job.job_kind <> 'observe_readiness'
-       OR EXISTS (
-         SELECT 1 FROM hns_root_import_execution_ownership AS ownership
-          WHERE ownership.responsibility = 'readiness' AND ownership.enabled
-       )
-     )
-     -- The reciprocal of the observation exclusion. A legacy readiness lease
-     -- taken before the lifecycle row existed is still in flight, so the
-     -- lifecycle runner waits for it to drain rather than observing the same
-     -- operation alongside it. The wait is bounded by that lease.
+     AND (job.job_kind <> 'observe_readiness' OR readiness_enabled)
      AND NOT EXISTS (
        SELECT 1 FROM hns_root_import_observation_jobs AS legacy
         WHERE legacy.root_import_session_id = job.root_import_session_id
@@ -1958,6 +1959,7 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
+  readiness_enabled BOOLEAN;
 BEGIN
   IF btrim(input_executor_id) <> input_executor_id
     OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
@@ -1966,6 +1968,14 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid HNS root observation claim';
   END IF;
+
+  -- The common lock order with the handover transaction, shared with the
+  -- lifecycle claim so both executors serialize on the same ownership fact.
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
 
   SELECT job.* INTO teardown
     FROM hns_root_import_teardown_jobs AS job
@@ -2083,16 +2093,9 @@ BEGIN
      )
      AND selected_session.status = 'observing'
      AND selected_session.expires_at > database_now
-     -- Readiness ownership handover: once the marker is enabled, the legacy
-     -- readiness claimant yields lifecycle-managed operations to the
-     -- lifecycle runner. Sessions with no lifecycle row keep the legacy
-     -- performer.
      AND NOT (
        job.operation_kind = 'observe_root_v1'
-       AND EXISTS (
-         SELECT 1 FROM hns_root_import_execution_ownership AS ownership
-          WHERE ownership.responsibility = 'readiness' AND ownership.enabled
-       )
+       AND readiness_enabled
        AND EXISTS (
          SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
           WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
@@ -2130,10 +2133,7 @@ BEGIN
      AND selected_session.expires_at > database_now
      AND NOT (
        job.operation_kind = 'observe_root_v1'
-       AND EXISTS (
-         SELECT 1 FROM hns_root_import_execution_ownership AS ownership
-          WHERE ownership.responsibility = 'readiness' AND ownership.enabled
-       )
+       AND readiness_enabled
        AND EXISTS (
          SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
           WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
@@ -2327,6 +2327,7 @@ DECLARE
   readiness_event_id TEXT;
   committed RECORD;
   problem TEXT;
+  readiness_enabled BOOLEAN;
 BEGIN
   IF input_session_id IS NULL
     OR length(btrim(input_session_id)) = 0
@@ -2349,6 +2350,11 @@ BEGIN
     RAISE EXCEPTION 'invalid HNS lifecycle readiness result';
   END IF;
 
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
   SELECT * INTO job FROM hns_root_import_lifecycle_jobs
    WHERE lifecycle_job_id = input_lifecycle_job_id
    FOR UPDATE;
@@ -2368,10 +2374,7 @@ BEGIN
     RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM hns_root_import_execution_ownership AS ownership
-     WHERE ownership.responsibility = 'readiness' AND ownership.enabled
-  ) THEN
+  IF NOT readiness_enabled THEN
     RETURN QUERY SELECT 'ownership_not_enabled'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
@@ -2402,7 +2405,11 @@ BEGIN
     RETURN QUERY SELECT 'lease_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
-  IF lifecycle.phase IS DISTINCT FROM 'checking_authority' THEN
+  -- Readiness is accepted in `checking_authority` as the advance to `ready`,
+  -- and in `ready` as a refresh in place: activation keeps stale readiness as
+  -- a pending hold and schedules this observation, so refusing `ready` made
+  -- the refresh impossible.
+  IF lifecycle.phase NOT IN ('checking_authority', 'ready') THEN
     RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
@@ -2414,7 +2421,8 @@ BEGIN
     RETURN QUERY SELECT 'plan_absent'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
-  IF session.status IS DISTINCT FROM 'observing' THEN
+  -- An advance comes from `observing`; a refresh comes from `ready`.
+  IF session.status NOT IN ('observing', 'ready') THEN
     RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
@@ -3812,10 +3820,16 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
+  readiness_enabled BOOLEAN;
 BEGIN
   IF input_outcome NOT IN ('ready', 'retry', 'failed') THEN
     RAISE EXCEPTION 'invalid HNS root observation finalization';
   END IF;
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
   SELECT * INTO teardown
     FROM hns_root_import_teardown_jobs
    WHERE teardown_job_id = input_observation_job_id
@@ -3929,23 +3943,8 @@ BEGIN
     FROM hns_root_import_sessions
    WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id
    FOR UPDATE;
-  -- Ownership handover: readiness acceptance for a lifecycle-managed
-  -- operation belongs to the lifecycle runner once the marker is enabled. A
-  -- legacy lease that survived handover is refused and changes nothing.
-  IF input_outcome = 'ready'
-    AND job.operation_kind = 'observe_root_v1'
-    AND EXISTS (
-      SELECT 1 FROM hns_root_import_execution_ownership AS ownership
-       WHERE ownership.responsibility = 'readiness' AND ownership.enabled
-    )
-    AND EXISTS (
-      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-       WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
-    )
-  THEN
-    RETURN QUERY SELECT 'ownership_conflict'::TEXT, session.root_import_session_id, session.revision;
-    RETURN;
-  END IF;
+  -- A completed job replays idempotently regardless of ownership; the work
+  -- was accepted under the ownership that was current when it ran.
   IF job.state IN ('completed', 'failed') THEN
     IF job.state = 'completed'
       AND input_outcome = 'ready'
@@ -3958,6 +3957,19 @@ BEGIN
     ELSE
       RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
     END IF;
+    RETURN;
+  END IF;
+  -- Ownership handover gates every new outcome, not only a readiness
+  -- acceptance: a post-handover retry or failure would also mutate the
+  -- session while the lifecycle runner owns readiness.
+  IF readiness_enabled
+    AND job.operation_kind = 'observe_root_v1'
+    AND EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+       WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+    )
+  THEN
+    RETURN QUERY SELECT 'ownership_conflict'::TEXT, session.root_import_session_id, session.revision;
     RETURN;
   END IF;
   IF job.state <> 'leased'
@@ -7984,15 +7996,23 @@ BEGIN
     OR (OLD.observation_job_id IS NOT NULL AND NEW.observation_job_id IS DISTINCT FROM OLD.observation_job_id)
     OR (OLD.observation_idempotency_key IS NOT NULL AND NEW.observation_idempotency_key IS DISTINCT FROM OLD.observation_idempotency_key)
     OR (OLD.observation_request_sha256 IS NOT NULL AND NEW.observation_request_sha256 IS DISTINCT FROM OLD.observation_request_sha256)
-    OR (OLD.readiness_result_bytes IS NOT NULL AND NEW.readiness_result_bytes IS DISTINCT FROM OLD.readiness_result_bytes)
-    OR (OLD.readiness_result_sha256 IS NOT NULL AND NEW.readiness_result_sha256 IS DISTINCT FROM OLD.readiness_result_sha256) THEN
+    OR (
+      OLD.readiness_result_bytes IS NOT NULL
+      AND NEW.readiness_result_bytes IS DISTINCT FROM OLD.readiness_result_bytes
+      AND NOT (OLD.status = 'ready' AND NEW.status = 'ready')
+    )
+    OR (
+      OLD.readiness_result_sha256 IS NOT NULL
+      AND NEW.readiness_result_sha256 IS DISTINCT FROM OLD.readiness_result_sha256
+      AND NOT (OLD.status = 'ready' AND NEW.status = 'ready')
+    ) THEN
     RAISE EXCEPTION 'HNS root-import retained evidence changed';
   END IF;
   IF NOT (
     (OLD.status = 'awaiting_ownership' AND NEW.status IN ('provisioning', 'failed', 'expired'))
     OR (OLD.status = 'provisioning' AND NEW.status IN ('awaiting_owner_update', 'failed', 'expired'))
     OR (OLD.status IN ('awaiting_owner_update', 'observing') AND NEW.status IN ('observing', 'ready', 'failed', 'expired'))
-    OR (OLD.status = 'ready' AND NEW.status IN ('activated', 'expired'))
+    OR (OLD.status = 'ready' AND NEW.status IN ('activated', 'expired', 'ready'))
   ) THEN
     RAISE EXCEPTION 'HNS root-import session transition is invalid';
   END IF;

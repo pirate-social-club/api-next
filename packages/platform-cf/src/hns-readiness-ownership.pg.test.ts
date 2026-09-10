@@ -495,6 +495,24 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
           ],
         );
         expect(finalized.rows[0]?.outcome).toBe("ownership_conflict");
+        // Every new outcome is gated, not only the readiness acceptance: a
+        // post-handover retry or failure would mutate the session too.
+        for (const outcome of ["retry", "failed"]) {
+          const refused = await admin.query<Record<string, unknown>>(
+            "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)",
+            [
+              "finalize-legacy-job",
+              "legacy-executor",
+              Number(job?.lease_fence),
+              planSha,
+              outcome,
+              null,
+              null,
+              "carrier_failure",
+            ],
+          );
+          expect(refused.rows[0]?.outcome).toBe("ownership_conflict");
+        }
         const state = await operationState(admin, "finalize-session");
         expect(state.session).toMatchObject({ status: "observing", readiness_result_sha256: null });
       });
@@ -591,6 +609,259 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
           "SELECT enabled FROM hns_root_import_execution_ownership WHERE responsibility='readiness'",
         );
         expect(marker.rows[0]).toMatchObject({ enabled: false });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a claim in flight blocks the handover and is then seen as a live lease",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "race-session",
+          rootLabel: "raceroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await admin.query(
+          `INSERT INTO hns_root_import_observation_jobs
+             (observation_job_id, root_import_session_id, operation_kind, request_bytes,
+              request_sha256, state)
+           VALUES ('race-legacy-job','race-session','observe_root_v1','{}'::bytea,
+             encode(sha256('{}'::bytea),'hex'),'queued')`,
+        );
+        const schema = (
+          await admin.query<{ readonly schema: string }>("SELECT current_schema() AS schema")
+        ).rows[0]?.schema;
+        if (schema === undefined) throw new Error("schema was not established");
+
+        const legacyClaimer = new Client({ connectionString });
+        await legacyClaimer.connect();
+        try {
+          await legacyClaimer.query(`SET search_path TO ${quote(schema)}`);
+          await legacyClaimer.query("BEGIN");
+          const claimed = await legacyClaimer.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
+            ["race-executor", 60],
+          );
+          expect(claimed.rows).toHaveLength(1);
+          const handover = admin.query<Record<string, unknown>>(
+            "SELECT * FROM begin_hns_root_import_readiness_ownership_v1($1)",
+            ["race-receipt"],
+          );
+          // The claim holds the marker share lock; the handover's FOR UPDATE
+          // cannot pass it, so the lease check cannot miss an in-flight claim.
+          const settled = await Promise.race([
+            handover.then(() => "settled" as const),
+            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 500)),
+          ]);
+          expect(settled).toBe("blocked");
+          await legacyClaimer.query("COMMIT");
+          const refused = await handover;
+          expect(refused.rows[0]?.outcome).toBe("live_lease_present");
+        } finally {
+          await legacyClaimer.end().catch(() => undefined);
+        }
+        await admin.query(
+          `UPDATE hns_root_import_observation_jobs
+              SET state='failed', leased_by=NULL, lease_expires_at=NULL,
+                  failure_code='test_cleanup', completed_at=clock_timestamp(),
+                  updated_at=clock_timestamp()
+            WHERE observation_job_id='race-legacy-job'`,
+        );
+
+        // The lifecycle claim serializes on the same marker row.
+        await queueJob(admin, "race-session", "observe_current");
+        const lifecycleClaimer = new Client({ connectionString });
+        await lifecycleClaimer.connect();
+        try {
+          await lifecycleClaimer.query(`SET search_path TO ${quote(schema)}`);
+          await lifecycleClaimer.query("BEGIN");
+          const claimed = await lifecycleClaimer.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+            ["race-lifecycle-executor", 60],
+          );
+          expect(claimed.rows).toHaveLength(1);
+          const handover = admin.query<Record<string, unknown>>(
+            "SELECT * FROM begin_hns_root_import_readiness_ownership_v1($1)",
+            ["race-receipt-2"],
+          );
+          const settled = await Promise.race([
+            handover.then(() => "settled" as const),
+            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 500)),
+          ]);
+          expect(settled).toBe("blocked");
+          await lifecycleClaimer.query("COMMIT");
+          const refused = await handover;
+          expect(refused.rows[0]?.outcome).toBe("live_lease_present");
+        } finally {
+          await lifecycleClaimer.end().catch(() => undefined);
+        }
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a stale-ready operation refreshes readiness in place",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "refresh-session",
+          rootLabel: "refreshroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        const staleBytes = Buffer.from('{"stale":true}');
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready',
+                  readiness_result_bytes=$1,
+                  readiness_result_sha256=encode(sha256($1),'hex'),
+                  revision=4
+            WHERE root_import_session_id='refresh-session'`,
+          [staleBytes],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready',
+                  readiness_observed_at=clock_timestamp() - interval '2 hours',
+                  next_check_at=clock_timestamp() - interval '2 hours'
+            WHERE root_import_session_id='refresh-session'`,
+        );
+        await enableMarker(admin);
+        await queueJob(admin, "refresh-session", "observe_readiness");
+        const job = await requireClaimLifecycle(admin);
+        const before = await admin.query<Record<string, unknown>>(
+          `SELECT readiness_observed_at FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='refresh-session'`,
+        );
+        const accepted = await commitReadiness(admin, {
+          session: "refresh-session",
+          job,
+          revision: 1,
+        });
+        expect(accepted.row?.outcome).toBe("ready");
+        const after = await admin.query<Record<string, unknown>>(
+          `SELECT phase, revision, readiness_observed_at
+             FROM hns_root_import_lifecycle WHERE root_import_session_id='refresh-session'`,
+        );
+        const afterRow = after.rows[0];
+        const beforeRow = before.rows[0];
+        if (afterRow === undefined || beforeRow === undefined) {
+          throw new Error("readiness timestamps were not read");
+        }
+        expect(afterRow.phase).toBe("ready");
+        expect(afterRow.revision).toBe("2");
+        expect((afterRow.readiness_observed_at as Date).getTime()).toBeGreaterThan(
+          (beforeRow.readiness_observed_at as Date).getTime(),
+        );
+        const session = await admin.query<Record<string, unknown>>(
+          `SELECT status, revision, readiness_result_sha256 FROM hns_root_import_sessions
+            WHERE root_import_session_id='refresh-session'`,
+        );
+        expect(session.rows[0]).toMatchObject({ status: "ready", revision: "5" });
+        expect(session.rows[0]?.readiness_result_sha256).toBe(accepted.sha);
+        const completed = await admin.query<Record<string, unknown>>(
+          "SELECT state FROM hns_root_import_lifecycle_jobs WHERE lifecycle_job_id=$1",
+          [job.lifecycle_job_id],
+        );
+        expect(completed.rows[0]?.state).toBe("completed");
+
+        // A second refresh with a different reading is a new accepted
+        // decision, not a replay of the first.
+        await queueJob(admin, "refresh-session", "observe_readiness");
+        const nextJob = await requireClaimLifecycle(admin);
+        const second = await commitReadiness(admin, {
+          session: "refresh-session",
+          job: nextJob,
+          revision: 2,
+          result: readinessResult("refresh-session", {
+            observed_at: new Date(Date.now() - 1_000).toISOString(),
+          }),
+        });
+        expect(second.row?.outcome).toBe("ready");
+        expect(second.row?.readiness_result_sha256).not.toBe(accepted.sha);
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "handover queues a refresh for a stale-ready operation",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "stale-ready-session",
+          rootLabel: "stalereadyroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready',
+                  readiness_result_bytes='{"stale":true}'::bytea,
+                  readiness_result_sha256=encode(sha256('{"stale":true}'::bytea),'hex'),
+                  revision=4
+            WHERE root_import_session_id='stale-ready-session'`,
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready',
+                  readiness_observed_at=clock_timestamp() - interval '2 hours',
+                  next_check_at=clock_timestamp() - interval '2 hours'
+            WHERE root_import_session_id='stale-ready-session'`,
+        );
+        const handover = await admin.query<Record<string, unknown>>(
+          "SELECT * FROM begin_hns_root_import_readiness_ownership_v1($1)",
+          ["stale-ready-receipt"],
+        );
+        expect(handover.rows[0]).toMatchObject({ outcome: "enabled", queued_jobs: "1" });
+        const queued = await admin.query<Record<string, unknown>>(
+          `SELECT state, generation FROM hns_root_import_lifecycle_jobs
+            WHERE root_import_session_id='stale-ready-session' AND job_kind='observe_readiness'`,
+        );
+        expect(queued.rows).toHaveLength(1);
+        expect(queued.rows[0]).toMatchObject({ state: "queued", generation: "1" });
+        // A fresh-ready operation is not queued a second time.
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET readiness_observed_at = clock_timestamp()
+            WHERE root_import_session_id='stale-ready-session'`,
+        );
+        await seedOperation(admin, {
+          session: "fresh-ready-session",
+          rootLabel: "freshreadyroot",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET status='ready',
+                  readiness_result_bytes='{}'::bytea,
+                  readiness_result_sha256=encode(sha256('{}'::bytea),'hex'),
+                  revision=4
+            WHERE root_import_session_id='fresh-ready-session'`,
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET phase='ready', readiness_observed_at=clock_timestamp()
+            WHERE root_import_session_id='fresh-ready-session'`,
+        );
+        const again = await admin.query<Record<string, unknown>>(
+          "SELECT * FROM begin_hns_root_import_readiness_ownership_v1($1)",
+          ["stale-ready-receipt-2"],
+        );
+        expect(again.rows[0]).toMatchObject({ outcome: "already_enabled", queued_jobs: "0" });
+        const freshQueued = await admin.query<{ readonly count: string }>(
+          `SELECT count(*)::text AS count FROM hns_root_import_lifecycle_jobs
+            WHERE root_import_session_id='fresh-ready-session' AND job_kind='observe_readiness'`,
+        );
+        expect(freshQueued.rows[0]?.count).toBe("0");
       });
     },
     BUDGET_MS,
