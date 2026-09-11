@@ -4369,16 +4369,28 @@ $_$;
 CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
-    AS $$
+    AS $_$
 DECLARE
   readiness_enabled BOOLEAN;
   lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
   job_session TEXT;
   legacy RECORD;
   committed RECORD;
-  database_now TIMESTAMPTZ := clock_timestamp();
+  database_now TIMESTAMPTZ;
+  observed_at TIMESTAMPTZ;
+  result JSONB;
   readiness_event_id TEXT;
 BEGIN
+  IF input_observation_job_id IS NULL
+    OR btrim(input_observation_job_id) IS DISTINCT FROM input_observation_job_id
+    OR input_executor_id IS NULL
+    OR input_lease_fence IS NULL
+    OR input_outcome IS NULL
+  THEN
+    RETURN QUERY SELECT 'ownership_conflict'::TEXT, NULL::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
   SELECT ownership.enabled INTO readiness_enabled
     FROM hns_root_import_execution_ownership AS ownership
    WHERE ownership.responsibility = 'readiness'
@@ -4393,6 +4405,61 @@ BEGIN
       SELECT * INTO lifecycle FROM hns_root_import_lifecycle AS selected_lifecycle
        WHERE selected_lifecycle.root_import_session_id = job_session
        FOR UPDATE;
+    END IF;
+    IF lifecycle.root_import_session_id IS NOT NULL
+      AND lifecycle.phase IN ('checking_authority', 'ready')
+    THEN
+      SELECT * INTO session FROM hns_root_import_sessions AS selected_session
+       WHERE selected_session.root_import_session_id = job_session
+       FOR UPDATE;
+      database_now := clock_timestamp();
+
+      -- Under withdrawn ownership only a readiness acceptance can advance a
+      -- lifecycle-managed operation. Every other outcome is refused before the
+      -- legacy finalizer mutates anything: failure and attempt exhaustion
+      -- preserve lifecycle ownership for a forward handover instead of
+      -- desynchronizing the session from the lifecycle row.
+      IF input_outcome IS DISTINCT FROM 'ready' THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      IF lifecycle.phase NOT IN ('checking_authority', 'ready')
+        OR lifecycle.generation <> 1
+        OR lifecycle.plan_encoded_resource_sha256 IS NULL
+        OR session.publish_plan_sha256 IS NULL
+        OR input_result_bytes IS NULL
+        OR input_result_sha256 IS NULL
+        OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+        OR encode(sha256(input_result_bytes), 'hex') IS DISTINCT FROM input_result_sha256
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      BEGIN
+        result := convert_from(input_result_bytes, 'UTF8')::JSONB;
+      EXCEPTION WHEN others THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END;
+      IF result->>'root_import_session_id' IS DISTINCT FROM job_session
+        OR result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      BEGIN
+        observed_at := (result->>'observed_at')::TIMESTAMPTZ;
+      EXCEPTION WHEN others THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END;
+      IF observed_at IS NULL
+        OR observed_at > database_now
+        OR observed_at <= database_now - interval '1800 seconds'
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
     END IF;
   END IF;
 
@@ -4442,7 +4509,7 @@ BEGIN
   RETURN QUERY SELECT
     legacy.outcome, legacy.root_import_session_id, legacy.session_revision;
 END;
-$$;
+$_$;
 
 CREATE FUNCTION finalize_hns_root_import_ownership_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_ownership_status text, input_ownership_result_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
@@ -21250,69 +21317,42 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Terminal-only receiver eligibility. An operation in any live phase can
+  -- later need readiness the legacy receiver cannot serve: a fresh `ready`
+  -- operation can go stale, a `waiting_safe_commitment` operation needs
+  -- readiness after safe commitment, and an adopted generation in an earlier
+  -- phase would escape a readiness-only check. Each phase therefore refuses
+  -- by name and preserves ownership. Operations created after withdrawal are
+  -- initial-readiness only; a stale-ready refresh requires a forward handover.
   SELECT CASE
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-       WHERE (
-           lifecycle.phase = 'checking_authority'
-           OR (
-             lifecycle.phase = 'ready'
-             AND (
-               lifecycle.readiness_observed_at IS NULL
-               OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-             )
-           )
-         )
-         AND lifecycle.generation <> 1
-    ) THEN 'receiver_cannot_resume_adopted_generation'
+       WHERE lifecycle.phase = 'preparing'
+    ) THEN 'receiver_cannot_continue_preparing'
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-       WHERE (
-           lifecycle.phase = 'checking_authority'
-           OR (
-             lifecycle.phase = 'ready'
-             AND (
-               lifecycle.readiness_observed_at IS NULL
-               OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-             )
-           )
-         )
-         AND lifecycle.plan_encoded_resource_sha256 IS NULL
-    ) THEN 'receiver_plan_absent'
+       WHERE lifecycle.phase = 'awaiting_publication'
+    ) THEN 'receiver_cannot_continue_awaiting_publication'
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-       WHERE (
-           lifecycle.phase = 'checking_authority'
-           OR (
-             lifecycle.phase = 'ready'
-             AND (
-               lifecycle.readiness_observed_at IS NULL
-               OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-             )
-           )
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM hns_root_import_observation_jobs AS observation
-            WHERE observation.root_import_session_id = lifecycle.root_import_session_id
-              AND observation.operation_kind = 'observe_root_v1'
-         )
-    ) THEN 'receiver_observation_absent'
+       WHERE lifecycle.phase = 'checking_publication'
+    ) THEN 'receiver_cannot_continue_checking_publication'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'waiting_safe_commitment'
+    ) THEN 'receiver_cannot_continue_waiting_safe_commitment'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'checking_authority'
+    ) THEN 'receiver_cannot_continue_checking_authority'
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
        WHERE lifecycle.phase = 'ready'
-         AND (
-           lifecycle.readiness_observed_at IS NULL
-           OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-         )
-    ) THEN 'receiver_cannot_resume_ready_refresh'
+    ) THEN 'receiver_cannot_continue_ready'
     WHEN EXISTS (
-      SELECT 1
-        FROM hns_root_import_lifecycle AS lifecycle
-        JOIN hns_root_import_sessions AS session
-          ON session.root_import_session_id = lifecycle.root_import_session_id
-       WHERE lifecycle.phase = 'checking_authority'
-         AND session.status <> 'observing'
-    ) THEN 'receiver_session_phase_conflict'
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'recovery_required'
+    ) THEN 'receiver_cannot_continue_recovery_required'
     ELSE NULL
   END INTO blocker;
   IF blocker IS NOT NULL THEN

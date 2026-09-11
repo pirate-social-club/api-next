@@ -24,14 +24,39 @@ REVOKE ALL ON FUNCTION finalize_hns_root_import_observation_job_legacy_v1(
   TEXT, TEXT, BIGINT, TEXT, TEXT, BYTEA, TEXT, TEXT
 ) FROM PUBLIC;
 
-DO $revoke_legacy_runtime$
+-- The rename carried every previously granted role onto the helper. Revoke
+-- every non-owner grantee, whatever the deployment had granted, so no role
+-- can reach the legacy body directly and bypass the wrapper.
+DO $revoke_legacy_grantees$
+DECLARE
+  grantee_oid OID;
+  grantee_name TEXT;
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'api_next_app') THEN
-    EXECUTE
-      'REVOKE ALL ON FUNCTION finalize_hns_root_import_observation_job_legacy_v1(text,text,bigint,text,text,bytea,text,text) FROM api_next_app';
-  END IF;
+  FOR grantee_oid, grantee_name IN
+    SELECT acl.grantee,
+           CASE WHEN acl.grantee = 0 THEN NULL ELSE r.rolname END
+      FROM pg_proc AS procedure
+      JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+      CROSS JOIN LATERAL aclexplode(
+        coalesce(procedure.proacl, acldefault('f', procedure.proowner))
+      ) AS acl
+      LEFT JOIN pg_roles AS r ON r.oid = acl.grantee
+     WHERE namespace.nspname = current_schema()
+       AND procedure.proname = 'finalize_hns_root_import_observation_job_legacy_v1'
+       AND acl.grantee <> procedure.proowner
+     GROUP BY acl.grantee, r.rolname
+  LOOP
+    IF grantee_oid = 0 THEN
+      EXECUTE
+        'REVOKE ALL ON FUNCTION finalize_hns_root_import_observation_job_legacy_v1(text,text,bigint,text,text,bytea,text,text) FROM PUBLIC';
+    ELSE
+      EXECUTE format(
+        'REVOKE ALL ON FUNCTION finalize_hns_root_import_observation_job_legacy_v1(text,text,bigint,text,text,bytea,text,text) FROM %I',
+        grantee_name);
+    END IF;
+  END LOOP;
 END;
-$revoke_legacy_runtime$;
+$revoke_legacy_grantees$;
 
 -- The public finalizer now holds the common lock order first — marker, then
 -- lifecycle — delegates the legacy outcome, and commits the lifecycle
@@ -56,12 +81,24 @@ LANGUAGE plpgsql AS $$
 DECLARE
   readiness_enabled BOOLEAN;
   lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
   job_session TEXT;
   legacy RECORD;
   committed RECORD;
-  database_now TIMESTAMPTZ := clock_timestamp();
+  database_now TIMESTAMPTZ;
+  observed_at TIMESTAMPTZ;
+  result JSONB;
   readiness_event_id TEXT;
 BEGIN
+  IF input_observation_job_id IS NULL
+    OR btrim(input_observation_job_id) IS DISTINCT FROM input_observation_job_id
+    OR input_executor_id IS NULL
+    OR input_lease_fence IS NULL
+    OR input_outcome IS NULL
+  THEN
+    RETURN QUERY SELECT 'ownership_conflict'::TEXT, NULL::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
   SELECT ownership.enabled INTO readiness_enabled
     FROM hns_root_import_execution_ownership AS ownership
    WHERE ownership.responsibility = 'readiness'
@@ -76,6 +113,61 @@ BEGIN
       SELECT * INTO lifecycle FROM hns_root_import_lifecycle AS selected_lifecycle
        WHERE selected_lifecycle.root_import_session_id = job_session
        FOR UPDATE;
+    END IF;
+    IF lifecycle.root_import_session_id IS NOT NULL
+      AND lifecycle.phase IN ('checking_authority', 'ready')
+    THEN
+      SELECT * INTO session FROM hns_root_import_sessions AS selected_session
+       WHERE selected_session.root_import_session_id = job_session
+       FOR UPDATE;
+      database_now := clock_timestamp();
+
+      -- Under withdrawn ownership only a readiness acceptance can advance a
+      -- lifecycle-managed operation. Every other outcome is refused before the
+      -- legacy finalizer mutates anything: failure and attempt exhaustion
+      -- preserve lifecycle ownership for a forward handover instead of
+      -- desynchronizing the session from the lifecycle row.
+      IF input_outcome IS DISTINCT FROM 'ready' THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      IF lifecycle.phase NOT IN ('checking_authority', 'ready')
+        OR lifecycle.generation <> 1
+        OR lifecycle.plan_encoded_resource_sha256 IS NULL
+        OR session.publish_plan_sha256 IS NULL
+        OR input_result_bytes IS NULL
+        OR input_result_sha256 IS NULL
+        OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+        OR encode(sha256(input_result_bytes), 'hex') IS DISTINCT FROM input_result_sha256
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      BEGIN
+        result := convert_from(input_result_bytes, 'UTF8')::JSONB;
+      EXCEPTION WHEN others THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END;
+      IF result->>'root_import_session_id' IS DISTINCT FROM job_session
+        OR result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      BEGIN
+        observed_at := (result->>'observed_at')::TIMESTAMPTZ;
+      EXCEPTION WHEN others THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END;
+      IF observed_at IS NULL
+        OR observed_at > database_now
+        OR observed_at <= database_now - interval '1800 seconds'
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
     END IF;
   END IF;
 
@@ -132,6 +224,18 @@ REVOKE ALL ON FUNCTION finalize_hns_root_import_observation_job_v1(
 ALTER FUNCTION finalize_hns_root_import_observation_job_v1(
   TEXT, TEXT, BIGINT, TEXT, TEXT, BYTEA, TEXT, TEXT
 ) SECURITY DEFINER;
+
+-- Preserve the runtime executor's access after the wrapper replaced the
+-- granted name. Migrations cannot assume application roles exist; the
+-- approved role workflow re-applies the canonical grant on every deployment.
+DO $grant_wrapper_runtime$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'api_next_app') THEN
+    EXECUTE
+      'GRANT EXECUTE ON FUNCTION finalize_hns_root_import_observation_job_v1(text,text,bigint,text,text,bytea,text,text) TO api_next_app';
+  END IF;
+END;
+$grant_wrapper_runtime$;
 
 -- The withdrawal: operator-only, marker-locked, live-lease refusing and
 -- preserving every retained field. It dispositions lifecycle-owned readiness
@@ -195,69 +299,42 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Terminal-only receiver eligibility. An operation in any live phase can
+  -- later need readiness the legacy receiver cannot serve: a fresh `ready`
+  -- operation can go stale, a `waiting_safe_commitment` operation needs
+  -- readiness after safe commitment, and an adopted generation in an earlier
+  -- phase would escape a readiness-only check. Each phase therefore refuses
+  -- by name and preserves ownership. Operations created after withdrawal are
+  -- initial-readiness only; a stale-ready refresh requires a forward handover.
   SELECT CASE
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-       WHERE (
-           lifecycle.phase = 'checking_authority'
-           OR (
-             lifecycle.phase = 'ready'
-             AND (
-               lifecycle.readiness_observed_at IS NULL
-               OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-             )
-           )
-         )
-         AND lifecycle.generation <> 1
-    ) THEN 'receiver_cannot_resume_adopted_generation'
+       WHERE lifecycle.phase = 'preparing'
+    ) THEN 'receiver_cannot_continue_preparing'
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-       WHERE (
-           lifecycle.phase = 'checking_authority'
-           OR (
-             lifecycle.phase = 'ready'
-             AND (
-               lifecycle.readiness_observed_at IS NULL
-               OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-             )
-           )
-         )
-         AND lifecycle.plan_encoded_resource_sha256 IS NULL
-    ) THEN 'receiver_plan_absent'
+       WHERE lifecycle.phase = 'awaiting_publication'
+    ) THEN 'receiver_cannot_continue_awaiting_publication'
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-       WHERE (
-           lifecycle.phase = 'checking_authority'
-           OR (
-             lifecycle.phase = 'ready'
-             AND (
-               lifecycle.readiness_observed_at IS NULL
-               OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-             )
-           )
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM hns_root_import_observation_jobs AS observation
-            WHERE observation.root_import_session_id = lifecycle.root_import_session_id
-              AND observation.operation_kind = 'observe_root_v1'
-         )
-    ) THEN 'receiver_observation_absent'
+       WHERE lifecycle.phase = 'checking_publication'
+    ) THEN 'receiver_cannot_continue_checking_publication'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'waiting_safe_commitment'
+    ) THEN 'receiver_cannot_continue_waiting_safe_commitment'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'checking_authority'
+    ) THEN 'receiver_cannot_continue_checking_authority'
     WHEN EXISTS (
       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
        WHERE lifecycle.phase = 'ready'
-         AND (
-           lifecycle.readiness_observed_at IS NULL
-           OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-         )
-    ) THEN 'receiver_cannot_resume_ready_refresh'
+    ) THEN 'receiver_cannot_continue_ready'
     WHEN EXISTS (
-      SELECT 1
-        FROM hns_root_import_lifecycle AS lifecycle
-        JOIN hns_root_import_sessions AS session
-          ON session.root_import_session_id = lifecycle.root_import_session_id
-       WHERE lifecycle.phase = 'checking_authority'
-         AND session.status <> 'observing'
-    ) THEN 'receiver_session_phase_conflict'
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'recovery_required'
+    ) THEN 'receiver_cannot_continue_recovery_required'
     ELSE NULL
   END INTO blocker;
   IF blocker IS NOT NULL THEN
