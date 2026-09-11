@@ -4532,6 +4532,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   test("recovers committed alignment output after interruption without another provider call", async () => {
     const prove = async (input: {
       readonly suffix: string;
+      readonly eventType: "alignment" | "workflow_replacement";
       readonly result:
         | {
             readonly status: "ready";
@@ -4639,12 +4640,44 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             },
           }),
         );
-        const payload = {
+        let payload = {
           outboxId: alignmentOutboxId,
           submissionId: fixture.submission,
           operationId: fixture.operation,
           workflowRevision: 2,
         };
+        if (input.eventType === "workflow_replacement") {
+          const replacementOutboxId = `media_pg_recovery_replacement_outbox_${input.suffix}`;
+          expect(
+            await run(connection, (store) =>
+              store.replaceLostWorkflow({
+                communityId: community,
+                submissionId: fixture.submission,
+                actorUserId: actor,
+                personaId: personaFor(connection),
+                expectedWorkflowRevision: 2,
+                outbox: {
+                  outboxEventId: replacementOutboxId,
+                  effectIdentity: `media_pg_recovery_replacement_effect_${input.suffix}`,
+                  payload: {
+                    kind: "workflow_replacement",
+                    submission_id: fixture.submission,
+                    operation_id: fixture.operation,
+                    replacement_sequence: 1,
+                    workflow_revision: 3,
+                    workflow_instance_id: `media-${fixture.operation}-r3`,
+                  },
+                },
+              }),
+            ),
+          ).toMatchObject({ kind: "committed" });
+          payload = {
+            outboxId: replacementOutboxId,
+            submissionId: fixture.submission,
+            operationId: fixture.operation,
+            workflowRevision: 3,
+          };
+        }
         const providersFor = (calls: { count: number }): MediaProcessingProviders =>
           ({
             alignment: {
@@ -4659,7 +4692,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         const firstCalls = { count: 0 };
         expect(
           await Effect.runPromise(
-            runMediaProcessingWorkflow(payload, "alignment", {
+            runMediaProcessingWorkflow(payload, input.eventType, {
               store: interrupted,
               providers: providersFor(firstCalls),
               options,
@@ -4708,7 +4741,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         const secondCalls = { count: 0 };
         expect(
           await Effect.runPromise(
-            runMediaProcessingWorkflow(payload, "alignment", {
+            runMediaProcessingWorkflow(payload, input.eventType, {
               store,
               providers: providersFor(secondCalls),
               options,
@@ -4735,7 +4768,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         const thirdCalls = { count: 0 };
         expect(
           await Effect.runPromise(
-            runMediaProcessingWorkflow(payload, "alignment", {
+            runMediaProcessingWorkflow(payload, input.eventType, {
               store,
               providers: providersFor(thirdCalls),
               options,
@@ -4746,6 +4779,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       });
     await prove({
       suffix: "ready",
+      eventType: "alignment",
       result: {
         status: "ready",
         artifactRef: "recovery-artifact-l1",
@@ -4758,6 +4792,25 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     await prove({
       suffix: "unavailable",
+      eventType: "alignment",
+      result: { status: "unavailable", failureCode: "alignment_failed" },
+    });
+    await prove({
+      suffix: "replacement-ready",
+      eventType: "workflow_replacement",
+      result: {
+        status: "ready",
+        artifactRef: "recovery-artifact-l1",
+        artifact: {
+          version: "media-timed-lyrics-artifact-v1",
+          mode: "word",
+          segments: [{ text: "Fixture", start_ms: 0, end_ms: 500 }],
+        },
+      },
+    });
+    await prove({
+      suffix: "replacement-unavailable",
+      eventType: "workflow_replacement",
       result: { status: "unavailable", failureCode: "alignment_failed" },
     });
     completedTestCount += 1;
