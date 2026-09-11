@@ -1,10 +1,10 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_communitiesCommunityIdMediaUploadReservations",
       "kind": "clean-break",
-      "reason": "Spec 013 song-backed interval, owner decisions of 2026-09-10. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly these three violations. The request genuinely becomes stricter, requiring the song's audio revision and the sample bounds, even though the detector describes removals. The baseline rejects song-reference reservations before issuing upload authority, so no working client depended on the old shape, and original-audio requests are unchanged. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 song-backed interval, owner decisions of 2026-09-10. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly these three violations. The request genuinely becomes stricter, requiring the song's audio revision and the sample bounds, even though the detector describes removals. The baseline rejects song-reference reservations before issuing upload authority, so no working client depended on the old shape, and original-audio requests are unchanged. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "request POST /communities/{communityId}/media-upload-reservations: enum value removed: \"song_reference\"",
         "request POST /communities/{communityId}/media-upload-reservations: response/request property removed: selected_from",
@@ -12,91 +12,91 @@
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "get_mediaPostSubmissionsSubmissionId",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response GET /media-post-submissions/{submissionId}: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_communitiesCommunityIdMediaPostSubmissions",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /communities/{communityId}/media-post-submissions status 201: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdCancel",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/cancel: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdFinalize",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/finalize: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdLyrics",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/lyrics: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdPosterRetry",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/poster-retry: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdReference",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/reference: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdRetry",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/retry: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_mediaPostSubmissionsSubmissionIdTerms",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /media-post-submissions/{submissionId}/terms: enum value added: \"song_reference_invalid\""
       ]
     },
     {
-      "baselineSha": "4335629e1d123bd7a83c86a4d41e263c7f5ef356",
+      "baselineSha": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
       "operationId": "post_moderationMediaPostSubmissionsSubmissionIdActions",
       "kind": "clean-break",
-      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4335629e and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation.",
+      "reason": "Spec 013 5A.6 names song_reference_invalid as the blocked outcome of a song reference whose owner policy no longer permits it, so the video submission snapshot's blocked reason_code gains that value. Reviewed and approved by the workspace_owner on 2026-09-10, narrowly: against baseline 4b9e84e6 and for exactly this finding, after the owner reproduced the same ten findings independently. Only a song-reference submission can reach this outcome, and song-reference submissions stay disabled until a client that knows the value has shipped. A changed baseline or violation set requires revalidation. Revalidated against 4b9e84e6 on 2026-09-11 after the branch rebased onto it: the rebase merged main's changes but the observed violation set for this operation is unchanged.",
       "expectedViolations": [
         "response POST /moderation/media-post-submissions/{submissionId}/actions: enum value added: \"song_reference_invalid\""
       ]
