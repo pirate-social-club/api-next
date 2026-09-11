@@ -11,6 +11,7 @@ import type {
 import type { MediaIdentificationRequest } from "../media-identification-provider.ts";
 import type { MediaExplicitnessClassifierInput } from "../media-provider-contracts.ts";
 import type {
+  AlignmentRecoveryRead,
   MediaProcessingAnalysis,
   MediaProcessingAttemptLease,
   MediaProcessingAttemptResult,
@@ -87,6 +88,7 @@ class FakeStore implements MediaProcessingStore {
     MediaProcessingAttemptResult,
     { readonly kind: "alignment" }
   >[] = [];
+  alignmentRecovery: AlignmentRecoveryRead = { kind: "pending" };
   providerReviews = 0;
   readonly communityDecisions = new Map<string, "permit" | "review" | "block">();
 
@@ -290,6 +292,9 @@ class FakeStore implements MediaProcessingStore {
     this.alignmentResults.push(result);
     return "committed";
   };
+
+  readAlignmentRecovery: MediaProcessingStore["readAlignmentRecovery"] = async () =>
+    this.alignmentRecovery;
 
   commitProcessingFailure: MediaProcessingStore["commitProcessingFailure"] = async (
     expected,
@@ -1240,6 +1245,166 @@ describe("media processing workflow", () => {
     expect(store.current.status).toBe("published");
     expect(store.providerReviews).toBe(0);
     expect(store.alignments).toBe(0);
+  });
+
+  test("recovers a committed ready alignment without calling the provider", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const providerEvents: string[] = [];
+    const committedResult = {
+      kind: "alignment",
+      status: "ready",
+      artifactRef: "persisted-alignment-l1",
+      artifactSha256: "c".repeat(64),
+      artifact: { version: "timed-lyrics-v1", timings: [] },
+    } as const;
+    store.alignmentRecovery = { kind: "committed", result: committedResult };
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.events).toContain("complete:alignment");
+    expect(store.alignments).toBe(0);
+    expect(store.attempts.get("media-attempt-operation-1-a1-n1-alignment-l1")?.result).toEqual(
+      committedResult,
+    );
+  });
+
+  test("recovers a committed unavailable alignment without calling the provider", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const providerEvents: string[] = [];
+    store.alignmentRecovery = {
+      kind: "committed",
+      result: { kind: "alignment", status: "unavailable", failureCode: "alignment_failed" },
+    };
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.events).toContain("complete:alignment");
+    expect(store.alignments).toBe(0);
+  });
+
+  test("stale or failed recovery reads never reach the provider", async () => {
+    for (const recovery of [{ kind: "stale" }, { kind: "failed" }] as const) {
+      const store = new FakeStore(
+        authority({
+          status: "published",
+          phase: null,
+          postId: "media-post-operation-1",
+          publishedLyricsRevision: 1,
+        }),
+        "alignment",
+      );
+      store.alignmentRecovery = recovery;
+      const providerEvents: string[] = [];
+      expect(
+        await runWorkflow(
+          workflowPayload(store),
+          "alignment",
+          dependencies(store, providers(providerEvents)),
+        ),
+      ).toEqual({ outcome: "waiting_for_provider" });
+      expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+      expect(store.alignments).toBe(0);
+    }
+  });
+
+  test("published workflow replacement routes pending alignment through the provider once", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "workflow_replacement",
+    );
+    const providerEvents: string[] = [];
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "workflow_replacement",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([
+      "effect:alignment:l1:accepted lyrics",
+    ]);
+    expect(store.alignments).toBe(1);
+  });
+
+  test("published workflow replacement with a committed recovery skips the provider", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "workflow_replacement",
+    );
+    const providerEvents: string[] = [];
+    store.alignmentRecovery = {
+      kind: "committed",
+      result: { kind: "alignment", status: "unavailable", failureCode: "audio_missing" },
+    };
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "workflow_replacement",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.events).toContain("complete:alignment");
+    expect(store.alignments).toBe(0);
+  });
+
+  test("workflow replacement for a lyrics-free published song stays inert", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: null,
+        lyrics: null,
+      }),
+      "workflow_replacement",
+    );
+    const providerEvents: string[] = [];
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "workflow_replacement",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "inert" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.attempts.size).toBe(0);
   });
 
   test("alignment exhaustion records unavailable without reopening published moderation", async () => {

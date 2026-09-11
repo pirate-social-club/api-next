@@ -50,7 +50,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 45;
+const testCount = 46;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4526,6 +4526,239 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).rejects.toMatchObject({ reason: "stale-revision" });
       expect((await snapshot()).rows[0]).toEqual(replaced);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("recovers committed alignment output after interruption without another provider call", async () => {
+    const prove = async (input: {
+      readonly suffix: string;
+      readonly result:
+        | {
+            readonly status: "ready";
+            readonly artifactRef: string;
+            readonly artifact: Readonly<Record<string, unknown>>;
+          }
+        | { readonly status: "unavailable"; readonly failureCode: "alignment_failed" };
+    }) =>
+      withCurrentSchema(async (admin, connection) => {
+        const lyricsAnalysis: TrustedSongAnalysis = {
+          ...analysis,
+          lyricsAnalysis: {
+            status: "ready",
+            lyricsRevision: 1,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: "recovery_lyrics_evidence",
+            policyRevision: "recovery_lyrics_policy",
+            adapterRevision: "recovery_lyrics_adapter",
+          },
+          lyricsSafety: "allow",
+        };
+        const publishedDecision: PublicationDecision = {
+          ...decision,
+          creationRevision: 3,
+          lyricsRevision: 1,
+        };
+        const layer = makeDirectPostgresControlPlaneLayer(connection);
+        const options = {
+          enabled: true,
+          workerId: "recovery-worker",
+          now: Date.now,
+          policyRevision: "fixture-v1",
+          transformAdapterRevision: "fixture-v1",
+          metadataAdapterRevision: "fixture-v1",
+          classifierTimeoutMs: 10000,
+          transformRuntimeMs: 60000,
+          maximumSampleBytes: 1000000,
+        };
+        const fixture = {
+          submission: `media_pg_recovery_${input.suffix}`,
+          operation: `media_pg_recovery_op_${input.suffix}`,
+          reservation: `media_pg_recovery_res_${input.suffix}`,
+        };
+        const caseAnalysis: TrustedSongAnalysis = {
+          ...lyricsAnalysis,
+          operationId: fixture.operation,
+          finalizedAudioRef: `media_pg_recovery_immutable_${input.suffix}`,
+        };
+        const readyArtifactSha256 =
+          input.result.status === "ready"
+            ? (
+                await admin.query<{ sha: string }>(
+                  "SELECT encode(sha256(convert_to($1::jsonb::text,'UTF8')),'hex') AS sha",
+                  [JSON.stringify(input.result.artifact)],
+                )
+              ).rows[0]?.sha
+            : undefined;
+        if (input.result.status === "ready" && readyArtifactSha256 === undefined)
+          throw new Error("missing artifact digest fixture");
+        const resolvedResult =
+          input.result.status === "ready"
+            ? { ...input.result, artifactSha256: readyArtifactSha256 as string }
+            : input.result;
+        await createThroughDecision(
+          connection,
+          publishedDecision,
+          caseAnalysis,
+          false,
+          `Fixture recovery ${input.suffix} lyrics`,
+          false,
+          fixture,
+        );
+        const postId = `media-post-${fixture.operation}`;
+        const alignmentOutboxId = `media_pg_recovery_alignment_outbox_${input.suffix}`;
+        await run(connection, (store) =>
+          store.publish({
+            communityId: community,
+            submissionId: fixture.submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            endpointTemplate: "/media-post-submissions/:submissionId/publish",
+            idempotencyKey: `${fixture.submission}-publish`,
+            requestHash,
+            responseBytes,
+            responseSha256,
+            expectedCreationRevision: 3,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            expectedDecisionRevision: 1,
+            postId,
+            outbox: {
+              outboxEventId: alignmentOutboxId,
+              effectIdentity: `media_pg_recovery_alignment_effect_${input.suffix}`,
+              payload: {
+                kind: "alignment",
+                submission_id: fixture.submission,
+                operation_id: fixture.operation,
+                post_id: postId,
+                lyrics_revision: 1,
+                workflow_revision: 2,
+                workflow_instance_id: `media-${fixture.operation}-r2`,
+              },
+            },
+          }),
+        );
+        const payload = {
+          outboxId: alignmentOutboxId,
+          submissionId: fixture.submission,
+          operationId: fixture.operation,
+          workflowRevision: 2,
+        };
+        const providersFor = (calls: { count: number }): MediaProcessingProviders =>
+          ({
+            alignment: {
+              align: async () => {
+                calls.count += 1;
+                return resolvedResult;
+              },
+            },
+          }) as unknown as MediaProcessingProviders;
+        const store = makeMediaProcessingStore(layer, { retryBaseMs: 1 });
+        const interrupted = { ...store, completeAttempt: async () => false };
+        const firstCalls = { count: 0 };
+        expect(
+          await Effect.runPromise(
+            runMediaProcessingWorkflow(payload, "alignment", {
+              store: interrupted,
+              providers: providersFor(firstCalls),
+              options,
+            }),
+          ),
+        ).toEqual({ outcome: "waiting_for_provider" });
+        expect(firstCalls.count).toBe(1);
+        const projection = (
+          await admin.query(
+            "SELECT status,current_artifact_ref,failure_code FROM media_alignment_projections WHERE submission_id=$1",
+            [fixture.submission],
+          )
+        ).rows[0];
+        expect(projection).toMatchObject({ status: input.result.status });
+        const running = (
+          await admin.query<{
+            attempt_id: string;
+            state: string;
+            claim_owner: string;
+            claim_fence: string;
+          }>(
+            "SELECT attempt_id,state,claim_owner,claim_fence FROM media_processing_attempts WHERE submission_id=$1",
+            [fixture.submission],
+          )
+        ).rows[0];
+        expect(running).toMatchObject({
+          state: "running",
+          claim_owner: "recovery-worker",
+          claim_fence: "1",
+        });
+        if (running === undefined) throw new Error("missing running attempt fixture");
+        expect(
+          await store.failAttempt(
+            {
+              attemptId: running.attempt_id,
+              attemptNumber: 1,
+              stage: "alignment",
+              claimOwner: running.claim_owner,
+              claimFence: Number(running.claim_fence),
+            },
+            "provider_unavailable",
+            true,
+          ),
+        ).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const secondCalls = { count: 0 };
+        expect(
+          await Effect.runPromise(
+            runMediaProcessingWorkflow(payload, "alignment", {
+              store,
+              providers: providersFor(secondCalls),
+              options,
+            }),
+          ),
+        ).toEqual({ outcome: "alignment_recorded" });
+        expect(secondCalls.count).toBe(0);
+        const attempt = (
+          await admin.query(
+            "SELECT state,result FROM media_processing_attempts WHERE submission_id=$1 ORDER BY attempt_number DESC LIMIT 1",
+            [fixture.submission],
+          )
+        ).rows[0];
+        expect(attempt).toMatchObject({ state: "succeeded" });
+        expect(attempt?.result).toEqual({ kind: "alignment", ...resolvedResult });
+        expect(
+          (
+            await admin.query(
+              "SELECT status,current_artifact_ref,failure_code FROM media_alignment_projections WHERE submission_id=$1",
+              [fixture.submission],
+            )
+          ).rows[0],
+        ).toEqual(projection);
+        const thirdCalls = { count: 0 };
+        expect(
+          await Effect.runPromise(
+            runMediaProcessingWorkflow(payload, "alignment", {
+              store,
+              providers: providersFor(thirdCalls),
+              options,
+            }),
+          ),
+        ).toEqual({ outcome: "alignment_recorded" });
+        expect(thirdCalls.count).toBe(0);
+      });
+    await prove({
+      suffix: "ready",
+      result: {
+        status: "ready",
+        artifactRef: "recovery-artifact-l1",
+        artifact: {
+          version: "media-timed-lyrics-artifact-v1",
+          mode: "word",
+          segments: [{ text: "Fixture", start_ms: 0, end_ms: 500 }],
+        },
+      },
+    });
+    await prove({
+      suffix: "unavailable",
+      result: { status: "unavailable", failureCode: "alignment_failed" },
     });
     completedTestCount += 1;
   }, 40_000);

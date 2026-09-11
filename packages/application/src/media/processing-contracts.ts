@@ -319,6 +319,15 @@ type MediaProcessingAttemptStart =
 
 export type MediaProcessingCommit = "committed" | "replay" | "stale";
 
+export type AlignmentRecoveryRead =
+  | Readonly<{ readonly kind: "pending" }>
+  | Readonly<{
+      readonly kind: "committed";
+      readonly result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
+    }>
+  | Readonly<{ readonly kind: "stale" }>
+  | Readonly<{ readonly kind: "failed" }>;
+
 export interface MediaProcessingStore {
   readonly getOutbox: (outboxId: string) => Promise<MediaProcessingOutboxRecord | null>;
   readonly claimOutbox: (
@@ -373,6 +382,9 @@ export interface MediaProcessingStore {
     authority: MediaProcessingAuthority,
     result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>,
   ) => Promise<MediaProcessingCommit>;
+  readonly readAlignmentRecovery: (
+    authority: MediaProcessingAuthority,
+  ) => Promise<AlignmentRecoveryRead>;
   readonly commitProcessingFailure: (
     authority: MediaProcessingAuthority,
     reason: "invalid_media" | "probe_failed" | "transform_failed",

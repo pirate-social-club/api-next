@@ -1124,6 +1124,17 @@ function align(
       return { outcome: "alignment_recorded" } as const;
     }
     if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
+    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
+    if (recovery.kind === "committed") {
+      yield* completeAttempt(current, started.lease, recovery.result, dependencies);
+      return { outcome: "alignment_recorded" } as const;
+    }
+    if (recovery.kind === "stale") {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    if (recovery.kind === "failed") {
+      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+    }
     let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
     if (current.lyrics === null) {
       result = { kind: "alignment", status: "unavailable", failureCode: "lyrics_missing" };
@@ -1228,6 +1239,12 @@ function runMediaProcessingWorkflowOnce(
       } as const;
     }
     if (eventType === "alignment") return yield* align(authority, dependencies);
+    if (eventType === "workflow_replacement") {
+      if (authority.status !== "published" || authority.publishedLyricsRevision === null) {
+        return { outcome: "inert" } as const;
+      }
+      return yield* align(authority, dependencies);
+    }
     if (eventType === "publication") return yield* publish(authority, dependencies);
     if (authority.status === "published") {
       return {
