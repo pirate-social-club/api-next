@@ -30,6 +30,9 @@ export const reusablePostgresTestSuites = [
 
 export const freshSchemaPostgresTestSuites = [
   "apps/http-worker/src/hns-community-publication.pg.test.ts",
+  "apps/http-worker/src/hns-community-activation.pg.test.ts",
+  "apps/http-worker/src/hns-community-activation-production-worker.pg.test.ts",
+  "apps/http-worker/src/hns-community-joint-ceremony.pg.test.ts",
   "apps/http-worker/src/public-community-threads-composition.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",
@@ -56,6 +59,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-lifecycle-projection.pg.test.ts",
   "packages/platform-cf/src/hns-observation-fence.pg.test.ts",
   "packages/platform-cf/src/hns-readiness-ownership.pg.test.ts",
+  "packages/platform-cf/src/hns-reconciliation-routing.pg.test.ts",
   "packages/platform-cf/src/hns-incident-recovery.pg.test.ts",
   // Creates its own schema and additionally needs a reachable regtest node;
   // it skips itself when either is absent.
