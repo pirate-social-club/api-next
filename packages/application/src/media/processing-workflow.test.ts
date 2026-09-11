@@ -1863,3 +1863,16 @@ test("discards prepared probe output when interruption precedes its write", asyn
   ).toEqual([]);
   expect(store.current.analysis).toBeNull();
 });
+
+test("resumes a processing submission through a workflow replacement event", async () => {
+  const store = new FakeStore(authority({ lyrics: null }), "workflow_replacement");
+  const providerEvents: string[] = [];
+  const result = await runWorkflow(
+    workflowPayload(store),
+    "workflow_replacement",
+    dependencies(store, providers(providerEvents)),
+  );
+  expect(result).toEqual({ outcome: "published_without_alignment" });
+  expect(store.publications).toBe(1);
+  expect(store.alignments).toBe(0);
+});

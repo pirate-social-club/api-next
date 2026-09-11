@@ -1239,10 +1239,11 @@ function runMediaProcessingWorkflowOnce(
       } as const;
     }
     if (eventType === "alignment") return yield* align(authority, dependencies);
-    if (eventType === "workflow_replacement") {
-      if (authority.status !== "published" || authority.publishedLyricsRevision === null) {
-        return { outcome: "inert" } as const;
-      }
+    if (
+      eventType === "workflow_replacement" &&
+      authority.status === "published" &&
+      authority.publishedLyricsRevision !== null
+    ) {
       return yield* align(authority, dependencies);
     }
     if (eventType === "publication") return yield* publish(authority, dependencies);
