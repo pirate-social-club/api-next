@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  DataAttachedLicense,
   DataParentReference,
   DataParentResolution,
   DataRegistrationArtifact,
@@ -330,6 +331,9 @@ function harness(
               observation: { ...common, outcome: "orphaned" as const },
             };
       },
+      readAttachedLicense: async () => {
+        throw new Error("attached-license backfill is not part of this harness");
+      },
     },
     signer: {
       sign: async () => {
@@ -548,7 +552,10 @@ const childPayload: DataRegistrationWorkflowPayload = {
 };
 
 /** A song-reference video whose parent song is controlled by the test. */
-function derivativeHarness(parentOverrides: Partial<DataRegistrationOperation>) {
+function derivativeHarness(
+  parentOverrides: Partial<DataRegistrationOperation>,
+  readAttachedLicense?: DataRegistrationWorkflowDependencies["chain"]["readAttachedLicense"],
+) {
   const child: DataRegistrationOperation = {
     ...operation(),
     registrationOperationId: CHILD_ID,
@@ -609,6 +616,11 @@ function derivativeHarness(parentOverrides: Partial<DataRegistrationOperation>) 
       current = { ...current, state: "pending" };
       return { kind: "created" as const, resolution };
     },
+    recordAttachedLicenseBackfill: async (parentId: string, license: DataAttachedLicense) => {
+      calls.push(`backfill:${parentId}`);
+      parent = { ...parent, attachedLicense: license };
+      return parent;
+    },
     pinsReady: async () => false,
     failRegistration: async (input: {
       operationState: "failed" | "reconciliation_required";
@@ -644,6 +656,7 @@ function derivativeHarness(parentOverrides: Partial<DataRegistrationOperation>) 
       readNonce: unreachable,
       broadcast: unreachable,
       observeReceipt: unreachable,
+      readAttachedLicense: readAttachedLicense ?? unreachable,
     },
     signer: { sign: unreachable },
     options: { enabled: true },
@@ -652,6 +665,7 @@ function derivativeHarness(parentOverrides: Partial<DataRegistrationOperation>) 
     calls,
     dependencies,
     child: () => current,
+    parent: () => parent,
     resolution: () => resolution,
     setParent: (next: Partial<DataRegistrationOperation>) => {
       parent = { ...parent, ...next };
@@ -722,6 +736,103 @@ describe("DATA registration of a song-reference video", () => {
     expect(state.child().state).toBe("waiting_parent");
   });
 
+  test("backfills terms from the parent's own confirming receipt, preserving the registration, then resolves", async () => {
+    const state = derivativeHarness({ ...REGISTERED_PARENT, attachedLicense: null }, async () => ({
+      status: "recorded",
+      attachedLicense: ATTACHED_LICENSE,
+    }));
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "progress",
+    });
+    expect(state.calls).toContain(`backfill:${PARENT_ID}`);
+    expect(state.calls).toContain("resolve-parent");
+    expect(state.parent()).toMatchObject({
+      state: "registered",
+      attachedLicense: ATTACHED_LICENSE,
+      confirmedTransactionHash: REGISTERED_PARENT.confirmedTransactionHash,
+      registeredIpId: REGISTERED_PARENT.registeredIpId,
+    });
+    expect(state.resolution()).toMatchObject({
+      consumedLicense: {
+        licenseTemplate: ATTACHED_LICENSE.licenseTemplate,
+        licenseTermsId: "1894",
+        preset: "commercial-remix",
+        commercialRevShareBps: 500,
+      },
+      termsAttachment: ATTACHED_LICENSE.attachment,
+    });
+  });
+
+  test("never records recovered terms that differ from the frozen expectation", async () => {
+    const differing = [
+      { ...ATTACHED_LICENSE, preset: "commercial-use" as const, commercialRevShareBps: null },
+      { ...ATTACHED_LICENSE, commercialRevShareBps: 1_000 },
+    ];
+    for (const attachedLicense of differing) {
+      const state = derivativeHarness(
+        { ...REGISTERED_PARENT, attachedLicense: null },
+        async () => ({ status: "recorded", attachedLicense }),
+      );
+      expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+        outcome: "failed",
+      });
+      expect(state.child()).toMatchObject({
+        state: "failed",
+        failureCode: "parent_license_mismatch",
+      });
+      // Unverified terms are never recorded as the parent's evidence.
+      expect(state.calls.some((call) => call.startsWith("backfill:"))).toBe(false);
+      expect(state.parent().attachedLicense).toBeNull();
+      expect(state.resolution()).toBeNull();
+    }
+  });
+
+  test("fails as a mismatch, never records, when the parent's terms match no preset", async () => {
+    const state = derivativeHarness({ ...REGISTERED_PARENT, attachedLicense: null }, async () => ({
+      status: "unsupported",
+      evidenceRef: "data-registration://aeneid/attached-license/terms-unsupported/1894",
+    }));
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "failed",
+    });
+    expect(state.child()).toMatchObject({
+      state: "failed",
+      failureCode: "parent_license_mismatch",
+    });
+    expect(state.calls.some((call) => call.startsWith("backfill:"))).toBe(false);
+    expect(state.parent().attachedLicense).toBeNull();
+    expect(state.resolution()).toBeNull();
+  });
+
+  test("keeps the child resumable while the parent's receipt cannot be read", async () => {
+    const state = derivativeHarness({ ...REGISTERED_PARENT, attachedLicense: null }, async () => ({
+      status: "unavailable",
+    }));
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    expect(state.child().state).toBe("waiting_parent");
+    expect(state.calls.some((call) => call.startsWith("backfill:"))).toBe(false);
+    expect(state.resolution()).toBeNull();
+  });
+
+  test("fails only when the parent's own receipt carries no attachment", async () => {
+    const state = derivativeHarness({ ...REGISTERED_PARENT, attachedLicense: null }, async () => ({
+      status: "unrecorded",
+      evidenceRef: "data-registration://aeneid/attached-license/no-terms",
+    }));
+    expect(await advanceDataRegistrationWorkflow(childPayload, state.dependencies)).toEqual({
+      outcome: "failed",
+    });
+    expect(state.child()).toMatchObject({
+      state: "failed",
+      failureCode: "parent_terms_unrecorded",
+      failureEvidenceRef: "data-registration://aeneid/attached-license/no-terms",
+    });
+    expect(state.calls.some((call) => call.startsWith("backfill:"))).toBe(false);
+    expect(state.resolution()).toBeNull();
+  });
+
   test.each([
     [
       "the parent's registration failed",
@@ -739,11 +850,6 @@ describe("DATA registration of a song-reference video", () => {
         attachedLicense: { ...ATTACHED_LICENSE, commercialRevShareBps: 1_000 },
       },
       "parent_license_mismatch",
-    ],
-    [
-      "the parent confirmed before its terms were recorded",
-      { ...REGISTERED_PARENT, attachedLicense: null },
-      "parent_terms_unrecorded",
     ],
   ] as const)("fails, never substitutes, when %s", async (_case, parent, code) => {
     const state = derivativeHarness(parent);

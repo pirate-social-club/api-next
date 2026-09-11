@@ -1,10 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  DataLicensePreset,
   DataRegistrationOperation,
   DataRegistrationPinVerification,
   DataRegistrationSigningAttempt,
 } from "@pirate/application/data/registration-persistence";
-import { bytesToHex, decodeFunctionData, encodeAbiParameters, encodeEventTopics } from "viem";
+import {
+  bytesToHex,
+  decodeFunctionData,
+  encodeAbiParameters,
+  encodeEventTopics,
+  encodeFunctionResult,
+} from "viem";
 import {
   DATA_REGISTRATION_AENEID_LICENSE_TEMPLATE,
   DATA_REGISTRATION_AENEID_SELECTORS,
@@ -14,6 +21,8 @@ import {
   LICENSE_WORKFLOW_ABI,
   makeDataRegistrationAeneidChain,
   makeJsonRpcTransport,
+  PIL_LICENSE_TEMPLATE_ABI,
+  presetTerms,
   REGISTRATION_WORKFLOW_ABI,
   ROYALTY_WORKFLOW_ABI,
 } from "./registration-aeneid-chain";
@@ -82,6 +91,29 @@ const baseAuthority: DataRegistrationArtifactAuthority = {
   acrPolicyRevision: "acr-v1",
   creatorAddress: "0x1111111111111111111111111111111111111111",
 };
+
+/** The hex a PILicenseTemplate.getLicenseTerms call returns, from the same
+ * preset definition the adapter plans with. */
+type PilTermsOverrides = Partial<{
+  commercialUse: boolean;
+  derivativesAllowed: boolean;
+  derivativesAttribution: boolean;
+  derivativesReciprocal: boolean;
+  derivativesApproval: boolean;
+  commercialRevShare: number;
+  royaltyPolicy: `0x${string}`;
+  currency: `0x${string}`;
+}>;
+const pilTerms = (
+  preset: DataLicensePreset,
+  share: number | null = null,
+  overrides: PilTermsOverrides = {},
+): string =>
+  encodeFunctionResult({
+    abi: PIL_LICENSE_TEMPLATE_ABI,
+    functionName: "getLicenseTerms",
+    result: { ...presetTerms(preset, share).terms, ...overrides },
+  });
 
 const originalVideoAuthority: DataRegistrationArtifactAuthority = {
   ...baseAuthority,
@@ -497,12 +529,13 @@ describe("song terms evidence against a real Aeneid receipt", () => {
     transactionHash: AENEID_TERMS_RECEIPT.transactionHash,
     signedTransactionHash: AENEID_TERMS_RECEIPT.transactionHash,
   };
-  const observe = (logs: readonly unknown[]) =>
+  const observe = (logs: readonly unknown[], terms: string = pilTerms("commercial-remix", 1_000)) =>
     chain(
       { ...baseAuthority, licensePreset: "commercial-remix", commercialRemixShareBps: 1_000 },
       async (method: string) => {
         if (method === "eth_blockNumber") return `0x${(23_425_318 + 2).toString(16)}`;
         if (method === "eth_getTransactionReceipt") return { ...AENEID_TERMS_RECEIPT, logs };
+        if (method === "eth_call") return terms;
         throw new Error("unexpected RPC method");
       },
       { getLatestMinedReceipt: async () => null },
@@ -539,6 +572,154 @@ describe("song terms evidence against a real Aeneid receipt", () => {
   test("reconciles a song registration that attached no terms", async () => {
     const [registered] = AENEID_TERMS_RECEIPT.logs;
     expect(await observe([registered])).toMatchObject({ status: "invalid" });
+  });
+
+  test("records the template's actual derivative permission, not the publication license", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    expect(await observe([registered, first], pilTerms("commercial-use"))).toMatchObject({
+      status: "confirmed",
+      observation: { attachedLicense: { preset: "commercial-use", commercialRevShareBps: null } },
+    });
+  });
+
+  test("records the template's actual revenue share, not the publication license", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    expect(await observe([registered, first], pilTerms("commercial-remix", 500))).toMatchObject({
+      status: "confirmed",
+      observation: { attachedLicense: { preset: "commercial-remix", commercialRevShareBps: 500 } },
+    });
+  });
+
+  test("reconciles a song whose attached terms map to no representable preset", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    expect(
+      await observe(
+        [registered, first],
+        pilTerms("non-commercial", null, { derivativesAllowed: false }),
+      ),
+    ).toMatchObject({ status: "invalid" });
+  });
+
+  test("reconciles terms that require separate derivative approval", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    expect(
+      await observe(
+        [registered, first],
+        pilTerms("commercial-remix", 1_000, { derivativesApproval: true }),
+      ),
+    ).toMatchObject({
+      status: "invalid",
+    });
+  });
+});
+
+describe("attached-license backfill from a legacy confirmation", () => {
+  const registeredParent: DataRegistrationOperation = {
+    ...operation,
+    state: "registered",
+    registeredIpId: "0x1653b905597e0f778c0e9c2d8a9d5c003ee56614",
+    confirmedTransactionHash: AENEID_TERMS_RECEIPT.transactionHash,
+    confirmedBlockNumber: 23_425_318n,
+    confirmedBlockHash: AENEID_TERMS_RECEIPT.blockHash,
+    confirmedLogIndex: 4,
+  };
+  const read = (rpcMethod: (method: string) => Promise<unknown>) =>
+    chain(
+      { ...baseAuthority, licensePreset: "commercial-remix", commercialRemixShareBps: 1_000 },
+      rpcMethod,
+      { getLatestMinedReceipt: async () => null },
+      "0x538048a26dbcc7a1dd446762098b0bfafa3a1472",
+    ).readAttachedLicense(registeredParent);
+
+  test("records the single attachment of the confirming transaction, with its coordinates", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    expect(
+      await read(async (method) => {
+        if (method === "eth_getTransactionReceipt") {
+          return { ...AENEID_TERMS_RECEIPT, logs: [registered, first] };
+        }
+        if (method === "eth_call") return pilTerms("commercial-remix", 1_000);
+        throw new Error("unexpected RPC method");
+      }),
+    ).toEqual({
+      status: "recorded",
+      attachedLicense: {
+        licenseTemplate: "0x2e896b0b2fdb7457499b56aaaa4ae55bcb4cd316",
+        licenseTermsId: "1894",
+        preset: "commercial-remix",
+        commercialRevShareBps: 1_000,
+        attachment: {
+          transactionHash: AENEID_TERMS_RECEIPT.transactionHash,
+          blockNumber: 23_425_318n,
+          blockHash: AENEID_TERMS_RECEIPT.blockHash,
+          logIndex: 7,
+        },
+      },
+    });
+  });
+
+  test("records the template's actual terms, never the publication license", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    expect(
+      await read(async (method) => {
+        if (method === "eth_getTransactionReceipt") {
+          return { ...AENEID_TERMS_RECEIPT, logs: [registered, first] };
+        }
+        if (method === "eth_call") {
+          return pilTerms("commercial-use");
+        }
+        throw new Error("unexpected RPC method");
+      }),
+    ).toMatchObject({
+      status: "recorded",
+      attachedLicense: { preset: "commercial-use", commercialRevShareBps: null },
+    });
+  });
+
+  test("stays resumable on a mismatched receipt and ends only on a verified absence", async () => {
+    expect(
+      await read(async () => {
+        throw new Error("RPC down");
+      }),
+    ).toEqual({ status: "unavailable" });
+    expect(
+      await read(async () => ({ ...AENEID_TERMS_RECEIPT, blockHash: `0x${"0".repeat(64)}` })),
+    ).toEqual({ status: "unavailable" });
+    expect(
+      await read(async () => ({ ...AENEID_TERMS_RECEIPT, transactionHash: `0x${"1".repeat(64)}` })),
+    ).toEqual({ status: "unavailable" });
+    const [registered, first, second] = AENEID_TERMS_RECEIPT.logs;
+    expect(
+      await read(async () => ({
+        ...AENEID_TERMS_RECEIPT,
+        logs: [registered, first, second],
+      })),
+    ).toMatchObject({ status: "unrecorded" });
+  });
+
+  test("stays resumable when the terms cannot be read, and reports terms outside the preset as unsupported", async () => {
+    const [registered, first] = AENEID_TERMS_RECEIPT.logs;
+    const receiptFor = (method: string) => {
+      if (method === "eth_getTransactionReceipt") {
+        return Promise.resolve({ ...AENEID_TERMS_RECEIPT, logs: [registered, first] });
+      }
+      return Promise.reject(new Error("terms unavailable"));
+    };
+    expect(await read(receiptFor)).toEqual({ status: "unavailable" });
+    const unsupported = async (method: string) =>
+      method === "eth_getTransactionReceipt"
+        ? { ...AENEID_TERMS_RECEIPT, logs: [registered, first] }
+        : pilTerms("commercial-remix", 1_000, { derivativesApproval: true });
+    expect(await read(unsupported)).toMatchObject({
+      status: "unsupported",
+      evidenceRef: "data-registration://aeneid/attached-license/terms-unsupported/1894",
+    });
+  });
+
+  test("reads nothing for a song that is not fully confirmed", async () => {
+    expect(
+      await chain(baseAuthority).readAttachedLicense({ ...registeredParent, state: "pending" }),
+    ).toMatchObject({ status: "unrecorded" });
   });
 });
 
@@ -783,6 +964,9 @@ describe("Aeneid DATA registration chain", () => {
             termsAttachedLog("0x4444444444444444444444444444444444444444", 7n, "0x3"),
           ],
         };
+      }
+      if (method === "eth_call") {
+        return pilTerms("non-commercial");
       }
       throw new Error("unexpected RPC method");
     };

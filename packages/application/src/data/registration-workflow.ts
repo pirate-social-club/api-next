@@ -1,5 +1,6 @@
 import type {
   ConfirmDataRegistrationInput,
+  DataAttachedLicense,
   DataRegistrationArtifact,
   DataRegistrationArtifactKind,
   DataRegistrationAttemptFailureCode,
@@ -102,6 +103,20 @@ export type DataRegistrationReceiptResult =
    */
   | Readonly<{ status: "invalid"; evidenceRef: string }>;
 
+/**
+ * Spec 008 section 3A: a registered song whose confirmation predates the terms
+ * evidence, read back from its own confirmed receipt. `unavailable` is an
+ * unreadable receipt, not an answer. `unrecorded` means the verified receipt
+ * carries no unique applicable attachment; `unsupported` means an attachment
+ * exists whose terms are not the preset they would have to be. Only
+ * `recorded` carries terms.
+ */
+export type DataRegistrationAttachedLicenseRead =
+  | Readonly<{ status: "recorded"; attachedLicense: DataAttachedLicense }>
+  | Readonly<{ status: "unavailable" }>
+  | Readonly<{ status: "unsupported"; evidenceRef: string }>
+  | Readonly<{ status: "unrecorded"; evidenceRef: string }>;
+
 export interface DataRegistrationChainPipeline {
   readonly plan: (
     operation: DataRegistrationOperation,
@@ -119,6 +134,15 @@ export interface DataRegistrationChainPipeline {
     operation: DataRegistrationOperation,
     attempt: DataRegistrationSigningAttempt,
   ) => Promise<DataRegistrationReceiptResult>;
+  /**
+   * Reads a registered song's attached terms from its own confirmation
+   * transaction when the confirmed row lacks them. The evidence is the
+   * receipt's terms-attached event and the song's frozen publication license,
+   * never the owner's current settings.
+   */
+  readonly readAttachedLicense: (
+    operation: DataRegistrationOperation,
+  ) => Promise<DataRegistrationAttachedLicenseRead>;
 }
 
 export interface DataRegistrationSigningService {
@@ -240,11 +264,15 @@ const failOperation = async (
 
 /**
  * Spec 008 section 3A. A song-reference video registers against its parent
- * song's attached terms, read only from the parent's confirmed ledger row. It
- * waits while the parent is unconfirmed, fails with the parent's failure, and
- * never substitutes: a license that differs from the one frozen at
- * publication, terms that forbid derivatives, or a parent confirmed without
- * its terms recorded each end the child with its own code.
+ * song's attached terms, read from the parent's confirmed ledger row. It waits
+ * while the parent is unconfirmed, fails with the parent's failure, and never
+ * substitutes: a license that differs from the one frozen at publication, or
+ * terms that forbid derivatives, each end the child with its own code.
+ *
+ * A parent confirmed before its terms evidence existed is repaired from its
+ * own confirming receipt before the child resolves, and the child stays
+ * resumable while that receipt cannot be read. Only a receipt that carries no
+ * single applicable attachment ends it as `parent_terms_unrecorded`.
  */
 const resolveParent = async (
   dependencies: DataRegistrationWorkflowDependencies,
@@ -297,16 +325,81 @@ const resolveParent = async (
     }
     return { outcome: "waiting" };
   }
-  const attached = parent.attachedLicense;
-  if (attached === null) {
+  if (
+    parent.registeredIpId === null ||
+    parent.confirmedTransactionHash === null ||
+    parent.confirmedBlockNumber === null ||
+    parent.confirmedBlockHash === null ||
+    parent.confirmedLogIndex === null
+  ) {
     return failOperation(
       dependencies,
       operation,
       null,
       "failed",
-      "parent_terms_unrecorded",
-      `${parentEvidence}/terms-unrecorded`,
+      "configuration_invalid",
+      `${parentEvidence}/confirmation-incomplete`,
     );
+  }
+  let attached = parent.attachedLicense;
+  if (attached === null) {
+    // A parent confirmed before its terms evidence existed is recoverable:
+    // the child re-reads the parent's own confirming receipt, records the
+    // terms it actually attached without changing the registration, and then
+    // resolves. A receipt that is momentarily unreadable leaves the child
+    // resumable in waiting_parent; a receipt that genuinely carries no
+    // attachment is the end.
+    const recovered = await dependencies.chain.readAttachedLicense(parent);
+    if (recovered.status === "unavailable") {
+      if (operation.state === "pending") {
+        await dependencies.store.awaitParent(operation.registrationOperationId);
+      }
+      return { outcome: "waiting" };
+    }
+    if (recovered.status === "unrecorded") {
+      return failOperation(
+        dependencies,
+        operation,
+        null,
+        "failed",
+        "parent_terms_unrecorded",
+        recovered.evidenceRef,
+      );
+    }
+    if (recovered.status === "unsupported") {
+      // The attachment exists but its terms are not the expected license:
+      // that is a mismatch, and unverified terms are never recorded.
+      return failOperation(
+        dependencies,
+        operation,
+        null,
+        "failed",
+        "parent_license_mismatch",
+        recovered.evidenceRef,
+      );
+    }
+    // The recovered terms must prove the license the child froze at
+    // publication. Unverified terms are never recorded as the parent's
+    // evidence, and a difference fails exactly as recorded terms do.
+    if (
+      recovered.attachedLicense.preset !== reference.expectedLicense.preset ||
+      recovered.attachedLicense.commercialRevShareBps !==
+        reference.expectedLicense.commercialRevShareBps
+    ) {
+      return failOperation(
+        dependencies,
+        operation,
+        null,
+        "failed",
+        "parent_license_mismatch",
+        `${parentEvidence}/license-mismatch`,
+      );
+    }
+    await dependencies.store.recordAttachedLicenseBackfill(
+      parent.registrationOperationId,
+      recovered.attachedLicense,
+    );
+    attached = recovered.attachedLicense;
   }
   if (
     attached.preset !== reference.expectedLicense.preset ||
@@ -329,22 +422,6 @@ const resolveParent = async (
       "failed",
       "parent_derivatives_not_permitted",
       `${parentEvidence}/derivatives-not-permitted`,
-    );
-  }
-  if (
-    parent.registeredIpId === null ||
-    parent.confirmedTransactionHash === null ||
-    parent.confirmedBlockNumber === null ||
-    parent.confirmedBlockHash === null ||
-    parent.confirmedLogIndex === null
-  ) {
-    return failOperation(
-      dependencies,
-      operation,
-      null,
-      "failed",
-      "configuration_invalid",
-      `${parentEvidence}/confirmation-incomplete`,
     );
   }
   await dependencies.store.resolveParent({

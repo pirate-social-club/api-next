@@ -2147,6 +2147,86 @@ export function makeDataRegistrationStore(
     );
   };
 
+  const recordAttachedLicenseBackfill: DataRegistrationStore["recordAttachedLicenseBackfill"] = (
+    registrationOperationId,
+    attachedLicense,
+  ) => {
+    if (
+      !validId(registrationOperationId) ||
+      !validLicense(attachedLicense) ||
+      !validCoordinates(attachedLicense.attachment)
+    ) {
+      return Promise.reject(fail("parent", "invalid-input", registrationOperationId));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const operation = yield* readOperation(transaction, registrationOperationId, true);
+            if (operation === null) {
+              return yield* Effect.fail(fail("parent", "not-found", registrationOperationId));
+            }
+            if (
+              operation.mediaKind !== "song" ||
+              operation.state !== "registered" ||
+              operation.registeredIpId === null ||
+              operation.confirmedTransactionHash === null
+            ) {
+              return yield* Effect.fail(fail("parent", "stale-state", registrationOperationId));
+            }
+            if (operation.attachedLicense !== null) {
+              // Already recorded. A replay must restate it exactly; a
+              // different answer is a conflict, never a rewrite.
+              if (!sameAttachedLicense(operation.attachedLicense, attachedLicense)) {
+                return yield* Effect.fail(
+                  fail("parent", "identity-conflict", registrationOperationId),
+                );
+              }
+              return operation;
+            }
+            // The evidence is the confirming transaction itself.
+            if (attachedLicense.attachment.transactionHash !== operation.confirmedTransactionHash) {
+              return yield* Effect.fail(fail("parent", "invalid-input", registrationOperationId));
+            }
+            const updated = yield* transaction.execute({
+              label: "data-registration.operation.attached-license-backfill",
+              text: `UPDATE data_registration_operations
+                        SET attached_license_template=$2,attached_license_terms_id=$3,
+                            attached_license_preset=$4,attached_commercial_rev_share_bps=$5,
+                            terms_attachment_transaction_hash=$6,terms_attachment_block_number=$7,
+                            terms_attachment_block_hash=$8,terms_attachment_log_index=$9,
+                            updated_at=clock_timestamp()
+                      WHERE registration_operation_id=$1
+                        AND state='registered' AND media_kind='song'
+                        AND attached_license_terms_id IS NULL`,
+              values: [
+                registrationOperationId,
+                attachedLicense.licenseTemplate,
+                attachedLicense.licenseTermsId,
+                attachedLicense.preset,
+                attachedLicense.commercialRevShareBps,
+                attachedLicense.attachment.transactionHash,
+                attachedLicense.attachment.blockNumber.toString(),
+                attachedLicense.attachment.blockHash,
+                attachedLicense.attachment.logIndex,
+              ],
+              readonly: false,
+            });
+            if (updated.rowCount !== 1) {
+              return yield* Effect.fail(fail("parent", "stale-state", registrationOperationId));
+            }
+            const result = yield* readOperation(transaction, registrationOperationId);
+            if (result === null) {
+              return yield* Effect.fail(fail("parent", "invalid-row", registrationOperationId));
+            }
+            return result;
+          }),
+        );
+      }),
+    );
+  };
+
   const resolveParent: DataRegistrationStore["resolveParent"] = (input) => {
     if (
       !validId(input.registrationOperationId) ||
@@ -2253,6 +2333,7 @@ export function makeDataRegistrationStore(
     getParentResolution,
     awaitParent,
     resolveParent,
+    recordAttachedLicenseBackfill,
     recordArtifact,
     recordPinVerification,
     pinsReady,

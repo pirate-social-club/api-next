@@ -1,5 +1,6 @@
 import {
   type DataAttachedLicense,
+  type DataLicensePreset,
   type DataRegistrationOperation,
   type DataRegistrationPinVerification,
   type DataRegistrationReceiptInput,
@@ -18,6 +19,7 @@ import {
   type Address,
   bytesToHex,
   decodeEventLog,
+  decodeFunctionResult,
   encodeFunctionData,
   type Hex,
   hexToBytes,
@@ -118,6 +120,17 @@ const PIL_TERMS_COMPONENTS = [
   { name: "derivativeRevCeiling", type: "uint256" },
   { name: "currency", type: "address" },
   { name: "uri", type: "string" },
+] as const;
+
+/** IPILicenseTemplate, protocol-core-v1; the terms an attached id really holds. */
+export const PIL_LICENSE_TEMPLATE_ABI = [
+  {
+    type: "function",
+    name: "getLicenseTerms",
+    stateMutability: "view",
+    inputs: [{ name: "selectedLicenseTermsId", type: "uint256" }],
+    outputs: [{ name: "terms", type: "tuple", components: PIL_TERMS_COMPONENTS }],
+  },
 ] as const;
 
 const LICENSING_CONFIG_COMPONENTS = [
@@ -308,12 +321,18 @@ const verifiedPin = (
   return pin;
 };
 
-const licenseTerms = (authority: DataRegistrationArtifactAuthority) => {
-  if (authority.licensePreset === null) {
-    throw new Error("original-video registration attaches no license terms");
+/**
+ * The exact PIL terms a preset attaches. This is the single definition of what
+ * each preset requires, used both to plan a registration and to recognize the
+ * terms a template holds when they are read back.
+ */
+export const presetTerms = (preset: DataLicensePreset, commercialRemixShareBps: number | null) => {
+  const commercial = preset !== "non-commercial";
+  const remix = preset === "commercial-remix";
+  const share = commercialRemixShareBps ?? 0;
+  if (remix && (!Number.isSafeInteger(share) || share < 0 || share > 10_000)) {
+    throw new Error("invalid commercial-remix share");
   }
-  const commercial = authority.licensePreset !== "non-commercial";
-  const remix = authority.licensePreset === "commercial-remix";
   return {
     terms: {
       transferable: true,
@@ -324,15 +343,15 @@ const licenseTerms = (authority: DataRegistrationArtifactAuthority) => {
       commercialAttribution: commercial,
       commercializerChecker: zeroAddress,
       commercializerCheckerData: zeroAddress,
-      commercialRevShare: remix ? authority.commercialRemixShareBps * 10_000 : 0,
+      commercialRevShare: remix ? share * 10_000 : 0,
       commercialRevCeiling: 0n,
-      derivativesAllowed: dataLicensePresetAllowsDerivatives(authority.licensePreset),
-      derivativesAttribution: dataLicensePresetAllowsDerivatives(authority.licensePreset),
+      derivativesAllowed: dataLicensePresetAllowsDerivatives(preset),
+      derivativesAttribution: dataLicensePresetAllowsDerivatives(preset),
       derivativesApproval: false,
-      derivativesReciprocal: dataLicensePresetAllowsDerivatives(authority.licensePreset),
+      derivativesReciprocal: dataLicensePresetAllowsDerivatives(preset),
       derivativeRevCeiling: 0n,
       currency: commercial ? WIP_TOKEN : zeroAddress,
-      uri: PIL_URIS[authority.licensePreset],
+      uri: PIL_URIS[preset],
     },
     licensingConfig: {
       isSet: false,
@@ -345,6 +364,16 @@ const licenseTerms = (authority: DataRegistrationArtifactAuthority) => {
       expectGroupRewardPool: zeroAddress,
     },
   } as const;
+};
+
+const licenseTerms = (authority: DataRegistrationArtifactAuthority) => {
+  if (authority.licensePreset === null) {
+    throw new Error("original-video registration attaches no license terms");
+  }
+  return presetTerms(
+    authority.licensePreset,
+    authority.licensePreset === "commercial-remix" ? authority.commercialRemixShareBps : null,
+  );
 };
 
 const planCalldata = async (
@@ -516,6 +545,81 @@ const decodeLogs = (
 };
 
 /**
+ * The PIL terms a template really holds for an attached terms id, mapped to
+ * the preset space publications freeze. `null` means the entry exists but does
+ * not correspond to any representable preset; a thrown call is transient and
+ * classified by the caller. The values come from the template's own storage,
+ * never from publication data.
+ */
+const readAttachedTerms = async (
+  options: DataRegistrationAeneidChainOptions,
+  licenseTemplate: string,
+  licenseTermsId: bigint,
+): Promise<Readonly<{
+  preset: DataLicensePreset;
+  commercialRevShareBps: number | null;
+}> | null> => {
+  const data = encodeFunctionData({
+    abi: PIL_LICENSE_TEMPLATE_ABI,
+    functionName: "getLicenseTerms",
+    args: [licenseTermsId],
+  });
+  const response = await options.rpc("eth_call", [{ to: licenseTemplate, data }, "latest"]);
+  if (typeof response !== "string" || !/^0x[0-9a-f]*$/iu.test(response)) {
+    throw new Error("Aeneid license terms unreadable");
+  }
+  const actual = decodeFunctionResult({
+    abi: PIL_LICENSE_TEMPLATE_ABI,
+    functionName: "getLicenseTerms",
+    data: response as Hex,
+  });
+  // The preset's own definition decides, field for field: commercial use,
+  // derivative permission, whether separate derivative approval is required,
+  // the revenue share, fees, expiry, currency, and URI. Three economic fields
+  // are not enough; a terms entry this preset did not construct is not it.
+  const matches = (preset: DataLicensePreset, share: number | null): boolean => {
+    const expected = presetTerms(preset, share).terms;
+    return (
+      actual.transferable === expected.transferable &&
+      actual.royaltyPolicy.toLowerCase() === expected.royaltyPolicy.toLowerCase() &&
+      actual.defaultMintingFee === expected.defaultMintingFee &&
+      actual.expiration === expected.expiration &&
+      actual.commercialUse === expected.commercialUse &&
+      actual.commercialAttribution === expected.commercialAttribution &&
+      actual.commercializerChecker.toLowerCase() === expected.commercializerChecker.toLowerCase() &&
+      actual.commercializerCheckerData.toLowerCase() ===
+        expected.commercializerCheckerData.toLowerCase() &&
+      actual.commercialRevShare === expected.commercialRevShare &&
+      actual.commercialRevCeiling === expected.commercialRevCeiling &&
+      actual.derivativesAllowed === expected.derivativesAllowed &&
+      actual.derivativesAttribution === expected.derivativesAttribution &&
+      actual.derivativesApproval === expected.derivativesApproval &&
+      actual.derivativesReciprocal === expected.derivativesReciprocal &&
+      actual.derivativeRevCeiling === expected.derivativeRevCeiling &&
+      actual.currency.toLowerCase() === expected.currency.toLowerCase() &&
+      actual.uri === expected.uri
+    );
+  };
+  if (matches("non-commercial", null)) {
+    return { preset: "non-commercial", commercialRevShareBps: null };
+  }
+  if (matches("commercial-use", null)) {
+    return { preset: "commercial-use", commercialRevShareBps: null };
+  }
+  const share = actual.commercialRevShare;
+  if (
+    Number.isSafeInteger(share) &&
+    share >= 0 &&
+    share <= 100_000_000 &&
+    share % 10_000 === 0 &&
+    matches("commercial-remix", share / 10_000)
+  ) {
+    return { preset: "commercial-remix", commercialRevShareBps: share / 10_000 };
+  }
+  return null;
+};
+
+/**
  * What the receipt must show beyond the IP registration, by intent. A song
  * attached exactly one set of PIL terms to its IP, and the confirmation keeps
  * them. A video attaches none. A song-reference video was linked to exactly
@@ -577,22 +681,22 @@ const registrationEvidence = async (
   ) {
     return { status: "invalid", reason: "song-terms-attachment" };
   }
-  const authority = await options.authority.read(operation);
-  if (authority.mediaKind !== "song" || authority.licensePreset === null) {
-    return { status: "invalid", reason: "authority-mismatch" };
-  }
   const termsId = attachment.args.licenseTermsId;
   if (typeof termsId !== "bigint" || termsId < 1n) {
     return { status: "invalid", reason: "song-terms-attachment" };
   }
+  // The event proves which entry the template holds; only reading that entry
+  // proves its derivative permission and revenue share. Publication data is
+  // what the registration intended, never what was attached.
+  const actualTerms = await readAttachedTerms(options, PIL_LICENSE_TEMPLATE, termsId);
+  if (actualTerms === null) return { status: "invalid", reason: "song-terms-unrecognized" };
   return {
     status: "valid",
     attachedLicense: {
       licenseTemplate: template,
       licenseTermsId: termsId.toString(),
-      preset: authority.licensePreset,
-      commercialRevShareBps:
-        authority.licensePreset === "commercial-remix" ? authority.commercialRemixShareBps : null,
+      preset: actualTerms.preset,
+      commercialRevShareBps: actualTerms.commercialRevShareBps,
       attachment: { transactionHash, blockNumber, blockHash, logIndex: attachment.logIndex },
     },
   };
@@ -842,6 +946,111 @@ export function makeDataRegistrationAeneidChain(
         observation: {
           ...receiptObservation(operation, attempt, receipt, blockNumber, null, "mined"),
           confirmations,
+        },
+      };
+    },
+    readAttachedLicense: async (operation) => {
+      if (
+        operation.mediaKind !== "song" ||
+        operation.state !== "registered" ||
+        operation.registeredIpId === null ||
+        operation.confirmedTransactionHash === null ||
+        operation.confirmedBlockNumber === null ||
+        operation.confirmedBlockHash === null
+      ) {
+        return {
+          status: "unrecorded" as const,
+          evidenceRef: "data-registration://aeneid/attached-license/confirmation-incomplete",
+        };
+      }
+      let raw: unknown;
+      try {
+        raw = await options.rpc("eth_getTransactionReceipt", [operation.confirmedTransactionHash]);
+      } catch {
+        return { status: "unavailable" as const };
+      }
+      if (!Predicate.isObject(raw)) return { status: "unavailable" as const };
+      const receipt = raw as Readonly<Record<string, unknown>>;
+      let blockNumber: bigint;
+      let receiptStatus: bigint;
+      try {
+        blockNumber = hexQuantity(receipt.blockNumber);
+        receiptStatus = hexQuantity(receipt.status);
+      } catch {
+        return { status: "unavailable" as const };
+      }
+      const transactionHash = String(receipt.transactionHash ?? "");
+      const blockHash = String(receipt.blockHash ?? "");
+      // A receipt that is not the mined transaction this operation recorded
+      // proves nothing about the terms, absent or otherwise: the child stays
+      // resumable instead of ending on an inconclusive read.
+      if (
+        receiptStatus !== 1n ||
+        transactionHash !== operation.confirmedTransactionHash ||
+        blockNumber !== operation.confirmedBlockNumber ||
+        blockHash !== operation.confirmedBlockHash
+      ) {
+        return { status: "unavailable" as const };
+      }
+      const licensingModule = LICENSING_MODULE.toLowerCase();
+      const template = PIL_LICENSE_TEMPLATE.toLowerCase();
+      const attachments = decodeLogs(receipt, LICENSE_TERMS_ATTACHED_EVENT).filter(
+        (log) =>
+          log.address === licensingModule &&
+          String(log.args.ipId).toLowerCase() === operation.registeredIpId,
+      );
+      const attachment = attachments[0];
+      if (
+        attachments.length !== 1 ||
+        attachment === undefined ||
+        String(attachment.args.licenseTemplate).toLowerCase() !== template ||
+        !Number.isSafeInteger(attachment.logIndex) ||
+        attachment.logIndex < 0
+      ) {
+        // The matching receipt is verified and carries no unique applicable
+        // attachment: this is the terminal absence the failure code names.
+        return {
+          status: "unrecorded" as const,
+          evidenceRef: `data-registration://aeneid/attached-license/terms-attachment/${operation.registrationOperationId}`,
+        };
+      }
+      const termsId = attachment.args.licenseTermsId;
+      if (typeof termsId !== "bigint" || termsId < 1n) {
+        return {
+          status: "unrecorded" as const,
+          evidenceRef: `data-registration://aeneid/attached-license/terms-attachment/${operation.registrationOperationId}`,
+        };
+      }
+      let actualTerms: Readonly<{
+        preset: DataLicensePreset;
+        commercialRevShareBps: number | null;
+      }> | null;
+      try {
+        actualTerms = await readAttachedTerms(options, PIL_LICENSE_TEMPLATE, termsId);
+      } catch {
+        return { status: "unavailable" as const };
+      }
+      if (actualTerms === null) {
+        // The attachment exists; its terms simply are not the preset they
+        // would have to be. That is a mismatch, not a missing attachment.
+        return {
+          status: "unsupported" as const,
+          evidenceRef: `data-registration://aeneid/attached-license/terms-unsupported/${termsId.toString()}`,
+        };
+      }
+      return {
+        status: "recorded" as const,
+        attachedLicense: {
+          licenseTemplate: template,
+          licenseTermsId: termsId.toString(),
+          preset: actualTerms.preset,
+          commercialRevShareBps: actualTerms.commercialRevShareBps,
+          attachment: {
+            transactionHash,
+            blockNumber,
+            blockHash,
+            logIndex: attachment.logIndex,
+          },
         },
       };
     },

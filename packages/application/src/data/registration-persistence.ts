@@ -378,6 +378,17 @@ export interface DataRegistrationStore {
   readonly resolveParent: (
     resolution: Omit<DataParentResolution, "resolvedAt">,
   ) => Promise<Readonly<{ kind: "created" | "replay"; resolution: DataParentResolution }>>;
+  /**
+   * Spec 008 section 3A: fills the terms a registered song actually attached
+   * when its confirmation predates that evidence. The registration is
+   * untouched: only a registered song with no recorded terms may be filled,
+   * in place, from the transaction that confirmed it. Recorded terms are never
+   * rewritten.
+   */
+  readonly recordAttachedLicenseBackfill: (
+    registrationOperationId: string,
+    attachedLicense: DataAttachedLicense,
+  ) => Promise<DataRegistrationOperation>;
   readonly failRegistration: (
     input: Readonly<{
       registrationOperationId: string;

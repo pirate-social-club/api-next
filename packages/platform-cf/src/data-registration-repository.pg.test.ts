@@ -942,4 +942,171 @@ suite("DATA registration persistence", () => {
       });
     });
   });
+
+  test("backfills a legacy song's attached terms from its confirming transaction in place", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const media = await seedPublishedSong(admin);
+      const store = makeDataRegistrationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const parentId = deterministicDataRegistrationOperationId(1315n, media.postId, 1n);
+      const child = deterministicDataRegistrationOperationId(1315n, "video-post-backfill", 1n);
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO data_registration_operations
+             (registration_operation_id,community_id,actor_user_id,submission_id,
+              media_operation_id,post_id,asset_id,chain_id,registration_revision,
+              publication_creation_revision,publication_audio_revision,
+              publication_analysis_revision,publication_decision_revision,
+              canonical_audio_sha256,workflow_revision,workflow_instance_id,state,
+              current_attempt_id,registered_ip_id,confirmed_transaction_hash,
+              confirmed_block_number,confirmed_block_hash,confirmed_log_index,confirmed_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$6,1315,1,1,1,1,1,$7,1,$8,'registered',
+                   $9,$10,$11,100,$12,4,clock_timestamp())`,
+          [
+            parentId,
+            media.communityId,
+            media.accountId,
+            media.submissionId,
+            media.mediaOperationId,
+            media.postId,
+            hash("a"),
+            deterministicDataRegistrationWorkflowId(parentId, 1n),
+            deterministicDataRegistrationAttemptId(parentId, 1),
+            address("a"),
+            bytes32("d"),
+            bytes32("e"),
+          ],
+        );
+        await admin.query(
+          `INSERT INTO data_registration_operations
+             (registration_operation_id,community_id,actor_user_id,submission_id,
+              media_operation_id,post_id,asset_id,chain_id,registration_revision,
+              publication_creation_revision,publication_audio_revision,
+              publication_analysis_revision,publication_decision_revision,
+              canonical_audio_sha256,workflow_revision,workflow_instance_id,
+              media_kind,rights_basis)
+           VALUES ($1,$2,$3,$4,$5,'video-post-backfill','video-post-backfill',1315,1,1,1,1,1,$6,1,$7,
+                   'video','derivative')`,
+          [
+            child,
+            media.communityId,
+            media.accountId,
+            "submission-video-post-backfill",
+            "operation-video-post-backfill",
+            hash("e"),
+            deterministicDataRegistrationWorkflowId(child, 1n),
+          ],
+        );
+        await admin.query(
+          `INSERT INTO data_registration_parent_references
+             (registration_operation_id,relationship,parent_asset_id,
+              parent_registration_operation_id,expected_parent_license_preset,
+              expected_parent_commercial_rev_share_bps,owner_policy_revision,
+              owner_policy_hash,owner_derivative_video)
+           VALUES ($1,'references_song',$2,$3,'commercial-remix',500,1,$4,'allowed')`,
+          [child, media.postId, parentId, hash("f")],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+
+      // The database refuses a terms fill whose attachment is not the
+      // registering transaction, even while the row still has no terms.
+      await expect(
+        admin.query(
+          `UPDATE data_registration_operations
+              SET attached_license_template=$2,attached_license_terms_id='1894',
+                  attached_license_preset='commercial-remix',attached_commercial_rev_share_bps=500,
+                  terms_attachment_transaction_hash=$3,terms_attachment_block_number=100,
+                  terms_attachment_block_hash=$4,terms_attachment_log_index=7,
+                  updated_at=clock_timestamp()
+            WHERE registration_operation_id=$1`,
+          [parentId, PIL_TEMPLATE, bytes32("9"), bytes32("e")],
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+
+      const license = {
+        licenseTemplate: PIL_TEMPLATE,
+        licenseTermsId: "1894",
+        preset: "commercial-remix" as const,
+        commercialRevShareBps: 500,
+        attachment: {
+          transactionHash: bytes32("d"),
+          blockNumber: 100n,
+          blockHash: bytes32("e"),
+          logIndex: 7,
+        },
+      };
+      const backfilled = await store.recordAttachedLicenseBackfill(parentId, license);
+      expect(backfilled).toMatchObject({
+        state: "registered",
+        attachedLicense: license,
+        confirmedTransactionHash: bytes32("d"),
+        confirmedBlockNumber: 100n,
+        registeredIpId: address("a"),
+      });
+      // A replay restates the same evidence; a different answer is a conflict.
+      expect(
+        (await store.recordAttachedLicenseBackfill(parentId, license)).attachedLicense,
+      ).toEqual(license);
+      await expect(
+        store.recordAttachedLicenseBackfill(parentId, { ...license, licenseTermsId: "1314" }),
+      ).rejects.toMatchObject({ reason: "identity-conflict" });
+      await expect(
+        store.recordAttachedLicenseBackfill(parentId, {
+          ...license,
+          attachment: { ...license.attachment, transactionHash: bytes32("9") },
+        }),
+      ).rejects.toMatchObject({ reason: "identity-conflict" });
+
+      // Recorded evidence is never rewritten: not changed, not cleared.
+      await expect(
+        admin.query(
+          "UPDATE data_registration_operations SET attached_license_terms_id='1314',updated_at=clock_timestamp() WHERE registration_operation_id=$1",
+          [parentId],
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+      await expect(
+        admin.query(
+          `UPDATE data_registration_operations
+              SET attached_license_template=NULL,attached_license_terms_id=NULL,
+                  attached_license_preset=NULL,attached_commercial_rev_share_bps=NULL,
+                  terms_attachment_transaction_hash=NULL,terms_attachment_block_number=NULL,
+                  terms_attachment_block_hash=NULL,terms_attachment_log_index=NULL,
+                  updated_at=clock_timestamp()
+            WHERE registration_operation_id=$1`,
+          [parentId],
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+
+      // With the terms now recorded, the frozen child resolves against them.
+      const created = await store.resolveParent({
+        registrationOperationId: child,
+        parentRegistrationOperationId: parentId,
+        parentRegistrationRevision: 1n,
+        parentIpId: address("a"),
+        consumedLicense: {
+          licenseTemplate: PIL_TEMPLATE,
+          licenseTermsId: "1894",
+          preset: "commercial-remix",
+          commercialRevShareBps: 500,
+        },
+        parentRegistration: {
+          transactionHash: bytes32("d"),
+          blockNumber: 100n,
+          blockHash: bytes32("e"),
+          logIndex: 4,
+        },
+        termsAttachment: {
+          transactionHash: bytes32("d"),
+          blockNumber: 100n,
+          blockHash: bytes32("e"),
+          logIndex: 7,
+        },
+      });
+      expect(created.kind).toBe("created");
+    });
+  });
 });

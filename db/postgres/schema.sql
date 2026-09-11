@@ -7505,6 +7505,36 @@ BEGIN
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'DATA registration operation timestamp must advance';
   END IF;
+  -- Terms backfill: a registered song whose confirmation predates the terms
+  -- evidence gains it in place, from the transaction that confirmed the
+  -- registration. The fill must be complete, the share must follow the
+  -- commercial-remix preset, and nothing else about the row may move. A row
+  -- that already has terms is never rewritten here.
+  IF OLD.state = 'registered' AND NEW.state = 'registered'
+     AND OLD.media_kind = 'song' AND NEW.media_kind = 'song'
+     AND OLD.attached_license_terms_id IS NULL
+     AND NEW.attached_license_terms_id IS NOT NULL
+     AND NEW.attached_license_template IS NOT NULL
+     AND NEW.attached_license_preset IS NOT NULL
+     AND (NEW.attached_license_preset = 'commercial-remix')
+         = (NEW.attached_commercial_rev_share_bps IS NOT NULL)
+     AND NEW.terms_attachment_transaction_hash = NEW.confirmed_transaction_hash
+     AND NEW.terms_attachment_block_number = NEW.confirmed_block_number
+     AND NEW.terms_attachment_block_hash = NEW.confirmed_block_hash
+     AND NEW.terms_attachment_log_index IS NOT NULL
+     AND ROW(
+       NEW.workflow_revision, NEW.workflow_instance_id, NEW.current_attempt_id,
+       NEW.registered_ip_id, NEW.confirmed_transaction_hash, NEW.confirmed_block_number,
+       NEW.confirmed_block_hash, NEW.confirmed_log_index, NEW.confirmed_at,
+       NEW.failure_code, NEW.failure_evidence_ref
+     ) IS NOT DISTINCT FROM ROW(
+       OLD.workflow_revision, OLD.workflow_instance_id, OLD.current_attempt_id,
+       OLD.registered_ip_id, OLD.confirmed_transaction_hash, OLD.confirmed_block_number,
+       OLD.confirmed_block_hash, OLD.confirmed_log_index, OLD.confirmed_at,
+       OLD.failure_code, OLD.failure_evidence_ref
+     ) THEN
+    RETURN NEW;
+  END IF;
   -- Terms evidence is written with a registration and cleared only when the
   -- registration itself is withdrawn; nothing else may rewrite it.
   IF ROW(

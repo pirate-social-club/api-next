@@ -161,6 +161,7 @@
     "0137_song_video_render_identities.sql": "f95400045d8475937173fc0dd4c1616a53452eeb9227249d7c4bd3f08727a1e7",
     "0138_song_video_interval_reservation.sql": "a35a2ed408a7cca9eba6a7b8b78beed6387ae37e743f9dec9f5449d43b8e24ab",
     "0139_song_video_publication.sql": "013d6b91fdc82b198c75814098c655eb98e4d1ab1db3c4ef08d6a387bbf91eed",
-    "0140_data_registration_derivative_video.sql": "ba5c054305794c821e9d2472eb2987fad8e478f9ed7cc67d2dd2e206e6342292"
+    "0140_data_registration_derivative_video.sql": "ba5c054305794c821e9d2472eb2987fad8e478f9ed7cc67d2dd2e206e6342292",
+    "0141_data_registration_attached_license_backfill.sql": "6ec593a5fc65b59fa12e905d413ef9219fcc9ede5b64cbe7d15e82deb81cf9c3"
   }
 }
