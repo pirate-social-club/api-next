@@ -96,8 +96,12 @@ const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
-const version = Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" });
+const ffmpegAvailable = Bun.which("ffmpeg") !== null;
+const version = ffmpegAvailable
+  ? Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
 const pinned =
+  version !== null &&
   version.exitCode === 0 &&
   new TextDecoder().decode(version.stdout).startsWith("ffmpeg version 6.1.1");
 const suite = connectionString !== undefined && pinned ? describe : describe.skip;
