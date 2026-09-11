@@ -20,14 +20,14 @@ export type LocalVersionedMasterStore = SongVideoOutputStore &
 
 /** Every write is a new version; a recorded version always resolves to its own bytes. */
 export function makeLocalVersionedMasterStore(): LocalVersionedMasterStore {
-  const objects = new Map<string, { version: string; bytes: Uint8Array }[]>();
+  const objects = new Map<string, { version: string; etag: string; bytes: Uint8Array }[]>();
   let written = 0;
   return {
     write: (key, bytes) => {
       written += 1;
       const version = `local-v${written}`;
       const versions = objects.get(key) ?? [];
-      versions.push({ version, bytes: bytes.slice() });
+      versions.push({ version, etag: `local-etag-${written}`, bytes: bytes.slice() });
       objects.set(key, versions);
       return version;
     },
@@ -35,7 +35,7 @@ export function makeLocalVersionedMasterStore(): LocalVersionedMasterStore {
       const latest = objects.get(key)?.at(-1);
       return latest === undefined
         ? null
-        : { bytes: latest.bytes.slice(), objectVersion: latest.version };
+        : { bytes: latest.bytes.slice(), objectVersion: latest.version, etag: latest.etag };
     },
     readVersion: async (key, version) => {
       const found = objects.get(key)?.find((entry) => entry.version === version);

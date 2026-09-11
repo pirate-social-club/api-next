@@ -188,7 +188,7 @@ suite("local song-video engine", () => {
     // And the master passes the repository's own output verification.
     const verification = await verifyRenderedOutput({
       store: {
-        read: async () => ({ bytes: result.masterBytes, objectVersion: "v1" }),
+        read: async () => ({ bytes: result.masterBytes, objectVersion: "v1", etag: "etag-v1" }),
         readVersion: async () => result.masterBytes,
       },
       prober: { probe: (bytes) => engine.probeMaster(bytes) },

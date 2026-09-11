@@ -380,10 +380,11 @@ export async function verifyAndSealMaster(
           source_immutable_ref, source_sha256, master_sha256, master_byte_length,
           master_ceiling_bytes, renderer_identity, renderer_policy_revision,
           decision_clip_start_samples, decision_clip_duration_samples,
-          verified_object_key, verified_object_version, measured_video_duration_samples,
+          verified_object_key, verified_object_version, verified_object_etag,
+          measured_video_duration_samples,
           measured_audio_duration_samples, measured_audio_sample_rate_hz, measured_audio_channels,
           master_policy_revision, soundtrack_sha256)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
       [
         request.masterRevisionId,
         request.attempt.planId,
@@ -403,6 +404,7 @@ export async function verifyAndSealMaster(
         request.decisionClipDurationSamples,
         verified.objectKey,
         verified.objectVersion,
+        verified.objectEtag,
         verified.probe.videoDurationSamples,
         verified.probe.audioDurationSamples,
         verified.probe.audioSampleRateHz,

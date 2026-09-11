@@ -285,7 +285,7 @@ const derivativeVideoAuthority: DataRegistrationArtifactAuthority = {
   licensePreset: null,
   caption: "A video to a song",
   master: {
-    objectKey: "song-video-masters/song-video-plan:submission-1/g1",
+    objectKey: "media://immutable/song-video-masters/song-video-plan:submission-1/g1",
     objectVersion: "v1",
     mediaType: "video/mp4",
     byteLength: 4n,

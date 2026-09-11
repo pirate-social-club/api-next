@@ -25,9 +25,11 @@
  * it is persisting the same bytes that were verified.
  */
 export type SongVideoOutputStore = {
-  readonly read: (
-    objectKey: string,
-  ) => Promise<{ readonly bytes: Uint8Array; readonly objectVersion: string } | null>;
+  readonly read: (objectKey: string) => Promise<{
+    readonly bytes: Uint8Array;
+    readonly objectVersion: string;
+    readonly etag: string;
+  } | null>;
   /**
    * Retrieves an exact recorded version. Downstream consumers resolve a sealed
    * master through this, so the verified bytes remain addressable after later
@@ -55,6 +57,7 @@ export type SongVideoProbeFacts = {
 type VerifiedOutput = {
   readonly objectKey: string;
   readonly objectVersion: string;
+  readonly objectEtag: string;
   readonly masterSha256: string;
   readonly masterByteLength: number;
   readonly probe: SongVideoProbeFacts;
@@ -81,6 +84,7 @@ type OutputVerificationFailure =
   | { readonly kind: "output_audio_track_invalid"; readonly channels: number }
   | { readonly kind: "output_has_no_video_track" }
   | { readonly kind: "output_is_the_source"; readonly sha256: string }
+  | { readonly kind: "output_etag_missing"; readonly objectKey: string }
   | { readonly kind: "output_version_not_addressable"; readonly objectVersion: string }
   | { readonly kind: "output_version_bytes_differ"; readonly objectVersion: string };
 
@@ -127,9 +131,17 @@ export async function verifyRenderedOutput(input: {
   if (read === null) {
     return { verified: false, failure: { kind: "output_absent", objectKey: input.objectKey } };
   }
-  const { bytes, objectVersion } = read;
+  const { bytes, objectVersion, etag } = read;
   if (objectVersion.trim().length === 0) {
     return { verified: false, failure: { kind: "output_absent", objectKey: input.objectKey } };
+  }
+  // The registered immutable identity needs the store's own etag, not a digest
+  // recomputed here: the source gateway matches it against the object it serves.
+  if (etag.trim().length === 0) {
+    return {
+      verified: false,
+      failure: { kind: "output_etag_missing", objectKey: input.objectKey },
+    };
   }
   if (bytes.byteLength === 0) {
     return { verified: false, failure: { kind: "output_empty", objectKey: input.objectKey } };
@@ -206,6 +218,7 @@ export async function verifyRenderedOutput(input: {
     output: {
       objectKey: input.objectKey,
       objectVersion,
+      objectEtag: etag,
       masterSha256,
       masterByteLength: bytes.byteLength,
       probe,

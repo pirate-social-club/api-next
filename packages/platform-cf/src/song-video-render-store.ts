@@ -131,7 +131,9 @@ export function makeSongVideoRenderStore(
             attemptId: `${request.planId}:g${generation}`,
             planId: request.planId,
             generation,
-            outputObjectKey: `song-video-masters/${request.planId}/g${generation}`,
+            // The immutable reference the source gateway, Stream grants, DATA
+            // and playback all resolve; the object store maps it to its key.
+            outputObjectKey: `media://immutable/song-video-masters/${request.planId}/g${generation}`,
             phase: "recorded",
             executionStartedAtMs: null,
           };

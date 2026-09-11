@@ -171,7 +171,7 @@ const derivativeAuthority: DataRegistrationArtifactAuthority = {
   licensePreset: null,
   caption: null,
   master: {
-    objectKey: "song-video-masters/song-video-plan:submission-1/g1",
+    objectKey: "media://immutable/song-video-masters/song-video-plan:submission-1/g1",
     objectVersion: "v7",
     mediaType: "video/mp4",
     byteLength: 5n,
@@ -230,7 +230,7 @@ describe("DATA registration artifacts of a song-reference video", () => {
     const [video] = first;
     if (video === undefined) throw new Error("master artifact missing");
     expect(video.artifact).toMatchObject({
-      sourceRef: "song-video-master://song-video-masters/song-video-plan:submission-1/g1@v7",
+      sourceRef: "media://immutable/song-video-masters/song-video-plan:submission-1/g1@v7",
       mediaType: "video/mp4",
       byteLength: 5n,
       canonicalSha256: "e".repeat(64),
@@ -239,7 +239,9 @@ describe("DATA registration artifacts of a song-reference video", () => {
     for await (const chunk of video.open(new AbortController().signal)) chunks.push(chunk);
     // The sealed version is what is read, never the key's latest object.
     expect(Buffer.concat(chunks)).toEqual(Buffer.from(MASTER_BYTES));
-    expect(opened).toEqual(["song-video-masters/song-video-plan:submission-1/g1@v7"]);
+    expect(opened).toEqual([
+      "media://immutable/song-video-masters/song-video-plan:submission-1/g1@v7",
+    ]);
 
     pins = [
       verifiedPin("canonical_video", "e".repeat(64), 5n),

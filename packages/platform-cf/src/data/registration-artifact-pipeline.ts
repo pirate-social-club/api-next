@@ -768,7 +768,7 @@ const masterArtifact = (
     ),
     registrationOperationId: operation.registrationOperationId,
     artifactKind: "canonical_video",
-    sourceRef: `song-video-master://${master.objectKey}@${master.objectVersion}`,
+    sourceRef: `${master.objectKey}@${master.objectVersion}`,
     mediaType: master.mediaType,
     byteLength: master.byteLength,
     canonicalSha256: master.sha256,

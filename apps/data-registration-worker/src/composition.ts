@@ -33,6 +33,7 @@ import { makeDataRegistrationWorkflowReaders } from "@pirate/platform-cf/data/re
 import { makeDataRegistrationSigningIntentReader } from "@pirate/platform-cf/data/signing-intent-reader";
 import { makeDataRegistrationStore } from "@pirate/platform-cf/data-registration-repository";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import { makeR2SongVideoMasterSource } from "@pirate/platform-cf/song-video-master-store";
 import { Effect } from "effect";
 import type { DataRegistrationWorkerComposition, DataRegistrationWorkerEnv } from "./index.ts";
 
@@ -199,6 +200,7 @@ export function makeDataRegistrationComposition(
   const artifacts = makeDataRegistrationArtifactPipeline({
     authority,
     immutableOriginals,
+    songVideoMasters: makeR2SongVideoMasterSource(immutableOriginals),
     pinning: makeFilebaseIpfsPinningAdapter({
       enabled: true,
       token: required(env.FILEBASE_IPFS_TOKEN, "FILEBASE_IPFS_TOKEN"),

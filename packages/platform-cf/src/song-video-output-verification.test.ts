@@ -25,7 +25,7 @@ const bytesOf = (text: string) => new TextEncoder().encode(text);
 const storeOf = (map: Record<string, Uint8Array>): SongVideoOutputStore => ({
   read: async (key) => {
     const bytes = map[key];
-    return bytes === undefined ? null : { bytes, objectVersion: `v-${key}` };
+    return bytes === undefined ? null : { bytes, objectVersion: `v-${key}`, etag: `etag-${key}` };
   },
   readVersion: async (key, version) => {
     const bytes = map[key];
@@ -190,7 +190,7 @@ describe("rendered output verification", () => {
     expect(
       await verify({
         store: {
-          read: async () => ({ bytes: master, objectVersion: "v-master-1" }),
+          read: async () => ({ bytes: master, objectVersion: "v-master-1", etag: "etag-master-1" }),
           readVersion: async () => null,
         },
       }),
@@ -201,7 +201,7 @@ describe("rendered output verification", () => {
     expect(
       await verify({
         store: {
-          read: async () => ({ bytes: master, objectVersion: "v-master-1" }),
+          read: async () => ({ bytes: master, objectVersion: "v-master-1", etag: "etag-master-1" }),
           readVersion: async () => bytesOf("different-bytes-entirely"),
         },
       }),

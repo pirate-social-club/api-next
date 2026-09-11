@@ -76,7 +76,9 @@ suite("song video render persistence", () => {
   const store = {
     read: async (key: string) => {
       const bytes = outputs.get(key);
-      return bytes === undefined ? null : { bytes, objectVersion: `v1:${key}` };
+      return bytes === undefined
+        ? null
+        : { bytes, objectVersion: `v1:${key}`, etag: `etag:${key}` };
     },
     readVersion: async (key: string, version: string) => {
       const bytes = outputs.get(key);

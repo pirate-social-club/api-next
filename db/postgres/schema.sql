@@ -19109,7 +19109,35 @@ CREATE FUNCTION validate_media_immutable_object_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE reservation_record media_upload_reservations%ROWTYPE;
+DECLARE master_record media_song_video_masters%ROWTYPE;
+DECLARE submission_record media_post_submissions%ROWTYPE;
 BEGIN
+  IF NEW.reservation_id IS NULL THEN
+    SELECT * INTO master_record
+      FROM media_song_video_masters m
+      JOIN media_song_video_accepted_masters a
+        ON a.master_revision_id = m.master_revision_id AND a.plan_id = m.plan_id
+     WHERE m.verified_object_key = NEW.immutable_ref
+       AND m.plan_submission_id = NEW.submission_id
+     FOR UPDATE OF m;
+    SELECT * INTO submission_record FROM media_post_submissions
+     WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
+       AND submission_id = NEW.submission_id AND operation_id = NEW.operation_id
+     FOR SHARE;
+    IF master_record.master_revision_id IS NULL
+       OR master_record.master_sha256 <> NEW.canonical_sha256
+       OR master_record.master_byte_length <> NEW.size_bytes
+       OR master_record.verified_object_etag IS NULL
+       OR master_record.verified_object_etag <> NEW.etag
+       OR master_record.verified_object_version <> NEW.object_version
+       OR NEW.content_type <> 'video/mp4'
+       OR submission_record.submission_id IS NULL
+       OR submission_record.author_persona_id <> NEW.author_persona_id
+    THEN
+      RAISE EXCEPTION 'sealed master facts do not match the accepted master';
+    END IF;
+    RETURN NEW;
+  END IF;
   SELECT * INTO reservation_record FROM media_upload_reservations WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND reservation_id = NEW.reservation_id FOR UPDATE;
   IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
   RETURN NEW;
@@ -26350,7 +26378,7 @@ CREATE TABLE media_immutable_objects (
     immutable_ref text NOT NULL,
     community_id text NOT NULL,
     actor_user_id text NOT NULL,
-    reservation_id text NOT NULL,
+    reservation_id text,
     submission_id text NOT NULL,
     operation_id text NOT NULL,
     destination_ref text NOT NULL,
@@ -26778,6 +26806,7 @@ CREATE TABLE media_song_video_masters (
     decision_clip_duration_samples bigint NOT NULL,
     sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     soundtrack_sha256 text NOT NULL,
+    verified_object_etag text,
     CONSTRAINT media_song_video_masters_attempt_generation_check CHECK ((attempt_generation >= 1)),
     CONSTRAINT media_song_video_masters_decision_clip_duration_samples_check CHECK ((decision_clip_duration_samples > 0)),
     CONSTRAINT media_song_video_masters_decision_clip_start_samples_check CHECK ((decision_clip_start_samples >= 0)),
@@ -26795,6 +26824,7 @@ CREATE TABLE media_song_video_masters (
     CONSTRAINT media_song_video_masters_sealed_at_check CHECK (isfinite(sealed_at)),
     CONSTRAINT media_song_video_masters_soundtrack_sha256_check CHECK ((soundtrack_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_song_video_masters_source_sha256_check CHECK ((source_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_verified_object_etag_check CHECK (((verified_object_etag IS NULL) OR (btrim(verified_object_etag) <> ''::text))),
     CONSTRAINT media_song_video_masters_verified_object_key_check CHECK ((btrim(verified_object_key) <> ''::text)),
     CONSTRAINT media_song_video_masters_verified_object_version_check CHECK ((btrim(verified_object_version) <> ''::text)),
     CONSTRAINT song_video_master_identity_distinct CHECK ((master_sha256 <> source_sha256)),
@@ -31685,9 +31715,6 @@ ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_submission_id_audio_revision_canonica_key UNIQUE (submission_id, audio_revision, canonical_sha256, immutable_ref);
 
 ALTER TABLE ONLY media_immutable_objects
-    ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_operatio_key UNIQUE (community_id, actor_user_id, operation_id);
-
-ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_immutable_ref_canonica_key UNIQUE (community_id, immutable_ref, canonical_sha256, content_type, size_bytes);
 
 ALTER TABLE ONLY media_immutable_objects
@@ -33019,6 +33046,8 @@ CREATE INDEX karaoke_sessions_live_account_idx ON karaoke_sessions USING btree (
 CREATE INDEX karaoke_sessions_revision_score_idx ON karaoke_sessions USING btree (community_id, post_id, karaoke_revision_id, account_id);
 
 CREATE INDEX learner_audio_artifacts_stored_account_idx ON learner_audio_artifacts USING btree (account_id, created_at, learner_audio_artifact_id) WHERE (recording_state = 'stored'::text);
+
+CREATE UNIQUE INDEX media_immutable_objects_reservation_operation_key ON media_immutable_objects USING btree (community_id, actor_user_id, operation_id) WHERE (reservation_id IS NOT NULL);
 
 CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (community_id, actor_user_id, updated_at DESC, submission_id);
 

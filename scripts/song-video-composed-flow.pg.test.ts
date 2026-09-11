@@ -861,6 +861,28 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       );
       expect(await decodedDigest(directory, master.bytes, null)).toBe(interval);
       expect(projection.soundtrack_sha256).toBe(interval);
+      // The master is a registered immutable object, addressed exactly as the
+      // source gateway, Stream grants and DATA resolve it. Registration with
+      // publication is what lets a real Stream copy name these bytes.
+      expect(projection.video_asset_ref.startsWith("media://immutable/")).toBe(true);
+      const registered = await admin.query<{
+        destination_ref: string;
+        object_version: string;
+        etag: string;
+        size_bytes: string;
+        canonical_sha256: string;
+      }>(
+        `SELECT destination_ref,object_version,etag,size_bytes::text,canonical_sha256
+           FROM "${schema}".media_immutable_objects WHERE immutable_ref=$1`,
+        [projection.video_asset_ref],
+      );
+      expect(registered.rows[0]).toEqual({
+        destination_ref: `r2://${projection.video_asset_ref.replace("media://immutable/", "immutable/")}`,
+        object_version: master.objectVersion,
+        etag: master.etag,
+        size_bytes: String(master.bytes.byteLength),
+        canonical_sha256: projection.canonical_video_sha256,
+      });
       expect(
         await decodedDigest(
           directory,
@@ -1037,7 +1059,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       });
       expect(
         await composed.masters.read(
-          `song-video-masters/song-video-plan:${submitted.submissionId}/g1`,
+          `media://immutable/song-video-masters/song-video-plan:${submitted.submissionId}/g1`,
         ),
       ).toBeNull();
     });

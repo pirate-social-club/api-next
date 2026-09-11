@@ -26,6 +26,7 @@ import {
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   type VideoSubmissionState,
 } from "../../domain/src/video-submission.ts";
+import { mediaProcessingPhysicalObjectKey } from "./media-immutable-object-key.ts";
 import { insertVideoStageFact } from "./video-stage-fact-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -2490,6 +2491,8 @@ type AcceptedMasterRow = Readonly<{
   masterRevisionId: string;
   attemptId: string;
   masterRef: string;
+  masterVersion: string;
+  masterEtag: string;
   masterSha256: string;
   masterByteLength: number;
   soundtrackSha256: string;
@@ -2500,8 +2503,9 @@ function readAcceptedMaster(tx: Executor, planId: string) {
   return Effect.gen(function* () {
     const result = yield* tx.execute<Row>({
       label: "video-publication.song-accepted-master",
-      text: `SELECT m.master_revision_id,m.attempt_id,m.verified_object_key,m.master_sha256,
-                    m.master_byte_length,m.soundtrack_sha256
+      text: `SELECT m.master_revision_id,m.attempt_id,m.verified_object_key,
+                    m.verified_object_version,m.verified_object_etag,
+                    m.master_sha256,m.master_byte_length,m.soundtrack_sha256
                FROM media_song_video_accepted_masters a
                JOIN media_song_video_masters m
                  ON m.master_revision_id=a.master_revision_id AND m.plan_id=a.plan_id
@@ -2515,6 +2519,8 @@ function readAcceptedMaster(tx: Executor, planId: string) {
       masterRevisionId: text(row, "master_revision_id"),
       attemptId: text(row, "attempt_id"),
       masterRef: text(row, "verified_object_key"),
+      masterVersion: text(row, "verified_object_version"),
+      masterEtag: text(row, "verified_object_etag"),
       masterSha256: text(row, "master_sha256"),
       masterByteLength: integer(row, "master_byte_length", 1),
       soundtrackSha256: text(row, "soundtrack_sha256"),
@@ -2724,6 +2730,32 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
           accepted.masterRef !== master.masterRef
         )
           throw new Error("song video publication is not the accepted master");
+        // The master becomes an immutable object with the publication, never
+        // before: Stream grants, playback and DATA resolve it through the same
+        // keyspace originals use, and an unpublished master is not grantable.
+        yield* tx.execute({
+          label: "video-publication.master-immutable-insert",
+          text: `INSERT INTO media_immutable_objects
+            (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,
+             operation_id,destination_ref,etag,object_version,size_bytes,content_type,
+             canonical_sha256,author_persona_id)
+            VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,'video/mp4',$10,$11)
+            ON CONFLICT (immutable_ref) DO NOTHING`,
+          values: [
+            accepted.masterRef,
+            current.state.communityId,
+            current.state.actorAccountId,
+            current.state.submissionId,
+            current.state.operationId,
+            `r2://${mediaProcessingPhysicalObjectKey(accepted.masterRef)}`,
+            accepted.masterEtag,
+            accepted.masterVersion,
+            accepted.masterByteLength,
+            accepted.masterSha256,
+            current.state.authorPersonaId,
+          ],
+          readonly: false,
+        });
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
         const video = current.state.video;
