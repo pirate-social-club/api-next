@@ -12,7 +12,7 @@ const bytes = new TextEncoder().encode("sealed-master-bytes");
 
 type BucketOptions = Readonly<{
   key?: string;
-  version?: string;
+  etag?: string;
   size?: number;
   bytes?: Uint8Array;
   /** No data is enqueued, so a read stays pending until the body is cancelled. */
@@ -30,8 +30,7 @@ function makeBucket(input: BucketOptions = {}) {
       if (key !== (input.key ?? physicalKey)) return null;
       return {
         key,
-        version: input.version ?? "version-7",
-        etag: "etag-7",
+        etag: input.etag ?? "etag-7",
         size: input.size ?? bodyBytes.byteLength,
         arrayBuffer: async () => {
           buffered += 1;
@@ -60,18 +59,23 @@ describe("song video master store", () => {
     const store = makeR2SongVideoOutputStore(bucket);
     expect(await store.read(masterRef)).toEqual({
       bytes,
-      objectVersion: "version-7",
+      objectVersion: "etag-7",
       etag: "etag-7",
     });
     expect(seen).toEqual([physicalKey]);
   });
 
-  test("refuses a version that is not the object currently stored, before buffering", async () => {
-    const store = makeR2SongVideoOutputStore(makeBucket().bucket);
-    expect(await store.readVersion(masterRef, "version-7")).toEqual(bytes);
+  test("records the normalized ETag and refuses a different identity before buffering", async () => {
+    const quoted = makeBucket({ etag: '"etag-9"' });
+    const store = makeR2SongVideoOutputStore(quoted.bucket);
+    expect(await store.read(masterRef)).toMatchObject({
+      objectVersion: "etag-9",
+      etag: "etag-9",
+    });
+    expect(await store.readVersion(masterRef, "etag-9")).toEqual(bytes);
     const stale = makeBucket();
     expect(
-      await makeR2SongVideoOutputStore(stale.bucket).readVersion(masterRef, "version-6"),
+      await makeR2SongVideoOutputStore(stale.bucket).readVersion(masterRef, "etag-6"),
     ).toBeNull();
     expect(stale.counters()).toEqual({ cancelled: 1, buffered: 0 });
   });
@@ -80,23 +84,23 @@ describe("song video master store", () => {
     const oversized = makeBucket({ size: SONG_VIDEO_MASTER_POLICY_V1.maxBytes + 1 });
     const store = makeR2SongVideoOutputStore(oversized.bucket);
     expect(await store.read(masterRef)).toBeNull();
-    expect(await store.readVersion(masterRef, "version-7")).toBeNull();
+    expect(await store.readVersion(masterRef, "etag-7")).toBeNull();
     expect(oversized.counters()).toEqual({ cancelled: 2, buffered: 0 });
   });
 
   test("streams the accepted master by its exact recorded version", async () => {
     const source = makeR2SongVideoMasterSource(makeBucket().bucket);
     const chunks: Uint8Array[] = [];
-    const opened = await source.open(masterRef, "version-7", new AbortController().signal);
+    const opened = await source.open(masterRef, "etag-7", new AbortController().signal);
     if (opened === null) throw new Error("master not opened");
     for await (const chunk of opened) chunks.push(chunk);
     expect(Buffer.concat(chunks)).toEqual(Buffer.from(bytes));
   });
 
-  test("refuses a master when the bucket holds a different version and cancels the body", async () => {
-    const other = makeBucket({ version: "version-8" });
+  test("refuses a master when the bucket holds a different identity and cancels the body", async () => {
+    const other = makeBucket({ etag: '"etag-8"' });
     const source = makeR2SongVideoMasterSource(other.bucket);
-    expect(await source.open(masterRef, "version-7", new AbortController().signal)).toBeNull();
+    expect(await source.open(masterRef, "etag-7", new AbortController().signal)).toBeNull();
     expect(other.counters()).toEqual({ cancelled: 1, buffered: 0 });
   });
 
@@ -104,7 +108,7 @@ describe("song video master store", () => {
     const pending = makeBucket({ pending: true });
     const source = makeR2SongVideoMasterSource(pending.bucket);
     const controller = new AbortController();
-    const opened = await source.open(masterRef, "version-7", controller.signal);
+    const opened = await source.open(masterRef, "etag-7", controller.signal);
     if (opened === null) throw new Error("master not opened");
     const next = opened[Symbol.asyncIterator]().next();
     controller.abort();
@@ -115,7 +119,7 @@ describe("song video master store", () => {
   test("refuses a reference that is not an immutable media reference", async () => {
     const source = makeR2SongVideoMasterSource(makeBucket().bucket);
     expect(
-      source.open("song-video-masters/plan/g1", "version-7", new AbortController().signal),
+      source.open("song-video-masters/plan/g1", "etag-7", new AbortController().signal),
     ).rejects.toThrow("invalid immutable media reference");
   });
 });
@@ -148,8 +152,8 @@ function makeWriteBucket(input: Readonly<{ unaddressable?: boolean }> = {}) {
       if (objects.has(key)) return null;
       objects.set(key, value.slice());
       return input.unaddressable === true
-        ? { version: "", etag: "etag-7" }
-        : { version: "version-7", etag: "etag-7" };
+        ? { version: "", etag: "" }
+        : { version: "version-7", etag: '"etag-7"' };
     },
   } as unknown as R2Bucket;
   return { bucket, puts, objects };

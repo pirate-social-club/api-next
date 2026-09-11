@@ -11475,6 +11475,15 @@ BEGIN
   THEN
     RAISE EXCEPTION 'a song-video render refusal record is immutable';
   END IF;
+  -- A host claim is taken once and never moved or cleared. The attempt it
+  -- names can only be re-rendered through a new generation, never by handing
+  -- the same execution to another host.
+  IF OLD.execution_claim_id IS NOT NULL
+     AND ROW(NEW.execution_claim_id,NEW.execution_claimed_at)
+         IS DISTINCT FROM ROW(OLD.execution_claim_id,OLD.execution_claimed_at)
+  THEN
+    RAISE EXCEPTION 'a song-video render host claim is immutable';
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -26861,14 +26870,19 @@ CREATE TABLE media_song_video_render_attempts (
     expected_output_sha256 text,
     expected_output_byte_length bigint,
     execution_refusal_reason text,
+    execution_claim_id text,
+    execution_claimed_at timestamp with time zone,
     CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
     CONSTRAINT media_song_video_render_attem_expected_output_byte_length_check CHECK (((expected_output_byte_length IS NULL) OR (expected_output_byte_length > 0))),
     CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempt_claim_shape CHECK (((execution_claim_id IS NULL) = (execution_claimed_at IS NULL))),
     CONSTRAINT media_song_video_render_attempt_execution_shape CHECK (((execution_phase = 'recorded'::text) = (execution_started_at IS NULL))),
     CONSTRAINT media_song_video_render_attempt_outcome_shape CHECK ((((expected_output_sha256 IS NULL) = (expected_output_byte_length IS NULL)) AND ((execution_refusal_reason IS NULL) OR (expected_output_sha256 IS NULL)))),
     CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK (((length(attempt_id) >= 1) AND (length(attempt_id) <= 128) AND (btrim(attempt_id) = attempt_id))),
     CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
     CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_execution_claim_id_check CHECK (((execution_claim_id IS NULL) OR (((length(execution_claim_id) >= 1) AND (length(execution_claim_id) <= 128)) AND (btrim(execution_claim_id) = execution_claim_id)))),
+    CONSTRAINT media_song_video_render_attempts_execution_claimed_at_check CHECK (((execution_claimed_at IS NULL) OR isfinite(execution_claimed_at))),
     CONSTRAINT media_song_video_render_attempts_execution_phase_check CHECK ((execution_phase = ANY (ARRAY['recorded'::text, 'submitting'::text, 'submitted'::text]))),
     CONSTRAINT media_song_video_render_attempts_execution_refusal_reason_check CHECK (((execution_refusal_reason IS NULL) OR (btrim(execution_refusal_reason) <> ''::text))),
     CONSTRAINT media_song_video_render_attempts_execution_started_at_check CHECK (((execution_started_at IS NULL) OR isfinite(execution_started_at))),
@@ -33076,6 +33090,8 @@ CREATE UNIQUE INDEX media_post_submissions_localization_identity_uidx ON media_p
 CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts USING btree (state, next_eligible_at, lease_expires_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'poll_wait'::text]));
 
 CREATE INDEX media_song_canonical_timings_pending_idx ON media_song_canonical_timings USING btree (requested_at) WHERE (state = 'pending'::text);
+
+CREATE INDEX media_song_video_render_attempt_dispatch_idx ON media_song_video_render_attempts USING btree (plan_id) WHERE ((state = 'started'::text) AND (execution_claim_id IS NULL));
 
 CREATE INDEX media_song_video_render_attempts_plan_idx ON media_song_video_render_attempts USING btree (plan_id, state);
 

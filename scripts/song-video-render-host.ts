@@ -17,14 +17,14 @@ import {
 /**
  * One operator-supervised render on the selected FFmpeg host (U.2).
  *
- * The host takes a dispatch that already exists: one attempt in
- * `media_song_video_render_attempts` at `started`/`submitting`, with its plan,
- * source and interval loaded from the same rows the workflow froze. It runs
- * one job at a time, writes the attempt's assigned output address once, records
- * what it measured before writing, and seals the accepted master through the
- * existing render store. An execution that cannot be concluded is reported
- * uncertain and left pending; nothing here retries it or launches a second
- * render.
+ * The host claims a dispatch atomically, before FFmpeg runs: the claim is a
+ * compare-and-set on the attempt row, so two hosts or a restarted host cannot
+ * both execute the same attempt. It then loads the plan, sealed source and
+ * frozen interval from the same rows the workflow froze, runs one job at a
+ * time, writes the attempt's assigned output address once, records what it
+ * measured before writing, and seals the accepted master through the existing
+ * render store. An execution that cannot be concluded is reported uncertain
+ * and left pending; nothing here retries it or launches a second render.
  *
  * This is the staging executor only. It is not wired into the Worker or any
  * deployment, and running it is a separately authorized operation.
@@ -41,6 +41,8 @@ export type HostRenderFacts = Readonly<{
   clipDurationSamples: number;
 }>;
 
+export type HostRenderClaim = Readonly<{ claimId: string; facts: HostRenderFacts }>;
+
 export type HostRenderOutcome =
   | Readonly<{ status: "accepted"; masterRevisionId: string }>
   | Readonly<{ status: "refused"; reason: string }>
@@ -56,7 +58,15 @@ export function planHostRenderRequest(facts: HostRenderFacts): SongVideoRenderRe
   };
 }
 
-const ATTEMPT_QUERY = `SELECT a.attempt_id,a.generation,a.dispatch_output_key,
+const CLAIM = `UPDATE media_song_video_render_attempts
+    SET execution_claim_id=$1, execution_claimed_at=clock_timestamp()
+  WHERE plan_id=$2 AND state='started' AND execution_phase='submitting'
+    AND expected_output_sha256 IS NULL AND execution_refusal_reason IS NULL
+    AND execution_claim_id IS NULL
+    AND ($3::text IS NULL OR attempt_id=$3)
+  RETURNING attempt_id`;
+
+const FACTS = `SELECT a.attempt_id,a.generation,a.dispatch_output_key,
   p.plan_id,p.song_asset_id,rp.canonical_audio_sha256,p.song_duration_samples::text,
   p.clip_start_samples::text,p.clip_duration_samples::text,
   v.immutable_ref,v.canonical_sha256,v.size_bytes::text
@@ -67,9 +77,7 @@ const ATTEMPT_QUERY = `SELECT a.attempt_id,a.generation,a.dispatch_output_key,
   JOIN media_video_revisions v ON v.submission_id=s.submission_id
     AND v.operation_id=s.operation_id
     AND v.video_revision=(s.video_state_snapshot->>'videoRevision')::bigint
- WHERE a.plan_id=$1 AND a.state='started' AND a.execution_phase='submitting'
-   AND a.expected_output_sha256 IS NULL AND a.execution_refusal_reason IS NULL
-   AND ($2::text IS NULL OR a.attempt_id=$2)`;
+ WHERE a.attempt_id=$1`;
 
 type AttemptRow = Readonly<{
   attempt_id: string;
@@ -86,14 +94,7 @@ type AttemptRow = Readonly<{
   size_bytes: string;
 }>;
 
-export async function loadHostRenderFacts(
-  client: Client,
-  planId: string,
-  attemptId?: string,
-): Promise<HostRenderFacts | null> {
-  const result = await client.query<AttemptRow>(ATTEMPT_QUERY, [planId, attemptId ?? null]);
-  const row = result.rows[0];
-  if (row === undefined) return null;
+function factsFromRow(row: AttemptRow): HostRenderFacts {
   return {
     planId: row.plan_id,
     attemptId: row.attempt_id,
@@ -114,6 +115,38 @@ export async function loadHostRenderFacts(
   };
 }
 
+/**
+ * Claims one dispatchable attempt for this host and returns its frozen work.
+ * The claim and the read happen in one transaction: the winner is the only
+ * caller that can receive the attempt, and a loser gets null.
+ */
+export async function claimHostRenderAttempt(
+  client: Client,
+  input: Readonly<{ planId: string; attemptId?: string | undefined; claimId: string }>,
+): Promise<HostRenderClaim | null> {
+  await client.query("BEGIN");
+  try {
+    const claimed = await client.query<{ attempt_id: string }>(CLAIM, [
+      input.claimId,
+      input.planId,
+      input.attemptId ?? null,
+    ]);
+    const attemptId = claimed.rows[0]?.attempt_id;
+    if (attemptId === undefined) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const result = await client.query<AttemptRow>(FACTS, [attemptId]);
+    const row = result.rows[0];
+    if (row === undefined) throw new Error("claimed song-video attempt facts are missing");
+    await client.query("COMMIT");
+    return { claimId: input.claimId, facts: factsFromRow(row) };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function executeHostRenderAttempt(
   input: Readonly<{
     facts: HostRenderFacts;
@@ -126,7 +159,7 @@ export async function executeHostRenderAttempt(
     submitted = await input.renderer.submit(planHostRenderRequest(input.facts));
   } catch {
     // The execution may have begun and may have written; the attempt stays
-    // submitting and is never rendered again from here.
+    // claimed and pending, and is never rendered again from here.
     return { status: "pending" };
   }
   if (submitted.status === "refused") return { status: "refused", reason: submitted.reason };
@@ -162,6 +195,7 @@ function required(name: string): string {
 async function main(): Promise<void> {
   const planId = required("SONG_VIDEO_RENDER_PLAN_ID");
   const attemptId = process.env.SONG_VIDEO_RENDER_ATTEMPT_ID?.trim() || undefined;
+  const claimId = process.env.SONG_VIDEO_RENDER_HOST_ID?.trim() || crypto.randomUUID();
   const databaseUrl = required("SONG_VIDEO_RENDER_DATABASE_URL");
   const bucket = required("SONG_VIDEO_RENDER_R2_BUCKET");
   const transport = makeHostR2Transport({
@@ -170,6 +204,9 @@ async function main(): Promise<void> {
       accessKeyId: required("SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
       secretAccessKey: required("SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
     },
+    ...(process.env.SONG_VIDEO_RENDER_R2_ENDPOINT?.trim()
+      ? { endpoint: process.env.SONG_VIDEO_RENDER_R2_ENDPOINT.trim() }
+      : {}),
   });
   const output = makeHostMasterOutputStore({ transport, bucket });
   const writer = makeHostMasterOutputWriter({ transport, bucket });
@@ -201,16 +238,19 @@ async function main(): Promise<void> {
 
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
-  let facts: HostRenderFacts | null;
+  let claim: HostRenderClaim | null;
   try {
-    facts = await loadHostRenderFacts(client, planId, attemptId);
+    claim = await claimHostRenderAttempt(client, { planId, attemptId, claimId });
   } finally {
     await client.end();
   }
-  if (facts === null) throw new Error("no dispatched song-video render attempt matches");
-  const outcome = await executeHostRenderAttempt({ facts, renderer, store });
+  if (claim === null) {
+    process.stdout.write(`${JSON.stringify({ plan_id: planId, status: "not_claimed" })}\n`);
+    return;
+  }
+  const outcome = await executeHostRenderAttempt({ facts: claim.facts, renderer, store });
   process.stdout.write(
-    `${JSON.stringify({ plan_id: planId, attempt_id: facts.attemptId, ...outcome })}\n`,
+    `${JSON.stringify({ plan_id: planId, attempt_id: claim.facts.attemptId, ...outcome })}\n`,
   );
   // A pending execution stays visible for reconciliation; it is not a retry.
   if (outcome.status === "pending") process.exitCode = 2;
@@ -218,7 +258,13 @@ async function main(): Promise<void> {
 
 if (import.meta.main) {
   await main().catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : "render host failed"}\n`);
+    // Sanitized: provider and connection failures can carry URLs or private
+    // configuration, so only operator-supplied names are safe to repeat.
+    const message = error instanceof Error ? error.message : "";
+    const safe = /^[A-Z0-9_]+ is required$/u.test(message)
+      ? message
+      : "song video render host failed";
+    process.stderr.write(`${safe}\n`);
     process.exitCode = 1;
   });
 }

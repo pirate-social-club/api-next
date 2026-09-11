@@ -92,24 +92,43 @@ describe("host R2 adapters", () => {
     ).rejects.toThrow("song video output is not addressable");
   });
 
-  test("reads an exact version and refuses a missing one", async () => {
-    const fake = makeTransport((request) => {
-      if (request.query?.versionId === "version-7") return new Response(bytes, { status: 200 });
-      if (request.query?.versionId === "version-6") return new Response(null, { status: 404 });
-      return new Response(bytes, {
-        status: 200,
-        headers: { etag: "etag-7", "x-amz-version-id": "version-7" },
-      });
-    });
+  test("records the normalized ETag as the object identity", async () => {
+    const fake = makeTransport(
+      () =>
+        new Response(bytes, {
+          status: 200,
+          headers: { etag: '"etag-7"' },
+        }),
+    );
     const store = makeHostMasterOutputStore({ transport: fake.transport, bucket });
+    // The S3 header quotes the tag; the recorded identity is unquoted, the
+    // form the Workers binding reports.
     expect(await store.read(masterRef)).toEqual({
       bytes,
-      objectVersion: "version-7",
+      objectVersion: "etag-7",
       etag: "etag-7",
     });
-    expect(await store.readVersion(masterRef, "version-7")).toEqual(bytes);
-    expect(await store.readVersion(masterRef, "version-6")).toBeNull();
-    expect(fake.sent[1]).toMatchObject({ key: physicalKey, query: { versionId: "version-7" } });
+    expect(await store.readVersion(masterRef, "etag-7")).toEqual(bytes);
+    expect(await store.readVersion(masterRef, "etag-6")).toBeNull();
+  });
+
+  test("cancels a response it cannot read within the bound", async () => {
+    let cancelled = false;
+    const oversized = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 200, headers: { "content-length": "999999999999" } },
+    );
+    const fake = makeTransport(() => oversized);
+    const store = makeHostMasterOutputStore({ transport: fake.transport, bucket });
+    await expect(store.read(masterRef)).rejects.toThrow("exceeds the read bound");
+    expect(cancelled).toBe(true);
   });
 
   test("reads media by immutable reference", async () => {

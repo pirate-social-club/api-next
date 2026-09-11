@@ -164,6 +164,7 @@
     "0140_data_registration_derivative_video.sql": "ba5c054305794c821e9d2472eb2987fad8e478f9ed7cc67d2dd2e206e6342292",
     "0141_data_registration_attached_license_backfill.sql": "6ec593a5fc65b59fa12e905d413ef9219fcc9ede5b64cbe7d15e82deb81cf9c3",
     "0142_song_video_master_immutable_registration.sql": "d5435fe973890509b0339901b9be83bacef3c0984a73b29f1bc2ff64c30c1f4c",
-    "0143_song_video_render_execution_evidence.sql": "4b2e12ae9ff413786e1978a57384d5b6761a8f71ebed2ea872e916a8b58ac9a5"
+    "0143_song_video_render_execution_evidence.sql": "4b2e12ae9ff413786e1978a57384d5b6761a8f71ebed2ea872e916a8b58ac9a5",
+    "0144_song_video_render_host_claim.sql": "60321cebda7f4f84166d1db5b364f36be15fe900a10f5a33daafdfd80a3f395c"
   }
 }

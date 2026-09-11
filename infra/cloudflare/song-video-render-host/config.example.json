@@ -10,8 +10,13 @@
     "runtime": "bun 1.4 (the workspace scripts run directly from the checkout)"
   },
   "entrypoint": "bun scripts/song-video-render-host.ts",
+  "invocation": {
+    "mounted_checkout": "infra/cloudflare/song-video-render-host/run-host.sh",
+    "image": "built from infra/cloudflare/song-video-render-host/Dockerfile with the pinned FFmpeg tarball URL and digest"
+  },
   "policy": {
     "concurrency": 1,
+    "claim": "the attempt row is claimed by compare-and-set before FFmpeg runs; a lost or duplicate invocation cannot execute it again",
     "retry": "never; an uncertain execution is left pending for reconciliation",
     "output": "written once to the accepted master address; no address is reused"
   },
@@ -20,18 +25,23 @@
     "source_of_truth": "media_song_video_render_attempts at started/submitting with no recorded execution evidence"
   },
   "environment": {
+    "SONG_VIDEO_RENDER_PLAN_ID": "REPLACE_WITH_DISPATCHED_PLAN_ID",
+    "SONG_VIDEO_RENDER_ATTEMPT_ID": "OPTIONAL_ATTEMPT_ID",
+    "SONG_VIDEO_RENDER_HOST_ID": "OPTIONAL_STABLE_HOST_ID",
     "SONG_VIDEO_RENDER_DATABASE_URL": "REPLACE_WITH_PRIVATE_CONNECTION_STRING",
     "SONG_VIDEO_RENDER_R2_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
     "SONG_VIDEO_RENDER_R2_BUCKET": "REPLACE_WITH_IMMUTABLE_ORIGINALS_BUCKET",
     "SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID": "REPLACE_WITH_PRIVATE_ACCESS_KEY_ID",
     "SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY": "REPLACE_WITH_PRIVATE_SECRET_ACCESS_KEY",
+    "SONG_VIDEO_RENDER_R2_ENDPOINT": "OPTIONAL_CUSTOM_ENDPOINT",
     "SONG_VIDEO_FFMPEG_BINARY": "ffmpeg",
     "SONG_VIDEO_FFPROBE_BINARY": "ffprobe"
   },
   "outcomes": {
     "accepted": "exit 0; master revision id printed",
     "refused": "exit 0; refusal reason printed; the attempt is abandoned by the workflow",
-    "pending": "exit 2; the attempt stays submitting and is never rendered again from here"
+    "not_claimed": "exit 0; another invocation holds the claim or the attempt is concluded",
+    "pending": "exit 2; the attempt stays claimed and submitting; never rendered again"
   },
   "authorization": {
     "deployment": false,

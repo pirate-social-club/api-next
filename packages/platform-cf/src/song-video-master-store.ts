@@ -23,6 +23,19 @@ import type { SongVideoOutputStore } from "./song-video-output-verification.ts";
 const withinReadBound = (size: number): boolean =>
   Number.isSafeInteger(size) && size > 0 && size <= SONG_VIDEO_MASTER_POLICY_V1.maxBytes;
 
+/**
+ * One object identity both adapters agree on. The Workers binding reports an
+ * unquoted ETag; the S3 HTTP response carries the same tag quoted, and
+ * possibly weak-prefixed. Sealing records this normalized form, so a master
+ * written by the host resolves from a Worker and the reverse, without
+ * assuming the two APIs' version fields are the same thing.
+ */
+export function normalizeObjectEtag(etag: string): string {
+  const trimmed = etag.trim();
+  const unquoted = trimmed.startsWith("W/") ? trimmed.slice(2).trim() : trimmed;
+  return unquoted.replace(/^"/u, "").replace(/"$/u, "");
+}
+
 const discard = async (body: ReadableStream<Uint8Array>): Promise<void> => {
   await body.cancel().catch(() => undefined);
 };
@@ -40,15 +53,16 @@ export function makeR2SongVideoOutputStore(bucket: R2Bucket): SongVideoOutputSto
       }
       return {
         bytes: new Uint8Array(await object.arrayBuffer()),
-        objectVersion: object.version,
-        etag: object.etag,
+        objectVersion: normalizeObjectEtag(object.etag),
+        etag: normalizeObjectEtag(object.etag),
       };
     },
     readVersion: async (objectKey, objectVersion) => {
       const object = await bucket.get(mediaProcessingPhysicalObjectKey(objectKey));
       if (object === null) return null;
-      // A stale or oversized object is refused before a byte is buffered.
-      if (object.version !== objectVersion || !withinReadBound(object.size)) {
+      // A stale or oversized object is refused before a byte is buffered. The
+      // identity compared is the normalized ETag, the one both APIs expose.
+      if (normalizeObjectEtag(object.etag) !== objectVersion || !withinReadBound(object.size)) {
         await discard(object.body);
         return null;
       }
@@ -70,9 +84,9 @@ export function makeR2SongVideoOutputWriter(bucket: R2Bucket): SongVideoOutputWr
         sha256,
       });
       if (object === null) return { status: "occupied" };
-      // Sealing resolves the version it verified, so a store that cannot name
-      // one has produced an object nothing downstream could accept.
-      if (object.version.trim().length === 0 || object.etag.trim().length === 0) {
+      // The recorded identity is the normalized ETag, so an object the store
+      // cannot name is unusable rather than a master.
+      if (normalizeObjectEtag(object.etag).length === 0) {
         throw new Error("song video output is not addressable");
       }
       return { status: "written" };
@@ -85,9 +99,9 @@ export function makeR2SongVideoMasterSource(bucket: R2Bucket): DataRegistrationM
     open: async (objectKey, objectVersion, signal) => {
       const object = await bucket.get(mediaProcessingPhysicalObjectKey(objectKey));
       if (object === null) return null;
-      if (object.version !== objectVersion) {
-        // A refused version is refused before any byte is read, and the body is
-        // cancelled rather than left dangling.
+      if (normalizeObjectEtag(object.etag) !== objectVersion) {
+        // A refused identity is refused before any byte is read, and the body
+        // is cancelled rather than left dangling.
         await discard(object.body);
         return null;
       }
