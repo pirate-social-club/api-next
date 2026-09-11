@@ -21092,6 +21092,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -21726,6 +21736,16 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -22731,6 +22751,16 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -23781,6 +23811,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -24415,6 +24455,16 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -25263,6 +25313,16 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "acknowledgement_required": {
                           "type": "boolean",
@@ -26199,6 +26259,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -26314,6 +26377,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -26392,6 +26458,9 @@
                         },
                         "replayed": {
                           "type": "boolean"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
                         },
                         "status": {
                           "type": "string",
@@ -26483,6 +26552,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -26564,8 +26636,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -26675,8 +26750,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -26739,6 +26817,175 @@
                     }
                   ],
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -26793,6 +27040,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -26813,7 +27070,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"
@@ -26878,6 +27135,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -26993,6 +27253,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -27071,6 +27334,9 @@
                         },
                         "replayed": {
                           "type": "boolean"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
                         },
                         "status": {
                           "type": "string",
@@ -27162,6 +27428,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -27243,8 +27512,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -27354,8 +27626,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -27418,6 +27693,175 @@
                     }
                   ],
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -27472,6 +27916,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -27492,7 +27946,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"
@@ -28084,6 +28538,9 @@
                                 "replayed": {
                                   "type": "boolean"
                                 },
+                                "lifecycle": {
+                                  "$ref": "#/$defs/Union_"
+                                },
                                 "status": {
                                   "type": "string",
                                   "enum": [
@@ -28199,6 +28656,9 @@
                                 "replayed": {
                                   "type": "boolean"
                                 },
+                                "lifecycle": {
+                                  "$ref": "#/$defs/Union_"
+                                },
                                 "status": {
                                   "type": "string",
                                   "enum": [
@@ -28277,6 +28737,9 @@
                                 },
                                 "replayed": {
                                   "type": "boolean"
+                                },
+                                "lifecycle": {
+                                  "$ref": "#/$defs/Union_"
                                 },
                                 "status": {
                                   "type": "string",
@@ -28368,6 +28831,9 @@
                                 "replayed": {
                                   "type": "boolean"
                                 },
+                                "lifecycle": {
+                                  "$ref": "#/$defs/Union_"
+                                },
                                 "status": {
                                   "type": "string",
                                   "enum": [
@@ -28449,8 +28915,11 @@
                                     "replayed": {
                                       "type": "boolean"
                                     },
-                                    "publish_plan": {
+                                    "lifecycle": {
                                       "$ref": "#/$defs/Union_"
+                                    },
+                                    "publish_plan": {
+                                      "$ref": "#/$defs/Union_1"
                                     },
                                     "publish_plan_sha256": {
                                       "anyOf": [
@@ -28560,8 +29029,11 @@
                                     "replayed": {
                                       "type": "boolean"
                                     },
-                                    "publish_plan": {
+                                    "lifecycle": {
                                       "$ref": "#/$defs/Union_"
+                                    },
+                                    "publish_plan": {
+                                      "$ref": "#/$defs/Union_1"
                                     },
                                     "publish_plan_sha256": {
                                       "anyOf": [
@@ -28637,6 +29109,175 @@
                   ],
                   "additionalProperties": false,
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -28691,6 +29332,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -28711,7 +29362,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"
@@ -29146,6 +29797,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -29261,6 +29915,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -29339,6 +29996,9 @@
                         },
                         "replayed": {
                           "type": "boolean"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
                         },
                         "status": {
                           "type": "string",
@@ -29430,6 +30090,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -29511,8 +30174,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -29622,8 +30288,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -29686,6 +30355,175 @@
                     }
                   ],
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -29740,6 +30578,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -29760,7 +30608,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"
@@ -30239,6 +31087,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -30354,6 +31205,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -30432,6 +31286,9 @@
                         },
                         "replayed": {
                           "type": "boolean"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
                         },
                         "status": {
                           "type": "string",
@@ -30523,6 +31380,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -30604,8 +31464,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -30715,8 +31578,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -30779,6 +31645,175 @@
                     }
                   ],
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -30833,6 +31868,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -30853,7 +31898,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"
@@ -30918,6 +31963,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -31033,6 +32081,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -31111,6 +32162,9 @@
                         },
                         "replayed": {
                           "type": "boolean"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
                         },
                         "status": {
                           "type": "string",
@@ -31202,6 +32256,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -31283,8 +32340,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -31394,8 +32454,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -31458,6 +32521,175 @@
                     }
                   ],
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -31512,6 +32744,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -31532,7 +32774,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"
@@ -31810,6 +33052,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -31925,6 +33170,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -32003,6 +33251,9 @@
                         },
                         "replayed": {
                           "type": "boolean"
+                        },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
                         },
                         "status": {
                           "type": "string",
@@ -32094,6 +33345,9 @@
                         "replayed": {
                           "type": "boolean"
                         },
+                        "lifecycle": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "status": {
                           "type": "string",
                           "enum": [
@@ -32175,8 +33429,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -32286,8 +33543,11 @@
                             "replayed": {
                               "type": "boolean"
                             },
-                            "publish_plan": {
+                            "lifecycle": {
                               "$ref": "#/$defs/Union_"
+                            },
+                            "publish_plan": {
+                              "$ref": "#/$defs/Union_1"
                             },
                             "publish_plan_sha256": {
                               "anyOf": [
@@ -32350,6 +33610,175 @@
                     }
                   ],
                   "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "preparing",
+                                "awaiting_publication",
+                                "checking_publication",
+                                "waiting_safe_commitment",
+                                "checking_authority",
+                                "ready",
+                                "activated",
+                                "recovery_required",
+                                "failed"
+                              ]
+                            },
+                            "pending_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "deadline": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "publication",
+                                        "finality"
+                                      ]
+                                    },
+                                    "at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "server_time": {
+                              "type": "string"
+                            },
+                            "next_check_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retry_hint_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "permitted_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "poll",
+                                  "acknowledge",
+                                  "check_publication",
+                                  "refresh_readiness",
+                                  "activate",
+                                  "recover"
+                                ]
+                              }
+                            },
+                            "observation": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "view": {
+                                      "type": "string",
+                                      "enum": [
+                                        "current",
+                                        "safe"
+                                      ]
+                                    },
+                                    "resource_sha256": {
+                                      "type": "string"
+                                    },
+                                    "tip_height": {
+                                      "type": "integer"
+                                    },
+                                    "update_inclusion_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "commitment_height": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "view",
+                                    "resource_sha256",
+                                    "tip_height",
+                                    "update_inclusion_height",
+                                    "commitment_height"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "phase",
+                            "pending_reason",
+                            "deadline",
+                            "server_time",
+                            "next_check_at",
+                            "retry_hint_seconds",
+                            "permitted_actions",
+                            "observation"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "Objects_1": {
                       "type": "object"
                     },
@@ -32404,6 +33833,16 @@
                             "type": "string"
                           }
                         },
+                        "encoded_resource_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "acknowledgement_required": {
                           "type": "boolean",
                           "enum": [
@@ -32424,7 +33863,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "$ref": "#/$defs/Objects_"

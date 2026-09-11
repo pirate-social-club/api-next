@@ -209,7 +209,7 @@ describe("DATA registration scheduled recovery", () => {
     };
     let cursor: { last_updated_at: string; last_identifier: string } | undefined;
     const statements: string[] = [];
-    const runtime = Layer.succeed(ControlPlaneDb, {
+    const service = {
       execute: (statement: ControlPlaneStatement) => {
         statements.push(statement.label);
         if (statement.label === "data-registration.workflow-cursor") {
@@ -237,7 +237,9 @@ describe("DATA registration scheduled recovery", () => {
         }
         throw new Error(`unexpected statement ${statement.label}`);
       },
-    } as unknown as ControlPlaneDb["Service"]);
+      withTransaction: (use: (tx: unknown) => unknown) => use(service),
+    };
+    const runtime = Layer.succeed(ControlPlaneDb, service as unknown as ControlPlaneDb["Service"]);
     const first = await listDataRegistrationSweepCandidates(runtime);
     const second = await listDataRegistrationSweepCandidates(runtime);
     const third = await listDataRegistrationSweepCandidates(runtime);

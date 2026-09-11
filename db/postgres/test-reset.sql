@@ -191,8 +191,15 @@ TRUNCATE TABLE
   "hns_root_health_renewal_jobs",
   "hns_root_health_renewal_scheduler_heartbeat",
   "hns_root_import_activation_operations",
+  "hns_root_import_execution_ownership",
+  "hns_root_import_lifecycle",
+  "hns_root_import_lifecycle_history",
+  "hns_root_import_lifecycle_jobs",
   "hns_root_import_name_proof_observations",
   "hns_root_import_observation_jobs",
+  "hns_root_import_recovery_authorizations",
+  "hns_root_import_recovery_findings",
+  "hns_root_import_retention_reviews",
   "hns_root_import_sessions",
   "hns_root_import_teardown_jobs",
   "home_feed_projection",
@@ -396,6 +403,8 @@ INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04
 
 INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
 
+INSERT INTO hns_root_import_execution_ownership VALUES ('readiness', false, NULL, NULL, '2000-01-01 00:00:00+00');
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -419,6 +428,9 @@ INSERT INTO platform_pirate_label_policy_revisions VALUES (1, 'pirate_ascii_ldh_
 INSERT INTO qualification_policy_versions VALUES ('study_session_first_pass_v2@1', 'study', 'study_session_first_pass_v2', '{"required_correct_bps": 7000}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v1@1', 'karaoke', 'karaoke_qualification_v1', '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["full_mix"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
+
+INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');

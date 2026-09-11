@@ -51,7 +51,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 48;
+const testCount = 49;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4982,6 +4982,105 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows,
       ).toHaveLength(1);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("serializes overlapping scan ticks on the cursor row and wraps once", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const publishPending = async (suffix: string): Promise<string> => {
+        const fixture = {
+          submission: `media_pg_overlap_${suffix}`,
+          operation: `media_pg_overlap_op_${suffix}`,
+          reservation: `media_pg_overlap_res_${suffix}`,
+        };
+        const caseAnalysis: TrustedSongAnalysis = {
+          ...analysis,
+          operationId: fixture.operation,
+          finalizedAudioRef: `media_pg_overlap_immutable_${suffix}`,
+          lyricsAnalysis: {
+            status: "ready",
+            lyricsRevision: 1,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: `overlap_lyrics_evidence_${suffix}`,
+            policyRevision: "overlap_lyrics_policy",
+            adapterRevision: "overlap_lyrics_adapter",
+          },
+          lyricsSafety: "allow",
+        };
+        const caseDecision: PublicationDecision = {
+          ...decision,
+          creationRevision: 3,
+          lyricsRevision: 1,
+        };
+        await createThroughDecision(
+          connection,
+          caseDecision,
+          caseAnalysis,
+          false,
+          `Overlap ${suffix} lyrics`,
+          false,
+          fixture,
+        );
+        const postId = `media-post-${fixture.operation}`;
+        await run(connection, (store) =>
+          store.publish({
+            communityId: community,
+            submissionId: fixture.submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            endpointTemplate: "/media-post-submissions/:submissionId/publish",
+            idempotencyKey: `${fixture.submission}-publish`,
+            requestHash,
+            responseBytes,
+            responseSha256,
+            expectedCreationRevision: 3,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            expectedDecisionRevision: 1,
+            postId,
+            outbox: {
+              outboxEventId: `media_pg_overlap_alignment_outbox_${suffix}`,
+              effectIdentity: `media_pg_overlap_alignment_effect_${suffix}`,
+              payload: {
+                kind: "alignment",
+                submission_id: fixture.submission,
+                operation_id: fixture.operation,
+                post_id: postId,
+                lyrics_revision: 1,
+                workflow_revision: 2,
+                workflow_instance_id: `media-${fixture.operation}-r2`,
+              },
+            },
+          }),
+        );
+        return fixture.submission;
+      };
+      const first = await publishPending("a");
+      const second = await publishPending("b");
+      const storeA = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+        workflowCandidateLimit: 1,
+      });
+      const storeB = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+        workflowCandidateLimit: 1,
+      });
+      const [pageA, pageB] = await Promise.all([
+        storeA.listWorkflowCandidates(),
+        storeB.listWorkflowCandidates(),
+      ]);
+      expect(pageA).toHaveLength(1);
+      expect(pageB).toHaveLength(1);
+      const inspected = [pageA[0]?.submissionId, pageB[0]?.submissionId];
+      expect(new Set(inspected)).toEqual(new Set([first, second]));
+      const cursor = (
+        await admin.query<{ last_identifier: string }>(
+          "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+        )
+      ).rows[0]?.last_identifier;
+      const third = await storeA.listWorkflowCandidates();
+      expect(third).toHaveLength(1);
+      expect(third[0]?.submissionId).toBe(inspected.find((entry) => entry !== cursor));
     });
     completedTestCount += 1;
   }, 40_000);

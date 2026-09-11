@@ -858,47 +858,48 @@ export function makeMediaProcessingStore(
     const rows = await run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const cursor = yield* db.execute<Row>({
-          label: "media-processing.workflow-cursor",
-          text: "SELECT last_updated_at::text AS last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
-          values: [],
-          readonly: true,
-        });
-        const last = cursor.rows[0];
-        const page = (after: Row | undefined) =>
-          db.execute<Row>({
-            label: "media-processing.workflow-candidates",
-            text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ${
-              after === undefined
-                ? ""
-                : "AND (s.updated_at,s.submission_id)>($2::timestamptz,$3::text)"
-            } ORDER BY s.updated_at,s.submission_id LIMIT $1`,
-            values:
-              after === undefined
-                ? [workflowCandidateLimit]
-                : [workflowCandidateLimit, after.last_updated_at, after.last_identifier],
-            readonly: true,
-          });
-        const forward = yield* page(last);
-        if (forward.rows.length > 0) return forward.rows;
-        if (last === undefined) return [];
-        return (yield* page(undefined)).rows;
+        return yield* db.withTransaction((tx) =>
+          Effect.gen(function* () {
+            const cursor = yield* tx.execute<Row>({
+              label: "media-processing.workflow-cursor",
+              text: "SELECT last_updated_at::text AS last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media' FOR UPDATE",
+              values: [],
+              readonly: false,
+            });
+            const last = cursor.rows[0];
+            const page = (after: Row | undefined) =>
+              tx.execute<Row>({
+                label: "media-processing.workflow-candidates",
+                text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ${
+                  after === undefined
+                    ? ""
+                    : "AND (s.updated_at,s.submission_id)>($2::timestamptz,$3::text)"
+                } ORDER BY s.updated_at,s.submission_id LIMIT $1`,
+                values:
+                  after === undefined
+                    ? [workflowCandidateLimit]
+                    : [workflowCandidateLimit, after.last_updated_at, after.last_identifier],
+                readonly: false,
+              });
+            const forward = yield* page(last);
+            // Advance past everything selected, including waiting, ceiling and
+            // failed-lookup rows; only then wrap once the page is exhausted.
+            let next = forward.rows;
+            if (next.length === 0 && last !== undefined) next = (yield* page(undefined)).rows;
+            const lastInspected = next[next.length - 1];
+            if (lastInspected !== undefined) {
+              yield* tx.execute({
+                label: "media-processing.workflow-cursor.advance",
+                text: "UPDATE recovery_inspection_cursors SET last_updated_at=$1::timestamptz,last_identifier=$2::text,updated_at=clock_timestamp() WHERE cursor_key='media'",
+                values: [lastInspected.updated_at, lastInspected.submission_id],
+                readonly: false,
+              });
+            }
+            return next;
+          }),
+        );
       }),
     );
-    const lastInspected = rows[rows.length - 1];
-    if (lastInspected !== undefined) {
-      await run(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.execute({
-            label: "media-processing.workflow-cursor.advance",
-            text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier,updated_at) VALUES ('media',$1::timestamptz,$2::text,clock_timestamp()) ON CONFLICT (cursor_key) DO UPDATE SET last_updated_at=EXCLUDED.last_updated_at,last_identifier=EXCLUDED.last_identifier,updated_at=clock_timestamp()",
-            values: [lastInspected.updated_at, lastInspected.submission_id],
-            readonly: false,
-          });
-        }),
-      );
-    }
     const candidates: MediaProcessingAuthority[] = [];
     for (const row of rows) {
       if (!validId(row.submission_id) || !validId(row.operation_id)) {

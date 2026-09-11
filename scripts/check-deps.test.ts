@@ -165,6 +165,37 @@ describe("provider dependency boundary", () => {
     );
   });
 
+  test("allows the provisioner only the shared observer seam from platform-cf", async () => {
+    const allowedRoot = await fixtureRoot({
+      "apps/hns-authority-provisioner/src/index.ts":
+        'import "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(allowedRoot, { checkVerificationExportSurface: false }).violations,
+    ).toEqual([]);
+
+    const unrelatedPlatformRoot = await fixtureRoot({
+      "apps/hns-authority-provisioner/src/index.ts": 'import "@pirate/platform-cf/postgres";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(unrelatedPlatformRoot, { checkVerificationExportSurface: false }).violations,
+    ).toContain(
+      "apps/hns-authority-provisioner/src/index.ts: @pirate/hns-authority-provisioner may not import @pirate/platform-cf/postgres",
+    );
+
+    const appToAppRoot = await fixtureRoot({
+      "apps/hns-authority-provisioner/src/index.ts": 'import "@pirate/hns-observer-driver";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(appToAppRoot, { checkVerificationExportSurface: false }).violations,
+    ).toContain(
+      "apps/hns-authority-provisioner/src/index.ts: @pirate/hns-authority-provisioner may not import @pirate/hns-observer-driver",
+    );
+  });
+
   test("recognizes re-exported boundary symbols and local export-surface widening", () => {
     const reexport = analyzeTypeScript(
       'export { makeVerificationProviderRegistry as registry } from "@pirate/application/verification";',

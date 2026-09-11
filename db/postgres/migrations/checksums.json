@@ -137,6 +137,26 @@
     "0134_reward_qualification_terms.sql": "c4e42b5a044e36b56f212d7f33bcee10e126ab616757022f24b40b76f368b828",
     "0135_song_source_recording_authority.sql": "fdef3c6d12c22db8b9bb508510252b6e3c5c0dd3156b44ff97247eaced05e96c",
     "0136_hns_existing_name_attachment.sql": "52daabc2ac8d8efc5138dad17c6f5e1e06f89e62880bd476e1dac82c2a35a621",
-    "0137_recovery_inspection_cursors.sql": "27c341b41beaf580a8b8c342d2c78f5db85de16dbb0aa3f50df04ff986586cae"
+    "0137_hns_root_import_lifecycle.sql": "d815181433623ed83fc32b7cb639ffb9238d19deff24ab8a8347f8fd186f6889",
+    "0138_hns_lifecycle_execution_privileges.sql": "451b07af678160d77eaebe828aeb78f986553d4a3b6aa5b55877c2df358421d7",
+    "0139_hns_lifecycle_readiness_invalidation.sql": "2aa962f9c7066d87c53ca63a70f5252985b31de8c6bcb95630c8126d3c9ca090",
+    "0140_hns_retention_reviews.sql": "9aab02e9eaffea826ed9c564344b4c76d1053fed94356171ed8c5bef258bf23c",
+    "0141_hns_lifecycle_execution_ownership.sql": "ee714304522f96e893e904f7b301332fa8e83ae61a3807c9d6fae220133a62e0",
+    "0142_hns_retention_reviewer.sql": "2b2c48f4415e033576f0a49e4cdf20197fb0303042c441e6528b66351a569869",
+    "0143_hns_lifecycle_observation_evidence.sql": "6363eb1608bca212fd4af7e687681f92774050284e67bc2e2bb1ec7a672abf0a",
+    "0144_hns_incident_recovery.sql": "39a16e4f38b1af75262cd7ee3bff9438d4877af63e3c618a17924931792e2c37",
+    "0145_hns_recovery_and_observation_fences.sql": "d42cf6f897d45f789a1c3cbd68634b74f8252a35d2ac5ecb2036f88d8e8bfa3c",
+    "0146_hns_recovery_adoption.sql": "d040bcbe054543970778d7dab041136a617f01d521fb1624c76216d43bcd8a04",
+    "0147_hns_withdraw_readiness_ownership.sql": "8ac8896a7140fdc48d11d508609e0261215e2af6068e24cd8b079377543a7068",
+    "0148_hns_observation_decision_fence_and_adoption_replay.sql": "86e87ec877a999008f9d15f9e86896e8414b266569a76afe4f40bd97f1792f76",
+    "0149_hns_observation_provenance_fence.sql": "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700",
+    "0150_hns_readiness_ownership_handover.sql": "4e4b6436b2c483453fce346723909803b0f1df09d34d54b20ed2dab341a8ddf0",
+    "0151_hns_readiness_ownership_corrections.sql": "9de4683d329d386da963c9b442313e41c71c28b07da93348eec89f24863afbad",
+    "0152_hns_lifecycle_activation.sql": "9ac2995e6a552c8d99a2fbeccdf7587d2af929c1f845bc609833513b83f77342",
+    "0153_hns_activation_policy.sql": "525b67fc6e379ecc33183cad0bc3451f2bcf96820d86984033daa3ffded7821c",
+    "0154_hns_expiry_consumers.sql": "2cd4977a1f2f02e167d5ab38a2517c4531483e93109dd88f6496fbdb0776072a",
+    "0155_hns_expiry_consumers_legacy.sql": "97dd927ef8710e26bcafbe46d80e7a3cb54594527a88a01eea6eae5d76de3db3",
+    "0156_hns_readiness_deadline_guard_removal.sql": "e33e1eb284ca2ebb15957db9fdf72336b42b0c992f5c24110623d1545205f001",
+    "0157_recovery_inspection_cursors.sql": "9a50753f346f224f65faaf77db3f34965ce88d394dd525c64d341233f0257bb4"
   }
 }

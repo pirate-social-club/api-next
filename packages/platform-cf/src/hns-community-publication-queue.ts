@@ -4,6 +4,7 @@ import {
   HnsCommunityRootImportStorageFailed,
 } from "@pirate/application/namespace-ownership";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { commitHnsRootImportLifecycleEventV1 } from "./hns-root-import-lifecycle-repository.ts";
 
 const Claim = Schema.Struct({
   actor_id: Schema.String,
@@ -51,6 +52,15 @@ export function makeHnsCommunityPublicationQueue(
                 readonly: false,
               });
               if (allowed.rowCount !== 1) return false;
+              // The acknowledgement, its scheduled observation work, and the
+              // lifecycle transition are one commit. A replayed acknowledgement
+              // is a replay in the reducer — deadlines untouched — and
+              // ON CONFLICT keeps the job from being queued twice.
+              yield* commitHnsRootImportLifecycleEventV1(tx, input.root_import_session_id, {
+                event: "publication_acknowledged",
+                event_id: `publication_acknowledged:${input.idempotency_key}`,
+                occurred_at_epoch_ms: Date.now(),
+              });
               yield* tx.execute({
                 label: "hns.publication.enqueue",
                 text: `INSERT INTO hns_community_publication_jobs

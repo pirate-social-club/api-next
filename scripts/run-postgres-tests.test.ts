@@ -3,10 +3,52 @@ import {
   partitionPostgresRecoveryFiles,
   partitionPostgresTestFiles,
   postgresGeneralShardCount,
+  postgresLockCapacityError,
+  postgresLockTableEntries,
   postgresTestFileWeight,
   postgresTestTimeoutMilliseconds,
+  requiredPostgresLockTableEntries,
   shardPostgresTestFiles,
 } from "./run-postgres-tests.ts";
+
+describe("PostgreSQL lock capacity preflight", () => {
+  test("a default postgres:17 server is refused before any suite starts", () => {
+    const failure = postgresLockCapacityError({
+      max_locks_per_transaction: 64,
+      max_connections: 100,
+      max_prepared_transactions: 0,
+    });
+    expect(failure).toContain("6400 entries");
+    expect(failure).toContain(String(requiredPostgresLockTableEntries));
+  });
+
+  test("the CI and rehearsal setting passes exactly at the audited bound", () => {
+    expect(
+      postgresLockTableEntries({
+        max_locks_per_transaction: 512,
+        max_connections: 100,
+        max_prepared_transactions: 0,
+      }),
+    ).toBe(requiredPostgresLockTableEntries);
+    expect(
+      postgresLockCapacityError({
+        max_locks_per_transaction: 512,
+        max_connections: 100,
+        max_prepared_transactions: 0,
+      }),
+    ).toBeNull();
+  });
+
+  test("prepared transactions count toward capacity, as they do in the guard", () => {
+    expect(
+      postgresLockTableEntries({
+        max_locks_per_transaction: 512,
+        max_connections: 80,
+        max_prepared_transactions: 20,
+      }),
+    ).toBe(requiredPostgresLockTableEntries);
+  });
+});
 
 describe("PostgreSQL test discovery", () => {
   test("allows the complete general suite fifteen minutes", () => {

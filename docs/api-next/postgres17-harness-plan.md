@@ -19,14 +19,26 @@ uses `$1` parameters, and does not pass through a translation layer.
 ## Local run
 
 With Docker available, start a disposable service container using the same
-image and credentials as CI:
+image, credentials, and lock capacity as CI:
 
 ```bash
 docker run --rm --name api-next-pg17 \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=postgres \
+  -e POSTGRES_INITDB_ARGS=--set=max_locks_per_transaction=512 \
   -p 5432:5432 postgres:17
 ```
+
+The lock capacity is not optional. `bun run test:postgres` preflights it and
+refuses with an explicit configuration error below 51,200 entries
+(`max_locks_per_transaction * (max_connections + max_prepared_transactions)`).
+A default `postgres:17` container gives 6,400, and
+`scripts/staging-persona-reconstruct.pg.test.ts` refuses below the capacity
+its trusted rehearsal established. `POSTGRES_INITDB_ARGS` above yields
+512 * 100 = 51,200; a server started from an already-initialized data
+directory needs `-c max_locks_per_transaction=1024 -c max_connections=200`
+(or equivalent) in its start arguments instead. Capacity failures are
+configuration, not code defects.
 
 Some VPN/firewall setups block Docker bridge or published-port traffic. In
 that environment the container can be healthy while connections to the
@@ -36,7 +48,8 @@ networking as a local harness workaround and omit `-p`:
 ```bash
 docker run --rm --network host --name api-next-pg17 \
   -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=postgres postgres:17
+  -e POSTGRES_DB=postgres \
+  -e POSTGRES_INITDB_ARGS=--set=max_locks_per_transaction=512 postgres:17
 ```
 
 Keep the URL below pointed at `127.0.0.1:5432` and record the network mode in

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
 import { decodeHnsRootImportReadinessResultV1 } from "@pirate/application/namespace-ownership";
-import { canonicalJson } from "@pirate/domain";
+import {
+  canonicalJson,
+  decideHnsRootImportLifecycleBatchV1,
+  decideHnsRootImportLifecycleV1,
+  HNS_ROOT_IMPORT_POLICY_V1,
+  initialHnsRootImportLifecycleStateV1,
+} from "@pirate/domain";
 import {
   HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
   HnsRootReadinessObservationError,
@@ -13,10 +20,37 @@ import {
 } from "./provision-root.ts";
 
 const encoder = new TextEncoder();
+const now = Date.parse("2026-09-01T06:00:00.000Z");
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function observedCurrent(records: readonly unknown[]): HnsChainObservationResultV1 {
+  return {
+    kind: "observed",
+    observation: {
+      view: "current",
+      network: "main",
+      genesis_block_hash: `${"0".repeat(63)}1`,
+      anchor: {
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        height: 812_345,
+        best_block_hash: "aa".repeat(32),
+        median_time_past_epoch_seconds: 1_770_000_000,
+        header_time_epoch_seconds: 1_770_000_030,
+        confirmations: 1,
+      },
+      tip_height: 812_345,
+      update_inclusion_height: 800_000,
+      commitment: null,
+      observed_at_epoch_ms: 1_770_000_060_000,
+      records: structuredClone(records) as never,
+      resource_sha256: "1".repeat(64),
+    },
+  };
 }
 
 async function fixture() {
@@ -49,7 +83,7 @@ async function fixture() {
       expires_at: "2099-01-01T00:00:00.000Z",
     },
     {
-      inspect_current_resource: async () => [{ type: "TXT", txt: ["preserved"] }],
+      observe_current_resource: async () => observedCurrent([{ type: "TXT", txt: ["preserved"] }]),
       ensure_zone: async () => zone,
     },
   );
@@ -108,8 +142,8 @@ describe("HNS root readiness observation", () => {
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
       ports: {
-        inspect_current_resource: async () =>
-          [...state.plan.replacement_records].reverse() as never,
+        observe_current_resource: async () =>
+          observedCurrent([...state.plan.replacement_records].reverse()),
         reconcile_zone: async (input) => {
           expect(input).toEqual({
             root_label: "newroot",
@@ -170,7 +204,7 @@ describe("HNS root readiness observation", () => {
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
         ports: {
-          inspect_current_resource: async () => state.plan.replacement_records as never,
+          observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
           reconcile_zone: async () => {},
           inspect_zone: async () => ({ ...state.zone, created: false }),
           observe_live: async () => state.live,
@@ -194,6 +228,58 @@ describe("HNS root readiness observation", () => {
     await expect(observe(1, now, 604_801)).rejects.toThrow();
   });
 
+  /** Drop every record of one type from a decoded plan's replacement list. */
+  const withoutType = (records: readonly unknown[], type: string): readonly unknown[] =>
+    records.filter((record) => (record as { readonly type?: unknown }).type !== type);
+
+  test("renewal accepts unrelated TXT drift while holding NS and DS continuity", async () => {
+    const state = await fixture();
+    async function renew(records: readonly unknown[]) {
+      return observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "renewal-drift", executor_id: "executor", lease_fence: 1 },
+        operation_kind: "renew_health_v1",
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          observe_current_resource: async () => observedCurrent(records),
+          reconcile_zone: async () => {},
+          inspect_zone: async () => ({ ...state.zone, created: false }),
+          observe_live: async () => state.live,
+        },
+        config: {
+          environment: "test",
+          valid_for_seconds: 604_800,
+          now: () => Date.parse("2026-09-05T06:00:00.000Z"),
+        },
+      });
+    }
+
+    // The owner adds a record of their own after activation. Their NS and DS
+    // still delegate to us, so authority is intact and renewal must proceed:
+    // an unrelated TXT is not a loss of control.
+    const drifted = [
+      ...state.plan.replacement_records,
+      { type: "TXT", txt: ["owner-added-after-activation=1"] },
+    ];
+    const renewed = await renew(drifted);
+    const decoded = await decodeHnsRootImportReadinessResultV1(renewed.result_bytes);
+    expect(decoded.result.root_label).toBe(state.request.root_label);
+
+    // Grant and generation continuity: renewal reports the same authority
+    // identity it was issued against, so a renewal cannot quietly migrate an
+    // operation onto different infrastructure.
+    const baseline = await decodeHnsRootImportReadinessResultV1(
+      (await renew(state.plan.replacement_records)).result_bytes,
+    );
+    expect(decoded.result.ds_records).toEqual(baseline.result.ds_records);
+    expect(decoded.result.authority_inventory_version).toBeDefined();
+
+    // Losing the delegation itself is a different matter and must not renew.
+    await expect(renew(withoutType(state.plan.replacement_records, "NS"))).rejects.toThrow();
+    await expect(renew(withoutType(state.plan.replacement_records, "DS"))).rejects.toThrow();
+  });
+
   test("reports owner-update pending without inspecting authority", async () => {
     const state = await fixture();
     let inspectedZone = false;
@@ -206,7 +292,7 @@ describe("HNS root readiness observation", () => {
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
         ports: {
-          inspect_current_resource: async () => [{ type: "TXT", txt: ["old"] }],
+          observe_current_resource: async () => observedCurrent([{ type: "TXT", txt: ["old"] }]),
           reconcile_zone: async () => {
             reconciledZone = true;
           },
@@ -232,7 +318,7 @@ describe("HNS root readiness observation", () => {
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
       ports: {
-        inspect_current_resource: async () => state.plan.replacement_records as never,
+        observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
         reconcile_zone: async () => {},
         inspect_zone: async () => ({ ...state.zone, created: false }),
         observe_live: async () => state.live,
@@ -263,46 +349,160 @@ describe("HNS root readiness observation", () => {
     ).rejects.toBeInstanceOf(TypeError);
   });
 
-  test("keeps import observations expiry-gated while allowing activated-root renewal", async () => {
+  test("separates the publication, finality, and readiness clocks (T06)", async () => {
     const state = await fixture();
-    const request = { ...state.request, expires_at: "2026-09-07T06:00:00.000Z" };
     const ports = {
-      inspect_current_resource: async () => state.plan.replacement_records as never,
+      observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
       reconcile_zone: async () => {},
       inspect_zone: async () => ({ ...state.zone, created: false }),
       observe_live: async () => state.live,
     };
-    const config = {
-      environment: "test",
-      valid_for_seconds: 86_400,
-      now: () => Date.parse("2026-09-08T06:00:00.000Z"),
-    } as const;
+    const request = { ...state.request, expires_at: "2026-09-07T06:00:00.000Z" };
 
-    await expect(
-      observeHnsRootReadinessV1({
-        observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
-        operation_kind: "observe_root_v1",
-        request,
-        publish_plan_bytes: state.provision.publish_plan_bytes,
-        provision_result_bytes: state.provision.result_bytes,
-        ports,
-        config,
-      }),
-    ).rejects.toEqual(new HnsRootReadinessObservationError("invalid_request"));
+    // Publication expiry after timely observed inclusion leaves the
+    // finality window open: the old single expiry would have torn the
+    // session down at expires_at; the separated clocks keep observing.
+    const inclusionAt = Date.parse("2026-09-06T00:00:00.000Z");
+    const lifecycle = decideHnsRootImportLifecycleBatchV1(
+      {
+        ...initialHnsRootImportLifecycleStateV1(1),
+        phase: "awaiting_publication",
+        revision: 2,
+        plan_exposed_at_epoch_ms: inclusionAt - 43_200_000,
+        publication_deadline_at_epoch_ms:
+          inclusionAt - 43_200_000 + HNS_ROOT_IMPORT_POLICY_V1.publication_window_seconds * 1_000,
+      },
+      [
+        {
+          event_id: "inclusion",
+          occurred_at_epoch_ms: inclusionAt,
+          event: "current_observation",
+          qualifying: true,
+          mismatch: false,
+          resource_sha256: "a".repeat(64),
+        },
+        {
+          event_id: "publication-deadline",
+          occurred_at_epoch_ms: inclusionAt + 10 * 86_400_000,
+          event: "deadline_reached",
+          deadline: "publication",
+        },
+      ],
+    );
+    expect(lifecycle[0]?.next_state?.phase).toBe("waiting_safe_commitment");
+    expect(lifecycle[1]?.outcome).toEqual({ kind: "rejection", reason: "no_active_window" });
 
-    const renewed = await observeHnsRootReadinessV1({
+    // The readiness observation itself still runs far past the old
+    // expires_at: the transport-level gate is not the import clock.
+    const pastOldExpiry = await observeHnsRootReadinessV1({
       observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
-      operation_kind: "renew_health_v1",
+      operation_kind: "observe_root_v1",
       request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
       ports,
-      config,
+      config: {
+        environment: "test",
+        valid_for_seconds: 86_400,
+        now: () => Date.parse("2026-09-08T06:00:00.000Z"),
+      },
     });
-    const decoded = await decodeHnsRootImportReadinessResultV1(renewed.result_bytes);
-    expect(decoded.result).toMatchObject({
-      observed_at: "2026-09-08T06:00:00.000Z",
-      valid_until: "2026-09-09T06:00:00.000Z",
+    expect(pastOldExpiry.result_bytes.byteLength).toBeGreaterThan(0);
+
+    // Finality exhaustion enters recovery and retains authority.
+    const finalityDeadline = lifecycle[0]?.next_state?.finality_deadline_at_epoch_ms ?? 0;
+    const exhausted = decideHnsRootImportLifecycleV1(
+      { ...(lifecycle[0]?.next_state ?? initialHnsRootImportLifecycleStateV1(1)) },
+      {
+        event_id: "finality-deadline",
+        occurred_at_epoch_ms: finalityDeadline,
+        event: "deadline_reached",
+        deadline: "finality",
+      },
+    );
+    expect(exhausted.next_state?.phase).toBe("recovery_required");
+    expect(exhausted.next_state?.pending_reason).toBe("finality_deadline_reached");
+
+    // Unauthorized late activation: activation is rejected outside ready.
+    const unauthorized = decideHnsRootImportLifecycleV1(
+      exhausted.next_state ?? initialHnsRootImportLifecycleStateV1(1),
+      {
+        event_id: "late-activation",
+        occurred_at_epoch_ms: finalityDeadline,
+        event: "activation_requested",
+      },
+    );
+    expect(unauthorized.outcome).toEqual({
+      kind: "rejection",
+      reason: "activation_not_permitted_in_phase",
     });
+
+    // Activated-root renewal is governed by its own evidence policy, not
+    // the import clocks: the renewal observation succeeds with unrelated
+    // TXT drift accepted by the readiness comparison of the current zone.
+    const renewal = await observeHnsRootReadinessV1({
+      observation_attempt: { job_id: "renewal-job", executor_id: "executor", lease_fence: 1 },
+      operation_kind: "renew_health_v1",
+      request,
+      publish_plan_bytes: state.provision.publish_plan_bytes,
+      provision_result_bytes: state.provision.result_bytes,
+      ports: {
+        ...ports,
+        observe_current_resource: async () =>
+          observedCurrent([
+            ...state.plan.replacement_records,
+            { type: "TXT", txt: ["unrelated-drift=new-value"] },
+          ]),
+      },
+      config: {
+        environment: "test",
+        valid_for_seconds: 86_400,
+        now: () => Date.parse("2026-09-08T07:00:00.000Z"),
+      },
+    });
+    const renewalDecoded = await decodeHnsRootImportReadinessResultV1(renewal.result_bytes);
+    expect(renewalDecoded.result.observed_at).toBe("2026-09-08T07:00:00.000Z");
+  });
+
+  test("holds more than twenty pending observations open with mismatch classification (T06)", async () => {
+    let current: ReturnType<typeof initialHnsRootImportLifecycleStateV1> = {
+      ...initialHnsRootImportLifecycleStateV1(1),
+      phase: "checking_publication",
+      revision: 2,
+      plan_exposed_at_epoch_ms: now - 86_400_000,
+      publication_deadline_at_epoch_ms:
+        now - 86_400_000 + HNS_ROOT_IMPORT_POLICY_V1.publication_window_seconds * 1_000,
+      applied_event_ids: new Set<string>(),
+    };
+    // Twenty-one consecutive mismatching observations: each is a pending
+    // hold with a scheduled next check and a typed classification — the
+    // old single expiry stopped observing after its bounded budget.
+    for (let index = 1; index <= 21; index += 1) {
+      const decision = decideHnsRootImportLifecycleV1(current, {
+        event_id: `mismatch-${index}`,
+        occurred_at_epoch_ms: now + index * 900_000,
+        event: "current_observation",
+        qualifying: false,
+        mismatch: true,
+        resource_sha256: "b".repeat(64),
+      });
+      expect(decision.outcome.kind).toBe("pending");
+      if (decision.outcome.kind !== "pending") throw new Error("unreachable");
+      expect(decision.outcome.reason).toBe("resource_mismatch_hold");
+      expect(decision.next_state?.phase).toBe("checking_publication");
+      expect(decision.next_state?.next_check_at_epoch_ms).not.toBeNull();
+      current = { ...(decision.next_state ?? current), applied_event_ids: new Set<string>() };
+    }
+    // The operational-failure budget is tracked separately: an unrelated
+    // provider failure in the same window still has a full budget.
+    const providerFailure = decideHnsRootImportLifecycleV1(current, {
+      event_id: "failure-1",
+      occurred_at_epoch_ms: now + 22 * 900_000,
+      event: "provider_failure",
+      classification: "transport_failure",
+      budget_exempt: false,
+    });
+    expect(providerFailure.next_state?.consecutive_operational_failures).toBe(1);
+    expect(providerFailure.next_state?.phase).toBe("checking_publication");
   });
 });

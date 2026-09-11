@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.3",
+  "sourceBranch": "fix/hns-root-import-lifecycle",
+  "wireContract": "HNS root-import publish plans carry encoded_resource_sha256, the SHA-256 of the HSD wire encoding of replacement_records, distinct from the plan-document hash; older responses without the additive field remain valid.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.3.tgz",
+    "sha256": "367b63851df00fee7e711b93e476a24a196e70f58270c91f7efc63206102dcf5"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.3",
+    "sourceIdentifier": "api-next-contracts@8aa65cf064f89f98227d9fd6809d477cadb6edd483eba4f38a24bc8bea623d95",
+    "openapiSha256": "8aa65cf064f89f98227d9fd6809d477cadb6edd483eba4f38a24bc8bea623d95",
+    "clientSha256": "2096d3835393ab39296036af1eca057df7e66aa59139b346edc55d096f03f242"
+  },
+  "verification": {
+    "status": "Focused plan/preflight, provisioner, and application suites passed; PostgreSQL suites pending in this lane."
+  }
+}

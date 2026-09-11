@@ -41,6 +41,7 @@
         "@pirate/application": "workspace:*",
         "@pirate/domain": "workspace:*",
         "@pirate/hns-dns-runtime": "workspace:*",
+        "@pirate/platform-cf": "workspace:*",
         "pg": "8.16.3",
       },
     },
@@ -92,7 +93,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.68.2",
+      "version": "0.68.6",
     },
     "packages/application": {
       "name": "@pirate/application",

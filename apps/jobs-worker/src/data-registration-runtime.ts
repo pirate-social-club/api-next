@@ -101,24 +101,26 @@ export function listDataRegistrationSweepCandidates(
     Effect.provide(runtime)(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const cursor = yield* db.execute<{
-          readonly last_updated_at: Date | string;
-          readonly last_identifier: string;
-        }>({
-          label: "data-registration.workflow-cursor",
-          text: "SELECT last_updated_at::text AS last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='data'",
-          values: [],
-          readonly: true,
-        });
-        const last = cursor.rows[0];
-        const page = (
-          after:
-            | { readonly last_updated_at: Date | string; readonly last_identifier: string }
-            | undefined,
-        ) =>
-          db.execute<DataRegistrationWorkflowCandidate & { readonly updated_at: Date | string }>({
-            label: "data-registration.workflow.sweep-candidates",
-            text: `SELECT operation.registration_operation_id,operation.workflow_revision,
+        return yield* db.withTransaction((tx) =>
+          Effect.gen(function* () {
+            const cursor = yield* tx.execute<{
+              readonly last_updated_at: string;
+              readonly last_identifier: string;
+            }>({
+              label: "data-registration.workflow-cursor",
+              text: "SELECT last_updated_at::text AS last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='data' FOR UPDATE",
+              values: [],
+              readonly: false,
+            });
+            const last = cursor.rows[0];
+            const page = (
+              after:
+                | { readonly last_updated_at: string; readonly last_identifier: string }
+                | undefined,
+            ) =>
+              tx.execute<DataRegistrationWorkflowCandidate & { readonly updated_at: string }>({
+                label: "data-registration.workflow.sweep-candidates",
+                text: `SELECT operation.registration_operation_id,operation.workflow_revision,
                           operation.workflow_instance_id,launch.state AS launch_state,operation.updated_at::text AS updated_at
                      FROM data_registration_operations operation
                      JOIN data_registration_outbox launch
@@ -133,22 +135,26 @@ export function listDataRegistrationSweepCandidates(
                       }
                     ORDER BY operation.updated_at,operation.registration_operation_id
                     LIMIT 25`,
-            values: after === undefined ? [] : [after.last_updated_at, after.last_identifier],
-            readonly: true,
-          });
-        const forward = yield* page(last);
-        let rows = forward.rows;
-        if (rows.length === 0 && last !== undefined) rows = (yield* page(undefined)).rows;
-        const lastRow = rows[rows.length - 1];
-        if (lastRow !== undefined) {
-          yield* db.execute({
-            label: "data-registration.workflow-cursor.advance",
-            text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier,updated_at) VALUES ('data',$1::timestamptz,$2::text,clock_timestamp()) ON CONFLICT (cursor_key) DO UPDATE SET last_updated_at=EXCLUDED.last_updated_at,last_identifier=EXCLUDED.last_identifier,updated_at=clock_timestamp()",
-            values: [lastRow.updated_at, lastRow.registration_operation_id],
-            readonly: false,
-          });
-        }
-        return rows;
+                values: after === undefined ? [] : [after.last_updated_at, after.last_identifier],
+                readonly: false,
+              });
+            // Advance past everything selected, including waiting, ceiling and
+            // failed-lookup rows; only then wrap once the page is exhausted.
+            const forward = yield* page(last);
+            let rows = forward.rows;
+            if (rows.length === 0 && last !== undefined) rows = (yield* page(undefined)).rows;
+            const lastRow = rows[rows.length - 1];
+            if (lastRow !== undefined) {
+              yield* tx.execute({
+                label: "data-registration.workflow-cursor.advance",
+                text: "UPDATE recovery_inspection_cursors SET last_updated_at=$1::timestamptz,last_identifier=$2::text,updated_at=clock_timestamp() WHERE cursor_key='data'",
+                values: [lastRow.updated_at, lastRow.registration_operation_id],
+                readonly: false,
+              });
+            }
+            return rows;
+          }),
+        );
       }),
     ),
   );

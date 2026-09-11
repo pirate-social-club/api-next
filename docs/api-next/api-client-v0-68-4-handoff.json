@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.4",
+  "sourceBranch": "fix/hns-root-import-lifecycle",
+  "wireContract": "Community HNS root-import session responses optionally project the lifecycle block (phase, bounded pending reason, deadline with kind, server time, observation summary, next_check_at with retry hint, permitted actions), and publish plans optionally carry encoded_resource_sha256, the HSD wire-encoding digest distinct from the plan-document hash. Older shapes remain valid.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.4.tgz",
+    "sha256": "47287253cf1946463d86dad948391bfc7b1ceca979e4735bbe475a5eefec31f8"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.4",
+    "sourceIdentifier": "api-next-contracts@196e87351712a06737891af69e69e65d1b0155a04c123d31291959c8815dcb2a",
+    "openapiSha256": "196e87351712a06737891af69e69e65d1b0155a04c123d31291959c8815dcb2a",
+    "clientSha256": "a8188ebe6c58d38015064fc1ae072178cb4c9a71eb2039a7daa6fe70a727c2eb"
+  },
+  "verification": {
+    "status": "Contract fixture suite (T12) passed for every phase and error class; handler emission wiring pending in this lane."
+  }
+}

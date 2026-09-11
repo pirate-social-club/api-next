@@ -24,11 +24,13 @@ const baselineSeedTables = [
   "handle_qualification_policy_revisions",
   "handle_reserved_label_revisions",
   "hns_control_observer_configurations",
+  "hns_root_import_execution_ownership",
   "moderation_platform_floor_category_decisions",
   "moderation_platform_floor_current",
   "moderation_platform_floor_revisions",
   "platform_pirate_label_policy_revisions",
   "qualification_policy_versions",
+  "recovery_inspection_cursors",
   "text_moderation_policy_current",
   "text_moderation_policy_revisions",
 ] as const;

@@ -405,10 +405,28 @@
       "handoff": "docs/api-next/api-client-v0-68-2-handoff.json"
     },
     {
+      "version": "0.68.3",
+      "artifact": "artifacts/api-client/pirate-api-client-0.68.3.tgz",
+      "artifactSha256": "367b63851df00fee7e711b93e476a24a196e70f58270c91f7efc63206102dcf5",
+      "handoff": "docs/api-next/api-client-v0-68-3-handoff.json"
+    },
+    {
+      "version": "0.68.4",
+      "artifact": "artifacts/api-client/pirate-api-client-0.68.4.tgz",
+      "artifactSha256": "47287253cf1946463d86dad948391bfc7b1ceca979e4735bbe475a5eefec31f8",
+      "handoff": "docs/api-next/api-client-v0-68-4-handoff.json"
+    },
+    {
       "version": "0.68.5",
       "artifact": "artifacts/api-client/pirate-api-client-0.68.5.tgz",
       "artifactSha256": "38be5256a980b180a6c73b1e00a4124a9f98bf62304bf6d57b8e5f5cc03d8239",
       "handoff": "docs/api-next/api-client-v0-68-5-handoff.json"
+    },
+    {
+      "version": "0.68.6",
+      "artifact": "artifacts/api-client/pirate-api-client-0.68.6.tgz",
+      "artifactSha256": "730281e31d10efc473249a7d173405663409e669252b8a82091349ab4edcb532",
+      "handoff": "docs/api-next/api-client-v0-68-6-handoff.json"
     }
   ]
 }

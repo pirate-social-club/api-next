@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import { commitLifecycleEventInTransaction } from "./lifecycle-transition.ts";
 
 type HnsAuthorityProvisionClaim = Readonly<{
   readonly provision_job_id: string;
@@ -58,6 +59,28 @@ function bytes(value: unknown): Uint8Array | null {
   return value instanceof Uint8Array ? new Uint8Array(value) : null;
 }
 
+/**
+ * The encoded-resource digest the exposed plan asserts.
+ *
+ * The plan document carries it separately from its own digest, because they
+ * hash different things: the plan hash identifies the document, this one
+ * identifies the wire bytes the owner is asked to publish. Qualification
+ * compares against the latter, so it is what the lifecycle row records. A plan
+ * that does not carry it in the expected shape yields null and leaves the
+ * operation without a digest, which makes observations non-qualifying rather
+ * than qualifying against a guess.
+ */
+function encodedResourceDigestFromPlanBytes(planBytes: Uint8Array): string | null {
+  try {
+    const plan: unknown = JSON.parse(new TextDecoder().decode(planBytes));
+    if (typeof plan !== "object" || plan === null) return null;
+    const digest = (plan as Record<string, unknown>).encoded_resource_sha256;
+    return typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest) ? digest : null;
+  } catch {
+    return null;
+  }
+}
+
 async function withClient<A>(
   connectionString: string,
   use: (client: Client) => Promise<A>,
@@ -112,40 +135,77 @@ export function makePostgresHnsAuthorityProvisionQueue(
     finalize: (input) =>
       withClient(connectionString, async (client) => {
         const completed = input.outcome === "completed";
-        const result = await client.query<Record<string, unknown>>(
-          "SELECT * FROM finalize_hns_authority_provision_job_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-          [
-            input.provision_job_id,
-            input.executor_id,
-            input.lease_fence,
-            input.request_sha256,
-            input.outcome,
-            completed ? Buffer.from(input.publish_plan_bytes) : null,
-            completed ? input.publish_plan_sha256 : null,
-            completed ? Buffer.from(input.result_bytes) : null,
-            completed ? input.result_sha256 : null,
-            completed ? null : input.failure_code,
-          ],
-        );
-        if (result.rows.length !== 1) throw new Error("HNS authority finalizer returned no result");
-        const row = result.rows[0];
-        if (row === undefined) throw new Error("HNS authority finalizer returned no result");
-        const revision =
-          row.session_revision === null ? null : safePositiveInteger(row.session_revision);
-        if (
-          !["completed", "retry", "failed", "replayed", "conflict", "lost", "not_found"].includes(
-            typeof row.outcome === "string" ? row.outcome : "",
-          ) ||
-          (row.root_import_session_id !== null && typeof row.root_import_session_id !== "string") ||
-          (row.session_revision !== null && revision === null)
-        ) {
-          throw new Error("HNS authority finalizer returned an invalid result");
+        // The plan becoming available and the lifecycle recording that it
+        // became available are one fact. They are committed together so a
+        // crash cannot expose a plan whose publication window never started,
+        // or start a window for a plan that was never persisted.
+        await client.query("BEGIN");
+        try {
+          const result = await client.query<Record<string, unknown>>(
+            "SELECT * FROM finalize_hns_authority_provision_job_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+            [
+              input.provision_job_id,
+              input.executor_id,
+              input.lease_fence,
+              input.request_sha256,
+              input.outcome,
+              completed ? Buffer.from(input.publish_plan_bytes) : null,
+              completed ? input.publish_plan_sha256 : null,
+              completed ? Buffer.from(input.result_bytes) : null,
+              completed ? input.result_sha256 : null,
+              completed ? null : input.failure_code,
+            ],
+          );
+          if (result.rows.length !== 1)
+            throw new Error("HNS authority finalizer returned no result");
+          const row = result.rows[0];
+          if (row === undefined) throw new Error("HNS authority finalizer returned no result");
+          const revision =
+            row.session_revision === null ? null : safePositiveInteger(row.session_revision);
+          if (
+            !["completed", "retry", "failed", "replayed", "conflict", "lost", "not_found"].includes(
+              typeof row.outcome === "string" ? row.outcome : "",
+            ) ||
+            (row.root_import_session_id !== null &&
+              typeof row.root_import_session_id !== "string") ||
+            (row.session_revision !== null && revision === null)
+          ) {
+            throw new Error("HNS authority finalizer returned an invalid result");
+          }
+          const sessionId = row.root_import_session_id as string | null;
+          // Only a completed provision exposes a plan. `preparation_completed`
+          // is what establishes plan_exposed_at and the publication deadline,
+          // and the reducer sets them exactly once: a replayed finalize records
+          // a replay in history and leaves both untouched. Ambiguous delivery of
+          // the plan to the owner is still exposure, so the window starts here
+          // rather than at any later acknowledgement.
+          if (completed && sessionId !== null && row.outcome === "completed") {
+            // The digest the operation will be judged against is recorded in
+            // the same transaction that exposes the plan. Write-once in SQL:
+            // a replayed finalize passes the same value and changes nothing.
+            const planDigest = encodedResourceDigestFromPlanBytes(input.publish_plan_bytes);
+            if (planDigest !== null) {
+              await client.query("SELECT set_hns_root_import_lifecycle_plan_digest_v1($1,$2)", [
+                sessionId,
+                planDigest,
+              ]);
+            }
+            await commitLifecycleEventInTransaction(client, sessionId, {
+              event: "preparation_completed",
+              event_id: `preparation_completed:${input.provision_job_id}:${input.publish_plan_sha256}`,
+              occurred_at_epoch_ms: Date.now(),
+            });
+          }
+          await client.query("COMMIT");
+          return {
+            outcome: row.outcome as HnsAuthorityProvisionFinalizeResult["outcome"],
+            root_import_session_id: sessionId,
+            session_revision: revision,
+          };
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => undefined);
+          throw error;
         }
-        return {
-          outcome: row.outcome as HnsAuthorityProvisionFinalizeResult["outcome"],
-          root_import_session_id: row.root_import_session_id as string | null,
-          session_revision: revision,
-        };
       }),
   };
 }

@@ -107,7 +107,9 @@ jobs:
           # drops a database per test pay to flush every other suite's dirty
           # buffers. Leaving fsync on made those teardowns exceed the per-test
           # budget under I/O contention.
-          POSTGRES_INITDB_ARGS: --set=fsync=off
+          # The audited lock capacity is 512 * 100 = 51,200 entries, which the
+          # lifecycle gate enforces before it runs.
+          POSTGRES_INITDB_ARGS: --set=fsync=off --set=max_locks_per_transaction=512
         ports:
           - 5432:5432
         options: >-

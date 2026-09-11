@@ -211,6 +211,7 @@ import { makeProductionDanceAttemptServices } from "./dance-attempt-production-c
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
+import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
@@ -254,6 +255,20 @@ export interface HttpWorkerBindings
   readonly OPENROUTER_API_KEY?: string;
   readonly STUDY_GENERATION_WORKFLOW?: CloudflareStudyGenerationWorkflowBinding<StudyGenerationWorkflowPayload>;
   readonly HNS_OWNER_VERIFIER?: HnsOwnerServiceBinding;
+  /**
+   * The activation current-view gatherer's configuration surface. Disabled
+   * unless explicitly enabled; the eight HNS_AUTHORITY_* settings are required
+   * and bounded when it is enabled.
+   */
+  readonly HNS_ACTIVATION_CURRENT_VIEW_ENABLED?: string;
+  readonly HNS_AUTHORITY_HSD_RPC_URL?: string;
+  readonly HNS_AUTHORITY_HSD_AUTHORIZATION?: string;
+  readonly HNS_AUTHORITY_CHAIN_NETWORK?: string;
+  readonly HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH?: string;
+  readonly HNS_AUTHORITY_TREE_INTERVAL_BLOCKS?: string;
+  readonly HNS_AUTHORITY_SAFE_CONFIRMATIONS?: string;
+  readonly HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS?: string;
+  readonly HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS?: string;
   readonly REGISTRATION_IP_LIMITER?: RegistrationRateLimiterNamespaces["ip"];
   readonly REGISTRATION_APPLICATION_LIMITER?: RegistrationRateLimiterNamespaces["application"];
   readonly API_NEXT_ENV?: string;
@@ -494,6 +509,15 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_EDGE_STATUS_ACCESS_ISSUER: bindings.HNS_EDGE_STATUS_ACCESS_ISSUER,
     HNS_EDGE_STATUS_ACCESS_JWKS_URL: bindings.HNS_EDGE_STATUS_ACCESS_JWKS_URL,
     HNS_EDGE_STATUS_ACCESS_AUDIENCE: bindings.HNS_EDGE_STATUS_ACCESS_AUDIENCE,
+    HNS_ACTIVATION_CURRENT_VIEW_ENABLED: bindings.HNS_ACTIVATION_CURRENT_VIEW_ENABLED,
+    HNS_AUTHORITY_HSD_RPC_URL: bindings.HNS_AUTHORITY_HSD_RPC_URL,
+    HNS_AUTHORITY_HSD_AUTHORIZATION: bindings.HNS_AUTHORITY_HSD_AUTHORIZATION,
+    HNS_AUTHORITY_CHAIN_NETWORK: bindings.HNS_AUTHORITY_CHAIN_NETWORK,
+    HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: bindings.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
+    HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: bindings.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
+    HNS_AUTHORITY_SAFE_CONFIRMATIONS: bindings.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
+    HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: bindings.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
+    HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: bindings.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -1022,6 +1046,13 @@ export async function createProductionHttpWorker(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
   const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
+  // The activation current-view gatherer. Disabled by default; disabled
+  // configuration stays an unavailable capability, and enabled configuration
+  // was already validated and bounded when the Worker config loaded.
+  const activationCurrentView = makeProductionHnsActivationCurrentView(
+    controlPlane,
+    config.HNS_ACTIVATION_CURRENT_VIEW,
+  );
   const hnsCommunityServices:
     | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">
     | undefined =
@@ -1050,6 +1081,7 @@ export async function createProductionHttpWorker(
             environment: config.API_NEXT_ENV,
             provider_binding: communityHnsBinding,
           }),
+          currentView: activationCurrentView,
         };
   const hnsCommunityRootImportHandlers =
     hnsCommunityServices === undefined

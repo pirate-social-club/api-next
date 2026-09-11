@@ -252,6 +252,7 @@ describe("HNS root-import HTTP handlers", () => {
         added_records: [],
         replacement_records: [],
         preserved_unknown_record_types: [],
+        encoded_resource_sha256: "abababababababababababababababababababababababababababababababab",
         acknowledgement_required: true as const,
       },
       publish_plan_sha256: "a".repeat(64),
