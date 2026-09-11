@@ -24,6 +24,7 @@ const context: HnsLifecycleReadinessContextV1 = {
   publish_plan_bytes: new Uint8Array([1]),
   provision_result_sha256: "c".repeat(64),
   provision_result_bytes: new Uint8Array([2]),
+  effective_plan_encoded_resource_sha256: "e".repeat(64),
   expires_at: new Date(Date.now() + 86_400_000).toISOString(),
 };
 

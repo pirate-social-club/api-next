@@ -24,6 +24,8 @@ import {
 } from "../../../packages/platform-cf/src/route-attachment-start-repository.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { runHnsAuthorityProvisionExecutorOnce } from "../../hns-authority-provisioner/src/executor.ts";
+import { runHnsRootImportLifecycleJobOnce } from "../../hns-authority-provisioner/src/lifecycle-executor.ts";
+import { makePostgresHnsRootImportLifecycleQueue } from "../../hns-authority-provisioner/src/lifecycle-queue.ts";
 import { makePostgresHnsRootObservationQueue } from "../../hns-authority-provisioner/src/observation-queue.ts";
 import type { HnsAuthorityZoneResult } from "../../hns-authority-provisioner/src/provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "../../hns-authority-provisioner/src/queue.ts";
@@ -64,7 +66,7 @@ const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
   throw new Error("Postgres required");
 const pgTest = url ? test : test.skip;
-pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
+pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
   "real handlers and durable publication continuation: %s",
   async (scenario) => {
     const schema = `hns_continuation_${randomUUID().replaceAll("-", "")}`;
@@ -106,7 +108,7 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
             request,
             {
               HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
-              HNS_CHALLENGE_TTL_SECONDS: scenario === "expired" ? "60" : "3600",
+              HNS_CHALLENGE_TTL_SECONDS: "3600",
               HNS_EVIDENCE_TTL_SECONDS: "2592000",
               HNS_PROVIDER_ENVIRONMENT: "staging",
               HNS_PROVIDER_CONFIGURATION_REFERENCE: configuration.reference,
@@ -306,88 +308,114 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
         ((await (await call(sessionUrl)).json()) as { publication_check_pending: boolean })
           .publication_check_pending,
       ).toBe(true);
-      if (scenario === "expired") {
-        // Exercise database time without bypassing immutable session guards.
-        await new Promise((resolve) => setTimeout(resolve, 61_000));
-        expect(await Effect.runPromise(continueHnsCommunityPublication(services, queue))).toBe(
-          true,
-        );
-        expect(
-          (await admin.query("SELECT state,failure_code FROM hns_community_publication_jobs"))
-            .rows[0],
-        ).toEqual({ state: "failed", failure_code: "authority_or_expiry" });
-        expect(observations).toHaveLength(0);
-        expect(((await (await call(sessionUrl)).json()) as { status: string }).status).toBe(
-          "expired",
-        );
-        const restartBody = { root_label: "harbor", idempotency_key: "restart" };
-        // Expiry alone cannot free a provisioned zone or its admission slot.
-        expect((await call(base, restartBody)).status).toBe(409);
-        await admin.query(`UPDATE hns_authority_provision_jobs
-          SET created_at=clock_timestamp()-interval '4 minutes',
-              updated_at=clock_timestamp()-interval '3 minutes'`);
-        const cleanup = (
-          await admin.query(
-            "SELECT * FROM claim_hns_root_import_observation_job_v1('expiry-cleanup',60)",
+      if (scenario === "publication_window") {
+        // The ratified policy: an elapsed publication window transitions the
+        // operation to recovery_required with authority retained. It is not a
+        // session expiry, and it never tears the provisional authority down.
+        const exposure = (
+          await admin.query<{ publication_deadline_at: string; plan_exposed_at: string }>(
+            `SELECT publication_deadline_at, plan_exposed_at FROM hns_root_import_lifecycle
+              WHERE root_import_session_id=$1`,
+            [starting.root_import_session_id],
           )
         ).rows[0];
-        expect(cleanup.operation_kind).toBe("teardown_provisional_root_v1");
+        expect(exposure?.publication_deadline_at).toBeDefined();
+        // The frozen window is anchored once at exposure; the stored value is
+        // the policy deadline, not a wall clock the test waits out.
         expect(
-          (
-            await admin.query(
-              "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,'expiry-cleanup',$2,$3,'failed',NULL,NULL,'session_expired')",
-              [cleanup.observation_job_id, cleanup.lease_fence, cleanup.request_sha256],
-            )
-          ).rows[0].outcome,
-        ).toBe("failed");
-        expect(
-          (
-            await admin.query(
-              "SELECT status,expires_at>clock_timestamp() AS unexpired FROM community_route_attachment_intents",
-            )
-          ).rows,
-        ).toEqual([{ status: "verification_required", unexpired: true }]);
-        // Production failure: the released child leaves a seven-day open parent.
-        const restarted = await call(base, restartBody);
-        expect(restarted.status).toBe(202);
-        const replacement = (await restarted.json()) as { root_import_session_id: string };
-        expect(replacement.root_import_session_id).not.toBe(starting.root_import_session_id);
-        const replay = await call(base, restartBody);
-        expect(replay.status).toBe(200);
-        expect(await replay.json()).toMatchObject({
-          root_import_session_id: replacement.root_import_session_id,
+          Date.parse(String(exposure?.publication_deadline_at)) -
+            Date.parse(String(exposure?.plan_exposed_at)),
+        ).toBe(1_209_600_000);
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET publication_deadline_at=clock_timestamp() - interval '1 second'
+            WHERE root_import_session_id=$1`,
+          [starting.root_import_session_id],
+        );
+        // The acknowledgement schedules no work of its own, so the performer's
+        // due current-view check is queued explicitly; the entrypoint suite
+        // makes the same accommodation by moving persisted due times.
+        await admin.query(
+          `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
+           SELECT $1,'observe_current',clock_timestamp() - interval '1 second'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM hns_root_import_lifecycle_jobs
+               WHERE root_import_session_id=$1 AND job_kind='observe_current' AND state='queued'
+            )`,
+          [starting.root_import_session_id],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle_jobs
+              SET due_at=clock_timestamp() - interval '1 second'
+            WHERE root_import_session_id=$1 AND job_kind='observe_current' AND state='queued'`,
+          [starting.root_import_session_id],
+        );
+        const lifecycleRun = await runHnsRootImportLifecycleJobOnce(
+          "lifecycle-executor",
+          60,
+          makePostgresHnsRootImportLifecycleQueue(connection, async () => ({
+            kind: "none",
+            evidence_ref: "publication-window-fixture",
+          })),
+        );
+        expect(lifecycleRun.claimed).toBe(true);
+        const lifecycle = (
+          await admin.query<{ phase: string; pending_reason: string }>(
+            `SELECT phase, pending_reason FROM hns_root_import_lifecycle
+              WHERE root_import_session_id=$1`,
+            [starting.root_import_session_id],
+          )
+        ).rows[0];
+        expect(lifecycle).toMatchObject({
+          phase: "recovery_required",
+          pending_reason: "publication_deadline_reached",
         });
         expect(
-          (await call(base, { ...restartBody, idempotency_key: "competing-restart" })).status,
-        ).toBe(409);
-        expect(
           (
-            await admin.query(
-              "SELECT status,count(*)::integer AS count FROM community_route_attachment_intents GROUP BY status ORDER BY status",
+            await admin.query<{ outcome: string; decision_reason: string }>(
+              `SELECT outcome, decision_reason FROM hns_root_import_lifecycle_history
+                WHERE root_import_session_id=$1 AND event_name='deadline_reached'
+                ORDER BY revision_after DESC NULLS LAST LIMIT 1`,
+              [starting.root_import_session_id],
             )
-          ).rows,
-        ).toEqual([
-          { status: "expired", count: 1 },
-          { status: "verification_required", count: 1 },
-        ]);
-        expect(
-          (
-            await runHnsAuthorityProvisionExecutorOnce({
-              executor_id: "replacement-executor",
-              queue: makePostgresHnsAuthorityProvisionQueue(connection),
-              provision: {
-                observe_current_resource: async () => observedCurrent(),
-                ensure_zone: async () => zoneResult,
-              },
-            })
-          ).outcome,
-        ).toBe("completed");
-        expect(
-          await (await call(`${base}/${replacement.root_import_session_id}`)).json(),
+          ).rows[0],
         ).toMatchObject({
-          status: "awaiting_owner_update",
-          publish_plan: { replacement_records: expect.any(Array) },
+          outcome: "transition",
+          decision_reason: "publication_deadline_recovery_authority_retained",
         });
+        // No expiry-driven teardown exists or becomes claimable, even after
+        // the legacy provision timestamps age past the retired sweep.
+        await admin.query(
+          `UPDATE hns_authority_provision_jobs
+              SET created_at=clock_timestamp()-interval '4 minutes',
+                  updated_at=clock_timestamp()-interval '3 minutes'`,
+        );
+        const claims = await admin.query<{ operation_kind: string }>(
+          "SELECT * FROM claim_hns_root_import_observation_job_v1('expiry-cleanup',60)",
+        );
+        expect(claims.rows.every((row) => !row.operation_kind.startsWith("teardown"))).toBe(true);
+        const teardownStates = (
+          await admin.query<{ state: string }>(
+            `SELECT state FROM hns_root_import_teardown_jobs
+              WHERE root_import_session_id=$1`,
+            [starting.root_import_session_id],
+          )
+        ).rows;
+        expect(teardownStates.length).toBeGreaterThan(0);
+        expect(teardownStates.every((row) => row.state === "waiting")).toBe(true);
+        // The admission slot and the retained reservation remain charged.
+        expect(
+          (
+            await admin.query<{ charged: boolean }>(
+              "SELECT hns_community_root_import_consumes_actor_budget_v1($1) AS charged",
+              [starting.root_import_session_id],
+            )
+          ).rows[0]?.charged,
+        ).toBe(true);
+        // Retained authority cannot be freed by starting a replacement.
+        const restartBody = { root_label: "harbor", idempotency_key: "restart" };
+        expect((await call(base, restartBody)).status).toBe(409);
+        expect(observations).toHaveLength(0);
         return;
       }
       if (scenario === "revoked") {

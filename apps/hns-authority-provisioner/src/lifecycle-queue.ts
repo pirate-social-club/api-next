@@ -63,6 +63,47 @@ function safePositiveInteger(value: unknown): number | null {
   return typeof parsed === "number" && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+type ReconcileResponsibilityV1 = "current" | "safe" | "readiness";
+
+const RECONCILE_RESPONSIBILITY_BY_JOB_KIND: Readonly<Record<string, ReconcileResponsibilityV1>> = {
+  observe_current: "current",
+  observe_safe: "safe",
+  observe_readiness: "readiness",
+};
+
+/**
+ * The fresh work a reconciled responsibility may schedule from a phase.
+ * Anything unsupported is a named disposition with no work rather than a job
+ * the phase cannot accept.
+ */
+function reconcileWorkKind(
+  responsibility: ReconcileResponsibilityV1,
+  phase: string,
+): "observe_current" | "observe_safe" | "observe_readiness" | null {
+  if (responsibility === "current") {
+    return [
+      "awaiting_publication",
+      "checking_publication",
+      "waiting_safe_commitment",
+      "checking_authority",
+      "ready",
+    ].includes(phase)
+      ? "observe_current"
+      : null;
+  }
+  if (responsibility === "safe") {
+    return [
+      "checking_publication",
+      "waiting_safe_commitment",
+      "checking_authority",
+      "ready",
+    ].includes(phase)
+      ? "observe_safe"
+      : null;
+  }
+  return phase === "checking_authority" || phase === "ready" ? "observe_readiness" : null;
+}
+
 async function withClient<A>(
   connectionString: string,
   use: (client: Client) => Promise<A>,
@@ -154,6 +195,112 @@ export function makePostgresHnsRootImportLifecycleQueue(
         };
       }),
     observe,
+    reconcile: (job, executorId) =>
+      withClient(connectionString, async (client) => {
+        await client.query("BEGIN");
+        try {
+          // The claimed job is validated under its own fence before anything
+          // else, exactly as the observation transaction does.
+          const owned = await client.query<Record<string, unknown>>(
+            `SELECT lifecycle_job_id, created_at FROM hns_root_import_lifecycle_jobs
+              WHERE lifecycle_job_id=$1 AND root_import_session_id=$2
+                AND job_kind='reconcile_provider' AND state='leased' AND leased_by=$3
+                AND lease_fence=$4 AND lease_expires_at > clock_timestamp()
+              FOR UPDATE`,
+            [job.lifecycle_job_id, job.root_import_session_id, executorId, job.lease_fence],
+          );
+          if (owned.rows.length !== 1) {
+            await client.query("ROLLBACK");
+            return { outcome: "retry" as const, reason: "reconcile_lease_conflict" };
+          }
+          const claimedAt = owned.rows[0]?.created_at;
+          const lifecycle = await client.query<Record<string, unknown>>(
+            `SELECT phase, revision, pending_reason, next_check_at
+               FROM hns_root_import_lifecycle WHERE root_import_session_id=$1 FOR UPDATE`,
+            [job.root_import_session_id],
+          );
+          const row = lifecycle.rows[0];
+          const revision = safePositiveInteger(row?.revision);
+          if (lifecycle.rows.length !== 1 || row === undefined || revision === null) {
+            await client.query("ROLLBACK");
+            return { outcome: "failed" as const, reason: "reconcile_lifecycle_absent" };
+          }
+          const phase = typeof row.phase === "string" ? row.phase : null;
+          if (phase === null) {
+            await client.query("ROLLBACK");
+            return { outcome: "failed" as const, reason: "reconcile_lifecycle_invalid" };
+          }
+          // The failure being reconciled is the decision that requested this
+          // exact job; its history row carries the concrete failed job, and
+          // that job's kind names the failed responsibility.
+          const failed = await client.query<Record<string, unknown>>(
+            `SELECT failed.job_kind AS failed_job_kind
+               FROM hns_root_import_lifecycle_history AS history
+               JOIN hns_root_import_lifecycle_jobs AS failed
+                 ON failed.lifecycle_job_id = history.lifecycle_job_id
+              WHERE history.root_import_session_id=$1
+                AND history.requested_work @> '[{"kind":"reconcile_provider"}]'::jsonb
+                AND history.recorded_at <= $2
+              ORDER BY history.recorded_at DESC, history.history_id DESC
+              LIMIT 1`,
+            [job.root_import_session_id, claimedAt],
+          );
+          const failedJobKind = failed.rows[0]?.failed_job_kind;
+          const responsibility =
+            typeof failedJobKind === "string"
+              ? RECONCILE_RESPONSIBILITY_BY_JOB_KIND[failedJobKind]
+              : undefined;
+          const workKind =
+            responsibility === undefined ? null : reconcileWorkKind(responsibility, phase);
+          const disposition =
+            responsibility === undefined
+              ? "reconcile_responsibility_unknown"
+              : workKind === null
+                ? `reconcile_superseded_${phase}`
+                : `reconcile_${responsibility}_to_${workKind}`;
+          const decision = await client.query<Record<string, unknown>>(
+            `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1(
+               $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11)`,
+            [
+              job.root_import_session_id,
+              revision,
+              `reconcile:${job.lifecycle_job_id}:${job.lease_fence}`,
+              "reconcile_routed",
+              "pending",
+              disposition,
+              phase,
+              JSON.stringify({
+                pending_reason: row.pending_reason,
+                next_check_at:
+                  row.next_check_at instanceof Date ? row.next_check_at.toISOString() : null,
+              }),
+              JSON.stringify(
+                workKind === null ? [] : [{ kind: workKind, due_at: new Date().toISOString() }],
+              ),
+              job.lifecycle_job_id,
+              job.lease_fence,
+            ],
+          );
+          const decisionOutcome = decision.rows[0]?.outcome;
+          if (decisionOutcome !== "pending" && decisionOutcome !== "replay") {
+            await client.query("ROLLBACK");
+            return { outcome: "retry" as const, reason: `reconcile_${String(decisionOutcome)}` };
+          }
+          const finalized = await client.query<Record<string, unknown>>(
+            "SELECT * FROM finalize_hns_root_import_lifecycle_job_v1($1,$2,$3,$4,$5)",
+            [job.lifecycle_job_id, executorId, job.lease_fence, "completed", null],
+          );
+          if (finalized.rows[0]?.outcome !== "completed") {
+            await client.query("ROLLBACK");
+            return { outcome: "retry" as const, reason: "reconcile_finalize_refused" };
+          }
+          await client.query("COMMIT");
+          return { outcome: "completed" as const, reason: disposition };
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => undefined);
+          throw error;
+        }
+      }),
     record_observation: async (client, job, executorId, decisionEventId, summary) => {
       const result = await client.query<Record<string, unknown>>(
         `SELECT record_hns_root_import_lifecycle_observation_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) AS outcome`,
@@ -330,7 +477,8 @@ export function makePostgresHnsLifecycleReadinessPorts(
                   session.publish_plan_bytes, session.expires_at,
                   provision.result_sha256 AS provision_result_sha256,
                   provision.result_bytes AS provision_result_bytes,
-                  lifecycle.revision AS lifecycle_revision, lifecycle.phase
+                  lifecycle.revision AS lifecycle_revision, lifecycle.phase,
+                  lifecycle.plan_encoded_resource_sha256 AS effective_plan_encoded_sha256
              FROM hns_root_import_lifecycle AS lifecycle
              JOIN hns_root_import_sessions AS session
                ON session.root_import_session_id = lifecycle.root_import_session_id
@@ -352,6 +500,10 @@ export function makePostgresHnsLifecycleReadinessPorts(
           typeof row.provision_result_sha256 === "string" ? row.provision_result_sha256 : null;
         const ownershipResultSha256 =
           typeof row.ownership_result_sha256 === "string" ? row.ownership_result_sha256 : null;
+        const effectivePlanEncodedSha256 =
+          typeof row.effective_plan_encoded_sha256 === "string"
+            ? row.effective_plan_encoded_sha256
+            : null;
         if (
           revision === null ||
           publishPlanBytes === null ||
@@ -367,6 +519,8 @@ export function makePostgresHnsLifecycleReadinessPorts(
           !/^[0-9a-f]{64}$/u.test(publishPlanSha256) ||
           !/^[0-9a-f]{64}$/u.test(provisionResultSha256) ||
           !/^[0-9a-f]{64}$/u.test(ownershipResultSha256) ||
+          effectivePlanEncodedSha256 === null ||
+          !/^[0-9a-f]{64}$/u.test(effectivePlanEncodedSha256) ||
           (await sha256Hex(publishPlanBytes)) !== publishPlanSha256 ||
           (await sha256Hex(provisionResultBytes)) !== provisionResultSha256
         ) {
@@ -383,6 +537,7 @@ export function makePostgresHnsLifecycleReadinessPorts(
           publish_plan_bytes: publishPlanBytes,
           provision_result_sha256: provisionResultSha256,
           provision_result_bytes: provisionResultBytes,
+          effective_plan_encoded_resource_sha256: effectivePlanEncodedSha256,
           expires_at: row.expires_at.toISOString(),
         };
         return context;

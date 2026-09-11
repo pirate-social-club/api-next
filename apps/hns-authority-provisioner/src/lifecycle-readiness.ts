@@ -37,6 +37,8 @@ export type HnsLifecycleReadinessContextV1 = Readonly<{
   readonly publish_plan_bytes: Uint8Array;
   readonly provision_result_sha256: string;
   readonly provision_result_bytes: Uint8Array;
+  /** The generation-bound effective digest; the adopted resource after adoption. */
+  readonly effective_plan_encoded_resource_sha256: string;
   readonly expires_at: string;
 }>;
 
@@ -148,6 +150,7 @@ export async function runHnsRootImportReadinessOnce(
       request,
       publish_plan_bytes: context.publish_plan_bytes,
       provision_result_bytes: context.provision_result_bytes,
+      effective_plan_encoded_resource_sha256: context.effective_plan_encoded_resource_sha256,
       ports: ports.observe,
       config: ports.config,
     });

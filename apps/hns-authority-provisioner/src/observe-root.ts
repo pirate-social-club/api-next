@@ -11,6 +11,7 @@ import {
   type HnsRootImportPublishPlanV1,
   type HnsRootResourceRecordV1,
   hnsAuthorityCapabilitySetDigest,
+  hnsObservedResourceMatchesEncodedPlanV1,
   normalizedHnsResourceMultisetKeyV1,
   validateHnsRootResourceRecordsV1,
 } from "@pirate/application/namespace-ownership";
@@ -335,6 +336,14 @@ export async function observeHnsRootReadinessV1(input: {
   readonly request: HnsRootReadinessObservationRequestV1;
   readonly publish_plan_bytes: Uint8Array;
   readonly provision_result_bytes: Uint8Array;
+  /**
+   * The operation's effective, generation-bound encoded-resource digest. After
+   * adoption this is the adopted resource's digest while the session still
+   * carries the original plan document, so readiness must qualify the current
+   * resource against the effective digest or an adopted operation could never
+   * re-establish readiness.
+   */
+  readonly effective_plan_encoded_resource_sha256?: string;
   readonly ports: HnsRootReadinessObservationPorts;
   readonly config: HnsRootReadinessObservationConfig;
 }) {
@@ -405,7 +414,14 @@ export async function observeHnsRootReadinessV1(input: {
       throw new HnsRootReadinessObservationError("authority_mismatch");
     }
   } else if (
-    canonicalRecordMultiset(chainRecords) !== canonicalRecordMultiset(plan.replacement_records)
+    canonicalRecordMultiset(chainRecords) !== canonicalRecordMultiset(plan.replacement_records) &&
+    !(
+      input.effective_plan_encoded_resource_sha256 !== undefined &&
+      (await hnsObservedResourceMatchesEncodedPlanV1(
+        chainRecords,
+        input.effective_plan_encoded_resource_sha256,
+      ))
+    )
   ) {
     throw new HnsRootReadinessObservationError("owner_update_pending");
   }

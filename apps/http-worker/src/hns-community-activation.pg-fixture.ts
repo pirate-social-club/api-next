@@ -4,6 +4,7 @@ import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-owne
 import {
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
+  preflightEncodeHnsResourceV1,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
 import { Effect, Redacted } from "effect";
@@ -34,16 +35,18 @@ import { createHttpWorker } from "./transport.ts";
 
 /**
  * The connected activation fixture: real HTTP handlers, real PostgreSQL
- * repository and the real provisioning/legacy-readiness executables, with the
- * HSD RPC server and the database as the only fixtures. The lifecycle row is
- * brought to ready the way the repository suite's activation fixture already
- * documents, because the readiness handover that makes the lifecycle performer
- * live is a later deliverable.
+ * repository and the real provisioning executables, with the HSD RPC server
+ * and the database as the only fixtures. `prepareAcknowledgedImport` stops
+ * where the joint ceremony takes over with the lifecycle performers;
+ * `prepareReadyImport` continues through the legacy readiness writer and
+ * brings the lifecycle row to ready the way the repository suite's activation
+ * fixture already documents.
  */
 
-export type ReadyImport = Readonly<{
+export type AcknowledgedImport = Readonly<{
   readonly admin: Client;
   readonly connectionString: string;
+  readonly scopedConnectionString: string;
   readonly layer: ReturnType<typeof makeDirectPostgresControlPlaneLayer>;
   readonly hsd: HnsRootResourceRpcFixture;
   readonly actor: string;
@@ -51,11 +54,17 @@ export type ReadyImport = Readonly<{
   readonly sessionId: string;
   readonly revision: number;
   readonly publishPlanSha256: string;
-  readonly readinessResultSha256: string;
   readonly planRecords: readonly HnsRootResourceRecordV1[];
+  readonly zoneResult: HnsAuthorityZoneResult;
+  readonly app: ReturnType<typeof createHttpWorker>;
+  readonly call: (path: string, body?: unknown) => Promise<Response> | Response;
+  readonly sessionUrl: string;
+  readonly verifyOwnerPublication: () => void;
   readonly services: Parameters<typeof makeHnsCommunityRootImportHandlers>[0];
   cleanup: () => Promise<void>;
 }>;
+
+export type ReadyImport = AcknowledgedImport & Readonly<{ readonly readinessResultSha256: string }>;
 
 export function enabledConfiguration(rpcUrl: string) {
   return {
@@ -71,11 +80,11 @@ export function enabledConfiguration(rpcUrl: string) {
   } as const;
 }
 
-export async function prepareReadyImport(input: {
+export async function prepareAcknowledgedImport(input: {
   readonly connectionString: string;
   readonly schema?: string;
   readonly onRequest?: () => Promise<void>;
-}): Promise<ReadyImport> {
+}): Promise<AcknowledgedImport> {
   const schema = input.schema ?? `hns_activation_${randomUUID().replaceAll("-", "")}`;
   const admin = new Client({ connectionString: input.connectionString });
   await admin.connect();
@@ -236,7 +245,7 @@ export async function prepareReadyImport(input: {
         resource_sha256: "1".repeat(64),
       },
     });
-    const prepared = await runHnsAuthorityProvisionExecutorOnce({
+    const provisioned = await runHnsAuthorityProvisionExecutorOnce({
       executor_id: "test-executor",
       queue: makePostgresHnsAuthorityProvisionQueue(connection),
       provision: {
@@ -244,11 +253,12 @@ export async function prepareReadyImport(input: {
         ensure_zone: async () => zoneResult,
       },
     });
-    expect(prepared.outcome).toBe("completed");
+    expect(provisioned.outcome).toBe("completed");
     const readyPlan = (await (await call(sessionUrl)).json()) as {
       status: string;
       revision: number;
       publish_plan: { replacement_records: HnsRootResourceRecordV1[] };
+      publish_plan_sha256: string;
     };
     expect(readyPlan.status).toBe("awaiting_owner_update");
     const acknowledgement = {
@@ -256,8 +266,48 @@ export async function prepareReadyImport(input: {
       idempotency_key: "published",
     };
     expect((await call(`${sessionUrl}/poll`, acknowledgement)).status).toBe(202);
+    return {
+      admin,
+      connectionString: input.connectionString,
+      scopedConnectionString: connection,
+      layer,
+      hsd,
+      actor,
+      community,
+      sessionId: starting.root_import_session_id,
+      revision: readyPlan.revision,
+      publishPlanSha256: readyPlan.publish_plan_sha256,
+      planRecords: readyPlan.publish_plan.replacement_records,
+      zoneResult,
+      app,
+      call,
+      sessionUrl,
+      verifyOwnerPublication: () => {
+        chain = "verified";
+      },
+      services,
+      cleanup,
+    };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+export async function prepareReadyImport(input: {
+  readonly connectionString: string;
+  readonly schema?: string;
+  readonly onRequest?: () => Promise<void>;
+}): Promise<ReadyImport> {
+  const acknowledged = await prepareAcknowledgedImport(input);
+  try {
+    const { admin, call, sessionUrl, services, sessionId, planRecords, zoneResult } = acknowledged;
     for (let pending = 0; pending < 5; pending++) {
-      expect(await Effect.runPromise(continueHnsCommunityPublication(services, queue))).toBe(true);
+      expect(
+        await Effect.runPromise(
+          continueHnsCommunityPublication(services, services.publicationQueue),
+        ),
+      ).toBe(true);
       expect(((await (await call(sessionUrl)).json()) as { status: string }).status).toBe(
         "awaiting_owner_update",
       );
@@ -265,8 +315,33 @@ export async function prepareReadyImport(input: {
         "UPDATE hns_community_publication_jobs SET next_attempt_at=clock_timestamp()-interval '1 second'",
       );
     }
-    chain = "verified";
-    expect(await Effect.runPromise(continueHnsCommunityPublication(services, queue))).toBe(true);
+    acknowledged.verifyOwnerPublication();
+    expect(
+      await Effect.runPromise(continueHnsCommunityPublication(services, services.publicationQueue)),
+    ).toBe(true);
+    const observedCurrent = (records: readonly unknown[] = []) => ({
+      kind: "observed" as const,
+      observation: {
+        view: "current" as const,
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        anchor: {
+          network: "main",
+          genesis_block_hash: `${"0".repeat(63)}1`,
+          height: 812_345,
+          best_block_hash: "aa".repeat(32),
+          median_time_past_epoch_seconds: 1_770_000_000,
+          header_time_epoch_seconds: 1_770_000_030,
+          confirmations: 1,
+        },
+        tip_height: 812_345,
+        update_inclusion_height: 800_000,
+        commitment: null,
+        observed_at_epoch_ms: 1_770_000_060_000,
+        records: structuredClone(records) as never,
+        resource_sha256: "1".repeat(64),
+      },
+    });
     const authorityView = (ordinal: 1 | 2) => ({
       authority_nameserver: `ns${ordinal}.pirate`,
       authority_address_family: "GLUE4" as const,
@@ -276,22 +351,20 @@ export async function prepareReadyImport(input: {
       validated_dnskey_response_sha256: String(ordinal).repeat(64),
       validated_control_response_sha256: String(ordinal + 2).repeat(64),
       validated_chain_authority_digest: "5".repeat(64),
-      observed_zone_bytes: zone,
-      observed_zone_sha256: digest,
+      observed_zone_bytes: zoneResult.managed_zone_bytes,
+      observed_zone_sha256: zoneResult.managed_rrset_sha256,
     });
     const readinessExecutor = await runHnsAuthorityProvisionExecutorOnce({
       executor_id: "readiness-executor",
-      queue: makePostgresHnsAuthorityProvisionQueue(connection),
+      queue: makePostgresHnsAuthorityProvisionQueue(acknowledged.scopedConnectionString),
       provision: {
-        observe_current_resource: async () =>
-          observedCurrent(readyPlan.publish_plan.replacement_records),
+        observe_current_resource: async () => observedCurrent(planRecords),
         ensure_zone: async () => zoneResult,
       },
       observation: {
-        queue: makePostgresHnsRootObservationQueue(connection),
+        queue: makePostgresHnsRootObservationQueue(acknowledged.scopedConnectionString),
         observe: {
-          observe_current_resource: async () =>
-            observedCurrent(readyPlan.publish_plan.replacement_records),
+          observe_current_resource: async () => observedCurrent(planRecords),
           reconcile_zone: async () => {},
           inspect_zone: async () => ({ ...zoneResult, created: false }),
           observe_live: async () => ({
@@ -311,15 +384,15 @@ export async function prepareReadyImport(input: {
       },
     });
     expect(readinessExecutor.outcome).toBe("ready");
-    // The harness drives the legacy readiness writer, which persists the
-    // session result; the lifecycle row is brought to the state the
-    // production readiness performer would have produced. The handover that
-    // makes that performer live is a later deliverable.
+    // This harness drives the legacy readiness writer, which persists the
+    // session result; the lifecycle row is brought to the ready state the
+    // production performer would produce. The joint ceremony exercises the
+    // performer itself through the handover.
     await admin.query(
       `UPDATE hns_root_import_lifecycle
           SET phase='ready', readiness_observed_at=clock_timestamp()
         WHERE root_import_session_id=$1`,
-      [starting.root_import_session_id],
+      [sessionId],
     );
     const activatable = (await (await call(sessionUrl)).json()) as {
       status: string;
@@ -329,22 +402,12 @@ export async function prepareReadyImport(input: {
     };
     expect(activatable.status).toBe("ready");
     return {
-      admin,
-      connectionString: input.connectionString,
-      layer,
-      hsd,
-      actor,
-      community,
-      sessionId: starting.root_import_session_id,
+      ...acknowledged,
       revision: activatable.revision,
-      publishPlanSha256: activatable.publish_plan_sha256,
       readinessResultSha256: activatable.readiness_result_sha256,
-      planRecords: readyPlan.publish_plan.replacement_records,
-      services,
-      cleanup,
     };
   } catch (error) {
-    await cleanup();
+    await acknowledged.cleanup();
     throw error;
   }
 }

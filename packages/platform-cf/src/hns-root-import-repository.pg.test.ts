@@ -1673,6 +1673,75 @@ suite("Postgres 17 HNS root-import repository", () => {
           route_binding_id: string;
         };
       };
+      // Post-decision rollback through the community repository path: the
+      // trigger fails the final activation-operation insert after the
+      // lifecycle decision, and every attachment, route, DNS, app-host, sale,
+      // session and lifecycle effect must survive or roll back together.
+      await admin.query(
+        `CREATE FUNCTION test_reject_community_activation_operation() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'forced post-decision failure'; END $$`,
+      );
+      await admin.query(
+        `CREATE TRIGGER test_reject_community_activation_operation BEFORE INSERT
+           ON hns_root_import_activation_operations
+           FOR EACH ROW EXECUTE FUNCTION test_reject_community_activation_operation()`,
+      );
+      await expect(
+        Effect.runPromise(Effect.scoped(store.activate(activationRecord))),
+      ).rejects.toMatchObject({ _tag: "HnsRootImportStorageFailed" });
+      const refused = await admin.query<{
+        session_status: string;
+        lifecycle_phase: string;
+        lifecycle_events: number;
+        attachment_status: string;
+        route_binding_id: string | null;
+        route_bindings: number;
+        dns_activations: number;
+        app_hosts: number;
+        sale_activations: number;
+        operations: number;
+      }>(
+        `SELECT session.status AS session_status, lifecycle.phase AS lifecycle_phase,
+                (SELECT count(*)::integer FROM hns_root_import_lifecycle_history
+                  WHERE root_import_session_id='root-import-session'
+                    AND event_id LIKE 'activation:%') AS lifecycle_events,
+                intent.status AS attachment_status,
+                community.canonical_route_binding_id AS route_binding_id,
+                (SELECT count(*)::integer FROM community_canonical_route_bindings
+                  WHERE route_binding_id='route-community-import') AS route_bindings,
+                (SELECT count(*)::integer FROM hns_dns_zone_activation_current
+                  WHERE canonical_root='newroot') AS dns_activations,
+                (SELECT count(*)::integer FROM hns_community_app_host_activation_current
+                  WHERE community_id='community_123e4567-e89b-42d3-a456-426614174099') AS app_hosts,
+                (SELECT count(*)::integer FROM community_handle_sale_namespace_activation_current
+                  WHERE community_id='community_123e4567-e89b-42d3-a456-426614174099') AS sale_activations,
+                (SELECT count(*)::integer FROM hns_root_import_activation_operations
+                  WHERE root_import_session_id='root-import-session') AS operations
+           FROM hns_root_import_sessions AS session
+           JOIN hns_root_import_lifecycle AS lifecycle
+             ON lifecycle.root_import_session_id=session.root_import_session_id
+           JOIN communities AS community
+             ON community.community_id='community_123e4567-e89b-42d3-a456-426614174099'
+           JOIN community_route_attachment_intents AS intent
+             ON intent.attachment_intent_id='attachment-import'
+          WHERE session.root_import_session_id='root-import-session'`,
+      );
+      expect(refused.rows[0]).toMatchObject({
+        session_status: "ready",
+        lifecycle_phase: "ready",
+        lifecycle_events: 0,
+        attachment_status: "commit_ready",
+        route_binding_id: null,
+        route_bindings: 0,
+        dns_activations: 0,
+        app_hosts: 0,
+        sale_activations: 0,
+        operations: 0,
+      });
+      await admin.query(
+        "DROP TRIGGER test_reject_community_activation_operation ON hns_root_import_activation_operations",
+      );
+      await admin.query("DROP FUNCTION test_reject_community_activation_operation()");
       const activated = await Effect.runPromise(Effect.scoped(store.activate(activationRecord)));
       expect(activated).toMatchObject({
         kind: "activated",
