@@ -138,6 +138,32 @@ describe("DATA registration scheduled recovery", () => {
     });
   });
 
+  test("isolates a DATA status-lookup failure and continues", async () => {
+    const failing = {
+      ...candidate,
+      registration_operation_id: "operation-failing",
+      workflow_instance_id: "data-registration-workflow:operation-failing:r1",
+    };
+    const result = await recoverDataRegistrationWorkflowCandidates([failing, candidate], {
+      store: {} as DataRegistrationStore,
+      workflow: {
+        get: async (instanceId: string) => {
+          if (instanceId.includes("operation-failing")) throw new Error("workflow api down");
+          return "present" as const;
+        },
+        create: async () => "already_exists" as const,
+      },
+    });
+    expect(result).toEqual({
+      inspected: 2,
+      present: 1,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 1,
+    });
+  });
+
   test("stops after three replacement revisions", async () => {
     let reads = 0;
     const result = await recoverDataRegistrationWorkflowCandidates(
