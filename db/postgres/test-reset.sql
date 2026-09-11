@@ -321,6 +321,7 @@ TRUNCATE TABLE
   "proof_sessions",
   "public_handle_index",
   "qualification_policy_versions",
+  "recovery_inspection_cursors",
   "reward_activity_availability_observations",
   "reward_asset_whitelist",
   "reward_chain_effect_transitions",
@@ -427,6 +428,9 @@ INSERT INTO platform_pirate_label_policy_revisions VALUES (1, 'pirate_ascii_ldh_
 INSERT INTO qualification_policy_versions VALUES ('study_session_first_pass_v2@1', 'study', 'study_session_first_pass_v2', '{"required_correct_bps": 7000}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v1@1', 'karaoke', 'karaoke_qualification_v1', '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["full_mix"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
+
+INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');

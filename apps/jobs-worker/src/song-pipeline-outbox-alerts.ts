@@ -1,6 +1,7 @@
 import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import type { Effect as EffectType, Layer } from "effect";
 import { Effect } from "effect";
+import { mediaRecoveryRequiredSql } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import {
   type AlertSink,
   alertTick,
@@ -9,7 +10,10 @@ import {
   type PipelineLogFields,
   writePipelineHealthSnapshot,
 } from "../../../packages/platform-cf/src/alerts.ts";
-import { SONG_WORKFLOW_MAX_REVISION } from "./song-workflow-recovery-policy";
+import {
+  DATA_WORKFLOW_MAX_REVISION,
+  SONG_WORKFLOW_MAX_REPLACEMENTS,
+} from "./song-workflow-recovery-policy";
 
 type ExhaustedLaunch = Readonly<{
   subsystem: "media" | "data";
@@ -46,24 +50,23 @@ export type SongPipelineOutboxAlertOptions = Readonly<{
 const SONG_PIPELINE_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
 export const SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS = 10 * 60;
 
-const MEDIA_LIVE_SUBMISSION_STATES = "('processing','action_required','manual_review')";
 const DATA_TERMINAL_OPERATION_STATES = "('registered','failed','reconciliation_required')";
 
 const healthSql = (subsystem: "media" | "data"): string =>
   subsystem === "media"
     ? `SELECT COUNT(*) FILTER (WHERE outbox.state='pending'
-                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS pending_count,
+                                AND ${mediaRecoveryRequiredSql("submission")})::int AS pending_count,
               COUNT(*) FILTER (WHERE outbox.state='running'
-                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS in_flight_count,
+                                AND ${mediaRecoveryRequiredSql("submission")})::int AS in_flight_count,
               COUNT(*) FILTER (WHERE (outbox.state='failed'
                                       OR (outbox.state='running' AND outbox.delivery_attempts>1))
-                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS retrying_count,
+                                AND ${mediaRecoveryRequiredSql("submission")})::int AS retrying_count,
               COUNT(*) FILTER (WHERE outbox.state='exhausted'
-                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS exhausted_count,
+                                AND ${mediaRecoveryRequiredSql("submission")})::int AS exhausted_count,
               COUNT(*) FILTER (WHERE outbox.state='delivered')::int AS terminal_count,
               EXTRACT(EPOCH FROM (clock_timestamp()-MIN(outbox.created_at) FILTER (
                 WHERE outbox.state='pending'
-                  AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES}
+                  AND ${mediaRecoveryRequiredSql("submission")}
               )))::bigint AS oldest_pending_age_seconds,
               MAX(outbox.delivered_at) FILTER (WHERE outbox.state='delivered') AS last_success_at
          FROM media_submission_outbox outbox
@@ -152,7 +155,7 @@ export function collectSongPipelineOutboxAlerts(
                       outbox.outbox_event_id AS outbox_id,
                       outbox.workflow_revision::text AS workflow_revision,
                       outbox.failure_code,
-                      CASE WHEN outbox.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+                      CASE WHEN submission.workflow_replacement_sequence>=${SONG_WORKFLOW_MAX_REPLACEMENTS}
                            THEN 'replacement_limit'
                            ELSE 'exhausted' END AS outcome
                  FROM media_submission_outbox outbox
@@ -161,12 +164,12 @@ export function collectSongPipelineOutboxAlerts(
                   AND submission.operation_id=outbox.operation_id
                   AND submission.workflow_revision=outbox.workflow_revision
                 WHERE outbox.state='exhausted'
-                  AND submission.status IN ('processing','action_required','manual_review')`);
+                  AND ${mediaRecoveryRequiredSql("submission")}`);
       }
       if (enabled.data) {
         queries.push(`SELECT 'data'::text AS subsystem,outbox.registration_operation_id AS operation_id,
                       outbox.outbox_id,outbox.workflow_revision::text,outbox.failure_code,
-                      CASE WHEN outbox.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+                      CASE WHEN operation.workflow_revision>=${DATA_WORKFLOW_MAX_REVISION}
                            THEN 'replacement_limit'
                            ELSE 'exhausted' END AS outcome
                  FROM data_registration_outbox outbox
