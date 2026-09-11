@@ -10,7 +10,10 @@ import {
   type PipelineLogFields,
   writePipelineHealthSnapshot,
 } from "../../../packages/platform-cf/src/alerts.ts";
-import { SONG_WORKFLOW_MAX_REVISION } from "./song-workflow-recovery-policy";
+import {
+  DATA_WORKFLOW_MAX_REVISION,
+  SONG_WORKFLOW_MAX_REPLACEMENTS,
+} from "./song-workflow-recovery-policy";
 
 type ExhaustedLaunch = Readonly<{
   subsystem: "media" | "data";
@@ -152,7 +155,7 @@ export function collectSongPipelineOutboxAlerts(
                       outbox.outbox_event_id AS outbox_id,
                       outbox.workflow_revision::text AS workflow_revision,
                       outbox.failure_code,
-                      CASE WHEN outbox.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+                      CASE WHEN submission.workflow_replacement_sequence>=${SONG_WORKFLOW_MAX_REPLACEMENTS}
                            THEN 'replacement_limit'
                            ELSE 'exhausted' END AS outcome
                  FROM media_submission_outbox outbox
@@ -166,7 +169,7 @@ export function collectSongPipelineOutboxAlerts(
       if (enabled.data) {
         queries.push(`SELECT 'data'::text AS subsystem,outbox.registration_operation_id AS operation_id,
                       outbox.outbox_id,outbox.workflow_revision::text,outbox.failure_code,
-                      CASE WHEN outbox.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+                      CASE WHEN operation.workflow_revision>=${DATA_WORKFLOW_MAX_REVISION}
                            THEN 'replacement_limit'
                            ELSE 'exhausted' END AS outcome
                  FROM data_registration_outbox outbox

@@ -51,7 +51,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 47;
+const testCount = 48;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -405,8 +405,8 @@ async function createThroughDecision(
           expectedAudioRevision: 1,
           lyrics: initialLyrics,
           outbox: {
-            outboxEventId: "media_pg_lyrics_outbox",
-            effectIdentity: "media_pg_lyrics_effect",
+            outboxEventId: key("media_pg_lyrics_outbox"),
+            effectIdentity: key("media_pg_lyrics_effect"),
             payload: {
               kind: "decision_wakeup",
               submission_id: submission,
@@ -924,6 +924,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             expect(durable).toMatchObject({
               status: "published",
               postId: `media-post-${operation}`,
+              replacementSequence: 0,
               publishedLyricsRevision: 1,
             });
           }
@@ -4886,6 +4887,101 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (await store.listWorkflowCandidates()).map((entry) => entry.submissionId),
       ).not.toContain(submission);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("advances and wraps the media inspection cursor beyond the first batch", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const publishPending = async (suffix: string): Promise<string> => {
+        const fixture = {
+          submission: `media_pg_cursor_${suffix}`,
+          operation: `media_pg_cursor_op_${suffix}`,
+          reservation: `media_pg_cursor_res_${suffix}`,
+        };
+        const caseAnalysis: TrustedSongAnalysis = {
+          ...analysis,
+          operationId: fixture.operation,
+          finalizedAudioRef: `media_pg_cursor_immutable_${suffix}`,
+          lyricsAnalysis: {
+            status: "ready",
+            lyricsRevision: 1,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: `cursor_lyrics_evidence_${suffix}`,
+            policyRevision: "cursor_lyrics_policy",
+            adapterRevision: "cursor_lyrics_adapter",
+          },
+          lyricsSafety: "allow",
+        };
+        const caseDecision: PublicationDecision = {
+          ...decision,
+          creationRevision: 3,
+          lyricsRevision: 1,
+        };
+        await createThroughDecision(
+          connection,
+          caseDecision,
+          caseAnalysis,
+          false,
+          `Cursor ${suffix} lyrics`,
+          false,
+          fixture,
+        );
+        const postId = `media-post-${fixture.operation}`;
+        await run(connection, (store) =>
+          store.publish({
+            communityId: community,
+            submissionId: fixture.submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            endpointTemplate: "/media-post-submissions/:submissionId/publish",
+            idempotencyKey: `${fixture.submission}-publish`,
+            requestHash,
+            responseBytes,
+            responseSha256,
+            expectedCreationRevision: 3,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            expectedDecisionRevision: 1,
+            postId,
+            outbox: {
+              outboxEventId: `media_pg_cursor_alignment_outbox_${suffix}`,
+              effectIdentity: `media_pg_cursor_alignment_effect_${suffix}`,
+              payload: {
+                kind: "alignment",
+                submission_id: fixture.submission,
+                operation_id: fixture.operation,
+                post_id: postId,
+                lyrics_revision: 1,
+                workflow_revision: 2,
+                workflow_instance_id: `media-${fixture.operation}-r2`,
+              },
+            },
+          }),
+        );
+        return fixture.submission;
+      };
+      const first = await publishPending("a");
+      const second = await publishPending("b");
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+        workflowCandidateLimit: 1,
+      });
+      const seen: string[] = [];
+      for (let tick = 0; tick < 3; tick += 1) {
+        const page = await store.listWorkflowCandidates();
+        expect(page).toHaveLength(1);
+        seen.push(page[0]?.submissionId ?? "");
+      }
+      expect(new Set([seen[0], seen[1]])).toEqual(new Set([first, second]));
+      expect(seen[2]).toBe(seen[0]);
+      expect(
+        (
+          await admin.query(
+            "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+          )
+        ).rows,
+      ).toHaveLength(1);
     });
     completedTestCount += 1;
   }, 40_000);

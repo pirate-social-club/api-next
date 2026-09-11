@@ -26423,6 +26423,15 @@ CREATE TABLE qualification_policy_versions (
     CONSTRAINT qualification_policy_versions_policy_document_check CHECK ((jsonb_typeof(policy_document) = 'object'::text))
 );
 
+CREATE TABLE recovery_inspection_cursors (
+    cursor_key text NOT NULL,
+    last_updated_at timestamp with time zone NOT NULL,
+    last_identifier text NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT recovery_inspection_cursors_cursor_key_check CHECK ((btrim(cursor_key) <> ''::text)),
+    CONSTRAINT recovery_inspection_cursors_last_identifier_check CHECK ((btrim(last_identifier) <> ''::text))
+);
+
 CREATE TABLE reward_activity_availability_observations (
     availability_observation_id text NOT NULL,
     community_id text NOT NULL,
@@ -29847,6 +29856,9 @@ ALTER TABLE ONLY qualification_policy_versions
 
 ALTER TABLE ONLY qualification_policy_versions
     ADD CONSTRAINT qualification_policy_versions_qualification_policy_version__key UNIQUE (qualification_policy_version_id, activity_key);
+
+ALTER TABLE ONLY recovery_inspection_cursors
+    ADD CONSTRAINT recovery_inspection_cursors_pkey PRIMARY KEY (cursor_key);
 
 ALTER TABLE ONLY reward_activity_availability_observations
     ADD CONSTRAINT reward_activity_availability__community_id_post_id_audio_re_key UNIQUE (community_id, post_id, audio_revision, activity_key, evidence_hash);

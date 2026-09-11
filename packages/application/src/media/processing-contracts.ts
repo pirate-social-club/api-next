@@ -122,6 +122,7 @@ export type MediaProcessingAuthority = Readonly<{
   readonly analysisRevision: number;
   readonly decisionRevision: number;
   readonly workflowRevision: number;
+  readonly replacementSequence: number;
   readonly retryCount: number;
   readonly status:
     | "processing"
@@ -516,7 +517,8 @@ export type MediaProcessingObservation = Readonly<{
     | "attempt_replayed"
     | "attempt_completed"
     | "attempt_failed"
-    | "workflow_replaced";
+    | "workflow_replaced"
+    | "workflow_lookup_failed";
   readonly operationId?: string;
   readonly submissionId?: string;
   readonly outboxId?: string;

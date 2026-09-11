@@ -13,6 +13,7 @@ export type MediaWorkflowSweepResult = Readonly<{
   readonly replaced: number;
   readonly stale: number;
   readonly limitReached: number;
+  readonly lookupFailed: number;
 }>;
 
 export type MediaWorkflowSweepDependencies = Readonly<{
@@ -38,16 +39,36 @@ export async function sweepMissingMediaWorkflows(
   dependencies: MediaWorkflowSweepDependencies,
 ): Promise<MediaWorkflowSweepResult> {
   const candidates = await dependencies.store.listWorkflowCandidates();
-  const result = { inspected: 0, present: 0, replaced: 0, stale: 0, limitReached: 0 };
+  const result = {
+    inspected: 0,
+    present: 0,
+    replaced: 0,
+    stale: 0,
+    limitReached: 0,
+    lookupFailed: 0,
+  };
   for (const candidate of candidates) {
     if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
       continue;
     result.inspected += 1;
-    if (songWorkflowReplacementLimitReached(candidate.workflowRevision)) {
+    if (songWorkflowReplacementLimitReached(candidate.replacementSequence)) {
       result.limitReached += 1;
       continue;
     }
-    if ((await dependencies.workflow.get(workflowInstanceId(candidate))) === "present") {
+    let workflowStatus: "present" | "missing";
+    try {
+      workflowStatus = await dependencies.workflow.get(workflowInstanceId(candidate));
+    } catch {
+      result.lookupFailed += 1;
+      dependencies.observe?.({
+        event: "workflow_lookup_failed",
+        operationId: candidate.operationId,
+        submissionId: candidate.submissionId,
+        workflowRevision: candidate.workflowRevision,
+      });
+      continue;
+    }
+    if (workflowStatus === "present") {
       result.present += 1;
       continue;
     }

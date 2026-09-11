@@ -390,6 +390,7 @@ export function makeMediaProcessingStore(
         state.analysis === null ? state.analysisRevision + 1 : state.analysisRevision,
       decisionRevision: state.decisionRevision,
       workflowRevision: state.workflowRevision,
+      replacementSequence: location.replacementSequence,
       retryCount: state.retryCount,
       status: state.status,
       phase:
@@ -854,19 +855,52 @@ export function makeMediaProcessingStore(
     ) {
       throw new MediaProcessingStoreError({ operation: "workflow", reason: "unavailable" });
     }
-    const identities = await run(
+    const rows = await run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* db.execute<Row>({
-          label: "media-processing.workflow-candidates",
-          text: `SELECT s.submission_id,s.operation_id FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ORDER BY s.updated_at,s.submission_id LIMIT $1`,
-          values: [workflowCandidateLimit],
+        const cursor = yield* db.execute<Row>({
+          label: "media-processing.workflow-cursor",
+          text: "SELECT last_updated_at::text AS last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+          values: [],
           readonly: true,
         });
+        const last = cursor.rows[0];
+        const page = (after: Row | undefined) =>
+          db.execute<Row>({
+            label: "media-processing.workflow-candidates",
+            text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ${
+              after === undefined
+                ? ""
+                : "AND (s.updated_at,s.submission_id)>($2::timestamptz,$3::text)"
+            } ORDER BY s.updated_at,s.submission_id LIMIT $1`,
+            values:
+              after === undefined
+                ? [workflowCandidateLimit]
+                : [workflowCandidateLimit, after.last_updated_at, after.last_identifier],
+            readonly: true,
+          });
+        const forward = yield* page(last);
+        if (forward.rows.length > 0) return forward.rows;
+        if (last === undefined) return [];
+        return (yield* page(undefined)).rows;
       }),
     );
+    const lastInspected = rows[rows.length - 1];
+    if (lastInspected !== undefined) {
+      await run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute({
+            label: "media-processing.workflow-cursor.advance",
+            text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier,updated_at) VALUES ('media',$1::timestamptz,$2::text,clock_timestamp()) ON CONFLICT (cursor_key) DO UPDATE SET last_updated_at=EXCLUDED.last_updated_at,last_identifier=EXCLUDED.last_identifier,updated_at=clock_timestamp()",
+            values: [lastInspected.updated_at, lastInspected.submission_id],
+            readonly: false,
+          });
+        }),
+      );
+    }
     const candidates: MediaProcessingAuthority[] = [];
-    for (const row of identities.rows) {
+    for (const row of rows) {
       if (!validId(row.submission_id) || !validId(row.operation_id)) {
         throw new MediaProcessingStoreError({ operation: "workflow", reason: "invalid-row" });
       }

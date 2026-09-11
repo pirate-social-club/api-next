@@ -13,7 +13,10 @@ import {
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 import type { SongPipelineEnablement } from "./song-pipeline-outbox-alerts.ts";
-import { SONG_WORKFLOW_MAX_REVISION } from "./song-workflow-recovery-policy.ts";
+import {
+  DATA_WORKFLOW_MAX_REVISION,
+  SONG_WORKFLOW_MAX_REPLACEMENTS,
+} from "./song-workflow-recovery-policy.ts";
 
 type Subsystem = "media" | "data";
 
@@ -104,7 +107,7 @@ const MEDIA_WORKFLOW_CEILING_ALERT_SQL = `SELECT submission.operation_id,
    AND launch.operation_id=submission.operation_id
    AND launch.workflow_revision=submission.workflow_revision
    AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
- WHERE submission.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+ WHERE submission.workflow_replacement_sequence>=${SONG_WORKFLOW_MAX_REPLACEMENTS}
    AND ${mediaRecoveryRequiredSql("submission")}
    AND launch.state IN ('delivered','exhausted')
  ORDER BY submission.updated_at,submission.operation_id
@@ -118,7 +121,7 @@ const DATA_WORKFLOW_CEILING_ALERT_SQL = `SELECT operation.registration_operation
     ON launch.registration_operation_id=operation.registration_operation_id
    AND launch.workflow_revision=operation.workflow_revision
    AND launch.workflow_instance_id=operation.workflow_instance_id
- WHERE operation.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+ WHERE operation.workflow_revision>=${DATA_WORKFLOW_MAX_REVISION}
    AND operation.state NOT IN ('registered','failed','reconciliation_required')
    AND launch.state IN ('delivered','exhausted')
  ORDER BY operation.updated_at,operation.registration_operation_id

@@ -314,6 +314,7 @@ TRUNCATE TABLE
   "proof_sessions",
   "public_handle_index",
   "qualification_policy_versions",
+  "recovery_inspection_cursors",
   "reward_activity_availability_observations",
   "reward_asset_whitelist",
   "reward_chain_effect_transitions",
