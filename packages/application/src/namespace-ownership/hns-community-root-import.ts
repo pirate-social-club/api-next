@@ -747,15 +747,23 @@ export const activateHnsCommunityRootImport = Effect.fn("activateHnsCommunityRoo
     const requestSha256 = yield* Effect.promise(() =>
       sha256({ version: "pirate-hns-community-root-import-activation-v1", ...input }),
     );
-    // The current-view read runs outside the activation transaction. The
-    // gather outcome is classified rather than collapsed: a confirmed conflict
-    // refuses as Conflict, unavailable evidence refuses as a provider failure
-    // with the exact classification retained for diagnostics, an operation
-    // with no lifecycle row passes no evidence so the repository keeps its
-    // missing-lifecycle handling, and only a gathered observation becomes the
-    // binding the transaction revalidates under its locks.
+    // An authenticated, digest-matching replay resolves through the
+    // repository's durable activation receipt before any chain observation:
+    // the observation accepted at the original activation remains the
+    // evidence, so a completed request is replayable while the provider is
+    // unavailable, the resource is absent or observation is disabled. A
+    // changed request identity still reaches the repository and keeps its
+    // conflict behavior.
+    // The current-view read runs outside the activation transaction for a
+    // fresh activation. The gather outcome is classified rather than
+    // collapsed: a confirmed conflict refuses as Conflict, unavailable
+    // evidence refuses as a provider failure with the exact classification
+    // retained for diagnostics, an operation with no lifecycle row passes no
+    // evidence so the repository keeps its missing-lifecycle handling, and
+    // only a gathered observation becomes the binding the transaction
+    // revalidates under its locks.
     const gathered =
-      services.currentView === undefined
+      replay || services.currentView === undefined
         ? null
         : yield* services
             .currentView({

@@ -530,6 +530,16 @@ describe("community HNS root import", () => {
     });
     expect(activationInputs).toHaveLength(0);
 
+    expect(
+      await run(() =>
+        Effect.succeed({ kind: "unavailable", classification: "malformed_response" } as never),
+      ),
+    ).toMatchObject({
+      reason: "provider_unavailable",
+      current_view_classification: "malformed_response",
+    });
+    expect(activationInputs).toHaveLength(0);
+
     expect(await run(() => Effect.succeed({ kind: "operation_absent" } as never))).toMatchObject({
       reason: "conflict",
     });
@@ -541,6 +551,115 @@ describe("community HNS root import", () => {
       current_view_classification: "transport_failure",
     });
     expect(activationInputs).toHaveLength(0);
+  });
+
+  test("resolves a completed identical replay before observing the chain", async () => {
+    const activated = {
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      revision: 6,
+      expires_at: "2099-01-01T00:00:00.000Z",
+      replayed: false,
+      status: "activated" as const,
+      publish_plan: null,
+      publish_plan_sha256: "a".repeat(64),
+      readiness_result_sha256: "b".repeat(64),
+      retry_after_seconds: null,
+    };
+    const authority = {
+      session: activated,
+      ceremony_intent_id: "ceremony-1",
+      namespace_session_id: "namespace-1",
+      ownership_expected_revision: 1,
+      challenge_txt_value: "pirate-verification=challenge",
+      provision_job_id: "provision-1",
+      ownership_result_sha256: "c".repeat(64),
+      provision_result_sha256: "d".repeat(64),
+    };
+    const request = {
+      actor_id: "actor-1",
+      actor_kind: "user" as const,
+      community_id: "community-1",
+      root_import_session_id: "root-import-1",
+      expected_revision: 5,
+      idempotency_key: "activate-completed",
+      publish_plan_sha256: "a".repeat(64),
+      readiness_result_sha256: "b".repeat(64),
+      acknowledged_complete_resource_replacement: true as const,
+    };
+    const original = {
+      creation_intent_id: "intent-1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      revision: 6,
+      status: "activated" as const,
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      app_host: "app.dankmemes",
+      dns_zone_activation_id: "dns-original",
+      dns_zone_activation_generation: 1 as const,
+      app_host_activation_id: "app-original",
+      app_host_activation_generation: 1 as const,
+      sale_namespace_activation_id: "sale-original",
+      sale_namespace_activation_generation: 1 as const,
+      sale_namespace_activation_sha256: "e".repeat(64),
+      handle_issuance_enabled: true as const,
+      replayed: true,
+    };
+    let observations = 0;
+    const activationInputs: { readonly current_evidence: unknown }[] = [];
+    const store = (activate: () => Effect.Effect<unknown, never>) => ({
+      get: () => Effect.succeed(activated),
+      loadPollAuthority: () => Effect.succeed(authority),
+      beginProvisioning: () => Effect.succeed({ kind: "conflict" as const }),
+      beginObservation: () => Effect.succeed({ kind: "conflict" as const }),
+      activate: (input: { readonly current_evidence: unknown }) => {
+        activationInputs.push(input);
+        return activate() as never;
+      },
+    });
+    const run = async (currentView: () => Effect.Effect<unknown, unknown>) =>
+      Effect.runPromise(
+        activateHnsCommunityRootImport(request, {
+          currentView: () => {
+            observations += 1;
+            return currentView() as never;
+          },
+          store: store(() =>
+            Effect.succeed({ kind: "replayed" as const, response: original }),
+          ) as never,
+        }),
+      );
+    for (const view of [
+      () => Effect.succeed({ kind: "unavailable", classification: "disabled" } as never),
+      () => Effect.succeed({ kind: "conflict", classification: "resource_absent" } as never),
+      () => Effect.fail(new Error("RPC unavailable")),
+    ]) {
+      expect(await run(view)).toEqual(original);
+    }
+    expect(observations).toBe(0);
+    expect(activationInputs).toHaveLength(3);
+    expect(activationInputs.every((input) => input.current_evidence === null)).toBe(true);
+
+    const changed = await Effect.runPromise(
+      activateHnsCommunityRootImport(
+        { ...request, idempotency_key: "activate-completed-other" },
+        {
+          currentView: () => {
+            observations += 1;
+            throw new Error("must not observe a changed identity");
+          },
+          store: store(() => Effect.succeed({ kind: "conflict" as const })) as never,
+        },
+      ).pipe(Effect.catchTag("HnsCommunityRootImportRejected", (error) => Effect.succeed(error))),
+    );
+    expect(changed).toMatchObject({
+      _tag: "HnsCommunityRootImportRejected",
+      reason: "conflict",
+    });
+    expect(observations).toBe(0);
   });
 
   test("does not disclose a session outside its community origin", async () => {
