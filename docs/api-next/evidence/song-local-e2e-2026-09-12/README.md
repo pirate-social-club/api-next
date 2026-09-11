@@ -43,4 +43,20 @@ tests and 181 workerd tests (80 general, 74 HTTP, 2 Self, 10 HNS verifier,
 evidence-file command processed zero files; the JSON receipt was parsed and
 compared directly instead.
 
-Browser outcomes will be appended after the bounded local run.
+The corrected API at 64f56114 served `GET /health` with HTTP 200 and
+`{"status":"ok"}`. Local launch passes public Privy JWKS/audience settings as
+explicit Wrangler vars because `secrets.required` filters undeclared entries
+from `.dev.vars`. Fresh local PEM keys are trimmed before serialization, as
+required by the existing session crypto validator. No production validator was
+weakened. The adjacent smoke receipt records this startup check.
+
+The first frontend build was stopped when native compiler RSS reached about
+5.5 GB despite a 2 GB JavaScript heap. A subsequent development run was
+contained in a systemd user scope with a 4 GB memory limit, no swap allowance
+and a two-core CPU quota. It hit that limit and was terminated within its own
+scope before serving the browser test. A final five-minute build with a
+smaller 1 GB JavaScript heap and the same OS cap is being checked. The local
+configuration overlay only supplies the public Privy app ID and localhost
+origins; tracked source in the b6cf294 export remains unchanged.
+
+No browser journey has run against this local pair yet.

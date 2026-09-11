@@ -1,0 +1,10 @@
+{
+  "api_commit": "64f5611413fef483b06ac962087b3770533993a3",
+  "checked_at": "2026-09-11T20:24:46.730149+00:00",
+  "target": "http://127.0.0.1:8788/health",
+  "status": 200,
+  "response": {
+    "status": "ok"
+  },
+  "scope": "Local Worker startup only; no browser journey or provider deployment."
+}
