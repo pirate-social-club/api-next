@@ -4,7 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.72.0",
   "sourceBranch": "feat/song-video-persistence-publication",
-  "wireContract": "Superset of 0.71.0 and main's 0.68.6. It carries the HNS root-import lifecycle projection that 0.68.6 added (optional lifecycle block with phase, bounded pending reason, deadline with kind, server time, observation summary, next_check_at with retry hint, permitted actions) alongside 0.71.0's PreflightSongVideoInterval operation. The song-video operations are unchanged from 0.71.0; the added fields are optional and older shapes remain valid. The rebase onto 4b9e84e6 merged the 0.68.6 client change that 0.71.0's immutable artifact predates, so a new release was required.",
+  "wireContract": "Superset of 0.71.0 and main's changes through 4b9e84e6. It adds comment reads (get_postsPostIdComments, with the ListPostComments aliases), song-playback access (post_postsPostIdSongPlaybackAccess, with the CreateSongPlaybackAccess aliases), and the HNS root-import lifecycle projection (optional lifecycle block with phase, bounded pending reason, deadline with kind, server time, observation summary, next_check_at with retry hint, permitted actions), alongside 0.71.0's PreflightSongVideoInterval operation. The song-video operations are unchanged from 0.71.0. The generated client decodes strictly, so a consumer still on 0.71.0 throws ApiClientResponseValidationError on an HNS response carrying lifecycle even though the field is optional on the wire; consumers must move to 0.72.0. The rebase merged the client changes that 0.71.0's immutable artifact predates, so a new release was required.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.72.0.tgz",
     "sha256": "1121c40d20465e390f3c7fb07665f3da2582159b216980fc8cca65f6882456f1"
@@ -18,6 +18,6 @@
     "clientSha256": "ec0a6671e8772a52ca40591988a359598d0ba48371ee8198eef0abf27d6cf24e"
   },
   "verification": {
-    "status": "Cut from the rebased branch on 4b9e84e6 with the renumbered migrations; generate:contracts, check:fresh and verify:api-client pass locally. The full required gates and the Solid rebuild are pending; the version takes the next free ordinal after 0.71.0 because that artifact is immutable and lacks main's 0.68.6 client change."
+    "status": "Cut from the rebased branch on 4b9e84e6 with the renumbered migrations; generate:contracts, check:fresh and verify:api-client pass locally. The Solid consumer is updated to this release in its own worktree: the app suite passes 741, the API suite 20, typecheck is clean, provenance and runtime-table digests are refreshed, and a decoder-level regression test covers an HNS response carrying lifecycle. The API pull request, the Solid pull request and the full required gates remain outstanding."
   }
 }
