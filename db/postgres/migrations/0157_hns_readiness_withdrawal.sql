@@ -185,11 +185,8 @@ BEGIN
   IF legacy.outcome = 'ready'
     AND NOT readiness_enabled
     AND lifecycle.root_import_session_id IS NOT NULL
+    AND lifecycle.phase IN ('checking_authority', 'ready')
   THEN
-    IF lifecycle.phase NOT IN ('checking_authority', 'ready') THEN
-      RAISE EXCEPTION
-        'HNS legacy readiness lifecycle phase conflict: %', lifecycle.phase;
-    END IF;
     readiness_event_id :=
       'readiness:legacy:' || input_observation_job_id || ':' ||
       input_lease_fence::TEXT || ':' || input_result_sha256;

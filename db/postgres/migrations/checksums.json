@@ -157,6 +157,6 @@
     "0154_hns_expiry_consumers.sql": "2cd4977a1f2f02e167d5ab38a2517c4531483e93109dd88f6496fbdb0776072a",
     "0155_hns_expiry_consumers_legacy.sql": "97dd927ef8710e26bcafbe46d80e7a3cb54594527a88a01eea6eae5d76de3db3",
     "0156_hns_readiness_deadline_guard_removal.sql": "e33e1eb284ca2ebb15957db9fdf72336b42b0c992f5c24110623d1545205f001",
-    "0157_hns_readiness_withdrawal.sql": "d49f8c29a137edd0c86a9bddb7942a4746e519140880f608663ad506a80749ff"
+    "0157_hns_readiness_withdrawal.sql": "fd1b2153652e53814c2f6811f2666a2576432f93b9677a15803bda1b63a530d0"
   }
 }
