@@ -1540,4 +1540,179 @@ suite("HNS readiness ownership and handover on PostgreSQL 17", () => {
     },
     BUDGET_MS,
   );
+
+  test(
+    "withdrawal returns readiness and the receiving executor advances both states",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "withdraw-session",
+          rootLabel: "withdraw-root",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await admin.query(
+          `INSERT INTO hns_root_import_observation_jobs
+             (observation_job_id, root_import_session_id, operation_kind, request_bytes,
+              request_sha256, state)
+           VALUES ('withdraw-legacy-job','withdraw-session','observe_root_v1','{}'::bytea,
+             encode(sha256('{}'::bytea),'hex'),'queued')`,
+        );
+        await enableMarker(admin);
+        await queueJob(admin, "withdraw-session", "observe_readiness");
+        const withdrawal = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM withdraw_hns_root_import_readiness_ownership_v1('reverse-receipt')`,
+        );
+        expect(withdrawal.rows[0]).toMatchObject({
+          outcome: "withdrawn",
+          dispositioned_jobs: "1",
+          queued_jobs: "1",
+        });
+        const marker = await admin.query<Record<string, unknown>>(
+          `SELECT enabled, enabled_at FROM hns_root_import_execution_ownership
+            WHERE responsibility='readiness'`,
+        );
+        expect(marker.rows[0]).toMatchObject({ enabled: false, enabled_at: null });
+        const readinessJob = await admin.query<Record<string, unknown>>(
+          `SELECT state, failure_code FROM hns_root_import_lifecycle_jobs
+            WHERE root_import_session_id='withdraw-session'
+              AND job_kind='observe_readiness'`,
+        );
+        expect(readinessJob.rows[0]).toMatchObject({
+          state: "failed",
+          failure_code: "readiness_ownership_withdrawn",
+        });
+        const legacy = await requireClaimLegacy(admin);
+        expect(legacy?.observation_job_id).toBe("withdraw-legacy-job");
+        const result = readinessResult("withdraw-session");
+        const finalized = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)`,
+          [
+            legacy?.observation_job_id,
+            "legacy-executor",
+            Number(legacy?.lease_fence),
+            legacy?.request_sha256,
+            result.bytes,
+            result.sha,
+          ],
+        );
+        expect(finalized.rows[0]).toMatchObject({ outcome: "ready" });
+        const state = await operationState(admin, "withdraw-session");
+        expect(state.lifecycle).toMatchObject({ phase: "ready" });
+        expect(state.lifecycle?.readiness_observed_at).not.toBeNull();
+        expect(state.session).toMatchObject({ status: "ready", revision: "4" });
+        const second = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM withdraw_hns_root_import_readiness_ownership_v1('reverse-receipt-2')`,
+        );
+        expect(second.rows[0]).toMatchObject({ outcome: "already_disabled" });
+        const forward = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM begin_hns_root_import_readiness_ownership_v1('re-handover')`,
+        );
+        expect(forward.rows[0]).toMatchObject({ outcome: "enabled" });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "withdrawal refuses a live lease and unsafe resumes with named reasons",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "withdraw-live-session",
+          rootLabel: "withdraw-live-root",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await admin.query(
+          `INSERT INTO hns_root_import_observation_jobs
+             (observation_job_id, root_import_session_id, operation_kind, request_bytes,
+              request_sha256, state)
+           VALUES ('withdraw-live-legacy','withdraw-live-session','observe_root_v1','{}'::bytea,
+             encode(sha256('{}'::bytea),'hex'),'queued')`,
+        );
+        await enableMarker(admin);
+        await queueJob(admin, "withdraw-live-session", "observe_readiness");
+        await requireClaimLifecycle(admin);
+        const live = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM withdraw_hns_root_import_readiness_ownership_v1('live-receipt')`,
+        );
+        expect(live.rows[0]).toMatchObject({ outcome: "live_lease_present" });
+        const marker = await admin.query<Record<string, unknown>>(
+          `SELECT enabled FROM hns_root_import_execution_ownership
+            WHERE responsibility='readiness'`,
+        );
+        expect(marker.rows[0]?.enabled).toBe(true);
+
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle_jobs
+              SET state='queued', leased_by=NULL, lease_expires_at=NULL
+            WHERE root_import_session_id='withdraw-live-session'
+              AND job_kind='observe_readiness'`,
+        );
+
+        await admin.query("BEGIN");
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle SET generation=2
+            WHERE root_import_session_id='withdraw-live-session'`,
+        );
+        await admin.query("COMMIT");
+        const adopted = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM withdraw_hns_root_import_readiness_ownership_v1('adopted-receipt')`,
+        );
+        expect(adopted.rows[0]).toMatchObject({
+          outcome: "receiver_cannot_resume_adopted_generation",
+        });
+
+        await admin.query("BEGIN");
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET generation=1, phase='ready',
+                  readiness_observed_at=clock_timestamp() - interval '2 hours'
+            WHERE root_import_session_id='withdraw-live-session'`,
+        );
+        await admin.query("COMMIT");
+        const refresh = await admin.query<Record<string, unknown>>(
+          `SELECT * FROM withdraw_hns_root_import_readiness_ownership_v1('refresh-receipt')`,
+        );
+        expect(refresh.rows[0]).toMatchObject({
+          outcome: "receiver_cannot_resume_ready_refresh",
+        });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the disabled marker gates lifecycle readiness claims after withdrawal",
+    async () => {
+      await withSchema(async (admin) => {
+        await seedOwners(admin);
+        await seedOperation(admin, {
+          session: "withdraw-gate-session",
+          rootLabel: "withdraw-gate-root",
+          withLifecycle: true,
+          lifecyclePhase: "checking_authority",
+        });
+        await admin.query(
+          `INSERT INTO hns_root_import_observation_jobs
+             (observation_job_id, root_import_session_id, operation_kind, request_bytes,
+              request_sha256, state)
+           VALUES ('withdraw-gate-legacy','withdraw-gate-session','observe_root_v1','{}'::bytea,
+             encode(sha256('{}'::bytea),'hex'),'queued')`,
+        );
+        await enableMarker(admin);
+        await admin.query(
+          `SELECT * FROM withdraw_hns_root_import_readiness_ownership_v1('gate-receipt')`,
+        );
+        await queueJob(admin, "withdraw-gate-session", "observe_readiness");
+        expect(await claimLifecycle(admin)).toBeUndefined();
+      });
+    },
+    BUDGET_MS,
+  );
 });
