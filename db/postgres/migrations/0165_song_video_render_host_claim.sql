@@ -7,7 +7,7 @@
 ALTER TABLE media_song_video_render_attempts
   ADD COLUMN execution_claim_id TEXT CHECK (
     execution_claim_id IS NULL
-    OR (length(execution_claim_id) BETWEEN 1 AND 128 AND btrim(execution_claim_id) = execution_claim_id)
+    OR (length(execution_claim_id) >= 1 AND length(execution_claim_id) <= 128 AND btrim(execution_claim_id) = execution_claim_id)
   ),
   ADD COLUMN execution_claimed_at TIMESTAMPTZ CHECK (
     execution_claimed_at IS NULL OR isfinite(execution_claimed_at)

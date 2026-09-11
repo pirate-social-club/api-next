@@ -26884,7 +26884,7 @@ CREATE TABLE media_song_video_render_attempts (
     CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK (((length(attempt_id) >= 1) AND (length(attempt_id) <= 128) AND (btrim(attempt_id) = attempt_id))),
     CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
     CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
-    CONSTRAINT media_song_video_render_attempts_execution_claim_id_check CHECK (((execution_claim_id IS NULL) OR (((length(execution_claim_id) >= 1) AND (length(execution_claim_id) <= 128)) AND (btrim(execution_claim_id) = execution_claim_id)))),
+    CONSTRAINT media_song_video_render_attempts_execution_claim_id_check CHECK (((execution_claim_id IS NULL) OR ((length(execution_claim_id) >= 1) AND (length(execution_claim_id) <= 128) AND (btrim(execution_claim_id) = execution_claim_id)))),
     CONSTRAINT media_song_video_render_attempts_execution_claimed_at_check CHECK (((execution_claimed_at IS NULL) OR isfinite(execution_claimed_at))),
     CONSTRAINT media_song_video_render_attempts_execution_phase_check CHECK ((execution_phase = ANY (ARRAY['recorded'::text, 'submitting'::text, 'submitted'::text]))),
     CONSTRAINT media_song_video_render_attempts_execution_refusal_reason_check CHECK (((execution_refusal_reason IS NULL) OR (btrim(execution_refusal_reason) <> ''::text))),

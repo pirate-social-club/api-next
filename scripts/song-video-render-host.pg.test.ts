@@ -33,7 +33,15 @@ import { runPostgresMigrations } from "./postgres-migrations.ts";
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
-const suite = connectionString ? describe : describe.skip;
+const ffmpegAvailable = Bun.which("ffmpeg") !== null;
+const version = ffmpegAvailable
+  ? Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
+const pinned =
+  version !== null &&
+  version.exitCode === 0 &&
+  new TextDecoder().decode(version.stdout).startsWith("ffmpeg version 6.1.1");
+const suite = connectionString !== undefined && pinned ? describe : describe.skip;
 
 const SONG_POST = "post-son-video-host";
 const SONG_ASSET = "media://immutable/media-operation-song-host/audio/1";
