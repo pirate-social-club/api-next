@@ -22,6 +22,9 @@ import type { LocalSongVideoEngine } from "./song-video-ffmpeg.ts";
 
 export type LocalVersionedMasterStore = SongVideoOutputStore & SongVideoOutputWriter;
 
+/** What the renderer needs from the host store: write once, read back. */
+export type LocalRenderOutput = SongVideoOutputWriter & Pick<SongVideoOutputStore, "read">;
+
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -68,7 +71,7 @@ type LocalRenderEngine = Pick<LocalSongVideoEngine, "identity" | "policyRevision
 export function makeLocalSongVideoRenderer(
   input: Readonly<{
     engine: LocalRenderEngine;
-    output: LocalVersionedMasterStore;
+    output: LocalRenderOutput;
     evidence: SongVideoExecutionEvidenceStore;
   }>,
 ): SongVideoRenderer {

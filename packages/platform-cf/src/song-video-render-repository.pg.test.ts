@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { loadHostRenderFacts } from "../../../scripts/song-video-render-host.ts";
 import {
   acceptMaster,
   persistRenderPlan,
@@ -944,6 +945,46 @@ suite("song video render persistence", () => {
       [registered.verified_object_key],
     );
     expect(rows.rows[0]?.n).toBe(1);
+  }, 120_000);
+
+  test("loads a dispatched attempt's frozen facts for the render host", async () => {
+    await bindPlan("plan-host-facts");
+    await startRenderAttempt(
+      client,
+      { attemptId: "attempt-host-facts", planId: "plan-host-facts", generation: 1 },
+      dispatchFor("attempt-host-facts"),
+    );
+    // The workflow records the intent to execute before the host is handed the
+    // attempt; the host only ever sees started/submitting.
+    await client.query(
+      `UPDATE media_song_video_render_attempts
+          SET execution_phase='submitting', execution_started_at=clock_timestamp()
+        WHERE attempt_id='attempt-host-facts'`,
+    );
+    expect(await loadHostRenderFacts(client, "plan-host-facts", "attempt-host-facts")).toEqual({
+      planId: "plan-host-facts",
+      attemptId: "attempt-host-facts",
+      generation: 1,
+      outputObjectKey: "master-object/attempt-host-facts",
+      source: {
+        immutableRef: sourceImmutableRef,
+        sha256: storedSourceSha256,
+        byteLength: 1_024,
+      },
+      song: {
+        assetRef: song.audioAssetRef,
+        sha256: song.canonicalAudioSha256,
+        durationSamples: Number(song.durationSamples),
+      },
+      clipStartSamples: basePlan.clipStartSamples,
+      clipDurationSamples: basePlan.clipDurationSamples,
+    });
+    // A concluded attempt is not offered to the host again.
+    await client.query(
+      `UPDATE media_song_video_render_attempts SET state='abandoned'
+        WHERE attempt_id='attempt-host-facts'`,
+    );
+    expect(await loadHostRenderFacts(client, "plan-host-facts", "attempt-host-facts")).toBeNull();
   }, 120_000);
 
   test("records one execution outcome per attempt and refuses a replaced record", async () => {
