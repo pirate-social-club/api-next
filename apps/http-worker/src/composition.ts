@@ -264,6 +264,15 @@ export interface HttpWorkerBindings
   readonly HNS_ACTIVATION_CURRENT_VIEW_ENABLED?: string;
   readonly HNS_AUTHORITY_HSD_RPC_URL?: string;
   readonly HNS_AUTHORITY_HSD_AUTHORIZATION?: string;
+  /**
+   * The private HSD read route. A Cloudflare VPC service binding; its fetch
+   * must be invoked on the binding, so composition passes it bound. Absent
+   * keeps the derived observer on global fetch, which only works when the
+   * configuration points at a publicly reachable endpoint.
+   */
+  readonly HNS_AUTHORITY_HSD?: {
+    readonly fetch: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
+  };
   readonly HNS_AUTHORITY_CHAIN_NETWORK?: string;
   readonly HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH?: string;
   readonly HNS_AUTHORITY_TREE_INTERVAL_BLOCKS?: string;
@@ -1069,6 +1078,9 @@ export async function createProductionHttpWorker(
   const activationCurrentView = makeProductionHnsActivationCurrentView(
     controlPlane,
     config.HNS_ACTIVATION_CURRENT_VIEW,
+    bindings.HNS_AUTHORITY_HSD === undefined
+      ? undefined
+      : bindings.HNS_AUTHORITY_HSD.fetch.bind(bindings.HNS_AUTHORITY_HSD),
   );
   const hnsCommunityServices:
     | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">

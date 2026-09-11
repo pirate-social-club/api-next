@@ -228,7 +228,16 @@ export function makePostgresHnsRootObservationQueue(
         const row = result.rows[0];
         const revision =
           row?.session_revision === null ? null : positiveInteger(row?.session_revision);
-        const outcomes = ["ready", "retry", "failed", "replayed", "conflict", "lost", "not_found"];
+        const outcomes = [
+          "ready",
+          "retry",
+          "failed",
+          "replayed",
+          "conflict",
+          "lost",
+          "not_found",
+          "ownership_conflict",
+        ];
         if (
           row === undefined ||
           typeof row.outcome !== "string" ||

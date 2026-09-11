@@ -4129,7 +4129,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
+CREATE FUNCTION finalize_hns_root_import_observation_job_legacy_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
@@ -4363,6 +4363,148 @@ BEGIN
      WHERE observation_job_id = input_observation_job_id;
     RETURN QUERY SELECT 'retry'::TEXT, session.root_import_session_id, session.revision;
   END IF;
+END;
+$_$;
+
+CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  readiness_enabled BOOLEAN;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  job_session TEXT;
+  legacy RECORD;
+  committed RECORD;
+  database_now TIMESTAMPTZ;
+  observed_at TIMESTAMPTZ;
+  result JSONB;
+  readiness_event_id TEXT;
+BEGIN
+  IF input_observation_job_id IS NULL
+    OR btrim(input_observation_job_id) IS DISTINCT FROM input_observation_job_id
+    OR input_executor_id IS NULL
+    OR input_lease_fence IS NULL
+    OR input_outcome IS NULL
+  THEN
+    RETURN QUERY SELECT 'ownership_conflict'::TEXT, NULL::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
+
+  IF NOT readiness_enabled THEN
+    SELECT observation.root_import_session_id INTO job_session
+      FROM hns_root_import_observation_jobs AS observation
+     WHERE observation.observation_job_id = input_observation_job_id;
+    IF job_session IS NOT NULL THEN
+      SELECT * INTO lifecycle FROM hns_root_import_lifecycle AS selected_lifecycle
+       WHERE selected_lifecycle.root_import_session_id = job_session
+       FOR UPDATE;
+    END IF;
+    IF lifecycle.root_import_session_id IS NOT NULL
+      AND lifecycle.phase IN ('checking_authority', 'ready')
+    THEN
+      SELECT * INTO session FROM hns_root_import_sessions AS selected_session
+       WHERE selected_session.root_import_session_id = job_session
+       FOR UPDATE;
+      database_now := clock_timestamp();
+
+      -- Under withdrawn ownership only a readiness acceptance can advance a
+      -- lifecycle-managed operation. Every other outcome is refused before the
+      -- legacy finalizer mutates anything: failure and attempt exhaustion
+      -- preserve lifecycle ownership for a forward handover instead of
+      -- desynchronizing the session from the lifecycle row.
+      IF input_outcome IS DISTINCT FROM 'ready' THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      IF lifecycle.phase NOT IN ('checking_authority', 'ready')
+        OR lifecycle.generation <> 1
+        OR lifecycle.plan_encoded_resource_sha256 IS NULL
+        OR session.publish_plan_sha256 IS NULL
+        OR input_result_bytes IS NULL
+        OR input_result_sha256 IS NULL
+        OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+        OR encode(sha256(input_result_bytes), 'hex') IS DISTINCT FROM input_result_sha256
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      BEGIN
+        result := convert_from(input_result_bytes, 'UTF8')::JSONB;
+      EXCEPTION WHEN others THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END;
+      IF result->>'root_import_session_id' IS DISTINCT FROM job_session
+        OR result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+      BEGIN
+        observed_at := (result->>'observed_at')::TIMESTAMPTZ;
+      EXCEPTION WHEN others THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END;
+      IF observed_at IS NULL
+        OR observed_at > database_now
+        OR observed_at <= database_now - interval '1800 seconds'
+      THEN
+        RETURN QUERY SELECT 'ownership_conflict'::TEXT, job_session, session.revision;
+        RETURN;
+      END IF;
+    END IF;
+  END IF;
+
+  SELECT * INTO legacy FROM finalize_hns_root_import_observation_job_legacy_v1(
+    input_observation_job_id,
+    input_executor_id,
+    input_lease_fence,
+    input_request_sha256,
+    input_outcome,
+    input_result_bytes,
+    input_result_sha256,
+    input_failure_code
+  );
+
+  IF legacy.outcome = 'ready'
+    AND NOT readiness_enabled
+    AND lifecycle.root_import_session_id IS NOT NULL
+    AND lifecycle.phase IN ('checking_authority', 'ready')
+  THEN
+    readiness_event_id :=
+      'readiness:legacy:' || input_observation_job_id || ':' ||
+      input_lease_fence::TEXT || ':' || input_result_sha256;
+    SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+      lifecycle.root_import_session_id,
+      lifecycle.revision,
+      readiness_event_id,
+      'readiness_observed',
+      'transition',
+      'readiness_retained',
+      'ready',
+      jsonb_build_object(
+        'readiness_observed_at', database_now,
+        'next_check_at', database_now + interval '1800 seconds',
+        'pending_reason', NULL
+      ),
+      '[]'::jsonb
+    );
+    IF committed.outcome IS DISTINCT FROM 'transition' THEN
+      RAISE EXCEPTION
+        'HNS legacy readiness lifecycle decision failed: %', committed.outcome;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT
+    legacy.outcome, legacy.root_import_session_id, legacy.session_revision;
 END;
 $_$;
 
@@ -21486,6 +21628,138 @@ BEGIN
     RAISE EXCEPTION 'moderation case must match the submission review reference';
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION withdraw_hns_root_import_readiness_ownership_v1(input_evidence_ref text) RETURNS TABLE(outcome text, dispositioned_jobs bigint, queued_jobs bigint, disabled_at timestamp with time zone)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  marker hns_root_import_execution_ownership%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  dispositioned BIGINT := 0;
+  queued BIGINT := 0;
+  blocker TEXT;
+BEGIN
+  IF input_evidence_ref IS NULL
+    OR btrim(input_evidence_ref) IS DISTINCT FROM input_evidence_ref
+    OR octet_length(input_evidence_ref) NOT BETWEEN 1 AND 512
+  THEN
+    RAISE EXCEPTION 'invalid HNS readiness withdrawal evidence';
+  END IF;
+
+  SELECT * INTO marker FROM hns_root_import_execution_ownership
+   WHERE responsibility = 'readiness'
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'marker_absent'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+  IF NOT marker.enabled THEN
+    RETURN QUERY SELECT 'already_disabled'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+
+  -- The common lock order is already held: the marker FOR UPDATE excludes
+  -- every claim and finalizer that takes the marker FOR SHARE, so no claim
+  -- can be granted between this check and the marker update below. A live
+  -- conflicting lease refuses withdrawal with state unchanged.
+  IF EXISTS (
+    SELECT 1
+      FROM hns_root_import_observation_jobs AS job
+      JOIN hns_root_import_lifecycle AS lifecycle
+        ON lifecycle.root_import_session_id = job.root_import_session_id
+     WHERE job.operation_kind = 'observe_root_v1'
+       AND job.state = 'leased'
+       AND job.lease_expires_at > database_now
+  ) OR EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_jobs AS job
+     WHERE job.state = 'leased'
+       AND job.lease_expires_at > database_now
+       AND job.job_kind IN ('observe_current', 'observe_safe', 'observe_readiness')
+  ) THEN
+    RETURN QUERY SELECT 'live_lease_present'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+
+  -- Terminal-only receiver eligibility. An operation in any live phase can
+  -- later need readiness the legacy receiver cannot serve: a fresh `ready`
+  -- operation can go stale, a `waiting_safe_commitment` operation needs
+  -- readiness after safe commitment, and an adopted generation in an earlier
+  -- phase would escape a readiness-only check. Each phase therefore refuses
+  -- by name and preserves ownership. Operations created after withdrawal are
+  -- initial-readiness only; a stale-ready refresh requires a forward handover.
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'preparing'
+    ) THEN 'receiver_cannot_continue_preparing'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'awaiting_publication'
+    ) THEN 'receiver_cannot_continue_awaiting_publication'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'checking_publication'
+    ) THEN 'receiver_cannot_continue_checking_publication'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'waiting_safe_commitment'
+    ) THEN 'receiver_cannot_continue_waiting_safe_commitment'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'checking_authority'
+    ) THEN 'receiver_cannot_continue_checking_authority'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'ready'
+    ) THEN 'receiver_cannot_continue_ready'
+    WHEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.phase = 'recovery_required'
+    ) THEN 'receiver_cannot_continue_recovery_required'
+    ELSE NULL
+  END INTO blocker;
+  IF blocker IS NOT NULL THEN
+    RETURN QUERY SELECT blocker, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+
+  UPDATE hns_root_import_lifecycle_jobs AS job
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'readiness_ownership_withdrawn',
+         completed_at = database_now, updated_at = database_now
+   WHERE job.job_kind = 'observe_readiness'
+     AND (
+       job.state = 'queued'
+       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+     );
+  GET DIAGNOSTICS dispositioned = ROW_COUNT;
+
+  -- One legacy observation row exists per session, so this is exactly-once
+  -- replacement work for the receiver and a replay of the withdrawal changes
+  -- nothing because the marker is already disabled.
+  UPDATE hns_root_import_observation_jobs AS observation
+     SET state = 'queued', attempt_count = 0, leased_by = NULL,
+         lease_expires_at = NULL, result_bytes = NULL, result_sha256 = NULL,
+         failure_code = NULL, completed_at = NULL, updated_at = database_now
+   WHERE observation.operation_kind = 'observe_root_v1'
+     AND EXISTS (
+       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+        WHERE lifecycle.root_import_session_id = observation.root_import_session_id
+          AND lifecycle.phase = 'checking_authority'
+     );
+  GET DIAGNOSTICS queued = ROW_COUNT;
+
+  UPDATE hns_root_import_execution_ownership
+     SET enabled = FALSE,
+         enabled_at = NULL,
+         evidence_ref = input_evidence_ref,
+         updated_at = database_now
+   WHERE responsibility = 'readiness';
+
+  RETURN QUERY SELECT 'withdrawn'::TEXT, dispositioned, queued, database_now;
 END;
 $$;
 
