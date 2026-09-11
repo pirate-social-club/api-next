@@ -231,8 +231,11 @@ export function makePostgresHnsRootImportLifecycleQueue(
             return { outcome: "failed" as const, reason: "reconcile_lifecycle_invalid" };
           }
           // The failure being reconciled is the decision that requested this
-          // exact job; its history row carries the concrete failed job, and
-          // that job's kind names the failed responsibility.
+          // exact job. The decision writer inserts its requested-work rows
+          // before its own history row, so the scheduling decision's
+          // `recorded_at` follows the job's `created_at`; the first matching
+          // history row at or after creation is that decision, and the locked
+          // lifecycle row makes interleaving decisions impossible.
           const failed = await client.query<Record<string, unknown>>(
             `SELECT failed.job_kind AS failed_job_kind
                FROM hns_root_import_lifecycle_history AS history
@@ -240,8 +243,8 @@ export function makePostgresHnsRootImportLifecycleQueue(
                  ON failed.lifecycle_job_id = history.lifecycle_job_id
               WHERE history.root_import_session_id=$1
                 AND history.requested_work @> '[{"kind":"reconcile_provider"}]'::jsonb
-                AND history.recorded_at <= $2
-              ORDER BY history.recorded_at DESC, history.history_id DESC
+                AND history.recorded_at >= $2
+              ORDER BY history.recorded_at ASC, history.history_id ASC
               LIMIT 1`,
             [job.root_import_session_id, claimedAt],
           );

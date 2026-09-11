@@ -80,6 +80,14 @@ async function seedReconcileFixture(
        ) RETURNING lifecycle_job_id`,
       [input.failedKind],
     );
+    // The decision writer inserts requested work before its own history row,
+    // so the reconcile job is seeded first and the failure history row after
+    // it. The routing lookup must bind to the scheduling decision from that
+    // ordering, not from a history row that happens to precede the job.
+    await admin.query(
+      `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at, generation)
+       VALUES ('reconcile-session','reconcile_provider',clock_timestamp() - interval '1 second',1)`,
+    );
     await admin.query(
       `INSERT INTO hns_root_import_lifecycle_history (
          root_import_session_id, event_id, event_name, outcome, prior_phase, new_phase,
@@ -92,13 +100,9 @@ async function seedReconcileFixture(
            'kind','reconcile_provider',
            'due_at',(clock_timestamp() - interval '1 second')
          )),
-         3, clock_timestamp() - interval '1 minute', $2, 0, 1
+         3, clock_timestamp(), $2, 0, 1
        )`,
       [input.phase, Number(failed.rows[0]?.lifecycle_job_id)],
-    );
-    await admin.query(
-      `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at, generation)
-       VALUES ('reconcile-session','reconcile_provider',clock_timestamp() - interval '1 second',1)`,
     );
     await admin.query("COMMIT");
   } catch (error) {
