@@ -31,6 +31,7 @@ beforeEach(async () => {
     expiresAtMs: Date.now() + 60_000,
     object: {
       key,
+      identity: "upload_version",
       version: object.version,
       etag: object.etag,
       size: object.size,

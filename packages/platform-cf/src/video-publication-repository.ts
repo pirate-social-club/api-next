@@ -2738,8 +2738,8 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
           text: `INSERT INTO media_immutable_objects
             (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,
              operation_id,destination_ref,etag,object_version,size_bytes,content_type,
-             canonical_sha256,author_persona_id)
-            VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,'video/mp4',$10,$11)
+             canonical_sha256,author_persona_id,identity_kind)
+            VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,'video/mp4',$10,$11,'content_etag')
             ON CONFLICT (immutable_ref) DO NOTHING`,
           values: [
             accepted.masterRef,

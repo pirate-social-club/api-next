@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import { Client } from "pg";
+import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
 import { makeR2SongVideoOutputStore } from "../packages/platform-cf/src/song-video-master-store.ts";
 import { startRenderAttempt } from "../packages/platform-cf/src/song-video-render-repository.ts";
 import {
@@ -15,6 +16,12 @@ import {
   songReferenceFinalizedFixture,
   community as videoCommunity,
 } from "../packages/platform-cf/src/video-publication.pg-fixture.ts";
+import {
+  makeVideoSourceGateway,
+  type VideoSourceBucket,
+} from "../packages/platform-cf/src/video-source-gateway.ts";
+import { makeVideoSourceGrantIssuer } from "../packages/platform-cf/src/video-source-grant-issuer.ts";
+import { makeVideoSourceGrantResolver } from "../packages/platform-cf/src/video-source-grant-resolver.ts";
 import { runPostgresMigrations } from "./postgres-migrations.ts";
 
 /**
@@ -33,7 +40,7 @@ const SONG_ASSET = "media://immutable/media-operation-song-host/audio/1";
 const BUCKET = "media-immutable-originals";
 const CLIP_DURATION = 4 * 48_000;
 
-type StoredObject = { bytes: Uint8Array; etag: string };
+type StoredObject = { bytes: Uint8Array; etag: string; version: string };
 
 async function ffmpegTool(args: readonly string[]): Promise<void> {
   const child = Bun.spawn(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", ...args], {
@@ -80,6 +87,9 @@ suite("song-video render host entry point", () => {
   let planId = "";
   let attemptId = "";
   let songSha = "";
+  let operationId = "";
+  let captureSha = "";
+  let captureSize = 0;
 
   beforeAll(async () => {
     await admin.connect();
@@ -124,8 +134,9 @@ suite("song-video render host entry point", () => {
     const song = new Uint8Array(await readFile(join(directory, "song.mp3")));
     const capture = new Uint8Array(await readFile(join(directory, "capture.mp4")));
     songSha = await mediaSha256Bytes(song);
+    captureSha = await mediaSha256Bytes(capture);
+    captureSize = capture.byteLength;
     const songDuration = await decodedSampleCount(directory, song);
-    const captureSha = await mediaSha256Bytes(capture);
     const songFixture: PublishedSongFixture = {
       songPostId: SONG_POST,
       communityId: videoCommunity,
@@ -146,6 +157,7 @@ suite("song-video render host entry point", () => {
       submissionId: "media-submission-host-entry",
       operationId: "media-operation-host-entry",
     };
+    operationId = identity.operationId;
     await songReferenceFinalizedFixture(scoped.toString(), {
       identity,
       planId,
@@ -171,13 +183,17 @@ suite("song-video render host entry point", () => {
     );
     // The bucket holds the sealed capture and the canonical song under the same
     // physical keys the production adapters derive from their references.
+    // The fixture's sealed capture carries its recorded upload identity; the
+    // fake bucket must expose exactly those values for the original check.
     objects.set(`immutable/${identity.operationId}/video/1`, {
       bytes: capture,
-      etag: "capture-etag",
+      etag: `immutable-etag-${identity.submissionId}`,
+      version: `immutable-version-${identity.submissionId}`,
     });
     objects.set(SONG_ASSET.replace("media://immutable/", "immutable/"), {
       bytes: song,
       etag: "song-etag",
+      version: "song-version",
     });
     server = Bun.serve({
       port: 0,
@@ -202,11 +218,9 @@ suite("song-video render host entry point", () => {
           if (stored !== undefined) return new Response(null, { status: 412 });
           const bytes = new Uint8Array(await request.arrayBuffer());
           putCount += 1;
-          objects.set(key, { bytes, etag: createHash("sha256").update(bytes).digest("hex") });
-          return new Response(null, {
-            status: 200,
-            headers: { etag: `"${createHash("sha256").update(bytes).digest("hex")}"` },
-          });
+          const etag = createHash("sha256").update(bytes).digest("hex");
+          objects.set(key, { bytes, etag, version: `r2-upload-${putCount}` });
+          return new Response(null, { status: 200, headers: { etag: `"${etag}"` } });
         }
         return new Response(null, { status: 405 });
       },
@@ -233,6 +247,40 @@ suite("song-video render host entry point", () => {
       SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "test-access-key",
       SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "test-secret-key",
       SONG_VIDEO_RENDER_R2_ENDPOINT: endpoint,
+    };
+  }
+
+  function sourceBucket(): VideoSourceBucket {
+    const identity = (key: string) => {
+      const entry = objects.get(key);
+      if (entry === undefined) return null;
+      return {
+        key,
+        version: entry.version,
+        etag: entry.etag,
+        size: entry.bytes.byteLength,
+        httpMetadata: { contentType: "video/mp4" as const },
+      };
+    };
+    return {
+      head: async (key) => identity(key),
+      get: async (key, options) => {
+        const id = identity(key);
+        if (id === null || id.etag !== options.onlyIf.etagMatches) return null;
+        const bytes = objects.get(key)?.bytes ?? new Uint8Array();
+        const range = options.range;
+        const selected =
+          range === undefined ? bytes : bytes.slice(range.offset, range.offset + range.length);
+        return {
+          ...id,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(selected);
+              controller.close();
+            },
+          }),
+        };
+      },
     };
   }
 
@@ -312,5 +360,75 @@ suite("song-video render host entry point", () => {
       [planId],
     );
     expect(count.rows[0]?.n).toBe(1);
+
+    // The real grant and gateway path. Publication registers the accepted
+    // master as a content-identified immutable object; a stream grant is
+    // issued for it; the gateway HEADs and range-reads the accepted bytes.
+    const layer = makeDirectPostgresControlPlaneLayer(scoped.toString());
+    const captureRef = `media://immutable/${operationId}/video/1`;
+    const capturePhysical = `immutable/${operationId}/video/1`;
+    const masterPhysical = masterKey.replace("media://immutable/", "immutable/");
+    const masterSha = await mediaSha256Bytes(stored.bytes);
+    await client.query(
+      `INSERT INTO media_immutable_objects
+         (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,operation_id,
+          destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,
+          author_persona_id,identity_kind)
+       SELECT $1,community_id,actor_user_id,NULL,submission_id,operation_id,$2,$3,$4,$5,
+              'video/mp4',$6,author_persona_id,'content_etag'
+         FROM media_immutable_objects WHERE immutable_ref=$7
+       ON CONFLICT (immutable_ref) DO NOTHING`,
+      [
+        masterKey,
+        `r2://${masterPhysical}`,
+        stored.etag,
+        stored.etag,
+        stored.bytes.byteLength,
+        masterSha,
+        captureRef,
+      ],
+    );
+    const issuer = makeVideoSourceGrantIssuer(layer, "https://media.example", "stream");
+    const grant = await issuer.issue({
+      objectKey: masterPhysical,
+      sha256: masterSha,
+      byteLength: stored.bytes.byteLength,
+      mediaType: "video/mp4",
+      requestId: "host-entry-stream",
+      expiresAtMs: Date.now() + 60_000,
+    });
+    const gateway = makeVideoSourceGateway({
+      bucket: sourceBucket(),
+      grants: makeVideoSourceGrantResolver(layer),
+      now: Date.now,
+    });
+    const head = await gateway(new Request(grant.url, { method: "HEAD" }));
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe(String(stored.bytes.byteLength));
+    const ranged = await gateway(new Request(grant.url, { headers: { range: "bytes=0-9" } }));
+    expect(ranged.status).toBe(206);
+    expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(stored.bytes.slice(0, 10));
+    // Changed content at the master's address is refused.
+    const masterEntry = objects.get(masterPhysical);
+    if (masterEntry === undefined) throw new Error("master object missing");
+    masterEntry.etag = "mutated-etag";
+    expect((await gateway(new Request(grant.url, { method: "HEAD" }))).status).toBe(409);
+    masterEntry.etag = stored.etag;
+
+    // An original upload keeps its version check: a replacement version with
+    // the same ETag is still refused.
+    const captureGrant = await issuer.issue({
+      objectKey: capturePhysical,
+      sha256: captureSha,
+      byteLength: captureSize,
+      mediaType: "video/mp4",
+      requestId: "host-entry-capture",
+      expiresAtMs: Date.now() + 60_000,
+    });
+    expect((await gateway(new Request(captureGrant.url, { method: "HEAD" }))).status).toBe(200);
+    const captureEntry = objects.get(capturePhysical);
+    if (captureEntry === undefined) throw new Error("capture object missing");
+    captureEntry.version = "replacement-version";
+    expect((await gateway(new Request(captureGrant.url, { method: "HEAD" }))).status).toBe(409);
   }, 600_000);
 });

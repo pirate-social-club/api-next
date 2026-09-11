@@ -19153,6 +19153,7 @@ BEGIN
        OR master_record.verified_object_etag <> NEW.etag
        OR master_record.verified_object_version <> NEW.object_version
        OR NEW.content_type <> 'video/mp4'
+       OR NEW.identity_kind <> 'content_etag'
        OR submission_record.submission_id IS NULL
        OR submission_record.author_persona_id <> NEW.author_persona_id
     THEN
@@ -19161,7 +19162,7 @@ BEGIN
     RETURN NEW;
   END IF;
   SELECT * INTO reservation_record FROM media_upload_reservations WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND reservation_id = NEW.reservation_id FOR UPDATE;
-  IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
+  IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) OR NEW.identity_kind <> 'upload_version' THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -26412,10 +26413,12 @@ CREATE TABLE media_immutable_objects (
     sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
+    identity_kind text DEFAULT 'upload_version'::text NOT NULL,
     CONSTRAINT media_immutable_objects_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_immutable_objects_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
     CONSTRAINT media_immutable_objects_destination_ref_check CHECK ((btrim(destination_ref) <> ''::text)),
     CONSTRAINT media_immutable_objects_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_immutable_objects_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
     CONSTRAINT media_immutable_objects_immutable_ref_check CHECK ((btrim(immutable_ref) <> ''::text)),
     CONSTRAINT media_immutable_objects_object_version_check CHECK ((btrim(object_version) <> ''::text)),
     CONSTRAINT media_immutable_objects_size_bytes_check CHECK ((size_bytes > 0))
@@ -27440,6 +27443,7 @@ CREATE TABLE media_video_source_grants (
     issued_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     revoked_at timestamp with time zone,
+    identity_kind text DEFAULT 'upload_version'::text NOT NULL,
     CONSTRAINT media_video_source_grants_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_check CHECK ((isfinite(expires_at) AND (expires_at > issued_at))),
@@ -27447,6 +27451,7 @@ CREATE TABLE media_video_source_grants (
     CONSTRAINT media_video_source_grants_consumer_check CHECK ((consumer = ANY (ARRAY['qencode'::text, 'stream'::text]))),
     CONSTRAINT media_video_source_grants_content_type_check CHECK ((content_type = ANY (ARRAY['video/mp4'::text, 'video/quicktime'::text]))),
     CONSTRAINT media_video_source_grants_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_video_source_grants_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
     CONSTRAINT media_video_source_grants_issued_at_check CHECK (isfinite(issued_at)),
     CONSTRAINT media_video_source_grants_object_version_check CHECK ((btrim(object_version) <> ''::text)),
     CONSTRAINT media_video_source_grants_physical_key_check CHECK (((length(physical_key) >= 11) AND (length(physical_key) <= 778))),

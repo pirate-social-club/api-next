@@ -1,7 +1,7 @@
 import type { SongVideoOutputWriter } from "@pirate/application/video/song-render";
 import { SONG_VIDEO_MASTER_POLICY_V1, VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
 import { mediaProcessingPhysicalObjectKey } from "../packages/platform-cf/src/media-immutable-object-key.ts";
-import { normalizeObjectEtag } from "../packages/platform-cf/src/song-video-master-store.ts";
+import { normalizeObjectEtag } from "../packages/platform-cf/src/media-object-identity.ts";
 import type { SongVideoOutputStore } from "../packages/platform-cf/src/song-video-output-verification.ts";
 import { type StagingCredentials, signR2Request } from "./media/r2-seal-probe-staging-signing.ts";
 import type { SongVideoMediaReader } from "./song-video-ffmpeg.ts";
@@ -81,9 +81,9 @@ const discard = async (response: Response): Promise<void> => {
 
 async function readBoundedBytes(response: Response, limit: number): Promise<Uint8Array> {
   const declared = response.headers.get("content-length");
-  if (declared !== null) {
-    const size = Number(declared);
-    if (!Number.isSafeInteger(size) || size < 0 || size > limit) {
+  const declaredLength = declared === null ? null : Number(declared);
+  if (declaredLength !== null) {
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > limit) {
       await discard(response);
       throw new Error("song video response exceeds the read bound");
     }
@@ -105,6 +105,11 @@ async function readBoundedBytes(response: Response, limit: number): Promise<Uint
     throw error;
   } finally {
     reader.releaseLock();
+  }
+  // The declared length is a bound and a promise: a body that completes short
+  // or long is refused rather than accepted as the object it claimed to be.
+  if (declaredLength !== null && total !== declaredLength) {
+    throw new Error("song video response body does not match its declared length");
   }
   const bytes = new Uint8Array(total);
   let offset = 0;

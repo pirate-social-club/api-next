@@ -910,9 +910,9 @@ suite("song video render persistence", () => {
       client.query(
         `INSERT INTO media_immutable_objects
            (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,operation_id,
-            destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id)
+            destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id,identity_kind)
          SELECT $1,community_id,actor_user_id,NULL,submission_id,operation_id,
-                $2,$3,$4,$5,'video/mp4',$6,author_persona_id
+                $2,$3,$4,$5,'video/mp4',$6,author_persona_id,'content_etag'
            FROM media_immutable_objects WHERE immutable_ref=$7`,
         [
           registered.verified_object_key,

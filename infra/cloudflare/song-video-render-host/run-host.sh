@@ -10,6 +10,11 @@ set -eu
 cd "$(dirname "$0")/../../.."
 
 command -v bun >/dev/null 2>&1 || { echo "bun 1.4 is required" >&2; exit 1; }
+bun_version=$(bun --version 2>/dev/null || echo "")
+case "$bun_version" in
+  1.4.*) ;;
+  *) echo "bun must be version 1.4 (saw: ${bun_version:-none})" >&2; exit 1 ;;
+esac
 for tool in ffmpeg ffprobe; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 1; }
   version=$("$tool" -version 2>/dev/null | head -n 1)

@@ -2,6 +2,7 @@ import type { SongVideoOutputWriter } from "@pirate/application/video/song-rende
 import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
 import type { DataRegistrationMasterSource } from "./data/registration-artifact-pipeline.ts";
 import { mediaProcessingPhysicalObjectKey } from "./media-immutable-object-key.ts";
+import { normalizeObjectEtag } from "./media-object-identity.ts";
 import type { SongVideoOutputStore } from "./song-video-output-verification.ts";
 
 /**
@@ -22,19 +23,6 @@ import type { SongVideoOutputStore } from "./song-video-output-verification.ts";
 
 const withinReadBound = (size: number): boolean =>
   Number.isSafeInteger(size) && size > 0 && size <= SONG_VIDEO_MASTER_POLICY_V1.maxBytes;
-
-/**
- * One object identity both adapters agree on. The Workers binding reports an
- * unquoted ETag; the S3 HTTP response carries the same tag quoted, and
- * possibly weak-prefixed. Sealing records this normalized form, so a master
- * written by the host resolves from a Worker and the reverse, without
- * assuming the two APIs' version fields are the same thing.
- */
-export function normalizeObjectEtag(etag: string): string {
-  const trimmed = etag.trim();
-  const unquoted = trimmed.startsWith("W/") ? trimmed.slice(2).trim() : trimmed;
-  return unquoted.replace(/^"/u, "").replace(/"$/u, "");
-}
 
 const discard = async (body: ReadableStream<Uint8Array>): Promise<void> => {
   await body.cancel().catch(() => undefined);
