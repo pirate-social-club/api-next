@@ -18,6 +18,7 @@ import {
 } from "@pirate/contracts";
 import { canonicalJson } from "@pirate/domain";
 import { Data, Effect, type Layer, Option, Schema } from "effect";
+import { mediaRecoveryRequiredSql } from "../../application/src/media/media-recovery-eligibility.ts";
 import type {
   MediaSubmissionState,
   PublicationDecision,
@@ -389,6 +390,7 @@ export function makeMediaProcessingStore(
         state.analysis === null ? state.analysisRevision + 1 : state.analysisRevision,
       decisionRevision: state.decisionRevision,
       workflowRevision: state.workflowRevision,
+      replacementSequence: location.replacementSequence,
       retryCount: state.retryCount,
       status: state.status,
       phase:
@@ -853,19 +855,53 @@ export function makeMediaProcessingStore(
     ) {
       throw new MediaProcessingStoreError({ operation: "workflow", reason: "unavailable" });
     }
-    const identities = await run(
+    const rows = await run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* db.execute<Row>({
-          label: "media-processing.workflow-candidates",
-          text: "SELECT submission_id,operation_id FROM media_post_submissions WHERE workflow_revision>0 AND status IN ('processing','action_required','manual_review') ORDER BY updated_at,submission_id LIMIT $1",
-          values: [workflowCandidateLimit],
-          readonly: true,
-        });
+        return yield* db.withTransaction((tx) =>
+          Effect.gen(function* () {
+            const cursor = yield* tx.execute<Row>({
+              label: "media-processing.workflow-cursor",
+              text: "SELECT last_updated_at::text AS last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media' FOR UPDATE",
+              values: [],
+              readonly: false,
+            });
+            const last = cursor.rows[0];
+            const page = (after: Row | undefined) =>
+              tx.execute<Row>({
+                label: "media-processing.workflow-candidates",
+                text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ${
+                  after === undefined
+                    ? ""
+                    : "AND (s.updated_at,s.submission_id)>($2::timestamptz,$3::text)"
+                } ORDER BY s.updated_at,s.submission_id LIMIT $1`,
+                values:
+                  after === undefined
+                    ? [workflowCandidateLimit]
+                    : [workflowCandidateLimit, after.last_updated_at, after.last_identifier],
+                readonly: false,
+              });
+            const forward = yield* page(last);
+            // Advance past everything selected, including waiting, ceiling and
+            // failed-lookup rows; only then wrap once the page is exhausted.
+            let next = forward.rows;
+            if (next.length === 0 && last !== undefined) next = (yield* page(undefined)).rows;
+            const lastInspected = next[next.length - 1];
+            if (lastInspected !== undefined) {
+              yield* tx.execute({
+                label: "media-processing.workflow-cursor.advance",
+                text: "UPDATE recovery_inspection_cursors SET last_updated_at=$1::timestamptz,last_identifier=$2::text,updated_at=clock_timestamp() WHERE cursor_key='media'",
+                values: [lastInspected.updated_at, lastInspected.submission_id],
+                readonly: false,
+              });
+            }
+            return next;
+          }),
+        );
       }),
     );
     const candidates: MediaProcessingAuthority[] = [];
-    for (const row of identities.rows) {
+    for (const row of rows) {
       if (!validId(row.submission_id) || !validId(row.operation_id)) {
         throw new MediaProcessingStoreError({ operation: "workflow", reason: "invalid-row" });
       }
@@ -930,6 +966,105 @@ export function makeMediaProcessingStore(
       }),
     );
 
+  const alignmentFailureCodes = [
+    "elevenlabs_key_missing",
+    "key_invalid",
+    "rate_limited",
+    "provider_unavailable",
+    "timeout",
+    "invalid_response",
+    "alignment_failed",
+    "lyrics_missing",
+    "audio_missing",
+  ] as const;
+
+  const readAlignmentRecovery: MediaProcessingStore["readAlignmentRecovery"] = async (
+    authority,
+  ) => {
+    const postId = authority.postId;
+    const audio = authority.audio;
+    const publishedLyricsRevision = authority.publishedLyricsRevision;
+    if (
+      postId === null ||
+      audio === null ||
+      publishedLyricsRevision === null ||
+      publishedLyricsRevision !== (authority.lyrics?.lyricsRevision ?? null)
+    )
+      return { kind: "stale" } as const;
+    try {
+      const result = await run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute<Row>({
+            label: "media-processing.alignment-recovery",
+            text: "SELECT projection.status,projection.failure_code,projection.current_artifact_ref,projection.current_artifact_revision,artifact.artifact_sha256,artifact.artifact FROM media_alignment_projections projection LEFT JOIN media_timed_lyrics_artifacts artifact ON artifact.artifact_ref=projection.current_artifact_ref AND artifact.artifact_revision=projection.current_artifact_revision AND artifact.community_id=projection.community_id AND artifact.actor_user_id=projection.actor_user_id AND artifact.submission_id=projection.submission_id AND artifact.operation_id=projection.operation_id AND artifact.post_id=projection.post_id AND artifact.audio_revision=projection.audio_revision AND artifact.analysis_revision=projection.analysis_revision AND artifact.canonical_audio_sha256=projection.canonical_audio_sha256 AND artifact.lyrics_revision=projection.lyrics_revision WHERE projection.community_id=$1 AND projection.actor_user_id=$2 AND projection.submission_id=$3 AND projection.operation_id=$4 AND projection.post_id=$5 AND projection.audio_revision=$6 AND projection.analysis_revision=$7 AND projection.canonical_audio_sha256=$8 AND projection.lyrics_revision IS NOT DISTINCT FROM $9",
+            values: [
+              authority.communityId,
+              authority.actorAccountId,
+              authority.submissionId,
+              authority.operationId,
+              postId,
+              authority.audioRevision,
+              authority.analysisRevision,
+              audio.canonicalSha256,
+              publishedLyricsRevision,
+            ],
+            readonly: true,
+          });
+        }),
+      );
+      if (result.rows.length !== 1) return { kind: "stale" } as const;
+      const row = result.rows[0];
+      if (row === undefined) return { kind: "stale" } as const;
+      if (row.status === "pending") return { kind: "pending" } as const;
+      if (row.status === "unavailable") {
+        const failureCode = row.failure_code;
+        if (
+          typeof failureCode !== "string" ||
+          !(alignmentFailureCodes as readonly string[]).includes(failureCode)
+        )
+          return { kind: "stale" } as const;
+        return {
+          kind: "committed",
+          result: {
+            kind: "alignment",
+            status: "unavailable",
+            failureCode: failureCode as (typeof alignmentFailureCodes)[number],
+          },
+        } as const;
+      }
+      if (row.status === "ready") {
+        const artifactRef = row.current_artifact_ref;
+        const artifactRevision = integer(row.current_artifact_revision);
+        const artifactSha256 = row.artifact_sha256;
+        const artifact = row.artifact;
+        if (
+          typeof artifactRef !== "string" ||
+          artifactRevision === null ||
+          typeof artifactSha256 !== "string" ||
+          !/^[0-9a-f]{64}$/u.test(artifactSha256) ||
+          typeof artifact !== "object" ||
+          artifact === null ||
+          Array.isArray(artifact)
+        )
+          return { kind: "stale" } as const;
+        return {
+          kind: "committed",
+          result: {
+            kind: "alignment",
+            status: "ready",
+            artifactRef,
+            artifactSha256,
+            artifact: artifact as Readonly<Record<string, unknown>>,
+          },
+        } as const;
+      }
+      return { kind: "stale" } as const;
+    } catch {
+      return { kind: "failed" } as const;
+    }
+  };
+
   return {
     getOutbox,
     claimOutbox,
@@ -944,6 +1079,7 @@ export function makeMediaProcessingStore(
     commitDecision,
     commitPublication,
     commitAlignment,
+    readAlignmentRecovery,
     commitProcessingFailure,
     commitProviderUnavailableReview,
     replaceMissingWorkflow,

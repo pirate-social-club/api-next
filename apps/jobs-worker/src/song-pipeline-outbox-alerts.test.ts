@@ -220,7 +220,8 @@ describe("song pipeline outbox alerts", () => {
     )?.text;
     expect(alertQuery).toContain("WHERE outbox.state='exhausted'");
     expect(alertQuery).not.toContain("queue_dlq");
-    expect(alertQuery).toContain("outbox.workflow_revision>=4");
+    expect(alertQuery).toContain("submission.workflow_replacement_sequence>=3");
+    expect(alertQuery).toContain("operation.workflow_revision>=4");
     expect(alertQuery).toContain("replacement_limit");
     expect(logs.map((fields) => fields.health)).toEqual(["healthy", "degraded"]);
   });

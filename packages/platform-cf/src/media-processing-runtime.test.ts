@@ -174,6 +174,7 @@ const authority = (sizeBytes: number) => ({
   decision: null,
   boundReferenceAssetId: null,
   postId: null,
+  replacementSequence: 0,
   publishedLyricsRevision: null,
 });
 

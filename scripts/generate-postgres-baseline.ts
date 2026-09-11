@@ -30,6 +30,7 @@ const baselineSeedTables = [
   "moderation_platform_floor_revisions",
   "platform_pirate_label_policy_revisions",
   "qualification_policy_versions",
+  "recovery_inspection_cursors",
   "text_moderation_policy_current",
   "text_moderation_policy_revisions",
 ] as const;
