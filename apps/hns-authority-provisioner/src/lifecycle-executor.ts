@@ -151,6 +151,16 @@ export type HnsLifecycleExecutorPortsV1 = Readonly<{
     job: HnsLifecycleClaimV1,
     executorId: string,
   ) => Promise<HnsLifecycleReadinessResultV1>;
+  /**
+   * Handles a claimed `reconcile_provider` job. Routing is not observation
+   * evidence: the port atomically schedules fresh work for the failed
+   * responsibility recorded by the failure it reconciles, or records a named
+   * disposition when the current phase no longer supports that work.
+   */
+  readonly reconcile?: (
+    job: HnsLifecycleClaimV1,
+    executorId: string,
+  ) => Promise<HnsLifecycleReadinessResultV1>;
   readonly now_epoch_ms: () => number;
 }>;
 
@@ -267,6 +277,17 @@ export async function runHnsRootImportLifecycleJobOnce(
     }
     const readiness = await ports.readiness(job, executorId);
     return { claimed: true, outcome: readiness.outcome, reason: readiness.reason };
+  }
+
+  if (job.job_kind === "reconcile_provider") {
+    if (ports.reconcile === undefined) {
+      // A declared job without a performer has a bounded failure disposition
+      // and is never marked successfully performed.
+      await ports.finalize(job, executorId, "failed", "reconcile_performer_absent");
+      return { claimed: true, outcome: "failed", reason: "reconcile_performer_absent" };
+    }
+    const routed = await ports.reconcile(job, executorId);
+    return { claimed: true, outcome: routed.outcome, reason: routed.reason };
   }
 
   const identity = await ports.identity(job.root_import_session_id);
