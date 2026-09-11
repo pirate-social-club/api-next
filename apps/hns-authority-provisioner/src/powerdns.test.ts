@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  decideHnsTeardownRetentionV1,
+  type HnsRootResourceRecordV1,
+  hnsChainResourceDigestV1,
+  preflightEncodeHnsResourceV1,
+} from "@pirate/application/namespace-ownership";
+import {
   buildManagedRootRrsets,
   makePowerDnsRootProvisioner,
   makePowerDnsRootReconciler,
@@ -268,7 +274,7 @@ describe("PowerDNS managed HNS root rrsets", () => {
     ]);
   });
 
-  test("idempotently deletes one exact abandoned root zone", async () => {
+  test("idempotently deletes one exact abandoned root zone and confirms it is gone", async () => {
     const calls: string[] = [];
     const teardown = makePowerDnsRootTeardown(
       {
@@ -277,11 +283,178 @@ describe("PowerDNS managed HNS root rrsets", () => {
         server_id: "localhost",
       },
       async (url, init) => {
-        calls.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
-        return new Response(null, { status: 204 });
+        const method = init?.method ?? "GET";
+        calls.push(`${method} ${new URL(String(url)).pathname}`);
+        // A real authority answers the read-back for a deleted zone with 404.
+        return method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : new Response(JSON.stringify({ error: "Not Found" }), { status: 404 });
       },
     );
     await teardown({ root_label: "newroot" });
-    expect(calls).toEqual(["DELETE /api/v1/servers/localhost/zones/newroot."]);
+    expect(calls).toEqual([
+      "DELETE /api/v1/servers/localhost/zones/newroot.",
+      "GET /api/v1/servers/localhost/zones/newroot.",
+    ]);
+  });
+
+  test("a zone still present after the delete is an ambiguous teardown, not a completed one", async () => {
+    // Quota is released on a completed teardown, so a 2xx that did not
+    // actually remove the zone must not be reported as success: the
+    // reservation has to stay held for reconciliation.
+    const teardown = makePowerDnsRootTeardown(
+      {
+        api_url: "http://powerdns.test:8081",
+        api_key: "secret-not-logged",
+        server_id: "localhost",
+      },
+      async (_url, init) =>
+        (init?.method ?? "GET") === "DELETE"
+          ? new Response(null, { status: 204 })
+          : new Response(
+              JSON.stringify({
+                name: "newroot.",
+                kind: "Native",
+                serial: 1,
+                dnssec: true,
+                rrsets: [],
+                account: "",
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+    );
+    await expect(teardown({ root_label: "newroot" })).rejects.toThrow(
+      "PowerDNS zone remains after teardown",
+    );
+  });
+});
+
+describe("teardown variants retain authority unless positive evidence allows retirement (T07)", () => {
+  function observed(
+    view: "current" | "safe",
+    digest: string | null,
+    records: readonly HnsRootResourceRecordV1[] = [],
+  ): import("@pirate/application/namespace-ownership").HnsChainObservationResultV1 {
+    return {
+      kind: "observed",
+      observation: {
+        view,
+        network: "main",
+        genesis_block_hash: `${"0".repeat(63)}1`,
+        anchor: {
+          network: "main",
+          genesis_block_hash: `${"0".repeat(63)}1`,
+          height: 812_345,
+          best_block_hash: "aa".repeat(32),
+          median_time_past_epoch_seconds: 1_770_000_000,
+          header_time_epoch_seconds: 1_770_000_030,
+          confirmations: 1,
+        },
+        tip_height: 812_345,
+        update_inclusion_height: 800_000,
+        commitment: null,
+        observed_at_epoch_ms: 1_770_000_060_000,
+        records,
+        resource_sha256: digest ?? `${"0".repeat(63)}${view === "current" ? "1" : "2"}`,
+      },
+    };
+  }
+
+  test("every teardown variant retains real authority records despite distinct JSON and wire digests", async () => {
+    const records = [
+      { type: "NS", ns: "ns1.pirate." },
+      { type: "TXT", txt: ["unrelated"] },
+    ];
+    const observedDigest = await hnsChainResourceDigestV1(records);
+    const wire = await preflightEncodeHnsResourceV1(records);
+    expect(observedDigest).not.toBe(wire.sha256);
+    for (const teardown_kind of ["teardown_provisional_root_v1", "teardown_root_v1"] as const) {
+      for (const referencingView of ["current", "safe"] as const) {
+        const decision = decideHnsTeardownRetentionV1({
+          teardown_kind,
+          authority: {
+            ns_names: ["ns1.pirate."],
+            ds: [],
+            challenge_txt_value: null,
+          },
+          current:
+            referencingView === "current"
+              ? observed("current", observedDigest, records)
+              : observed("current", null),
+          safe:
+            referencingView === "safe"
+              ? observed("safe", observedDigest, records)
+              : observed("safe", null),
+          positive_absence_evidence: true,
+        });
+        expect(decision).toMatchObject({
+          decision: "retain",
+          reason: "chain_reference_retained",
+        });
+      }
+    }
+  });
+
+  test("unavailable reads retain authority pending another inspection", () => {
+    for (const unavailable of [
+      { kind: "unavailable", classification: "transport_failure" },
+      { kind: "unavailable", classification: "chain_moving" },
+      { kind: "unavailable", classification: "node_stale" },
+      { kind: "finding", classification: "resource_absent" },
+    ]) {
+      const decision = decideHnsTeardownRetentionV1({
+        teardown_kind: "teardown_root_v1",
+        authority: {
+          ns_names: [],
+          ds: [],
+          challenge_txt_value: null,
+        },
+        current: observed("current", null),
+        safe: unavailable as never,
+        positive_absence_evidence: false,
+      });
+      expect(decision).toMatchObject({
+        decision: "retain",
+        reason: "unavailable_chain_state_retained",
+      });
+    }
+  });
+
+  test("chain absence after exposure alone never authorizes deletion", () => {
+    const decision = decideHnsTeardownRetentionV1({
+      teardown_kind: "teardown_provisional_root_v1",
+      authority: {
+        ns_names: [],
+        ds: [],
+        challenge_txt_value: null,
+      },
+      current: observed("current", null),
+      safe: observed("safe", null),
+      positive_absence_evidence: false,
+    });
+    expect(decision).toEqual({
+      decision: "retain",
+      reason: "chain_absence_after_exposure_retained",
+      inspected_views: ["current", "safe"],
+    });
+  });
+
+  test("retirement requires positive fresh-inspection evidence", () => {
+    const decision = decideHnsTeardownRetentionV1({
+      teardown_kind: "teardown_root_v1",
+      authority: {
+        ns_names: [],
+        ds: [],
+        challenge_txt_value: null,
+      },
+      current: observed("current", null),
+      safe: observed("safe", null),
+      positive_absence_evidence: true,
+    });
+    expect(decision).toEqual({
+      decision: "retire_eligible",
+      reason: "retirement_positive_evidence",
+      inspected_views: ["current", "safe"],
+    });
   });
 });

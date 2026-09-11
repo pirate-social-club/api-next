@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.6",
+  "sourceBranch": "fix/hns-root-import-lifecycle",
+  "wireContract": "Combines the community core reads and song playback grants carried by 0.68.5 with the HNS root-import lifecycle projection first cut in 0.68.4: session responses optionally project the lifecycle block (phase, bounded pending reason, deadline with kind, server time, observation summary, next_check_at with retry hint, permitted actions), and publish plans optionally carry encoded_resource_sha256, the HSD wire-encoding digest distinct from the plan-document hash. Older shapes remain valid.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.6.tgz",
+    "sha256": "730281e31d10efc473249a7d173405663409e669252b8a82091349ab4edcb532"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.6",
+    "sourceIdentifier": "api-next-contracts@540ad5c0c3374b68ce42f8c67505dc67c296664076ae931e846b2d0396a97cef",
+    "openapiSha256": "540ad5c0c3374b68ce42f8c67505dc67c296664076ae931e846b2d0396a97cef",
+    "clientSha256": "4fd6942bfe1eb66ee2d97838a581715602ccb31a83f3abc34a5ddd96aaff7d76"
+  },
+  "verification": {
+    "status": "Merged wire contract on the review-repair tip; bun run check and the domain and lifecycle suites pass locally at the merge tip, and the required remote checks run on the pull request. The Solid consumer pins 0.68.4, which remains wire-compatible because the added fields are optional. Live acceptance and publication remain gated."
+  }
+}

@@ -21,13 +21,17 @@ import {
   hnsRootImportNameProofMessage,
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application";
-import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
+import {
+  decodeStrictHnsJsonBytes,
+  HNS_ROOT_IMPORT_LIFECYCLE_POLICY_NAME_V1,
+  hnsRootImportLifecyclePolicyDigest,
+} from "@pirate/application/namespace-ownership";
 import {
   type HnsRootImportSessionResponseV1 as HnsRootImportSessionResponse,
   HnsRootImportSessionResponseV1,
 } from "@pirate/contracts";
 import { handleSaleNamespaceActivationHash } from "@pirate/domain";
-import { Effect, type Layer, Option, Schema } from "effect";
+import { Data, Effect, type Layer, Option, Schema } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -39,6 +43,15 @@ const storageFailure = (cause?: unknown): HnsRootImportStorageFailed =>
   cause === undefined
     ? new HnsRootImportStorageFailed({})
     : new HnsRootImportStorageFailed({ cause });
+
+/**
+ * An activation command refused after the transaction began. It travels the
+ * transaction's failure channel so every write in that transaction rolls
+ * back, and the public outcome is translated from it outside the transaction.
+ */
+class HnsRootImportActivationRefused extends Data.TaggedError("HnsRootImportActivationRefused")<{
+  readonly reason: string;
+}> {}
 
 function oneRow<RowType>(result: ControlPlaneResult<RowType>): RowType | null | undefined {
   if (result.rows.length > 1) return undefined;
@@ -425,6 +438,25 @@ export function makeControlPlaneHnsRootImportRepository(
             const insertedRow = oneRow(insertedSession);
             if (insertedRow === undefined) return yield* Effect.fail(storageFailure());
             if (insertedRow === null) return { kind: "conflict" } as const;
+            // The lifecycle row is part of the creation record, exactly as it
+            // is on the community creation path: a session with no lifecycle
+            // row is a phase that can only be guessed later. Both rows commit
+            // in one transaction, and a replayed Start leaves both untouched.
+            yield* transaction.execute<Row>({
+              label: "hns.root-import.start.insert-lifecycle",
+              text: `INSERT INTO hns_root_import_lifecycle (
+                       root_import_session_id, root_label, phase, revision, generation,
+                       pending_reason, policy_name, policy_digest
+                     ) VALUES ($1,$2,'preparing',1,1,'preparing_retained_authority',$3,$4)
+                     ON CONFLICT (root_import_session_id) DO NOTHING`,
+              values: [
+                input.root_import_session_id,
+                input.root_label,
+                HNS_ROOT_IMPORT_LIFECYCLE_POLICY_NAME_V1,
+                hnsRootImportLifecyclePolicyDigest(),
+              ],
+              readonly: false,
+            });
             const response = responseFromRow(insertedRow, false, options);
             return response === null
               ? yield* Effect.fail(storageFailure())
@@ -619,119 +651,193 @@ export function makeControlPlaneHnsRootImportRepository(
     activate: (input) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* db.withTransaction((transaction) =>
-          Effect.gen(function* () {
-            const communityOrigin = (
-              input as HnsRootImportActivationRecord & {
-                readonly community_origin?: Readonly<{
-                  readonly attachment_intent_id: string;
-                  readonly route_binding_id: string;
-                }>;
-              }
-            ).community_origin;
-            const replayResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.find-replay",
-              text: `SELECT *
+        const communityOrigin = (
+          input as HnsRootImportActivationRecord & {
+            readonly community_origin?: Readonly<{
+              readonly attachment_intent_id: string;
+              readonly route_binding_id: string;
+            }>;
+          }
+        ).community_origin;
+        // Ownership is checked before the policy pre-flight so a wrong
+        // principal still receives not_found rather than a policy outcome
+        // about an operation it does not own.
+        const ownership = yield* db.execute<Row>({
+          label: "hns.root-import.activate.authorize-ownership",
+          text: `SELECT 1 AS present
+                   FROM hns_root_import_sessions AS session
+                  WHERE session.actor_id=$1 AND session.root_import_session_id=$2
+                    AND ${
+                      communityOrigin === undefined
+                        ? "session.origin_kind='creation_intent' AND session.creation_intent_id=$3"
+                        : "session.origin_kind='community_attachment' AND session.community_id=$3 AND session.attachment_intent_id=$4"
+                    }`,
+          values: [
+            input.input.actor_id,
+            input.input.root_import_session_id,
+            communityOrigin === undefined ? input.input.creation_intent_id : input.community_id,
+            ...(communityOrigin === undefined ? [] : [communityOrigin.attachment_intent_id]),
+          ],
+          readonly: true,
+        });
+        if (oneRow(ownership) === null) {
+          return { kind: "not_found" } as const;
+        }
+        // Pre-flight policy: stale readiness records its single pending hold
+        // and refresh work in its own statement, so that refusal survives the
+        // effects rollback; every other refusal returns conflict without
+        // running an effects transaction. The final commit at the end of that
+        // transaction revalidates everything under the locks.
+        const authorization = yield* db.execute<Row>({
+          label: "hns.root-import.activate.authorize",
+          text: `SELECT * FROM authorize_hns_root_import_activation_v1(
+                   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          values: [
+            input.input.root_import_session_id,
+            input.input.expected_revision,
+            input.current_evidence?.lifecycle_revision ?? null,
+            input.current_evidence?.lifecycle_generation ?? null,
+            input.input.publish_plan_sha256,
+            input.input.readiness_result_sha256,
+            input.request_sha256,
+            input.current_evidence === null
+              ? null
+              : new Date(input.current_evidence.observed_at_epoch_ms),
+            input.current_evidence?.resource_sha256 ?? null,
+            input.current_evidence?.qualifying ?? null,
+          ],
+          readonly: false,
+        });
+        const authorizationRow = oneRow(authorization);
+        if (authorizationRow === undefined || authorizationRow === null) {
+          return yield* Effect.fail(storageFailure());
+        }
+        if (authorizationRow.outcome !== "authorized" && authorizationRow.outcome !== "replayed") {
+          return { kind: "conflict" } as const;
+        }
+        return yield* db
+          .withTransaction((transaction) =>
+            Effect.gen(function* () {
+              // Common lock order: the lifecycle row first, then the session.
+              // The pre-flight, the readiness writer and every lifecycle
+              // writer order lifecycle before session, so an activation
+              // transaction that locked the session first could deadlock
+              // against a pre-flight holding lifecycle and waiting on the
+              // session.
+              yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lock-lifecycle",
+                text: `SELECT root_import_session_id FROM hns_root_import_lifecycle
+                        WHERE root_import_session_id=$1
+                        FOR UPDATE`,
+                values: [input.input.root_import_session_id],
+                readonly: false,
+              });
+              const replayResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.find-replay",
+                text: `SELECT *
                        FROM hns_root_import_activation_operations
                       WHERE actor_id=$1 AND root_import_session_id=$2
                         AND idempotency_key=$3
                       FOR UPDATE`,
-              values: [
-                input.input.actor_id,
-                input.input.root_import_session_id,
-                input.input.idempotency_key,
-              ],
-              readonly: false,
-            });
-            const replay = oneRow(replayResult);
-            if (replay === undefined) return yield* Effect.fail(storageFailure());
-            if (replay !== null) {
-              if (
-                replay.request_sha256 !== input.request_sha256 ||
-                (communityOrigin === undefined
-                  ? replay.creation_intent_id !== input.input.creation_intent_id
-                  : replay.origin_kind !== "community_attachment" ||
-                    replay.attachment_intent_id !== communityOrigin.attachment_intent_id) ||
-                replay.community_id !== input.community_id ||
-                positiveInteger(replay.expected_session_revision) !== input.input.expected_revision
-              ) {
-                return { kind: "conflict" } as const;
-              }
-              const revision = positiveInteger(replay.result_session_revision);
-              const replayCommunityId = stringValue(replay, "community_id");
-              const replayDnsActivationId = stringValue(replay, "dns_zone_activation_id");
-              const replayAppActivationId = stringValue(replay, "app_host_activation_id");
-              const replaySaleActivationId = stringValue(replay, "sale_namespace_activation_id");
-              const replaySaleHash = stringValue(replay, "sale_namespace_activation_sha256");
-              const replaySession =
-                communityOrigin === undefined
-                  ? null
-                  : oneRow(
-                      yield* transaction.execute<Row>({
-                        label: "hns.root-import.activate.load-community-replay",
-                        text: `SELECT status,revision,root_label FROM hns_root_import_sessions
+                values: [
+                  input.input.actor_id,
+                  input.input.root_import_session_id,
+                  input.input.idempotency_key,
+                ],
+                readonly: false,
+              });
+              const replay = oneRow(replayResult);
+              if (replay === undefined) return yield* Effect.fail(storageFailure());
+              if (replay !== null) {
+                if (
+                  replay.request_sha256 !== input.request_sha256 ||
+                  (communityOrigin === undefined
+                    ? replay.creation_intent_id !== input.input.creation_intent_id
+                    : replay.origin_kind !== "community_attachment" ||
+                      replay.attachment_intent_id !== communityOrigin.attachment_intent_id) ||
+                  replay.community_id !== input.community_id ||
+                  positiveInteger(replay.expected_session_revision) !==
+                    input.input.expected_revision
+                ) {
+                  return yield* Effect.fail(
+                    new HnsRootImportActivationRefused({ reason: "conflict" }),
+                  );
+                }
+                const revision = positiveInteger(replay.result_session_revision);
+                const replayCommunityId = stringValue(replay, "community_id");
+                const replayDnsActivationId = stringValue(replay, "dns_zone_activation_id");
+                const replayAppActivationId = stringValue(replay, "app_host_activation_id");
+                const replaySaleActivationId = stringValue(replay, "sale_namespace_activation_id");
+                const replaySaleHash = stringValue(replay, "sale_namespace_activation_sha256");
+                const replaySession =
+                  communityOrigin === undefined
+                    ? null
+                    : oneRow(
+                        yield* transaction.execute<Row>({
+                          label: "hns.root-import.activate.load-community-replay",
+                          text: `SELECT status,revision,root_label FROM hns_root_import_sessions
                             WHERE actor_id=$1 AND community_id=$2 AND attachment_intent_id=$3
                               AND root_import_session_id=$4`,
-                        values: [
-                          input.input.actor_id,
-                          input.community_id,
-                          communityOrigin.attachment_intent_id,
-                          input.input.root_import_session_id,
-                        ],
-                        readonly: false,
-                      }),
-                    );
-              const root =
-                communityOrigin === undefined
-                  ? yield* loadSession(transaction, input.input, false, options)
-                  : replaySession === null || replaySession === undefined
-                    ? null
-                    : {
-                        status: replaySession.status,
-                        revision: positiveInteger(replaySession.revision),
-                        root_label: stringValue(replaySession, "root_label"),
-                      };
-              if (
-                revision === null ||
-                replayCommunityId === null ||
-                replayDnsActivationId === null ||
-                replayAppActivationId === null ||
-                replaySaleActivationId === null ||
-                replaySaleHash === null ||
-                !/^[0-9a-f]{64}$/u.test(replaySaleHash) ||
-                root === null ||
-                root.status !== "activated" ||
-                root.revision !== revision ||
-                root.root_label === null
-              ) {
-                return yield* Effect.fail(storageFailure());
+                          values: [
+                            input.input.actor_id,
+                            input.community_id,
+                            communityOrigin.attachment_intent_id,
+                            input.input.root_import_session_id,
+                          ],
+                          readonly: false,
+                        }),
+                      );
+                const root =
+                  communityOrigin === undefined
+                    ? yield* loadSession(transaction, input.input, false, options)
+                    : replaySession === null || replaySession === undefined
+                      ? null
+                      : {
+                          status: replaySession.status,
+                          revision: positiveInteger(replaySession.revision),
+                          root_label: stringValue(replaySession, "root_label"),
+                        };
+                if (
+                  revision === null ||
+                  replayCommunityId === null ||
+                  replayDnsActivationId === null ||
+                  replayAppActivationId === null ||
+                  replaySaleActivationId === null ||
+                  replaySaleHash === null ||
+                  !/^[0-9a-f]{64}$/u.test(replaySaleHash) ||
+                  root === null ||
+                  root.status !== "activated" ||
+                  root.revision !== revision ||
+                  root.root_label === null
+                ) {
+                  return yield* Effect.fail(storageFailure());
+                }
+                return {
+                  kind: "replayed",
+                  response: {
+                    creation_intent_id: input.input.creation_intent_id,
+                    root_import_session_id: input.input.root_import_session_id,
+                    root_label: root.root_label,
+                    revision,
+                    status: "activated",
+                    community_id: replayCommunityId,
+                    app_host: `app.${root.root_label}`,
+                    dns_zone_activation_id: replayDnsActivationId,
+                    dns_zone_activation_generation: 1,
+                    app_host_activation_id: replayAppActivationId,
+                    app_host_activation_generation: 1,
+                    sale_namespace_activation_id: replaySaleActivationId,
+                    sale_namespace_activation_generation: 1,
+                    sale_namespace_activation_sha256: replaySaleHash,
+                    handle_issuance_enabled: true,
+                    replayed: true,
+                  },
+                } as const;
               }
-              return {
-                kind: "replayed",
-                response: {
-                  creation_intent_id: input.input.creation_intent_id,
-                  root_import_session_id: input.input.root_import_session_id,
-                  root_label: root.root_label,
-                  revision,
-                  status: "activated",
-                  community_id: replayCommunityId,
-                  app_host: `app.${root.root_label}`,
-                  dns_zone_activation_id: replayDnsActivationId,
-                  dns_zone_activation_generation: 1,
-                  app_host_activation_id: replayAppActivationId,
-                  app_host_activation_generation: 1,
-                  sale_namespace_activation_id: replaySaleActivationId,
-                  sale_namespace_activation_generation: 1,
-                  sale_namespace_activation_sha256: replaySaleHash,
-                  handle_issuance_enabled: true,
-                  replayed: true,
-                },
-              } as const;
-            }
 
-            const sessionResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.lock-session",
-              text: `SELECT session.*, observation.result_bytes AS observed_result_bytes
+              const sessionResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lock-session",
+                text: `SELECT session.*, observation.result_bytes AS observed_result_bytes
                        FROM hns_root_import_sessions AS session
                        LEFT JOIN hns_root_import_observation_jobs AS observation
                          ON observation.observation_job_id = session.observation_job_id
@@ -742,65 +848,89 @@ export function makeControlPlaneHnsRootImportRepository(
                             : "session.origin_kind='community_attachment' AND session.community_id=$2 AND session.attachment_intent_id=$4"
                         }
                       FOR UPDATE OF session`,
-              values: [
-                input.input.actor_id,
-                communityOrigin === undefined ? input.input.creation_intent_id : input.community_id,
-                input.input.root_import_session_id,
-                ...(communityOrigin === undefined ? [] : [communityOrigin.attachment_intent_id]),
-              ],
-              readonly: false,
-            });
-            const session = oneRow(sessionResult);
-            if (session === undefined) return yield* Effect.fail(storageFailure());
-            if (session === null) return { kind: "not_found" } as const;
-            const readinessBytes = bytes(session.observed_result_bytes);
-            const sessionExpiresAt = instant(session.expires_at);
-            if (
-              session.status !== "ready" ||
-              positiveInteger(session.revision) !== input.input.expected_revision ||
-              session.publish_plan_sha256 !== input.input.publish_plan_sha256 ||
-              session.readiness_result_sha256 !== input.input.readiness_result_sha256 ||
-              readinessBytes === null ||
-              sessionExpiresAt === null
-            ) {
-              return { kind: "conflict" } as const;
-            }
-            const readiness = yield* Effect.tryPromise({
-              try: () => decodeHnsRootImportReadinessResultV1(readinessBytes),
-              catch: storageFailure,
-            });
-            if (
-              readiness.result_sha256 !== input.input.readiness_result_sha256 ||
-              readiness.result.root_import_session_id !== input.input.root_import_session_id ||
-              readiness.result.namespace_session_id !== session.namespace_session_id ||
-              readiness.result.root_label !== session.root_label ||
-              readiness.result.publish_plan_sha256 !== input.input.publish_plan_sha256 ||
-              readiness.result.ownership_result_sha256 !== session.ownership_result_sha256
-            ) {
-              return { kind: "conflict" } as const;
-            }
-            if (communityOrigin === undefined) {
-              const intentResult = yield* transaction.execute<Row>({
-                label: "hns.root-import.activate.lock-committed-intent",
-                text: `SELECT intent_id
+                values: [
+                  input.input.actor_id,
+                  communityOrigin === undefined
+                    ? input.input.creation_intent_id
+                    : input.community_id,
+                  input.input.root_import_session_id,
+                  ...(communityOrigin === undefined ? [] : [communityOrigin.attachment_intent_id]),
+                ],
+                readonly: false,
+              });
+              const session = oneRow(sessionResult);
+              if (session === undefined) return yield* Effect.fail(storageFailure());
+              if (session === null) return { kind: "not_found" } as const;
+              // The authoritative readiness evidence is the session's own
+              // persisted result, written by whichever readiness performer owns
+              // the operation; the legacy observation job's result may be absent
+              // or from a superseded observation after handover.
+              const readinessBytes = bytes(session.readiness_result_bytes);
+              const readinessDigest =
+                readinessBytes === null
+                  ? null
+                  : yield* Effect.promise(() => sha256Bytes(readinessBytes));
+              // The retired single expiry does not gate activation (spec 012,
+              // "Expiry consumers"); the lifecycle decision's phase, revision,
+              // generation and readiness-freshness checks govern, and the
+              // application service has already validated the caller's
+              // authorization.
+              if (
+                session.status !== "ready" ||
+                positiveInteger(session.revision) !== input.input.expected_revision ||
+                session.publish_plan_sha256 !== input.input.publish_plan_sha256 ||
+                session.readiness_result_sha256 !== input.input.readiness_result_sha256 ||
+                readinessBytes === null ||
+                readinessDigest !== session.readiness_result_sha256
+              ) {
+                return yield* Effect.fail(
+                  new HnsRootImportActivationRefused({ reason: "conflict" }),
+                );
+              }
+              const readiness = yield* Effect.tryPromise({
+                try: () => decodeHnsRootImportReadinessResultV1(readinessBytes),
+                catch: storageFailure,
+              });
+              if (
+                readiness.result_sha256 !== input.input.readiness_result_sha256 ||
+                readiness.result.root_import_session_id !== input.input.root_import_session_id ||
+                readiness.result.namespace_session_id !== session.namespace_session_id ||
+                readiness.result.root_label !== session.root_label ||
+                readiness.result.publish_plan_sha256 !== input.input.publish_plan_sha256 ||
+                readiness.result.ownership_result_sha256 !== session.ownership_result_sha256
+              ) {
+                return yield* Effect.fail(
+                  new HnsRootImportActivationRefused({ reason: "conflict" }),
+                );
+              }
+              if (communityOrigin === undefined) {
+                const intentResult = yield* transaction.execute<Row>({
+                  label: "hns.root-import.activate.lock-committed-intent",
+                  text: `SELECT intent_id
                        FROM community_creation_intents
                       WHERE intent_id=$1 AND actor_id=$2 AND status='committed'
                         AND committed_community_id=$3
                       FOR SHARE`,
-                values: [input.input.creation_intent_id, input.input.actor_id, input.community_id],
-                readonly: false,
-              });
-              const committedIntent = oneRow(intentResult);
-              if (
-                committedIntent === undefined ||
-                committedIntent?.intent_id !== input.input.creation_intent_id
-              ) {
-                return { kind: "conflict" } as const;
-              }
-            } else {
-              const attachmentResult = yield* transaction.execute<Row>({
-                label: "hns.root-import.activate.lock-route-attachment",
-                text: `SELECT intent.revision,intent.status,state.generation,
+                  values: [
+                    input.input.creation_intent_id,
+                    input.input.actor_id,
+                    input.community_id,
+                  ],
+                  readonly: false,
+                });
+                const committedIntent = oneRow(intentResult);
+                if (
+                  committedIntent === undefined ||
+                  committedIntent?.intent_id !== input.input.creation_intent_id
+                ) {
+                  return yield* Effect.fail(
+                    new HnsRootImportActivationRefused({ reason: "conflict" }),
+                  );
+                }
+              } else {
+                const attachmentResult = yield* transaction.execute<Row>({
+                  label: "hns.root-import.activate.lock-route-attachment",
+                  text: `SELECT intent.revision,intent.status,state.generation,
                               result.evidence_ref
                          FROM community_route_attachment_intents AS intent
                          JOIN community_route_attachment_requirement_states AS state
@@ -812,97 +942,99 @@ export function makeControlPlaneHnsRootImportRepository(
                           AND intent.attachment_intent_id=$3
                           AND has_community_route_authority(intent.community_id,intent.actor_id)
                         FOR UPDATE OF intent,state`,
-                values: [
-                  input.input.actor_id,
-                  input.community_id,
-                  communityOrigin.attachment_intent_id,
-                ],
-                readonly: false,
-              });
-              const attachment = oneRow(attachmentResult);
-              const attachmentRevision =
-                attachment === null || attachment === undefined
-                  ? null
-                  : positiveInteger(attachment.revision);
-              const attachmentGeneration =
-                attachment === null || attachment === undefined
-                  ? null
-                  : positiveInteger(attachment.generation);
-              const attachmentEvidence =
-                attachment === null || attachment === undefined
-                  ? null
-                  : stringValue(attachment, "evidence_ref");
-              if (
-                attachmentRevision === null ||
-                attachmentGeneration === null ||
-                attachmentEvidence === null ||
-                attachment?.status !== "commit_ready"
-              ) {
-                return { kind: "conflict" } as const;
-              }
-              const routeBinding = yield* transaction.execute({
-                label: "hns.root-import.activate.insert-route-binding",
-                text: `INSERT INTO community_canonical_route_bindings (
+                  values: [
+                    input.input.actor_id,
+                    input.community_id,
+                    communityOrigin.attachment_intent_id,
+                  ],
+                  readonly: false,
+                });
+                const attachment = oneRow(attachmentResult);
+                const attachmentRevision =
+                  attachment === null || attachment === undefined
+                    ? null
+                    : positiveInteger(attachment.revision);
+                const attachmentGeneration =
+                  attachment === null || attachment === undefined
+                    ? null
+                    : positiveInteger(attachment.generation);
+                const attachmentEvidence =
+                  attachment === null || attachment === undefined
+                    ? null
+                    : stringValue(attachment, "evidence_ref");
+                if (
+                  attachmentRevision === null ||
+                  attachmentGeneration === null ||
+                  attachmentEvidence === null ||
+                  attachment?.status !== "commit_ready"
+                ) {
+                  return yield* Effect.fail(
+                    new HnsRootImportActivationRefused({ reason: "conflict" }),
+                  );
+                }
+                const routeBinding = yield* transaction.execute({
+                  label: "hns.root-import.activate.insert-route-binding",
+                  text: `INSERT INTO community_canonical_route_bindings (
                   route_binding_id,community_id,family,root_label,root_label_display,
                   ownership_status,route_lifecycle_status,binding_generation,
                   verified_evidence_ref,route_authority_kind
                 ) VALUES ($1,$2,'hns',$3,$3,'verified','active',$4::bigint,$5,
                   'verified_namespace_v1')`,
-                values: [
-                  communityOrigin.route_binding_id,
-                  input.community_id,
-                  readiness.result.root_label,
-                  attachmentGeneration,
-                  attachmentEvidence,
-                ],
-                readonly: false,
-              });
-              if (routeBinding.rowCount !== 1) return yield* Effect.fail(storageFailure());
-              const communityBinding = yield* transaction.execute({
-                label: "hns.root-import.activate.bind-community-route",
-                text: `UPDATE communities SET canonical_route_binding_id=$1,updated_at=clock_timestamp()
+                  values: [
+                    communityOrigin.route_binding_id,
+                    input.community_id,
+                    readiness.result.root_label,
+                    attachmentGeneration,
+                    attachmentEvidence,
+                  ],
+                  readonly: false,
+                });
+                if (routeBinding.rowCount !== 1) return yield* Effect.fail(storageFailure());
+                const communityBinding = yield* transaction.execute({
+                  label: "hns.root-import.activate.bind-community-route",
+                  text: `UPDATE communities SET canonical_route_binding_id=$1,updated_at=clock_timestamp()
                         WHERE community_id=$2 AND canonical_route_binding_id IS NULL
                           AND status='active' AND route_authority_version='optional_route_v2'`,
-                values: [communityOrigin.route_binding_id, input.community_id],
-                readonly: false,
-              });
-              if (communityBinding.rowCount !== 1) return yield* Effect.fail(storageFailure());
-              const committedResource = JSON.stringify({
-                authority_version: "optional_route_v2",
-                community_id: input.community_id,
-                href: `/c/${input.community_id}`,
-                canonical_route: {
-                  family: "hns",
-                  root_label: readiness.result.root_label,
-                  root_label_display: readiness.result.root_label,
-                  path_segment: `app.${readiness.result.root_label}`,
-                  href: `/c/app.${readiness.result.root_label}`,
-                  app_host: null,
-                },
-              });
-              const attachmentCommit = yield* transaction.execute({
-                label: "hns.root-import.activate.commit-route-attachment",
-                text: `UPDATE community_route_attachment_intents
+                  values: [communityOrigin.route_binding_id, input.community_id],
+                  readonly: false,
+                });
+                if (communityBinding.rowCount !== 1) return yield* Effect.fail(storageFailure());
+                const committedResource = JSON.stringify({
+                  authority_version: "optional_route_v2",
+                  community_id: input.community_id,
+                  href: `/c/${input.community_id}`,
+                  canonical_route: {
+                    family: "hns",
+                    root_label: readiness.result.root_label,
+                    root_label_display: readiness.result.root_label,
+                    path_segment: `app.${readiness.result.root_label}`,
+                    href: `/c/app.${readiness.result.root_label}`,
+                    app_host: null,
+                  },
+                });
+                const attachmentCommit = yield* transaction.execute({
+                  label: "hns.root-import.activate.commit-route-attachment",
+                  text: `UPDATE community_route_attachment_intents
                           SET status='committed',revision=revision+1,
                               committed_route_binding_id=$1,committed_resource=$2::jsonb,
                               updated_at=clock_timestamp()
                         WHERE actor_id=$3 AND community_id=$4 AND attachment_intent_id=$5
                           AND status='commit_ready' AND revision=$6::bigint`,
-                values: [
-                  communityOrigin.route_binding_id,
-                  committedResource,
-                  input.input.actor_id,
-                  input.community_id,
-                  communityOrigin.attachment_intent_id,
-                  attachmentRevision,
-                ],
-                readonly: false,
-              });
-              if (attachmentCommit.rowCount !== 1) return yield* Effect.fail(storageFailure());
-            }
-            const routeResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.lock-route",
-              text: `SELECT community.canonical_route_binding_id,
+                  values: [
+                    communityOrigin.route_binding_id,
+                    committedResource,
+                    input.input.actor_id,
+                    input.community_id,
+                    communityOrigin.attachment_intent_id,
+                    attachmentRevision,
+                  ],
+                  readonly: false,
+                });
+                if (attachmentCommit.rowCount !== 1) return yield* Effect.fail(storageFailure());
+              }
+              const routeResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lock-route",
+                text: `SELECT community.canonical_route_binding_id,
                             binding.root_label_display, binding.binding_generation,
                             binding.verified_evidence_ref
                        FROM communities AS community
@@ -920,298 +1052,303 @@ export function makeControlPlaneHnsRootImportRepository(
                         AND binding.route_lifecycle_status='active'
                         AND binding.route_authority_kind='verified_namespace_v1'
                       FOR SHARE OF community, binding`,
-              values: [input.community_id, input.input.actor_id, readiness.result.root_label],
-              readonly: false,
-            });
-            const route = oneRow(routeResult);
-            const routeRow = route === null || route === undefined ? null : route;
-            const routeBindingId =
-              routeRow === null ? null : stringValue(routeRow, "canonical_route_binding_id");
-            const displayRoot =
-              routeRow === null ? null : stringValue(routeRow, "root_label_display");
-            const routeGeneration =
-              routeRow === null ? null : positiveInteger(routeRow.binding_generation);
-            const evidenceRef =
-              routeRow === null ? null : stringValue(routeRow, "verified_evidence_ref");
-            if (
-              route === undefined ||
-              routeBindingId === null ||
-              displayRoot === null ||
-              routeGeneration === null ||
-              evidenceRef === null
-            ) {
-              return { kind: "conflict" } as const;
-            }
+                values: [input.community_id, input.input.actor_id, readiness.result.root_label],
+                readonly: false,
+              });
+              const route = oneRow(routeResult);
+              const routeRow = route === null || route === undefined ? null : route;
+              const routeBindingId =
+                routeRow === null ? null : stringValue(routeRow, "canonical_route_binding_id");
+              const displayRoot =
+                routeRow === null ? null : stringValue(routeRow, "root_label_display");
+              const routeGeneration =
+                routeRow === null ? null : positiveInteger(routeRow.binding_generation);
+              const evidenceRef =
+                routeRow === null ? null : stringValue(routeRow, "verified_evidence_ref");
+              if (
+                route === undefined ||
+                routeBindingId === null ||
+                displayRoot === null ||
+                routeGeneration === null ||
+                evidenceRef === null
+              ) {
+                return yield* Effect.fail(
+                  new HnsRootImportActivationRefused({ reason: "conflict" }),
+                );
+              }
 
-            const dnsDocument = yield* Effect.tryPromise({
-              try: () =>
-                prepareHnsDnsZoneActivationDocumentV1({
-                  payload: {
-                    version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
-                    dns_zone_activation_id: input.dns_zone_activation_id,
-                    canonical_root: readiness.result.root_label,
-                    dns_authority: [
-                      "pirate_managed_dns_v1",
-                      readiness.result.dns_authority_reference,
-                      1,
-                    ],
-                    pirate_dns_authority_inventory: [
-                      readiness.result.authority_inventory_reference,
-                      readiness.result.authority_inventory_version,
-                      readiness.result.authority_inventory_digest,
-                    ],
-                    zone_revision: readiness.result.powerdns_zone_serial,
-                    dnssec_keyset: [
-                      readiness.result.dnssec_keyset_reference,
-                      readiness.result.dnssec_keyset_version,
-                    ],
-                    gateway: [
-                      readiness.result.gateway_deployment_reference,
-                      readiness.result.gateway_certificate_spki_sha256,
-                    ],
-                    stable_chain_delegation_snapshot: [
-                      `hns-root-chain:${readiness.result.chain_resource_sha256}`,
-                      readiness.result_sha256,
-                    ],
-                  },
-                  zone_bytes: readiness.managed_zone_bytes,
-                }),
-              catch: storageFailure,
-            });
-            const activationDocumentDigest = yield* Effect.promise(() =>
-              sha256Bytes(dnsDocument.activation_document_bytes),
-            );
+              const dnsDocument = yield* Effect.tryPromise({
+                try: () =>
+                  prepareHnsDnsZoneActivationDocumentV1({
+                    payload: {
+                      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+                      dns_zone_activation_id: input.dns_zone_activation_id,
+                      canonical_root: readiness.result.root_label,
+                      dns_authority: [
+                        "pirate_managed_dns_v1",
+                        readiness.result.dns_authority_reference,
+                        1,
+                      ],
+                      pirate_dns_authority_inventory: [
+                        readiness.result.authority_inventory_reference,
+                        readiness.result.authority_inventory_version,
+                        readiness.result.authority_inventory_digest,
+                      ],
+                      zone_revision: readiness.result.powerdns_zone_serial,
+                      dnssec_keyset: [
+                        readiness.result.dnssec_keyset_reference,
+                        readiness.result.dnssec_keyset_version,
+                      ],
+                      gateway: [
+                        readiness.result.gateway_deployment_reference,
+                        readiness.result.gateway_certificate_spki_sha256,
+                      ],
+                      stable_chain_delegation_snapshot: [
+                        `hns-root-chain:${readiness.result.chain_resource_sha256}`,
+                        readiness.result_sha256,
+                      ],
+                    },
+                    zone_bytes: readiness.managed_zone_bytes,
+                  }),
+                catch: storageFailure,
+              });
+              const activationDocumentDigest = yield* Effect.promise(() =>
+                sha256Bytes(dnsDocument.activation_document_bytes),
+              );
 
-            const databaseClock = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.database-clock",
-              text: "SELECT clock_timestamp() AS database_now",
-              values: [],
-              readonly: false,
-            });
-            const nowRow = oneRow(databaseClock);
-            const databaseNow = nowRow === null ? null : instant(nowRow?.database_now);
-            if (
-              nowRow === undefined ||
-              databaseNow === null ||
-              Date.parse(sessionExpiresAt) <= Date.parse(databaseNow) ||
-              Date.parse(readiness.result.observed_at) > Date.parse(databaseNow) ||
-              Date.parse(readiness.result.valid_until) <= Date.parse(databaseNow)
-            ) {
-              return { kind: "conflict" } as const;
-            }
+              const databaseClock = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.database-clock",
+                text: "SELECT clock_timestamp() AS database_now",
+                values: [],
+                readonly: false,
+              });
+              const nowRow = oneRow(databaseClock);
+              const databaseNow = nowRow === null ? null : instant(nowRow?.database_now);
+              if (
+                nowRow === undefined ||
+                databaseNow === null ||
+                // The retired session expiry does not gate activation; the
+                // readiness evidence's own window does.
+                Date.parse(readiness.result.observed_at) > Date.parse(databaseNow) ||
+                Date.parse(readiness.result.valid_until) <= Date.parse(databaseNow)
+              ) {
+                return yield* Effect.fail(
+                  new HnsRootImportActivationRefused({ reason: "conflict" }),
+                );
+              }
 
-            yield* transaction.execute({
-              label: "hns.root-import.activate.insert-inventory",
-              text: `INSERT INTO hns_authority_inventories (
+              yield* transaction.execute({
+                label: "hns.root-import.activate.insert-inventory",
+                text: `INSERT INTO hns_authority_inventories (
                        registry_reference, authority_inventory_reference,
                        authority_inventory_version, authority_inventory_digest,
                        environment, runtime_capability_set_digest, inventory_bytes,
                        published_at, expires_at
                      ) VALUES ($1,$2,$3,$4,$5,$6,$7::bytea,$8::timestamptz,$9::timestamptz)`,
-              values: [
-                "hns-authority:root-import",
-                readiness.result.authority_inventory_reference,
-                readiness.result.authority_inventory_version,
-                readiness.result.authority_inventory_digest,
-                readiness.authority_inventory.environment,
-                readiness.authority_inventory.runtime_capability_set_digest,
-                readiness.authority_inventory_bytes,
-                readiness.result.observed_at,
-                readiness.result.valid_until,
-              ],
-              readonly: false,
-            });
+                values: [
+                  "hns-authority:root-import",
+                  readiness.result.authority_inventory_reference,
+                  readiness.result.authority_inventory_version,
+                  readiness.result.authority_inventory_digest,
+                  readiness.authority_inventory.environment,
+                  readiness.authority_inventory.runtime_capability_set_digest,
+                  readiness.authority_inventory_bytes,
+                  readiness.result.observed_at,
+                  readiness.result.valid_until,
+                ],
+                readonly: false,
+              });
 
-            const dnsOperationId = `hns-dns-activate:${input.request_sha256}`;
-            const reservationResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.reserve-dns",
-              text: `SELECT * FROM reserve_hns_dns_zone_activation_v1(
+              const dnsOperationId = `hns-dns-activate:${input.request_sha256}`;
+              const reservationResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.reserve-dns",
+                text: `SELECT * FROM reserve_hns_dns_zone_activation_v1(
                        $1,$2,$3,$4,0,60
                      )`,
-              values: [
-                dnsOperationId,
-                `hns-root:${input.input.idempotency_key}`,
-                activationDocumentDigest,
-                input.dns_zone_activation_id,
-              ],
-              readonly: false,
-            });
-            const reservation = oneRow(reservationResult);
-            const fenceToken =
-              reservation === null || reservation === undefined
-                ? null
-                : positiveInteger(reservation.fence_token);
-            if (
-              reservation === undefined ||
-              reservation?.outcome !== "reserved" ||
-              reservation?.dns_zone_activation_id !== input.dns_zone_activation_id ||
-              fenceToken === null
-            ) {
-              return yield* Effect.fail(storageFailure());
-            }
-            const finalizeResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.finalize-dns",
-              text: `SELECT * FROM finalize_hns_dns_zone_activation_v1(
+                values: [
+                  dnsOperationId,
+                  `hns-root:${input.input.idempotency_key}`,
+                  activationDocumentDigest,
+                  input.dns_zone_activation_id,
+                ],
+                readonly: false,
+              });
+              const reservation = oneRow(reservationResult);
+              const fenceToken =
+                reservation === null || reservation === undefined
+                  ? null
+                  : positiveInteger(reservation.fence_token);
+              if (
+                reservation === undefined ||
+                reservation?.outcome !== "reserved" ||
+                reservation?.dns_zone_activation_id !== input.dns_zone_activation_id ||
+                fenceToken === null
+              ) {
+                return yield* Effect.fail(storageFailure());
+              }
+              const finalizeResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.finalize-dns",
+                text: `SELECT * FROM finalize_hns_dns_zone_activation_v1(
                        $1,$2::bigint,$3::bytea,$4,$5,'pirate_managed_dns_v1',$6,1,
                        $7,$8,$9,$10::bigint,$11::bytea,$12,$13,$14,$15,$16,$17,$18
                      )`,
-              values: [
-                dnsOperationId,
-                fenceToken,
-                dnsDocument.activation_document_bytes,
-                input.dns_zone_activation_id,
-                readiness.result.root_label,
-                readiness.result.dns_authority_reference,
-                readiness.result.authority_inventory_reference,
-                readiness.result.authority_inventory_version,
-                readiness.result.authority_inventory_digest,
-                readiness.result.powerdns_zone_serial,
-                dnsDocument.zone_bytes,
-                dnsDocument.zone_bytes_digest,
-                readiness.result.dnssec_keyset_reference,
-                readiness.result.dnssec_keyset_version,
-                readiness.result.gateway_deployment_reference,
-                readiness.result.gateway_certificate_spki_sha256,
-                `hns-root-chain:${readiness.result.chain_resource_sha256}`,
-                readiness.result_sha256,
-              ],
-              readonly: false,
-            });
-            const finalized = oneRow(finalizeResult);
-            const dnsActivationGeneration =
-              finalized === null || finalized === undefined
-                ? null
-                : positiveInteger(finalized.activation_generation);
-            if (
-              finalized === undefined ||
-              finalized?.outcome !== "activated" ||
-              finalized?.dns_zone_activation_id !== input.dns_zone_activation_id ||
-              dnsActivationGeneration !== 1
-            ) {
-              return yield* Effect.fail(storageFailure());
-            }
-            const healthValidForSeconds = Math.floor(
-              (Date.parse(readiness.result.valid_until) - Date.parse(databaseNow)) / 1_000,
-            );
-            if (healthValidForSeconds < 1 || healthValidForSeconds > 604_800) {
-              return yield* Effect.fail(storageFailure());
-            }
-            const healthResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.record-health",
-              text: `SELECT * FROM record_hns_dns_zone_health_v1(
+                values: [
+                  dnsOperationId,
+                  fenceToken,
+                  dnsDocument.activation_document_bytes,
+                  input.dns_zone_activation_id,
+                  readiness.result.root_label,
+                  readiness.result.dns_authority_reference,
+                  readiness.result.authority_inventory_reference,
+                  readiness.result.authority_inventory_version,
+                  readiness.result.authority_inventory_digest,
+                  readiness.result.powerdns_zone_serial,
+                  dnsDocument.zone_bytes,
+                  dnsDocument.zone_bytes_digest,
+                  readiness.result.dnssec_keyset_reference,
+                  readiness.result.dnssec_keyset_version,
+                  readiness.result.gateway_deployment_reference,
+                  readiness.result.gateway_certificate_spki_sha256,
+                  `hns-root-chain:${readiness.result.chain_resource_sha256}`,
+                  readiness.result_sha256,
+                ],
+                readonly: false,
+              });
+              const finalized = oneRow(finalizeResult);
+              const dnsActivationGeneration =
+                finalized === null || finalized === undefined
+                  ? null
+                  : positiveInteger(finalized.activation_generation);
+              if (
+                finalized === undefined ||
+                finalized?.outcome !== "activated" ||
+                finalized?.dns_zone_activation_id !== input.dns_zone_activation_id ||
+                dnsActivationGeneration !== 1
+              ) {
+                return yield* Effect.fail(storageFailure());
+              }
+              const healthValidForSeconds = Math.floor(
+                (Date.parse(readiness.result.valid_until) - Date.parse(databaseNow)) / 1_000,
+              );
+              if (healthValidForSeconds < 1 || healthValidForSeconds > 604_800) {
+                return yield* Effect.fail(storageFailure());
+              }
+              const healthResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.record-health",
+                text: `SELECT * FROM record_hns_dns_zone_health_v1(
                        $1,$2,$3,$4,$5::bigint,0,$6,$7,$8,$9,$10,$11,$12,
                        $13::boolean,$14::boolean,$15::boolean,$16::boolean,$17::integer
                      )`,
-              values: [
-                `hns-health:${input.request_sha256}`,
-                `hns-root-health:${input.input.idempotency_key}`,
-                readiness.result_sha256,
-                input.dns_zone_activation_id,
-                dnsActivationGeneration,
-                `hns-root-chain:${readiness.result.chain_resource_sha256}`,
-                readiness.result_sha256,
-                readiness.result.observed_zone_bytes_sha256,
-                readiness.result.dnssec_keyset_reference,
-                readiness.result.dnssec_keyset_version,
-                readiness.result.gateway_deployment_reference,
-                readiness.result.gateway_certificate_spki_sha256,
-                readiness.result.delegation_matches,
-                readiness.result.ds_authenticates_zone,
-                readiness.result.retained_zone_digest_matches,
-                readiness.result.gateway_healthy,
-                healthValidForSeconds,
-              ],
-              readonly: false,
-            });
-            const health = oneRow(healthResult);
-            if (
-              health === undefined ||
-              health?.outcome !== "recorded" ||
-              health?.dns_zone_activation_id !== input.dns_zone_activation_id ||
-              positiveInteger(health.activation_generation) !== dnsActivationGeneration ||
-              positiveInteger(health.health_generation) !== 1
-            ) {
-              return yield* Effect.fail(storageFailure());
-            }
-            const appResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.activate-app",
-              text: `SELECT * FROM activate_hns_community_app_host_v1(
+                values: [
+                  `hns-health:${input.request_sha256}`,
+                  `hns-root-health:${input.input.idempotency_key}`,
+                  readiness.result_sha256,
+                  input.dns_zone_activation_id,
+                  dnsActivationGeneration,
+                  `hns-root-chain:${readiness.result.chain_resource_sha256}`,
+                  readiness.result_sha256,
+                  readiness.result.observed_zone_bytes_sha256,
+                  readiness.result.dnssec_keyset_reference,
+                  readiness.result.dnssec_keyset_version,
+                  readiness.result.gateway_deployment_reference,
+                  readiness.result.gateway_certificate_spki_sha256,
+                  readiness.result.delegation_matches,
+                  readiness.result.ds_authenticates_zone,
+                  readiness.result.retained_zone_digest_matches,
+                  readiness.result.gateway_healthy,
+                  healthValidForSeconds,
+                ],
+                readonly: false,
+              });
+              const health = oneRow(healthResult);
+              if (
+                health === undefined ||
+                health?.outcome !== "recorded" ||
+                health?.dns_zone_activation_id !== input.dns_zone_activation_id ||
+                positiveInteger(health.activation_generation) !== dnsActivationGeneration ||
+                positiveInteger(health.health_generation) !== 1
+              ) {
+                return yield* Effect.fail(storageFailure());
+              }
+              const appResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.activate-app",
+                text: `SELECT * FROM activate_hns_community_app_host_v1(
                        $1,$2,$3,$4,$5,$6,$7,'verified_namespace_v1',$8,$9::bigint,
                        $10,$11::bigint,$12
                      )`,
-              values: [
-                `hns-app:${input.request_sha256}`,
-                `hns-root-app:${input.input.idempotency_key}`,
-                input.request_sha256,
-                input.app_host_activation_id,
-                input.community_id,
-                readiness.result.root_label,
-                routeBindingId,
-                evidenceRef,
-                routeGeneration,
-                input.dns_zone_activation_id,
-                dnsActivationGeneration,
-                readiness.result.gateway_deployment_reference,
-              ],
-              readonly: false,
-            });
-            const app = oneRow(appResult);
-            const appActivationGeneration =
-              app === null || app === undefined
-                ? null
-                : positiveInteger(app.app_host_activation_generation);
-            if (
-              app === undefined ||
-              app?.outcome !== "activated" ||
-              app?.app_host_activation_id !== input.app_host_activation_id ||
-              app?.status !== "active" ||
-              appActivationGeneration !== 1
-            ) {
-              return yield* Effect.fail(storageFailure());
-            }
+                values: [
+                  `hns-app:${input.request_sha256}`,
+                  `hns-root-app:${input.input.idempotency_key}`,
+                  input.request_sha256,
+                  input.app_host_activation_id,
+                  input.community_id,
+                  readiness.result.root_label,
+                  routeBindingId,
+                  evidenceRef,
+                  routeGeneration,
+                  input.dns_zone_activation_id,
+                  dnsActivationGeneration,
+                  readiness.result.gateway_deployment_reference,
+                ],
+                readonly: false,
+              });
+              const app = oneRow(appResult);
+              const appActivationGeneration =
+                app === null || app === undefined
+                  ? null
+                  : positiveInteger(app.app_host_activation_generation);
+              if (
+                app === undefined ||
+                app?.outcome !== "activated" ||
+                app?.app_host_activation_id !== input.app_host_activation_id ||
+                app?.status !== "active" ||
+                appActivationGeneration !== 1
+              ) {
+                return yield* Effect.fail(storageFailure());
+              }
 
-            yield* transaction.execute({
-              label: "hns.root-import.activate.ensure-handle-authority",
-              text: `INSERT INTO community_handle_sales_authority_grants (
+              yield* transaction.execute({
+                label: "hns.root-import.activate.ensure-handle-authority",
+                text: `INSERT INTO community_handle_sales_authority_grants (
                        grant_id,community_id,principal_account_id,authority,source_kind,
                        source_policy_ref,status,granted_at,granted_by_account_id
                      ) VALUES (
                        community_handle_sales_creator_grant_id_v1($1,$2),$1,$2,
                        'manage_handle_sales','creator_owner',NULL,'active',$3::timestamptz,$2
                      ) ON CONFLICT (community_id,principal_account_id,authority) DO NOTHING`,
-              values: [input.community_id, input.input.actor_id, databaseNow],
-              readonly: false,
-            });
-            const authorityResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.read-handle-authority",
-              text: `SELECT grant_id
+                values: [input.community_id, input.input.actor_id, databaseNow],
+                readonly: false,
+              });
+              const authorityResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.read-handle-authority",
+                text: `SELECT grant_id
                        FROM community_handle_sales_authority_grants
                       WHERE community_id=$1 AND principal_account_id=$2
                         AND authority='manage_handle_sales' AND status='active'
                       FOR SHARE`,
-              values: [input.community_id, input.input.actor_id],
-              readonly: false,
-            });
-            const salesAuthority = oneRow(authorityResult);
-            const salesAuthorityId =
-              salesAuthority === null ? null : stringValue(salesAuthority ?? {}, "grant_id");
-            if (salesAuthority === undefined || salesAuthorityId === null) {
-              return yield* Effect.fail(storageFailure());
-            }
-            const saleHash = handleSaleNamespaceActivationHash({
-              sale_namespace_activation_id: input.sale_namespace_activation_id,
-              sale_namespace_activation_generation: 1,
-              community_id: input.community_id,
-              family: "hns",
-              canonical_root: readiness.result.root_label,
-              namespace_authority_reference: evidenceRef,
-              namespace_authority_generation: routeGeneration,
-              dns_zone_activation_id: input.dns_zone_activation_id,
-              dns_zone_activation_generation: dnsActivationGeneration,
-            }).sha256;
-            yield* transaction.execute({
-              label: "hns.root-import.activate.insert-sale-revision",
-              text: `INSERT INTO community_handle_sale_namespace_activation_revisions (
+                values: [input.community_id, input.input.actor_id],
+                readonly: false,
+              });
+              const salesAuthority = oneRow(authorityResult);
+              const salesAuthorityId =
+                salesAuthority === null ? null : stringValue(salesAuthority ?? {}, "grant_id");
+              if (salesAuthority === undefined || salesAuthorityId === null) {
+                return yield* Effect.fail(storageFailure());
+              }
+              const saleHash = handleSaleNamespaceActivationHash({
+                sale_namespace_activation_id: input.sale_namespace_activation_id,
+                sale_namespace_activation_generation: 1,
+                community_id: input.community_id,
+                family: "hns",
+                canonical_root: readiness.result.root_label,
+                namespace_authority_reference: evidenceRef,
+                namespace_authority_generation: routeGeneration,
+                dns_zone_activation_id: input.dns_zone_activation_id,
+                dns_zone_activation_generation: dnsActivationGeneration,
+              }).sha256;
+              yield* transaction.execute({
+                label: "hns.root-import.activate.insert-sale-revision",
+                text: `INSERT INTO community_handle_sale_namespace_activation_revisions (
                        sale_namespace_activation_id,sale_namespace_activation_generation,
                        sale_namespace_activation_hash,community_id,family,canonical_root,
                        display_root,namespace_authority_kind,namespace_authority_reference,
@@ -1224,91 +1361,127 @@ export function makeControlPlaneHnsRootImportRepository(
                        'hns_dns_zone_activation_v1',$8,$9::bigint,'dedicated_root_replace_v1',TRUE,
                        'active',NULL,$10,$11,$12::timestamptz,$12::timestamptz,
                        NULL,NULL,$12::timestamptz)`,
-              values: [
-                input.sale_namespace_activation_id,
-                saleHash,
-                input.community_id,
-                readiness.result.root_label,
-                displayRoot,
-                evidenceRef,
-                routeGeneration,
-                input.dns_zone_activation_id,
-                dnsActivationGeneration,
-                input.input.actor_id,
-                salesAuthorityId,
-                databaseNow,
-              ],
-              readonly: false,
-            });
-            yield* transaction.execute({
-              label: "hns.root-import.activate.insert-sale-current",
-              text: `INSERT INTO community_handle_sale_namespace_activation_current (
+                values: [
+                  input.sale_namespace_activation_id,
+                  saleHash,
+                  input.community_id,
+                  readiness.result.root_label,
+                  displayRoot,
+                  evidenceRef,
+                  routeGeneration,
+                  input.dns_zone_activation_id,
+                  dnsActivationGeneration,
+                  input.input.actor_id,
+                  salesAuthorityId,
+                  databaseNow,
+                ],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "hns.root-import.activate.insert-sale-current",
+                text: `INSERT INTO community_handle_sale_namespace_activation_current (
                        sale_namespace_activation_id,family,canonical_root,community_id,
                        current_generation,updated_at
                      ) VALUES ($1,'hns',$2,$3,1,$4::timestamptz)`,
-              values: [
-                input.sale_namespace_activation_id,
-                readiness.result.root_label,
-                input.community_id,
-                databaseNow,
-              ],
-              readonly: false,
-            });
-            yield* transaction.execute({
-              label: "hns.root-import.activate.insert-sale-action",
-              text: `INSERT INTO community_handle_sale_namespace_activation_actions (
+                values: [
+                  input.sale_namespace_activation_id,
+                  readiness.result.root_label,
+                  input.community_id,
+                  databaseNow,
+                ],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "hns.root-import.activate.insert-sale-action",
+                text: `INSERT INTO community_handle_sale_namespace_activation_actions (
                        action_id,actor_account_id,community_id,endpoint_template,
                        idempotency_key,request_hash,sale_namespace_activation_id,
                        expected_activation_generation,result_activation_generation,
                        result_activation_hash,committed_at
                      ) VALUES ($1,$2,$3,'/communities/:communityId/handle-sale-namespaces',
                        $4,$5,$6,0,1,$7,$8::timestamptz)`,
-              values: [
-                `hns-sale-action_${input.request_sha256}`,
-                input.input.actor_id,
-                input.community_id,
-                `hns-root-${input.request_sha256.slice(0, 64)}`,
-                input.request_sha256,
-                input.sale_namespace_activation_id,
-                saleHash,
-                databaseNow,
-              ],
-              readonly: false,
-            });
+                values: [
+                  `hns-sale-action_${input.request_sha256}`,
+                  input.input.actor_id,
+                  input.community_id,
+                  `hns-root-${input.request_sha256.slice(0, 64)}`,
+                  input.request_sha256,
+                  input.sale_namespace_activation_id,
+                  saleHash,
+                  databaseNow,
+                ],
+                readonly: false,
+              });
 
-            const cancelledTeardown = yield* transaction.execute({
-              label: "hns.root-import.activate.cancel-teardown",
-              text: `UPDATE hns_root_import_teardown_jobs
+              const cancelledTeardown = yield* transaction.execute({
+                label: "hns.root-import.activate.cancel-teardown",
+                text: `UPDATE hns_root_import_teardown_jobs
                         SET state='cancelled',leased_by=NULL,lease_expires_at=NULL,
                             failure_code=NULL,completed_at=$1::timestamptz,
                             updated_at=$1::timestamptz
                       WHERE root_import_session_id=$2 AND state='waiting'`,
-              values: [databaseNow, input.input.root_import_session_id],
-              readonly: false,
-            });
-            if (cancelledTeardown.rowCount !== 1) {
-              return yield* Effect.fail(storageFailure());
-            }
+                values: [databaseNow, input.input.root_import_session_id],
+                readonly: false,
+              });
+              if (cancelledTeardown.rowCount !== 1) {
+                return yield* Effect.fail(storageFailure());
+              }
 
-            const updated = yield* transaction.execute({
-              label: "hns.root-import.activate.update-session",
-              text: `UPDATE hns_root_import_sessions
+              // The activation acceptance revalidates under the locks at the end
+              // of the effects transaction: any state change since the
+              // pre-flight rolls every effect back, and a session with no
+              // lifecycle row is refused rather than continuing without the
+              // ownership safeguards.
+              const currentEvidence = input.current_evidence;
+              const lifecycleResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lifecycle",
+                text: `SELECT * FROM commit_hns_root_import_activation_v1(
+                       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                values: [
+                  input.input.root_import_session_id,
+                  input.input.expected_revision,
+                  currentEvidence?.lifecycle_revision ?? null,
+                  currentEvidence?.lifecycle_generation ?? null,
+                  input.input.publish_plan_sha256,
+                  input.input.readiness_result_sha256,
+                  input.request_sha256,
+                  currentEvidence === null ? null : new Date(currentEvidence.observed_at_epoch_ms),
+                  currentEvidence?.resource_sha256 ?? null,
+                  currentEvidence?.qualifying ?? null,
+                ],
+                readonly: false,
+              });
+              const lifecycleRow = oneRow(lifecycleResult);
+              if (lifecycleRow === undefined || lifecycleRow === null) {
+                return yield* Effect.fail(storageFailure());
+              }
+              if (lifecycleRow.outcome !== "activated" && lifecycleRow.outcome !== "replayed") {
+                return yield* Effect.fail(
+                  new HnsRootImportActivationRefused({
+                    reason: `lifecycle_${String(lifecycleRow.outcome)}`,
+                  }),
+                );
+              }
+
+              const updated = yield* transaction.execute({
+                label: "hns.root-import.activate.update-session",
+                text: `UPDATE hns_root_import_sessions
                         SET status='activated',revision=revision+1,
                             activated_community_id=$1,updated_at=$2::timestamptz
                       WHERE root_import_session_id=$3 AND status='ready'
                         AND revision=$4::bigint`,
-              values: [
-                input.community_id,
-                databaseNow,
-                input.input.root_import_session_id,
-                input.input.expected_revision,
-              ],
-              readonly: false,
-            });
-            if (updated.rowCount !== 1) return yield* Effect.fail(storageFailure());
-            yield* transaction.execute({
-              label: "hns.root-import.activate.insert-operation",
-              text: `INSERT INTO hns_root_import_activation_operations (
+                values: [
+                  input.community_id,
+                  databaseNow,
+                  input.input.root_import_session_id,
+                  input.input.expected_revision,
+                ],
+                readonly: false,
+              });
+              if (updated.rowCount !== 1) return yield* Effect.fail(storageFailure());
+              yield* transaction.execute({
+                label: "hns.root-import.activate.insert-operation",
+                text: `INSERT INTO hns_root_import_activation_operations (
                        operation_id,root_import_session_id,actor_id,creation_intent_id,
                        origin_kind,attachment_intent_id,
                        idempotency_key,request_sha256,expected_session_revision,community_id,
@@ -1317,48 +1490,53 @@ export function makeControlPlaneHnsRootImportRepository(
                        result_session_revision,committed_at
                      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10,$11,$12,$13,$14,
                        $9::bigint+1,$15::timestamptz)`,
-              values: [
-                input.operation_id,
-                input.input.root_import_session_id,
-                input.input.actor_id,
-                communityOrigin === undefined ? input.input.creation_intent_id : null,
-                communityOrigin === undefined ? "creation_intent" : "community_attachment",
-                communityOrigin?.attachment_intent_id ?? null,
-                input.input.idempotency_key,
-                input.request_sha256,
-                input.input.expected_revision,
-                input.community_id,
-                input.dns_zone_activation_id,
-                input.app_host_activation_id,
-                input.sale_namespace_activation_id,
-                saleHash,
-                databaseNow,
-              ],
-              readonly: false,
-            });
-            return {
-              kind: "activated",
-              response: {
-                creation_intent_id: input.input.creation_intent_id,
-                root_import_session_id: input.input.root_import_session_id,
-                root_label: readiness.result.root_label,
-                revision: input.input.expected_revision + 1,
-                status: "activated",
-                community_id: input.community_id,
-                app_host: `app.${readiness.result.root_label}`,
-                dns_zone_activation_id: input.dns_zone_activation_id,
-                dns_zone_activation_generation: dnsActivationGeneration,
-                app_host_activation_id: input.app_host_activation_id,
-                app_host_activation_generation: appActivationGeneration,
-                sale_namespace_activation_id: input.sale_namespace_activation_id,
-                sale_namespace_activation_generation: 1,
-                sale_namespace_activation_sha256: saleHash,
-                handle_issuance_enabled: true,
-                replayed: false,
-              },
-            } as const;
-          }),
-        );
+                values: [
+                  input.operation_id,
+                  input.input.root_import_session_id,
+                  input.input.actor_id,
+                  communityOrigin === undefined ? input.input.creation_intent_id : null,
+                  communityOrigin === undefined ? "creation_intent" : "community_attachment",
+                  communityOrigin?.attachment_intent_id ?? null,
+                  input.input.idempotency_key,
+                  input.request_sha256,
+                  input.input.expected_revision,
+                  input.community_id,
+                  input.dns_zone_activation_id,
+                  input.app_host_activation_id,
+                  input.sale_namespace_activation_id,
+                  saleHash,
+                  databaseNow,
+                ],
+                readonly: false,
+              });
+              return {
+                kind: "activated",
+                response: {
+                  creation_intent_id: input.input.creation_intent_id,
+                  root_import_session_id: input.input.root_import_session_id,
+                  root_label: readiness.result.root_label,
+                  revision: input.input.expected_revision + 1,
+                  status: "activated",
+                  community_id: input.community_id,
+                  app_host: `app.${readiness.result.root_label}`,
+                  dns_zone_activation_id: input.dns_zone_activation_id,
+                  dns_zone_activation_generation: dnsActivationGeneration,
+                  app_host_activation_id: input.app_host_activation_id,
+                  app_host_activation_generation: appActivationGeneration,
+                  sale_namespace_activation_id: input.sale_namespace_activation_id,
+                  sale_namespace_activation_generation: 1,
+                  sale_namespace_activation_sha256: saleHash,
+                  handle_issuance_enabled: true,
+                  replayed: false,
+                },
+              } as const;
+            }),
+          )
+          .pipe(
+            Effect.catchTag("HnsRootImportActivationRefused", () =>
+              Effect.succeed({ kind: "conflict" } as const),
+            ),
+          );
       }),
   };
 }

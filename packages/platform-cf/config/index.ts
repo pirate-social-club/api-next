@@ -1,4 +1,4 @@
-import { Config, ConfigProvider, Effect, Redacted } from "effect";
+import { Config, ConfigProvider, Effect, Option, Redacted } from "effect";
 import type { Redacted as RedactedType } from "effect/Redacted";
 
 /**
@@ -10,11 +10,12 @@ import type { Redacted as RedactedType } from "effect/Redacted";
  * required config therefore fails the first health-check request rather than
  * limping into a read path (incident api#999 class).
  *
- * Semantics note: `Config.withDefault` swallows parse failures, so a
- * defaulted variable can never be *invalid* — it falls back. Money-path
- * variables are therefore REQUIRED (no defaults): an unset or malformed
- * money-path value must fail startup, and a missing testnet posture is a
- * deploy-time event, not a runtime surprise.
+ * Semantics note: `Config.withDefault` applies only when the variable is
+ * absent; a present but malformed value still fails the parse. Recovery that
+ * also covers parse failures is `Config.orElse`. Money-path variables are
+ * therefore REQUIRED (no defaults): an unset money-path value must fail
+ * startup rather than silently becoming a default, and a missing testnet
+ * posture is a deploy-time event, not a runtime surprise.
  */
 
 /** Where this Worker build may run; gates per-env config below. */
@@ -116,6 +117,152 @@ export const JobsWorkerConfig = Config.all({
     "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC",
   ),
 });
+
+/**
+ * A parse failure for a value the provider supplied. The wrapped cause is a
+ * plain Error: the config boundary never prints it, and loadWorkerConfig
+ * replaces the whole failure with one opaque sentence.
+ */
+function configFailure(message: string): Effect.Effect<never, Config.ConfigError> {
+  return Effect.fail(new Config.ConfigError(new Error(message) as never));
+}
+
+function hnsAuthoritySetting(name: string): Config.Config<string> {
+  return Config.string(name).pipe(
+    Config.mapOrFail((value) =>
+      value.length > 0 && value.trim() === value
+        ? Effect.succeed(value)
+        : configFailure(`${name} is missing or invalid`),
+    ),
+  );
+}
+
+function hnsAuthorityBoundedInteger(
+  name: string,
+  minimum: number,
+  maximum: number,
+): Config.Config<number> {
+  return Config.int(name).pipe(
+    Config.mapOrFail((value) =>
+      Number.isSafeInteger(value) && value >= minimum && value <= maximum
+        ? Effect.succeed(value)
+        : configFailure(`${name} must be between ${minimum} and ${maximum}`),
+    ),
+  );
+}
+
+const HnsActivationCurrentViewSettings = {
+  HNS_AUTHORITY_HSD_RPC_URL: hnsAuthoritySetting("HNS_AUTHORITY_HSD_RPC_URL"),
+  HNS_AUTHORITY_HSD_AUTHORIZATION: secret("HNS_AUTHORITY_HSD_AUTHORIZATION"),
+  HNS_AUTHORITY_CHAIN_NETWORK: hnsAuthoritySetting("HNS_AUTHORITY_CHAIN_NETWORK"),
+  HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: hnsAuthoritySetting(
+    "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH",
+  ).pipe(
+    Config.mapOrFail((value) =>
+      /^[0-9a-f]{64}$/u.test(value)
+        ? Effect.succeed(value)
+        : configFailure("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH is invalid"),
+    ),
+  ),
+  HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: hnsAuthorityBoundedInteger(
+    "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS",
+    1,
+    2_000,
+  ),
+  HNS_AUTHORITY_SAFE_CONFIRMATIONS: hnsAuthorityBoundedInteger(
+    "HNS_AUTHORITY_SAFE_CONFIRMATIONS",
+    0,
+    1_000,
+  ),
+  HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: hnsAuthorityBoundedInteger(
+    "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS",
+    60,
+    86_400,
+  ),
+  HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: hnsAuthorityBoundedInteger(
+    "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS",
+    0,
+    3_600,
+  ),
+} as const;
+
+const HnsActivationCurrentViewOptionalSettings = {
+  HNS_AUTHORITY_HSD_RPC_URL: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_HSD_RPC_URL,
+  ),
+  HNS_AUTHORITY_HSD_AUTHORIZATION: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_HSD_AUTHORIZATION,
+  ),
+  HNS_AUTHORITY_CHAIN_NETWORK: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_CHAIN_NETWORK,
+  ),
+  HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
+  ),
+  HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
+  ),
+  HNS_AUTHORITY_SAFE_CONFIRMATIONS: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
+  ),
+  HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
+  ),
+  HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: Config.option(
+    HnsActivationCurrentViewSettings.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
+  ),
+} as const;
+
+export type HnsActivationCurrentViewConfigValue =
+  | Readonly<{ readonly enabled: false }>
+  | Readonly<{
+      readonly enabled: true;
+      readonly HNS_AUTHORITY_HSD_RPC_URL: string;
+      readonly HNS_AUTHORITY_HSD_AUTHORIZATION: RedactedType<string>;
+      readonly HNS_AUTHORITY_CHAIN_NETWORK: string;
+      readonly HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: string;
+      readonly HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: number;
+      readonly HNS_AUTHORITY_SAFE_CONFIRMATIONS: number;
+      readonly HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: number;
+      readonly HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: number;
+    }>;
+
+/**
+ * The activation current-view gatherer group. Disabled by default; an absent
+ * or explicitly disabled group is a disabled capability, never an invalid one.
+ * Enabling it requires every HNS_AUTHORITY_* setting, bounded by the same
+ * values the provisioner enforces, because a partial or out-of-range group
+ * must fail before route construction rather than observe with invented
+ * defaults. The authorization value is a Worker secret binding and is
+ * redacted like every other credential.
+ */
+export const HnsActivationCurrentViewConfig: Config.Config<HnsActivationCurrentViewConfigValue> =
+  Config.all({
+    enabled: Config.boolean("HNS_ACTIVATION_CURRENT_VIEW_ENABLED").pipe(Config.withDefault(false)),
+    settings: Config.all(HnsActivationCurrentViewOptionalSettings),
+  }).pipe(
+    Config.mapOrFail(
+      ({
+        enabled,
+        settings,
+      }): Effect.Effect<HnsActivationCurrentViewConfigValue, Config.ConfigError> => {
+        if (!enabled) return Effect.succeed({ enabled: false });
+        const missing = (Object.keys(settings) as (keyof typeof settings)[]).filter((name) =>
+          Option.isNone(settings[name] as Option.Option<unknown>),
+        );
+        if (missing.length > 0) {
+          return configFailure(
+            `HNS activation current-view configuration is incomplete: missing ${missing.join(", ")}`,
+          );
+        }
+        const complete = Option.all(settings);
+        if (Option.isNone(complete)) {
+          return configFailure("HNS activation current-view configuration is incomplete");
+        }
+        return Effect.succeed({ enabled: true, ...complete.value });
+      },
+    ),
+  );
 
 /**
  * Configuration required before the HTTP application layer is constructed.
@@ -275,6 +422,7 @@ export const HttpWorkerConfig = Config.all({
   ),
   ...MegapotRewardConfigFields,
   MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
+  HNS_ACTIVATION_CURRENT_VIEW: HnsActivationCurrentViewConfig,
 });
 
 export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;

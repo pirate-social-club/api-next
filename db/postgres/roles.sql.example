@@ -49,3 +49,76 @@ GRANT EXECUTE ON FUNCTION append_song_owner_policy_revision_v1(
 GRANT EXECUTE ON FUNCTION observe_song_derivative_video_policy_v1(
   TEXT, TEXT, BIGINT, TEXT, TEXT, BIGINT, TEXT
 ) TO api_next_app;
+
+-- HNS root-import lifecycle execution. The runtime reaches the lifecycle
+-- tables only through these fenced routines: claim and finalize one leased
+-- job, commit one decision under an expected revision, persist the accepted
+-- observation against the decision that consumed it, and record the
+-- readiness result the legacy observation path owns. The leases, fences,
+-- revision checks, decision binding and observation freshness are all
+-- enforced inside the functions; the direct table grants in this file do not
+-- extend to the lifecycle ledgers, which migration 0137 revoked from PUBLIC.
+GRANT EXECUTE ON FUNCTION claim_hns_root_import_lifecycle_job_v1(TEXT, INTEGER)
+  TO api_next_app;
+GRANT EXECUTE ON FUNCTION finalize_hns_root_import_lifecycle_job_v1(
+  BIGINT, TEXT, BIGINT, TEXT, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION commit_hns_root_import_lifecycle_decision_v1(
+  TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BIGINT, BIGINT, BIGINT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION record_hns_root_import_lifecycle_observation_v1(
+  TEXT, BIGINT, TEXT, BIGINT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, TIMESTAMPTZ, TEXT, BIGINT, INTEGER
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION claim_hns_root_import_observation_job_v1(TEXT, INTEGER)
+  TO api_next_app;
+GRANT EXECUTE ON FUNCTION finalize_hns_root_import_observation_job_v1(
+  TEXT, TEXT, BIGINT, TEXT, TEXT, BYTEA, TEXT, TEXT
+) TO api_next_app;
+-- The reviewer's writer records a retaining decision only. The function
+-- refuses any decision that could authorize deletion however it is called.
+GRANT EXECUTE ON FUNCTION record_hns_root_import_retention_review_v1(
+  TEXT, BIGINT, TEXT, BIGINT, BIGINT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, TEXT, TIMESTAMPTZ
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
+  TO api_next_app;
+-- The atomic readiness acceptance: result bytes, session readiness, the
+-- lifecycle transition and job completion in one statement. It acts only
+-- when the persisted readiness ownership marker is enabled.
+GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
+  TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
+) TO api_next_app;
+-- The lifecycle half of activation commits inside the existing activation
+-- transaction, revalidating phase, revision, generation, freshness and the
+-- pre-gathered current-view binding before the activation effects commit.
+GRANT EXECUTE ON FUNCTION commit_hns_root_import_activation_v1(
+  TEXT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN
+) TO api_next_app;
+-- The policy pre-flight: it records the stale-readiness pending hold and
+-- refresh work, or authorizes the effects transaction without writing.
+GRANT EXECUTE ON FUNCTION authorize_hns_root_import_activation_v1(
+  TEXT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN
+) TO api_next_app;
+
+-- The operator role is the only writer that can produce an authorization to
+-- delete retained authority or to apply a recovery decision. Its functions
+-- are deliberately not granted to the runtime: a compromise of the serving
+-- path cannot retire infrastructure or resume a parked incident.
+CREATE ROLE api_next_operator LOGIN;
+GRANT USAGE ON SCHEMA public TO api_next_operator;
+GRANT EXECUTE ON FUNCTION record_hns_root_import_authority_supersession_v1(
+  TEXT, BIGINT, TEXT, TEXT
+) TO api_next_operator;
+GRANT EXECUTE ON FUNCTION record_hns_root_import_recovery_finding_v1(
+  TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, BOOLEAN, BOOLEAN
+) TO api_next_operator;
+GRANT EXECUTE ON FUNCTION authorize_hns_root_import_recovery_v1(
+  TEXT, TEXT, TEXT, INTEGER, INTEGER
+) TO api_next_operator;
+GRANT EXECUTE ON FUNCTION apply_hns_root_import_recovery_v1(
+  TEXT, TEXT, BIGINT, TEXT, JSONB, INTEGER
+) TO api_next_operator;
+-- The readiness ownership handover is an operator transaction: it refuses
+-- while a conflicting lease is live, disposes obsolete rows and enables the
+-- persisted marker. It is deliberately not a runtime grant.
+GRANT EXECUTE ON FUNCTION begin_hns_root_import_readiness_ownership_v1(TEXT)
+  TO api_next_operator;

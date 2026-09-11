@@ -56,6 +56,7 @@ export {
   NamespaceOwnershipCompletionRejected,
   NamespaceOwnershipCompletionStorageFailed,
 } from "./completion.ts";
+export * from "./hns-activation-current-view.ts";
 export type {
   HnsActiveLeaseRenewalAuthorityV1,
   HnsActiveLeaseRenewalDecodedRequest,
@@ -180,6 +181,7 @@ export {
   hnsRootIsPirateWritable,
   validateHnsAuthorityInventoryAtDatabaseTime,
 } from "./hns-authority-inventory.ts";
+export * from "./hns-chain-observation.ts";
 export type {
   HnsCommunityPublicationClaim,
   HnsCommunityPublicationQueue,
@@ -411,6 +413,7 @@ export {
   hnsProviderIdentityDigest,
   hnsProviderIdentityPreimage,
 } from "./hns-evidence.ts";
+export * from "./hns-incident-recovery.ts";
 export {
   decodeHnsPrivateDriverAuthoritativeAxfrResponseV1,
   decodeHnsPrivateDriverErrorV1,
@@ -456,7 +459,11 @@ export {
   hnsPrivateDriverErrorStatus,
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
+export * from "./hns-resource-codec.ts";
+export * from "./hns-retention-review.ts";
 export * from "./hns-root-import.ts";
+export * from "./hns-root-import-lifecycle-projection.ts";
+export * from "./hns-root-import-lifecycle-service.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,
   HnsRootImportNameProofMessageInput,
@@ -478,6 +485,7 @@ export {
 } from "./hns-root-import-name-proof.ts";
 export * from "./hns-root-import-plan.ts";
 export * from "./hns-root-import-readiness.ts";
+export * from "./hns-teardown-retention.ts";
 export * from "./operator-control-promotion.ts";
 export * from "./operator-managed-root-registry.ts";
 export * from "./operator-managed-route.ts";

@@ -537,6 +537,385 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, revision bigint, generation bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding hns_root_import_recovery_findings%ROWTYPE;
+  recovery_grant hns_root_import_recovery_authorizations%ROWTYPE;
+  committed RECORD;
+  rebound BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_evidence_freshness_seconds IS NULL
+    OR input_evidence_freshness_seconds NOT BETWEEN 1 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS recovery evidence freshness bound';
+  END IF;
+  -- The row lock is held for the whole application: the generation check, the
+  -- transition, the rebinding, and the single-use consumption are one
+  -- serialized unit, so a concurrent application cannot interleave between
+  -- them.
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF lifecycle.phase <> 'recovery_required' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF lifecycle.revision <> input_expected_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  SELECT * INTO finding FROM hns_root_import_recovery_findings
+   WHERE root_import_session_id = input_session_id AND evidence_ref = input_evidence_ref;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'finding_absent'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF finding.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF finding.recorded_at <= database_now - (input_evidence_freshness_seconds * interval '1 second')
+  THEN
+    RETURN QUERY SELECT 'evidence_stale'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  SELECT * INTO recovery_grant FROM hns_root_import_recovery_authorizations
+   WHERE recovery_finding_id = finding.recovery_finding_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'authorization_absent'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF recovery_grant.consumed_at IS NOT NULL THEN
+    RETURN QUERY SELECT 'authorization_consumed'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF recovery_grant.expires_at <= database_now THEN
+    RETURN QUERY SELECT 'authorization_expired'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF recovery_grant.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+
+  IF recovery_grant.action = 'adopt' THEN
+    IF finding.covenant_resource_sha256 IS NULL THEN
+      RETURN QUERY SELECT 'adoption_evidence_missing'::TEXT, lifecycle.revision,
+                          lifecycle.generation;
+      RETURN;
+    END IF;
+    IF input_target_phase <> 'checking_publication' THEN
+      RETURN QUERY SELECT 'adoption_target_invalid'::TEXT, lifecycle.revision,
+                          lifecycle.generation;
+      RETURN;
+    END IF;
+  END IF;
+
+  -- Decide first, and only then rebind. The commit function returns a
+  -- non-raising `replay` outcome when the event identity already exists; a
+  -- replay must not move the generation, rewrite the digest, clear the
+  -- anchors, or spend the authorization.
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    'recovery:' || input_evidence_ref,
+    'recovery_decided',
+    'transition',
+    'recovery_' || recovery_grant.action || ':' || finding.reason,
+    input_target_phase,
+    '{}'::jsonb,
+    coalesce(input_requested_work, '[]'::jsonb),
+    NULL,
+    NULL,
+    CASE WHEN recovery_grant.action = 'adopt' THEN lifecycle.generation + 1 ELSE NULL END
+  );
+  IF committed.outcome IS DISTINCT FROM 'transition' THEN
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+
+  IF recovery_grant.action = 'adopt' THEN
+    UPDATE hns_root_import_lifecycle
+       SET generation = lifecycle.generation + 1,
+           plan_encoded_resource_sha256 = finding.covenant_resource_sha256,
+           first_current_observation_at = NULL,
+           finality_deadline_at = NULL,
+           readiness_observed_at = NULL,
+           updated_at = database_now
+     WHERE root_import_session_id = input_session_id
+    RETURNING hns_root_import_lifecycle.generation INTO rebound;
+  ELSE
+    rebound := lifecycle.generation;
+  END IF;
+  UPDATE hns_root_import_recovery_authorizations
+     SET consumed_at = database_now
+   WHERE recovery_authorization_id = recovery_grant.recovery_authorization_id;
+  RETURN QUERY SELECT 'applied'::TEXT, committed.revision, rebound;
+END;
+$$;
+
+CREATE FUNCTION authorize_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  database_now TIMESTAMPTZ;
+  committed RECORD;
+BEGIN
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_expected_session_revision IS NULL
+    OR input_expected_session_revision <= 0
+    OR (input_expected_lifecycle_revision IS NOT NULL AND input_expected_lifecycle_revision <= 0)
+    OR (input_expected_generation IS NOT NULL AND input_expected_generation <= 0)
+    OR input_publish_plan_sha256 IS NULL
+    OR input_publish_plan_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_readiness_result_sha256 IS NULL
+    OR input_readiness_result_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_activation_identity IS NULL
+    OR length(btrim(input_activation_identity)) = 0
+    OR btrim(input_activation_identity) IS DISTINCT FROM input_activation_identity
+    OR octet_length(input_activation_identity) > 256
+    OR (input_current_resource_sha256 IS NOT NULL AND input_current_resource_sha256 !~ '^[0-9a-f]{64}$')
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle activation input';
+  END IF;
+
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  database_now := clock_timestamp();
+  IF session.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_history
+     WHERE root_import_session_id = input_session_id
+       AND event_id = 'activation:' || input_activation_identity
+  ) THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  IF lifecycle.phase IS DISTINCT FROM 'ready' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_expected_lifecycle_revision IS NOT NULL
+    AND lifecycle.revision IS DISTINCT FROM input_expected_lifecycle_revision
+  THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_expected_generation IS NOT NULL
+    AND lifecycle.generation IS DISTINCT FROM input_expected_generation
+  THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.status IS DISTINCT FROM 'ready'
+    OR session.revision IS DISTINCT FROM input_expected_session_revision
+  THEN
+    RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.publish_plan_sha256 IS DISTINCT FROM input_publish_plan_sha256 THEN
+    RETURN QUERY SELECT 'plan_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.readiness_result_sha256 IS DISTINCT FROM input_readiness_result_sha256 THEN
+    RETURN QUERY SELECT 'readiness_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  -- Stale readiness is the one refusal that records a durable pending hold:
+  -- it schedules exactly one readiness refresh per pending episode and keeps
+  -- the phase at ready, matching the pure transition policy's pending hold.
+  IF lifecycle.readiness_observed_at IS NULL
+    OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+  THEN
+    IF lifecycle.pending_reason = 'readiness_evidence_stale'
+      AND EXISTS (
+        SELECT 1 FROM hns_root_import_lifecycle_jobs AS pending_job
+         WHERE pending_job.root_import_session_id = input_session_id
+           AND pending_job.job_kind = 'observe_readiness'
+           AND pending_job.generation = lifecycle.generation
+           AND pending_job.state IN ('queued', 'leased')
+      )
+    THEN
+      RETURN QUERY SELECT 'readiness_pending'::TEXT, lifecycle.revision;
+      RETURN;
+    END IF;
+    SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+      input_session_id,
+      lifecycle.revision,
+      'activation-pending:' || input_activation_identity,
+      'activation_requested',
+      'pending',
+      'readiness_evidence_stale',
+      'ready',
+      jsonb_build_object(
+        'pending_reason', 'readiness_evidence_stale',
+        'next_check_at', database_now + interval '900 seconds'
+      ),
+      jsonb_build_array(
+        jsonb_build_object(
+          'kind', 'observe_readiness',
+          'due_at', database_now + interval '900 seconds'
+        )
+      )
+    );
+    IF committed.outcome IS DISTINCT FROM 'pending' THEN
+      RETURN QUERY SELECT 'readiness_pending'::TEXT, lifecycle.revision;
+      RETURN;
+    END IF;
+    RETURN QUERY SELECT 'readiness_pending'::TEXT, committed.revision;
+    RETURN;
+  END IF;
+
+  IF input_expected_lifecycle_revision IS NULL
+    OR input_expected_generation IS NULL
+    OR input_current_observed_at IS NULL
+    OR input_current_resource_sha256 IS NULL
+    OR input_current_qualifying IS NULL
+  THEN
+    RETURN QUERY SELECT 'evidence_required'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_current_qualifying IS DISTINCT FROM TRUE THEN
+    RETURN QUERY SELECT 'current_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_current_observed_at > database_now
+    OR input_current_observed_at <= database_now - interval '1800 seconds'
+  THEN
+    RETURN QUERY SELECT 'current_stale'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.plan_encoded_resource_sha256 IS NULL
+    OR input_current_resource_sha256 IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256
+  THEN
+    RETURN QUERY SELECT 'current_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT 'authorized'::TEXT, lifecycle.revision;
+END;
+$_$;
+
+CREATE FUNCTION authorize_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_action text, input_ttl_seconds integer, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, recovery_authorization_id bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding hns_root_import_recovery_findings%ROWTYPE;
+  existing BIGINT;
+  inserted BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_ttl_seconds IS NULL OR input_ttl_seconds NOT BETWEEN 60 AND 86400
+    OR input_evidence_freshness_seconds IS NULL
+    OR input_evidence_freshness_seconds NOT BETWEEN 1 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS recovery authorization window';
+  END IF;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT * INTO finding FROM hns_root_import_recovery_findings
+   WHERE root_import_session_id = input_session_id AND evidence_ref = input_evidence_ref;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'finding_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF finding.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF finding.recorded_at <= database_now - (input_evidence_freshness_seconds * interval '1 second')
+  THEN
+    -- The generation only moves on supersession. It says nothing about what
+    -- the owner did to their own name since this reading, so the reading's own
+    -- age has to be bounded separately.
+    RETURN QUERY SELECT 'evidence_stale'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF finding.supported_action IS DISTINCT FROM input_action THEN
+    RETURN QUERY SELECT 'action_unsupported'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT recovery_grant.recovery_authorization_id INTO existing
+    FROM hns_root_import_recovery_authorizations AS recovery_grant
+   WHERE recovery_grant.recovery_finding_id = finding.recovery_finding_id;
+  IF FOUND THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, existing;
+    RETURN;
+  END IF;
+  INSERT INTO hns_root_import_recovery_authorizations (
+    recovery_finding_id, root_import_session_id, authority_generation,
+    action, authorized_at, expires_at
+  ) VALUES (
+    finding.recovery_finding_id, input_session_id, finding.authority_generation,
+    input_action, database_now, database_now + input_ttl_seconds * interval '1 second'
+  ) RETURNING hns_root_import_recovery_authorizations.recovery_authorization_id INTO inserted;
+  RETURN QUERY SELECT 'recorded'::TEXT, inserted;
+END;
+$$;
+
+CREATE FUNCTION authorize_hns_root_import_retirement_v1(input_session_id text, input_freshness_seconds integer) RETURNS TABLE(kind text, recorded_at timestamp with time zone, evidence_ref text, authority_generation bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  current_generation BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_freshness_seconds IS NULL OR input_freshness_seconds NOT BETWEEN 1 AND 604800 THEN
+    RAISE EXCEPTION 'invalid HNS retirement freshness bound';
+  END IF;
+  SELECT lifecycle.generation INTO current_generation
+    FROM hns_root_import_lifecycle AS lifecycle
+   WHERE lifecycle.root_import_session_id = input_session_id;
+  IF NOT FOUND THEN
+    -- No lifecycle means no inspected generation to validate against.
+    RETURN;
+  END IF;
+  RETURN QUERY
+    SELECT CASE WHEN review.decision = 'superseded' THEN 'supersession' ELSE 'retention_review' END,
+           review.reviewed_at, review.evidence_ref, review.authority_generation
+      FROM hns_root_import_retention_reviews AS review
+     WHERE review.root_import_session_id = input_session_id
+       AND review.decision IN ('retire_authorized', 'superseded')
+       AND review.authority_generation = current_generation
+       AND review.reviewed_at > database_now - (input_freshness_seconds * interval '1 second')
+     ORDER BY review.reviewed_at DESC
+     LIMIT 1;
+END;
+$$;
+
 CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_idempotency_key text, input_request_sha256 text, input_ownership_result_sha256 text, input_observation_job_id text, input_observation_request_bytes bytea, input_observation_request_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -1150,6 +1529,111 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION begin_hns_root_import_readiness_ownership_v1(input_evidence_ref text) RETURNS TABLE(outcome text, dispositioned_jobs bigint, queued_jobs bigint, enabled_at timestamp with time zone)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  marker hns_root_import_execution_ownership%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  dispositioned BIGINT := 0;
+  queued BIGINT := 0;
+BEGIN
+  IF input_evidence_ref IS NULL
+    OR btrim(input_evidence_ref) IS DISTINCT FROM input_evidence_ref
+    OR octet_length(input_evidence_ref) NOT BETWEEN 1 AND 512
+  THEN
+    RAISE EXCEPTION 'invalid HNS readiness handover evidence';
+  END IF;
+
+  SELECT * INTO marker FROM hns_root_import_execution_ownership
+   WHERE responsibility = 'readiness'
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'marker_absent'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+  IF marker.enabled THEN
+    RETURN QUERY SELECT 'already_enabled'::TEXT, 0::BIGINT, 0::BIGINT, marker.enabled_at;
+    RETURN;
+  END IF;
+
+  -- The marker's FOR UPDATE is held for the rest of this transaction, and
+  -- every claim takes FOR SHARE on the same row, so no claim can be granted
+  -- between this check and the marker update below.
+  IF EXISTS (
+    SELECT 1
+      FROM hns_root_import_observation_jobs AS job
+      JOIN hns_root_import_lifecycle AS lifecycle
+        ON lifecycle.root_import_session_id = job.root_import_session_id
+     WHERE job.operation_kind = 'observe_root_v1'
+       AND job.state = 'leased'
+       AND job.lease_expires_at > database_now
+  ) OR EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_jobs AS job
+     WHERE job.state = 'leased'
+       AND job.lease_expires_at > database_now
+       AND job.job_kind IN ('observe_current', 'observe_safe', 'observe_readiness')
+  ) THEN
+    RETURN QUERY SELECT 'live_lease_present'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
+    RETURN;
+  END IF;
+
+  UPDATE hns_root_import_observation_jobs AS job
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'readiness_ownership_transferred', completed_at = database_now,
+         updated_at = database_now
+   WHERE job.operation_kind = 'observe_root_v1'
+     AND (
+       job.state = 'queued'
+       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+     )
+     AND EXISTS (
+       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+        WHERE lifecycle.root_import_session_id = job.root_import_session_id
+     );
+  GET DIAGNOSTICS dispositioned = ROW_COUNT;
+
+  -- Replacement work for the current generation exactly once. Readiness is
+  -- the next evidence in `checking_authority`, and a `ready` operation with
+  -- absent or stale readiness needs the refresh the disposed legacy row would
+  -- have performed.
+  INSERT INTO hns_root_import_lifecycle_jobs (
+    root_import_session_id, job_kind, due_at, generation
+  )
+  SELECT lifecycle.root_import_session_id, 'observe_readiness',
+         database_now, lifecycle.generation
+    FROM hns_root_import_lifecycle AS lifecycle
+   WHERE (
+       lifecycle.phase = 'checking_authority'
+       OR (
+         lifecycle.phase = 'ready'
+         AND (
+           lifecycle.readiness_observed_at IS NULL
+           OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+         )
+       )
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM hns_root_import_lifecycle_jobs AS pending
+        WHERE pending.root_import_session_id = lifecycle.root_import_session_id
+          AND pending.job_kind = 'observe_readiness'
+          AND pending.generation = lifecycle.generation
+          AND pending.state IN ('queued', 'leased')
+     );
+  GET DIAGNOSTICS queued = ROW_COUNT;
+
+  UPDATE hns_root_import_execution_ownership
+     SET enabled = TRUE,
+         enabled_at = database_now,
+         evidence_ref = input_evidence_ref,
+         updated_at = database_now
+   WHERE responsibility = 'readiness';
+
+  RETURN QUERY SELECT 'enabled'::TEXT, dispositioned, queued, database_now;
+END;
+$$;
+
 CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, target_rating text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -1544,6 +2028,87 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION claim_hns_root_import_lifecycle_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(lifecycle_job_id bigint, root_import_session_id text, job_kind text, due_at timestamp with time zone, lease_fence bigint, lease_expires_at timestamp with time zone, generation bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  candidate hns_root_import_lifecycle_jobs%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  readiness_enabled BOOLEAN;
+BEGIN
+  IF input_executor_id IS NULL
+    OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
+    OR input_executor_id ~ '[[:cntrl:]]'
+    OR input_lease_seconds IS NULL
+    OR input_lease_seconds NOT BETWEEN 4 AND 120 THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle job claim';
+  END IF;
+
+  -- The common lock order with the handover transaction. FOR SHARE admits
+  -- concurrent claims and excludes the handover's FOR UPDATE, so a claim
+  -- cannot be granted in the window between the handover's lease check and
+  -- its marker update.
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
+
+  UPDATE hns_root_import_lifecycle_jobs AS stale
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'generation_superseded', completed_at = database_now,
+         updated_at = database_now
+   WHERE stale.lifecycle_job_id IN (
+     SELECT job.lifecycle_job_id
+       FROM hns_root_import_lifecycle_jobs AS job
+       JOIN hns_root_import_lifecycle AS lifecycle
+         ON lifecycle.root_import_session_id = job.root_import_session_id
+      WHERE job.generation < lifecycle.generation
+        AND (
+          job.state = 'queued'
+          OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+        )
+      FOR UPDATE OF job SKIP LOCKED
+   );
+
+  SELECT job.* INTO candidate
+    FROM hns_root_import_lifecycle_jobs AS job
+    JOIN hns_root_import_lifecycle AS lifecycle
+      ON lifecycle.root_import_session_id = job.root_import_session_id
+   WHERE ((job.state = 'queued' AND job.due_at <= database_now)
+      OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
+     AND job.generation = lifecycle.generation
+     AND (job.job_kind <> 'observe_readiness' OR readiness_enabled)
+     AND NOT EXISTS (
+       SELECT 1 FROM hns_root_import_observation_jobs AS legacy
+        WHERE legacy.root_import_session_id = job.root_import_session_id
+          AND legacy.state = 'leased'
+          AND legacy.lease_expires_at > database_now
+     )
+   ORDER BY job.due_at, job.lifecycle_job_id
+   FOR UPDATE OF job SKIP LOCKED
+   LIMIT 1;
+  IF NOT FOUND THEN RETURN; END IF;
+  UPDATE hns_root_import_lifecycle_jobs AS job
+     SET state = 'leased',
+         attempt_count = candidate.attempt_count + 1,
+         lease_fence = candidate.lease_fence + 1,
+         leased_by = input_executor_id,
+         lease_expires_at = database_now + input_lease_seconds * interval '1 second',
+         failure_code = NULL,
+         updated_at = database_now
+   WHERE job.lifecycle_job_id = candidate.lifecycle_job_id;
+  RETURN QUERY SELECT
+    candidate.lifecycle_job_id, candidate.root_import_session_id,
+    candidate.job_kind, candidate.due_at,
+    candidate.lease_fence + 1,
+    database_now + input_lease_seconds * interval '1 second',
+    candidate.generation;
+END;
+$$;
+
 CREATE FUNCTION claim_hns_root_import_observation_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(observation_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, publish_plan_bytes bytea, publish_plan_sha256 text, provision_result_bytes bytea, provision_result_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -1554,6 +2119,7 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
+  readiness_enabled BOOLEAN;
 BEGIN
   IF btrim(input_executor_id) <> input_executor_id
     OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
@@ -1562,6 +2128,14 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid HNS root observation claim';
   END IF;
+
+  -- The common lock order with the handover transaction, shared with the
+  -- lifecycle claim so both executors serialize on the same ownership fact.
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
 
   SELECT job.* INTO teardown
     FROM hns_root_import_teardown_jobs AS job
@@ -1577,6 +2151,10 @@ BEGIN
        OR (
          cleanup_session.status IN ('awaiting_owner_update', 'observing', 'ready')
          AND cleanup_session.expires_at <= database_now
+         AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = cleanup_session.root_import_session_id
+         )
        )
      )
      AND EXISTS (
@@ -1636,6 +2214,10 @@ BEGIN
        OR (
          cleanup_session.status IN ('awaiting_owner_update', 'observing', 'ready')
          AND cleanup_session.expires_at <= database_now
+         AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = cleanup_session.root_import_session_id
+         )
        )
      )
      AND EXISTS (
@@ -1678,7 +2260,21 @@ BEGIN
        OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
      )
      AND selected_session.status = 'observing'
-     AND selected_session.expires_at > database_now
+     AND (
+       selected_session.expires_at > database_now
+       OR EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = selected_session.root_import_session_id
+         )
+     )
+     AND NOT (
+       job.operation_kind = 'observe_root_v1'
+       AND readiness_enabled
+       AND EXISTS (
+         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+          WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+       )
+     )
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -1708,7 +2304,21 @@ BEGIN
        OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
      )
      AND selected_session.status = 'observing'
-     AND selected_session.expires_at > database_now
+     AND (
+       selected_session.expires_at > database_now
+       OR EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = selected_session.root_import_session_id
+         )
+     )
+     AND NOT (
+       job.operation_kind = 'observe_root_v1'
+       AND readiness_enabled
+       AND EXISTS (
+         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+          WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+       )
+     )
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -1738,6 +2348,469 @@ BEGIN
     database_now + input_lease_seconds * interval '1 second';
 END;
 $$;
+
+CREATE FUNCTION commit_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  database_now TIMESTAMPTZ;
+  committed RECORD;
+BEGIN
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_expected_session_revision IS NULL
+    OR input_expected_session_revision <= 0
+    OR (input_expected_lifecycle_revision IS NOT NULL AND input_expected_lifecycle_revision <= 0)
+    OR (input_expected_generation IS NOT NULL AND input_expected_generation <= 0)
+    OR input_publish_plan_sha256 IS NULL
+    OR input_publish_plan_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_readiness_result_sha256 IS NULL
+    OR input_readiness_result_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_activation_identity IS NULL
+    OR length(btrim(input_activation_identity)) = 0
+    OR btrim(input_activation_identity) IS DISTINCT FROM input_activation_identity
+    OR octet_length(input_activation_identity) > 256
+    OR (input_current_resource_sha256 IS NOT NULL AND input_current_resource_sha256 !~ '^[0-9a-f]{64}$')
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle activation input';
+  END IF;
+
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  database_now := clock_timestamp();
+  IF session.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_history
+     WHERE root_import_session_id = input_session_id
+       AND event_id = 'activation:' || input_activation_identity
+  ) THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  IF lifecycle.phase IS DISTINCT FROM 'ready' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_expected_lifecycle_revision IS NULL
+    OR input_expected_generation IS NULL
+    OR input_current_observed_at IS NULL
+    OR input_current_resource_sha256 IS NULL
+    OR input_current_qualifying IS NULL
+  THEN
+    RETURN QUERY SELECT 'evidence_required'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.revision IS DISTINCT FROM input_expected_lifecycle_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.generation IS DISTINCT FROM input_expected_generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.status IS DISTINCT FROM 'ready'
+    OR session.revision IS DISTINCT FROM input_expected_session_revision
+  THEN
+    RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.publish_plan_sha256 IS DISTINCT FROM input_publish_plan_sha256 THEN
+    RETURN QUERY SELECT 'plan_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF session.readiness_result_sha256 IS DISTINCT FROM input_readiness_result_sha256 THEN
+    RETURN QUERY SELECT 'readiness_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF lifecycle.readiness_observed_at IS NULL
+    OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+  THEN
+    RETURN QUERY SELECT 'readiness_stale'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_current_qualifying IS DISTINCT FROM TRUE THEN
+    RETURN QUERY SELECT 'current_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  IF input_current_observed_at > database_now
+    OR input_current_observed_at <= database_now - interval '1800 seconds'
+  THEN
+    RETURN QUERY SELECT 'current_stale'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+  -- The binding SQL can verify: the observed wire digest must be the
+  -- operation's effective, generation-bound encoded-resource digest.
+  IF lifecycle.plan_encoded_resource_sha256 IS NULL
+    OR input_current_resource_sha256 IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256
+  THEN
+    RETURN QUERY SELECT 'current_conflict'::TEXT, lifecycle.revision;
+    RETURN;
+  END IF;
+
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    'activation:' || input_activation_identity,
+    'activation_requested',
+    'transition',
+    'activated',
+    'activated',
+    '{}'::jsonb,
+    jsonb_build_array(
+      jsonb_build_object(
+        'kind', 'retention_review',
+        'due_at', database_now + interval '604800 seconds'
+      )
+    )
+  );
+  IF committed.outcome = 'transition' THEN
+    RETURN QUERY SELECT 'activated'::TEXT, committed.revision;
+    RETURN;
+  END IF;
+  IF committed.outcome = 'replay' THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, committed.revision;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT committed.outcome::TEXT, committed.revision;
+END;
+$_$;
+
+CREATE FUNCTION commit_hns_root_import_lifecycle_decision_v1(input_session_id text, input_expected_revision bigint, input_event_id text, input_event_name text, input_outcome text, input_decision_reason text, input_new_phase text, input_deadline_patch jsonb, input_requested_work jsonb, input_lifecycle_job_id bigint DEFAULT NULL::bigint, input_lease_fence bigint DEFAULT NULL::bigint, input_scheduled_generation bigint DEFAULT NULL::bigint) RETURNS TABLE(outcome text, revision bigint, replayed boolean)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  work JSONB;
+  index_ INTEGER;
+  kind TEXT;
+  due TIMESTAMPTZ;
+  requested_generation BIGINT;
+BEGIN
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_event_id IS NULL
+    OR length(btrim(input_event_id)) = 0
+    OR btrim(input_event_id) IS DISTINCT FROM input_event_id
+    OR input_outcome IS NULL
+    OR input_outcome NOT IN ('transition', 'replay', 'pending', 'rejection')
+    OR input_decision_reason IS NULL
+    OR btrim(input_decision_reason) IS DISTINCT FROM input_decision_reason
+    OR octet_length(input_decision_reason) > 512
+    -- Provenance is a pair: a job identity without its fence, or the reverse,
+    -- cannot describe a claimed job and is refused rather than half-recorded.
+    OR ((input_lifecycle_job_id IS NULL) <> (input_lease_fence IS NULL))
+    OR (input_lifecycle_job_id IS NOT NULL AND input_lifecycle_job_id <= 0)
+    OR (input_lease_fence IS NOT NULL AND input_lease_fence < 0)
+    OR (input_scheduled_generation IS NOT NULL AND input_scheduled_generation <= 0)
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle decision input';
+  END IF;
+
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+    WHERE root_import_session_id = input_session_id
+    FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'HNS lifecycle operation not found';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM hns_root_import_lifecycle_history
+    WHERE root_import_session_id = input_session_id AND event_id = input_event_id
+  ) THEN
+    RETURN QUERY SELECT 'replay'::TEXT, lifecycle.revision, TRUE;
+    RETURN;
+  END IF;
+
+  IF lifecycle.revision <> input_expected_revision THEN
+    RAISE EXCEPTION 'HNS lifecycle revision conflict'
+      USING ERRCODE = '40001';
+  END IF;
+
+  -- Requested work is stamped with the generation it was scheduled under.
+  -- The default is the generation the decision applies to; adoption passes
+  -- the post-rebinding generation explicitly, because the jobs it requests
+  -- describe the operation after the rebinding, not before it.
+  requested_generation := coalesce(input_scheduled_generation, lifecycle.generation);
+
+  IF input_outcome = 'transition' OR input_outcome = 'pending' THEN
+    IF input_new_phase IS NULL OR input_new_phase <> lifecycle.phase THEN
+      IF input_new_phase IS NULL OR NOT hns_root_import_lifecycle_transition_allowed_v1(
+        lifecycle.phase, input_new_phase
+      ) THEN
+        RAISE EXCEPTION 'HNS lifecycle transition not permitted: % -> %',
+          lifecycle.phase, coalesce(input_new_phase, 'NULL');
+      END IF;
+    END IF;
+    UPDATE hns_root_import_lifecycle
+      SET phase = input_new_phase,
+          publication_deadline_at = COALESCE(
+            (input_deadline_patch->>'publication_deadline_at')::TIMESTAMPTZ,
+            publication_deadline_at
+          ),
+          first_current_observation_at = COALESCE(
+            (input_deadline_patch->>'first_current_observation_at')::TIMESTAMPTZ,
+            first_current_observation_at
+          ),
+          finality_deadline_at = COALESCE(
+            (input_deadline_patch->>'finality_deadline_at')::TIMESTAMPTZ,
+            finality_deadline_at
+          ),
+          readiness_observed_at = CASE
+            WHEN input_deadline_patch->>'clear_readiness_observed_at' = 'true' THEN NULL
+            ELSE COALESCE(
+              (input_deadline_patch->>'readiness_observed_at')::TIMESTAMPTZ,
+              readiness_observed_at
+            )
+          END,
+          plan_exposed_at = COALESCE(
+            (input_deadline_patch->>'plan_exposed_at')::TIMESTAMPTZ,
+            plan_exposed_at
+          ),
+          pending_reason = input_deadline_patch->>'pending_reason',
+          next_check_at = (input_deadline_patch->>'next_check_at')::TIMESTAMPTZ,
+          observation_count = COALESCE(
+            (input_deadline_patch->>'observation_count')::BIGINT, observation_count),
+          consecutive_operational_failures = COALESCE(
+            (input_deadline_patch->>'consecutive_operational_failures')::BIGINT,
+            consecutive_operational_failures),
+          last_useful_error = input_deadline_patch->>'last_useful_error',
+          last_useful_error_at = (input_deadline_patch->>'last_useful_error_at')::TIMESTAMPTZ,
+          terminal_decided_at = (input_deadline_patch->>'terminal_decided_at')::TIMESTAMPTZ,
+          revision = lifecycle.revision + 1,
+          updated_at = database_now
+      WHERE root_import_session_id = input_session_id;
+    FOR index_ IN 0 .. jsonb_array_length(input_requested_work) - 1 LOOP
+      work := input_requested_work->index_;
+      kind := work->>'kind';
+      due := (work->>'due_at')::TIMESTAMPTZ;
+      IF kind IS NULL OR due IS NULL THEN
+        RAISE EXCEPTION 'invalid HNS lifecycle requested work';
+      END IF;
+      INSERT INTO hns_root_import_lifecycle_jobs(
+        root_import_session_id, job_kind, due_at, generation
+      ) VALUES (input_session_id, kind, due, requested_generation);
+    END LOOP;
+    INSERT INTO hns_root_import_lifecycle_history(
+      root_import_session_id, event_id, event_name, outcome,
+      prior_phase, new_phase, decision_reason, requested_work, revision_after,
+      lifecycle_job_id, lease_fence, generation
+    ) VALUES (
+      input_session_id, input_event_id, input_event_name, input_outcome,
+      lifecycle.phase, input_new_phase, input_decision_reason,
+      input_requested_work, lifecycle.revision + 1,
+      input_lifecycle_job_id, input_lease_fence, lifecycle.generation
+    );
+    RETURN QUERY SELECT input_outcome::TEXT, lifecycle.revision + 1, FALSE;
+    RETURN;
+  END IF;
+
+  INSERT INTO hns_root_import_lifecycle_history(
+    root_import_session_id, event_id, event_name, outcome,
+    prior_phase, new_phase, decision_reason, requested_work, revision_after,
+    lifecycle_job_id, lease_fence, generation
+  ) VALUES (
+    input_session_id, input_event_id, input_event_name, input_outcome,
+    lifecycle.phase, NULL, input_decision_reason, '[]'::jsonb, lifecycle.revision,
+    input_lifecycle_job_id, input_lease_fence, lifecycle.generation
+  );
+  RETURN QUERY SELECT input_outcome::TEXT, lifecycle.revision, FALSE;
+END;
+$$;
+
+CREATE FUNCTION commit_hns_root_import_readiness_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_expected_revision bigint, input_result_bytes bytea, input_result_sha256 text) RETURNS TABLE(outcome text, revision bigint, readiness_result_sha256 text)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  result JSONB;
+  database_now TIMESTAMPTZ;
+  readiness_event_id TEXT;
+  committed RECORD;
+  problem TEXT;
+  readiness_enabled BOOLEAN;
+BEGIN
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_lifecycle_job_id IS NULL
+    OR input_lifecycle_job_id <= 0
+    OR input_executor_id IS NULL
+    OR length(btrim(input_executor_id)) = 0
+    OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR input_lease_fence IS NULL
+    OR input_lease_fence < 0
+    OR input_expected_revision IS NULL
+    OR input_expected_revision <= 0
+    OR input_result_bytes IS NULL
+    OR octet_length(input_result_bytes) NOT BETWEEN 1 AND 1048576
+    OR input_result_sha256 IS NULL
+    OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+    OR encode(sha256(input_result_bytes), 'hex') IS DISTINCT FROM input_result_sha256
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle readiness result';
+  END IF;
+
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+   WHERE lifecycle_job_id = input_lifecycle_job_id
+   FOR UPDATE;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  database_now := clock_timestamp();
+
+  IF lifecycle.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF session.root_import_session_id IS NULL THEN
+    RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF NOT readiness_enabled THEN
+    RETURN QUERY SELECT 'ownership_not_enabled'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  readiness_event_id :=
+    'readiness:' || input_lifecycle_job_id::text || ':' || input_lease_fence::text ||
+    ':' || input_result_sha256;
+
+  IF job.state = 'completed' THEN
+    IF EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle_history
+       WHERE root_import_session_id = input_session_id AND event_id = readiness_event_id
+    ) THEN
+      RETURN QUERY SELECT 'replayed'::TEXT, lifecycle.revision, input_result_sha256;
+      RETURN;
+    END IF;
+    RETURN QUERY SELECT 'conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF job.root_import_session_id IS DISTINCT FROM input_session_id
+    OR job.state IS DISTINCT FROM 'leased'
+    OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence IS DISTINCT FROM input_lease_fence
+    OR job.lease_expires_at <= database_now
+    OR job.job_kind IS DISTINCT FROM 'observe_readiness'
+    OR job.generation IS DISTINCT FROM lifecycle.generation
+  THEN
+    RETURN QUERY SELECT 'lease_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  -- Readiness is accepted in `checking_authority` as the advance to `ready`,
+  -- and in `ready` as a refresh in place: activation keeps stale readiness as
+  -- a pending hold and schedules this observation, so refusing `ready` made
+  -- the refresh impossible.
+  IF lifecycle.phase NOT IN ('checking_authority', 'ready') THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF lifecycle.revision IS DISTINCT FROM input_expected_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  IF lifecycle.plan_encoded_resource_sha256 IS NULL THEN
+    RETURN QUERY SELECT 'plan_absent'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+  -- An advance comes from `observing`; a refresh comes from `ready`.
+  IF session.status NOT IN ('observing', 'ready') THEN
+    RETURN QUERY SELECT 'session_conflict'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  BEGIN
+    result := convert_from(input_result_bytes, 'UTF8')::jsonb;
+    IF jsonb_typeof(result) IS DISTINCT FROM 'object' THEN
+      problem := 'shape';
+    ELSIF result->>'version' IS DISTINCT FROM 'pirate-hns-root-import-readiness-result-v1' THEN
+      problem := 'version';
+    ELSIF result->>'root_import_session_id' IS DISTINCT FROM input_session_id THEN
+      problem := 'session';
+    ELSIF result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256 THEN
+      problem := 'plan';
+    ELSIF (result->>'observed_at')::TIMESTAMPTZ > database_now THEN
+      problem := 'observed_future';
+    ELSIF (result->>'valid_until')::TIMESTAMPTZ <= database_now THEN
+      problem := 'expired';
+    ELSE
+      problem := NULL;
+    END IF;
+  EXCEPTION WHEN others THEN
+    problem := 'unreadable';
+  END;
+  IF problem IS NOT NULL THEN
+    RETURN QUERY SELECT 'invalid_result'::TEXT, lifecycle.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    readiness_event_id,
+    'readiness_observed',
+    'transition',
+    'readiness_retained',
+    'ready',
+    jsonb_build_object(
+      'readiness_observed_at', database_now,
+      'next_check_at', database_now + interval '1800 seconds',
+      'pending_reason', NULL
+    ),
+    '[]'::jsonb,
+    input_lifecycle_job_id,
+    input_lease_fence
+  );
+  IF committed.outcome IS DISTINCT FROM 'transition' THEN
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  UPDATE hns_root_import_sessions
+     SET status = 'ready',
+         revision = session.revision + 1,
+         readiness_result_bytes = input_result_bytes,
+         readiness_result_sha256 = input_result_sha256,
+         updated_at = database_now
+   WHERE root_import_session_id = input_session_id;
+  UPDATE hns_root_import_lifecycle_jobs
+     SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = NULL, completed_at = database_now, updated_at = database_now
+   WHERE lifecycle_job_id = input_lifecycle_job_id;
+  RETURN QUERY SELECT 'ready'::TEXT, committed.revision, input_result_sha256;
+END;
+$_$;
 
 CREATE FUNCTION community_handle_sales_creator_grant_id_v1(input_community_id text, input_account_id text) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT
@@ -2501,6 +3574,26 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.generation IS NULL THEN
+    SELECT lifecycle.generation INTO NEW.generation
+      FROM hns_root_import_lifecycle AS lifecycle
+     WHERE lifecycle.root_import_session_id = NEW.root_import_session_id;
+  END IF;
+  IF NEW.generation IS NULL THEN
+    RAISE EXCEPTION 'HNS lifecycle job requires an operation generation';
+  END IF;
+  IF NEW.generation <= 0 THEN
+    RAISE EXCEPTION 'HNS lifecycle job generation must be positive';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION finalize_dance_attempt_evidence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2985,6 +4078,57 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION finalize_hns_root_import_lifecycle_job_v1(input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_outcome text, input_failure_code text) RETURNS TABLE(outcome text, lease_state text)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_outcome NOT IN ('completed', 'failed', 'retry') THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle job finalize outcome';
+  END IF;
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+    WHERE lifecycle_job_id = input_lifecycle_job_id
+    FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'not_found'::TEXT, NULL::TEXT;
+    RETURN;
+  END IF;
+  -- Fence check on finalize: a lost lease can never finalize.
+  IF job.state <> 'leased' OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence <> input_lease_fence THEN
+    RETURN QUERY SELECT 'conflict'::TEXT, job.state;
+    RETURN;
+  END IF;
+  IF input_outcome = 'completed' THEN
+    UPDATE hns_root_import_lifecycle_jobs
+      SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
+          completed_at = database_now, updated_at = database_now
+      WHERE lifecycle_job_id = input_lifecycle_job_id;
+    RETURN QUERY SELECT 'completed'::TEXT, 'leased'::TEXT;
+    RETURN;
+  END IF;
+  IF input_outcome = 'failed' THEN
+    UPDATE hns_root_import_lifecycle_jobs
+      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+          failure_code = coalesce(input_failure_code, 'failed'),
+          completed_at = database_now, updated_at = database_now
+      WHERE lifecycle_job_id = input_lifecycle_job_id;
+    RETURN QUERY SELECT 'failed'::TEXT, 'leased'::TEXT;
+    RETURN;
+  END IF;
+  UPDATE hns_root_import_lifecycle_jobs
+    SET state = 'queued', leased_by = NULL, lease_expires_at = NULL,
+        due_at = database_now + interval '60 seconds',
+        failure_code = coalesce(input_failure_code, 'retry'),
+        updated_at = database_now
+    WHERE lifecycle_job_id = input_lifecycle_job_id;
+  RETURN QUERY SELECT 'retry'::TEXT, 'leased'::TEXT;
+END;
+$$;
+
 CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -2995,10 +4139,16 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
+  readiness_enabled BOOLEAN;
 BEGIN
   IF input_outcome NOT IN ('ready', 'retry', 'failed') THEN
     RAISE EXCEPTION 'invalid HNS root observation finalization';
   END IF;
+  SELECT ownership.enabled INTO readiness_enabled
+    FROM hns_root_import_execution_ownership AS ownership
+   WHERE ownership.responsibility = 'readiness'
+   FOR SHARE;
+  readiness_enabled := coalesce(readiness_enabled, FALSE);
   SELECT * INTO teardown
     FROM hns_root_import_teardown_jobs
    WHERE teardown_job_id = input_observation_job_id
@@ -3036,6 +4186,10 @@ BEGIN
         OR (
           session.status IN ('awaiting_owner_update', 'observing', 'ready')
           AND session.expires_at <= database_now
+          AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = session.root_import_session_id
+         )
         )
       )
       OR input_outcome = 'ready'
@@ -3112,6 +4266,8 @@ BEGIN
     FROM hns_root_import_sessions
    WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id
    FOR UPDATE;
+  -- A completed job replays idempotently regardless of ownership; the work
+  -- was accepted under the ownership that was current when it ran.
   IF job.state IN ('completed', 'failed') THEN
     IF job.state = 'completed'
       AND input_outcome = 'ready'
@@ -3126,13 +4282,32 @@ BEGIN
     END IF;
     RETURN;
   END IF;
+  -- Ownership handover gates every new outcome, not only a readiness
+  -- acceptance: a post-handover retry or failure would also mutate the
+  -- session while the lifecycle runner owns readiness.
+  IF readiness_enabled
+    AND job.operation_kind = 'observe_root_v1'
+    AND EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+       WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
+    )
+  THEN
+    RETURN QUERY SELECT 'ownership_conflict'::TEXT, session.root_import_session_id, session.revision;
+    RETURN;
+  END IF;
   IF job.state <> 'leased'
     OR job.leased_by <> input_executor_id
     OR job.lease_fence <> input_lease_fence
     OR job.lease_expires_at <= database_now
     OR job.request_sha256 <> input_request_sha256
     OR session.status <> 'observing'
-    OR session.expires_at <= database_now
+    OR (
+      session.expires_at <= database_now
+      AND NOT EXISTS (
+           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+            WHERE lifecycle_owner.root_import_session_id = session.root_import_session_id
+         )
+    )
   THEN
     RETURN QUERY SELECT 'lost'::TEXT, session.root_import_session_id, session.revision;
     RETURN;
@@ -7070,6 +8245,37 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION guard_hns_root_import_lifecycle_anchor_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  rebinding BOOLEAN := NEW.generation > OLD.generation;
+BEGIN
+  IF NOT rebinding THEN
+    IF NEW.first_current_observation_at IS DISTINCT FROM OLD.first_current_observation_at
+      AND OLD.first_current_observation_at IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS lifecycle finality anchor is immutable';
+    END IF;
+    IF NEW.finality_deadline_at IS DISTINCT FROM OLD.finality_deadline_at
+      AND OLD.finality_deadline_at IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS lifecycle finality deadline is immutable';
+    END IF;
+    IF NEW.plan_encoded_resource_sha256 IS DISTINCT FROM OLD.plan_encoded_resource_sha256
+      AND OLD.plan_encoded_resource_sha256 IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS lifecycle plan digest is immutable';
+    END IF;
+  END IF;
+  IF NEW.generation < OLD.generation THEN
+    RAISE EXCEPTION 'HNS lifecycle generation never decreases';
+  END IF;
+  IF OLD.phase = 'failed' AND NEW.phase <> 'failed' THEN
+    RAISE EXCEPTION 'HNS lifecycle terminal decisions allow no further transitions';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_hns_root_import_provision_authorization_change() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -7119,15 +8325,23 @@ BEGIN
     OR (OLD.observation_job_id IS NOT NULL AND NEW.observation_job_id IS DISTINCT FROM OLD.observation_job_id)
     OR (OLD.observation_idempotency_key IS NOT NULL AND NEW.observation_idempotency_key IS DISTINCT FROM OLD.observation_idempotency_key)
     OR (OLD.observation_request_sha256 IS NOT NULL AND NEW.observation_request_sha256 IS DISTINCT FROM OLD.observation_request_sha256)
-    OR (OLD.readiness_result_bytes IS NOT NULL AND NEW.readiness_result_bytes IS DISTINCT FROM OLD.readiness_result_bytes)
-    OR (OLD.readiness_result_sha256 IS NOT NULL AND NEW.readiness_result_sha256 IS DISTINCT FROM OLD.readiness_result_sha256) THEN
+    OR (
+      OLD.readiness_result_bytes IS NOT NULL
+      AND NEW.readiness_result_bytes IS DISTINCT FROM OLD.readiness_result_bytes
+      AND NOT (OLD.status = 'ready' AND NEW.status = 'ready')
+    )
+    OR (
+      OLD.readiness_result_sha256 IS NOT NULL
+      AND NEW.readiness_result_sha256 IS DISTINCT FROM OLD.readiness_result_sha256
+      AND NOT (OLD.status = 'ready' AND NEW.status = 'ready')
+    ) THEN
     RAISE EXCEPTION 'HNS root-import retained evidence changed';
   END IF;
   IF NOT (
     (OLD.status = 'awaiting_ownership' AND NEW.status IN ('provisioning', 'failed', 'expired'))
     OR (OLD.status = 'provisioning' AND NEW.status IN ('awaiting_owner_update', 'failed', 'expired'))
     OR (OLD.status IN ('awaiting_owner_update', 'observing') AND NEW.status IN ('observing', 'ready', 'failed', 'expired'))
-    OR (OLD.status = 'ready' AND NEW.status IN ('activated', 'expired'))
+    OR (OLD.status = 'ready' AND NEW.status IN ('activated', 'expired', 'ready'))
   ) THEN
     RAISE EXCEPTION 'HNS root-import session transition is invalid';
   END IF;
@@ -10529,6 +11743,33 @@ CREATE FUNCTION hns_root_health_renewal_terminal_failure_v1(code text) RETURNS b
     'session_expired', 'session_not_activated', 'generation_superseded'), FALSE)
 $$;
 
+CREATE FUNCTION hns_root_import_lifecycle_transition_allowed_v1(input_from text, input_to text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT input_from = input_to OR (
+    input_from = 'preparing' AND input_to IN ('awaiting_publication', 'recovery_required')
+  ) OR (
+    input_from = 'awaiting_publication' AND input_to IN
+      ('checking_publication', 'waiting_safe_commitment', 'recovery_required')
+  ) OR (
+    input_from = 'checking_publication' AND input_to IN
+      ('waiting_safe_commitment', 'checking_authority', 'recovery_required')
+  ) OR (
+    input_from = 'waiting_safe_commitment' AND input_to IN
+      ('checking_authority', 'checking_publication', 'recovery_required')
+  ) OR (
+    input_from = 'checking_authority' AND input_to IN
+      ('ready', 'waiting_safe_commitment', 'checking_publication', 'recovery_required')
+  ) OR (
+    input_from = 'ready' AND input_to IN
+      ('activated', 'waiting_safe_commitment', 'checking_publication', 'recovery_required')
+  ) OR (
+    input_from = 'recovery_required' AND input_to IN
+      ('checking_publication', 'waiting_safe_commitment', 'checking_authority', 'ready', 'failed')
+  );
+$$;
+
 CREATE FUNCTION identity_credentials_enforce_lifecycle() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13115,6 +14356,325 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION record_hns_root_import_authority_supersession_v1(input_session_id text, input_expected_generation bigint, input_evidence_ref text, input_reason text) RETURNS TABLE(outcome text, retention_review_id bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  existing BIGINT;
+  inserted BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF btrim(input_evidence_ref) <> input_evidence_ref
+    OR octet_length(input_evidence_ref) NOT BETWEEN 1 AND 256
+    OR input_evidence_ref ~ '[[:cntrl:]]'
+    OR btrim(input_reason) <> input_reason
+    OR octet_length(input_reason) NOT BETWEEN 1 AND 256
+    OR input_reason ~ '[[:cntrl:]]'
+  THEN
+    RAISE EXCEPTION 'invalid HNS authority supersession evidence';
+  END IF;
+
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF lifecycle.generation <> input_expected_generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+
+  SELECT review.retention_review_id INTO existing
+    FROM hns_root_import_retention_reviews AS review
+   WHERE review.root_import_session_id = input_session_id
+     AND review.evidence_ref = input_evidence_ref;
+  IF FOUND THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, existing;
+    RETURN;
+  END IF;
+
+  INSERT INTO hns_root_import_retention_reviews (
+    root_import_session_id, authority_generation, reviewed_at,
+    decision, reason, evidence_ref
+  ) VALUES (
+    input_session_id, lifecycle.generation, database_now,
+    'superseded', input_reason, input_evidence_ref
+  ) RETURNING hns_root_import_retention_reviews.retention_review_id INTO inserted;
+
+  RETURN QUERY SELECT 'recorded'::TEXT, inserted;
+END;
+$$;
+
+CREATE FUNCTION record_hns_root_import_lifecycle_observation_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_view text, input_resource_sha256 text, input_tip_height bigint, input_update_inclusion_height bigint, input_commitment_height bigint, input_observed_at timestamp with time zone, input_decision_event_id text, input_freshness_seconds integer) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  decision hns_root_import_lifecycle_history%ROWTYPE;
+  expected_job_kind TEXT;
+  expected_event_name TEXT;
+  database_now TIMESTAMPTZ;
+BEGIN
+  expected_job_kind := CASE input_view
+    WHEN 'current' THEN 'observe_current'
+    WHEN 'safe' THEN 'observe_safe'
+  END;
+  expected_event_name := CASE input_view
+    WHEN 'current' THEN 'current_observation'
+    WHEN 'safe' THEN 'safe_observation'
+  END;
+  -- Every argument is validated for NULL explicitly. A NULL comparison result
+  -- is not TRUE and would otherwise fall through an OR chain, which is how a
+  -- NULL lease fence could once have passed the fence.
+  IF input_session_id IS NULL
+    OR length(btrim(input_session_id)) = 0
+    OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+    OR input_lifecycle_job_id IS NULL
+    OR input_lifecycle_job_id <= 0
+    OR input_executor_id IS NULL
+    OR length(btrim(input_executor_id)) = 0
+    OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR input_lease_fence IS NULL
+    OR input_lease_fence < 0
+    OR expected_job_kind IS NULL
+    OR input_resource_sha256 IS NULL
+    OR input_resource_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_tip_height IS NULL
+    OR input_tip_height <= 0
+    OR input_update_inclusion_height IS NOT NULL AND (
+      input_update_inclusion_height <= 0 OR input_update_inclusion_height > input_tip_height
+    )
+    OR input_commitment_height IS NOT NULL AND (
+      input_commitment_height <= 0 OR input_commitment_height > input_tip_height
+    )
+    OR input_observed_at IS NULL
+    OR input_decision_event_id IS NULL
+    OR length(btrim(input_decision_event_id)) = 0
+    OR btrim(input_decision_event_id) IS DISTINCT FROM input_decision_event_id
+    OR input_freshness_seconds IS NULL
+    OR input_freshness_seconds NOT BETWEEN 1 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle observation evidence';
+  END IF;
+
+  -- Lock the job first, then the operation, the same order the runner uses.
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+   WHERE lifecycle_job_id = input_lifecycle_job_id
+   FOR UPDATE;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  -- The clock is read only after both locks are held, so every check below is
+  -- measured against the moment the fence actually executes.
+  database_now := clock_timestamp();
+
+  IF NOT FOUND OR job.root_import_session_id IS DISTINCT FROM input_session_id
+    OR job.state IS DISTINCT FROM 'leased'
+    OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence IS DISTINCT FROM input_lease_fence
+    OR job.lease_expires_at <= database_now
+  THEN
+    RETURN 'lease_conflict';
+  END IF;
+  IF job.job_kind IS DISTINCT FROM expected_job_kind THEN
+    RETURN 'job_kind_mismatch';
+  END IF;
+  IF lifecycle.root_import_session_id IS NULL THEN
+    RETURN 'lifecycle_absent';
+  END IF;
+  -- The job's own generation, stamped at scheduling, must be the operation's
+  -- current generation. The caller cannot assert a generation the job does
+  -- not have.
+  IF job.generation IS DISTINCT FROM lifecycle.generation THEN
+    RETURN 'generation_conflict';
+  END IF;
+  -- Any future observation is refused. No clock-skew allowance: the producer
+  -- and this database share the clock discipline the lane is built on.
+  IF input_observed_at > database_now THEN
+    RETURN 'observation_in_future';
+  END IF;
+  IF input_observed_at <= database_now - input_freshness_seconds * interval '1 second' THEN
+    RETURN 'observation_stale';
+  END IF;
+  SELECT * INTO decision FROM hns_root_import_lifecycle_history
+   WHERE root_import_session_id = input_session_id
+     AND event_id = input_decision_event_id;
+  IF NOT FOUND
+    OR decision.outcome NOT IN ('transition', 'pending')
+    OR decision.revision_after IS DISTINCT FROM lifecycle.revision
+    OR decision.new_phase IS DISTINCT FROM lifecycle.phase
+    OR decision.event_name IS DISTINCT FROM expected_event_name
+    OR decision.lifecycle_job_id IS DISTINCT FROM input_lifecycle_job_id
+    OR decision.lease_fence IS DISTINCT FROM input_lease_fence
+    OR decision.generation IS DISTINCT FROM lifecycle.generation
+  THEN
+    RETURN 'decision_conflict';
+  END IF;
+  UPDATE hns_root_import_lifecycle
+     SET last_observation_view = input_view,
+         last_observation_resource_sha256 = input_resource_sha256,
+         last_observation_tip_height = input_tip_height,
+         last_observation_update_inclusion_height = input_update_inclusion_height,
+         last_observation_commitment_height = input_commitment_height,
+         last_observation_at = input_observed_at,
+         last_observation_recorded_at = database_now,
+         updated_at = database_now
+   WHERE root_import_session_id = input_session_id;
+  IF NOT FOUND THEN RETURN 'lifecycle_absent'; END IF;
+  RETURN 'recorded';
+END;
+$_$;
+
+CREATE FUNCTION record_hns_root_import_recovery_finding_v1(input_session_id text, input_expected_generation bigint, input_evidence_ref text, input_classification text, input_reason text, input_supported_action text, input_inclusion_txid text, input_inclusion_block_height bigint, input_covenant_resource_sha256 text, input_plan_encoded_sha256 text, input_current_resource_sha256 text, input_safe_resource_sha256 text, input_zone_present boolean, input_signing_keys_present boolean) RETURNS TABLE(outcome text, recovery_finding_id bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  existing BIGINT;
+  inserted BIGINT;
+BEGIN
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF lifecycle.generation <> input_expected_generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  SELECT finding.recovery_finding_id INTO existing
+    FROM hns_root_import_recovery_findings AS finding
+   WHERE finding.root_import_session_id = input_session_id
+     AND finding.evidence_ref = input_evidence_ref;
+  IF FOUND THEN
+    RETURN QUERY SELECT 'replayed'::TEXT, existing;
+    RETURN;
+  END IF;
+  INSERT INTO hns_root_import_recovery_findings (
+    root_import_session_id, authority_generation, evidence_ref,
+    classification, reason, supported_action,
+    inclusion_txid, inclusion_block_height, covenant_resource_sha256,
+    plan_encoded_sha256, current_resource_sha256, safe_resource_sha256,
+    zone_present, signing_keys_present
+  ) VALUES (
+    input_session_id, lifecycle.generation, input_evidence_ref,
+    input_classification, input_reason, input_supported_action,
+    input_inclusion_txid, input_inclusion_block_height, input_covenant_resource_sha256,
+    input_plan_encoded_sha256, input_current_resource_sha256, input_safe_resource_sha256,
+    input_zone_present, input_signing_keys_present
+  ) RETURNING hns_root_import_recovery_findings.recovery_finding_id INTO inserted;
+  RETURN QUERY SELECT 'recorded'::TEXT, inserted;
+END;
+$$;
+
+CREATE FUNCTION record_hns_root_import_retention_review_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_expected_generation bigint, input_reason text, input_evidence_ref text, input_current_observed_at timestamp with time zone, input_safe_observed_at timestamp with time zone, input_current_resource_sha256 text, input_safe_resource_sha256 text, input_next_review_at timestamp with time zone) RETURNS TABLE(outcome text, retention_review_id bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  existing BIGINT;
+  inserted BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_reason NOT IN (
+    'chain_reference_retained',
+    'unavailable_chain_state_retained',
+    'unknown_provenance_retained',
+    'exposure_horizon_undetermined_retained'
+  ) THEN
+    -- The retaining reasons are the complete vocabulary this writer accepts.
+    -- Anything else is a caller defect, not a review.
+    RAISE EXCEPTION 'invalid HNS retention review reason';
+  END IF;
+  IF input_next_review_at IS NULL OR input_next_review_at <= database_now THEN
+    RAISE EXCEPTION 'invalid HNS retention review schedule';
+  END IF;
+
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+   WHERE lifecycle_job_id = input_lifecycle_job_id
+   FOR UPDATE;
+  IF NOT FOUND
+    OR job.root_import_session_id <> input_session_id
+    OR job.job_kind <> 'retention_review'
+    OR job.state <> 'leased'
+    OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence <> input_lease_fence
+    OR job.lease_expires_at <= database_now
+  THEN
+    RETURN QUERY SELECT 'lease_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+
+  IF lifecycle.generation <> input_expected_generation THEN
+    -- The inspection was gathered for one generation. A superseded operation
+    -- holds different infrastructure and this evidence does not describe it.
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, NULL::BIGINT;
+    RETURN;
+  END IF;
+
+  SELECT review.retention_review_id INTO existing
+    FROM hns_root_import_retention_reviews AS review
+   WHERE review.root_import_session_id = input_session_id
+     AND review.evidence_ref = input_evidence_ref;
+  IF FOUND THEN
+    -- A redelivered inspection. The review already exists and reviews are
+    -- append-only, so nothing is written and no second job is scheduled. The
+    -- claimed job still completes: leaving it leased would have it reclaimed
+    -- and re-inspected forever.
+    UPDATE hns_root_import_lifecycle_jobs
+       SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
+           completed_at = database_now, updated_at = database_now
+     WHERE lifecycle_job_id = input_lifecycle_job_id;
+    RETURN QUERY SELECT 'replayed'::TEXT, existing;
+    RETURN;
+  END IF;
+
+  INSERT INTO hns_root_import_retention_reviews (
+    root_import_session_id, authority_generation, reviewed_at,
+    current_observed_at, safe_observed_at,
+    current_resource_sha256, safe_resource_sha256,
+    decision, reason, evidence_ref
+  ) VALUES (
+    input_session_id, lifecycle.generation, database_now,
+    input_current_observed_at, input_safe_observed_at,
+    input_current_resource_sha256, input_safe_resource_sha256,
+    'retain', input_reason, input_evidence_ref
+  ) RETURNING hns_root_import_retention_reviews.retention_review_id INTO inserted;
+
+  INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
+    VALUES (input_session_id, 'retention_review', input_next_review_at);
+
+  -- The review, its successor job and the claimed job's completion are one
+  -- fact. Finalizing separately would let a crash leave a recorded review
+  -- whose job is reclaimed and inspected again, or a completed job whose
+  -- recurrence was never scheduled.
+  UPDATE hns_root_import_lifecycle_jobs
+     SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
+         completed_at = database_now, updated_at = database_now
+   WHERE lifecycle_job_id = input_lifecycle_job_id;
+
+  RETURN QUERY SELECT 'recorded'::TEXT, inserted;
+END;
+$$;
+
 CREATE FUNCTION reject_community_commerce_immutable_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13234,6 +14794,39 @@ CREATE FUNCTION reject_hns_operator_control_promotion_receipt_change() RETURNS t
     AS $$
 BEGIN
   RAISE EXCEPTION 'HNS operator control promotion receipts are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_hns_recovery_record_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'hns_root_import_recovery_authorizations'
+    AND TG_OP = 'UPDATE'
+    AND OLD.consumed_at IS NULL
+    AND NEW.consumed_at IS NOT NULL
+    AND NEW.recovery_finding_id = OLD.recovery_finding_id
+    AND NEW.root_import_session_id = OLD.root_import_session_id
+    AND NEW.authority_generation = OLD.authority_generation
+    AND NEW.action = OLD.action
+    AND NEW.authorized_at = OLD.authorized_at
+    AND NEW.expires_at = OLD.expires_at
+  THEN
+    -- Marking an authorization consumed is the one permitted transition, and
+    -- only from unconsumed. It is what makes an authorization single use.
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'HNS recovery records are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_hns_retention_review_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS retention reviews are append-only';
 END;
 $$;
 
@@ -13995,6 +15588,33 @@ BEGIN
   RETURN QUERY SELECT eligible_count, inserted_count, database_now;
 END;
 $$;
+
+CREATE FUNCTION set_hns_root_import_lifecycle_plan_digest_v1(input_session_id text, input_digest text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  stored TEXT;
+BEGIN
+  IF input_digest !~ '^[0-9a-f]{64}$' THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle plan digest';
+  END IF;
+  SELECT plan_encoded_resource_sha256 INTO stored
+    FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND THEN RETURN 'lifecycle_absent'; END IF;
+  IF stored IS NOT NULL THEN
+    IF stored = input_digest THEN RETURN 'replayed'; END IF;
+    RAISE EXCEPTION 'HNS lifecycle plan digest is immutable';
+  END IF;
+  UPDATE hns_root_import_lifecycle
+     SET plan_encoded_resource_sha256 = input_digest,
+         updated_at = clock_timestamp()
+   WHERE root_import_session_id = input_session_id;
+  RETURN 'set';
+END;
+$_$;
 
 CREATE FUNCTION track_handle_authored_content_footprint_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -23527,6 +25147,116 @@ CREATE TABLE hns_root_import_activation_operations (
     CONSTRAINT hns_root_import_activation_operations_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (attachment_intent_id IS NOT NULL))))
 );
 
+CREATE TABLE hns_root_import_execution_ownership (
+    responsibility text NOT NULL,
+    enabled boolean DEFAULT false NOT NULL,
+    enabled_at timestamp with time zone,
+    evidence_ref text,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_root_import_execution_ownership_evidence_shape CHECK (((evidence_ref IS NULL) OR ((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 512))))),
+    CONSTRAINT hns_root_import_execution_ownership_marker_shape CHECK (((enabled AND (enabled_at IS NOT NULL)) OR ((NOT enabled) AND (enabled_at IS NULL)))),
+    CONSTRAINT hns_root_import_execution_ownership_responsibility_check CHECK ((responsibility = 'readiness'::text))
+);
+
+CREATE TABLE hns_root_import_lifecycle (
+    root_import_session_id text NOT NULL,
+    root_label text NOT NULL,
+    phase text NOT NULL,
+    revision bigint NOT NULL,
+    generation bigint NOT NULL,
+    plan_exposed_at timestamp with time zone,
+    publication_deadline_at timestamp with time zone,
+    first_current_observation_at timestamp with time zone,
+    finality_deadline_at timestamp with time zone,
+    readiness_observed_at timestamp with time zone,
+    pending_reason text,
+    next_check_at timestamp with time zone,
+    observation_count bigint DEFAULT 0 NOT NULL,
+    consecutive_operational_failures bigint DEFAULT 0 NOT NULL,
+    last_useful_error text,
+    last_useful_error_at timestamp with time zone,
+    terminal_decided_at timestamp with time zone,
+    policy_name text NOT NULL,
+    policy_digest text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    plan_encoded_resource_sha256 text,
+    last_observation_view text,
+    last_observation_resource_sha256 text,
+    last_observation_tip_height bigint,
+    last_observation_update_inclusion_height bigint,
+    last_observation_commitment_height bigint,
+    last_observation_at timestamp with time zone,
+    last_observation_recorded_at timestamp with time zone,
+    CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
+    CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at, last_observation_recorded_at) = ANY (ARRAY[0, 5])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
+    CONSTRAINT hns_root_import_lifecycle_phase_check CHECK ((phase = ANY (ARRAY['preparing'::text, 'awaiting_publication'::text, 'checking_publication'::text, 'waiting_safe_commitment'::text, 'checking_authority'::text, 'ready'::text, 'activated'::text, 'recovery_required'::text, 'failed'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_phase_deadline_shape CHECK ((((phase = 'awaiting_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL) AND (first_current_observation_at IS NULL) AND (finality_deadline_at IS NULL)) OR ((phase = 'checking_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL)) OR ((phase = ANY (ARRAY['waiting_safe_commitment'::text, 'checking_authority'::text])) AND (first_current_observation_at IS NOT NULL) AND (finality_deadline_at IS NOT NULL)) OR ((phase = 'ready'::text) AND (readiness_observed_at IS NOT NULL)) OR ((phase = 'activated'::text) AND (readiness_observed_at IS NOT NULL)) OR (phase = ANY (ARRAY['preparing'::text, 'recovery_required'::text, 'failed'::text])))),
+    CONSTRAINT hns_root_import_lifecycle_plan_digest_shape CHECK (((plan_encoded_resource_sha256 IS NULL) OR (plan_encoded_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_lifecycle_revision_check CHECK ((revision > 0))
+);
+
+CREATE TABLE hns_root_import_lifecycle_history (
+    history_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    event_id text NOT NULL,
+    event_name text NOT NULL,
+    outcome text NOT NULL,
+    prior_phase text NOT NULL,
+    new_phase text,
+    decision_reason text NOT NULL,
+    requested_work jsonb DEFAULT '[]'::jsonb NOT NULL,
+    revision_after bigint,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lifecycle_job_id bigint,
+    lease_fence bigint,
+    generation bigint,
+    CONSTRAINT hns_root_import_lifecycle_history_outcome_check CHECK ((outcome = ANY (ARRAY['transition'::text, 'replay'::text, 'pending'::text, 'rejection'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_history_provenance_shape CHECK ((((lifecycle_job_id IS NULL) = (lease_fence IS NULL)) AND ((lifecycle_job_id IS NULL) OR (lifecycle_job_id > 0)) AND ((lease_fence IS NULL) OR (lease_fence >= 0)) AND ((generation IS NULL) OR (generation > 0)) AND ((lifecycle_job_id IS NULL) OR (generation IS NOT NULL))))
+);
+
+ALTER TABLE hns_root_import_lifecycle_history ALTER COLUMN history_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_lifecycle_history_history_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE hns_root_import_lifecycle_jobs (
+    lifecycle_job_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    job_kind text NOT NULL,
+    due_at timestamp with time zone NOT NULL,
+    state text DEFAULT 'queued'::text NOT NULL,
+    attempt_count bigint DEFAULT 0 NOT NULL,
+    leased_by text,
+    lease_expires_at timestamp with time zone,
+    lease_fence bigint DEFAULT 0 NOT NULL,
+    failure_code text,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    generation bigint NOT NULL,
+    CONSTRAINT hns_root_import_lifecycle_jobs_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_jobs_generation_positive CHECK ((generation > 0)),
+    CONSTRAINT hns_root_import_lifecycle_jobs_job_kind_v2_check CHECK ((job_kind = ANY (ARRAY['observe_current'::text, 'observe_safe'::text, 'observe_readiness'::text, 'reconcile_provider'::text, 'retention_review'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_jobs_lease_fence_check CHECK ((lease_fence >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'completed'::text, 'failed'::text])))
+);
+
+ALTER TABLE hns_root_import_lifecycle_jobs ALTER COLUMN lifecycle_job_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_lifecycle_jobs_lifecycle_job_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 CREATE TABLE hns_root_import_name_proof_observations (
     proof_result_sha256 text NOT NULL,
     root_import_session_id text NOT NULL,
@@ -23562,6 +25292,100 @@ CREATE TABLE hns_root_import_observation_jobs (
     CONSTRAINT hns_root_import_observation_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'completed'::text, 'failed'::text]))),
     CONSTRAINT hns_root_import_observation_jobs_state_shape CHECK ((((state = 'queued'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL)) OR ((state = 'leased'::text) AND (btrim(leased_by) = leased_by) AND ((octet_length(leased_by) >= 1) AND (octet_length(leased_by) <= 256)) AND (lease_expires_at IS NOT NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND ((octet_length(result_bytes) >= 1) AND (octet_length(result_bytes) <= 1048576)) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256) AND (failure_code IS NULL) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (btrim(failure_code) = failure_code) AND ((octet_length(failure_code) >= 1) AND (octet_length(failure_code) <= 128)) AND (failure_code !~ '[[:cntrl:]]'::text) AND (completed_at IS NOT NULL)))),
     CONSTRAINT hns_root_import_observation_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
+);
+
+CREATE TABLE hns_root_import_recovery_authorizations (
+    recovery_authorization_id bigint NOT NULL,
+    recovery_finding_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    action text NOT NULL,
+    authorized_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    CONSTRAINT hns_recovery_authorization_window CHECK ((expires_at > authorized_at)),
+    CONSTRAINT hns_root_import_recovery_authorizati_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_recovery_authorizations_action_check CHECK ((action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text])))
+);
+
+ALTER TABLE hns_root_import_recovery_authorizations ALTER COLUMN recovery_authorization_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_recovery_authoriz_recovery_authorization_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE hns_root_import_recovery_findings (
+    recovery_finding_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    evidence_ref text NOT NULL,
+    classification text NOT NULL,
+    reason text NOT NULL,
+    supported_action text,
+    inclusion_txid text,
+    inclusion_block_height bigint,
+    covenant_resource_sha256 text,
+    plan_encoded_sha256 text,
+    current_resource_sha256 text,
+    safe_resource_sha256 text,
+    zone_present boolean,
+    signing_keys_present boolean,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_recovery_finding_action_shape CHECK (((supported_action IS NULL) OR (classification = ANY (ARRAY['matching_authority_available'::text, 'recoverable_authority_missing'::text])))),
+    CONSTRAINT hns_recovery_finding_inclusion_shape CHECK ((num_nulls(inclusion_txid, inclusion_block_height, covenant_resource_sha256) = ANY (ARRAY[0, 3]))),
+    CONSTRAINT hns_root_import_recovery_finding_covenant_resource_sha256_check CHECK (((covenant_resource_sha256 IS NULL) OR (covenant_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_recovery_findings_classification_check CHECK ((classification = ANY (ARRAY['matching_authority_available'::text, 'recoverable_authority_missing'::text, 'conflicting_publication'::text, 'insufficient_evidence'::text]))),
+    CONSTRAINT hns_root_import_recovery_findings_current_resource_sha256_check CHECK (((current_resource_sha256 IS NULL) OR (current_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_evidence_ref_check CHECK (((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 512)))),
+    CONSTRAINT hns_root_import_recovery_findings_inclusion_block_height_check CHECK (((inclusion_block_height IS NULL) OR (inclusion_block_height > 0))),
+    CONSTRAINT hns_root_import_recovery_findings_inclusion_txid_check CHECK (((inclusion_txid IS NULL) OR (inclusion_txid ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_plan_encoded_sha256_check CHECK (((plan_encoded_sha256 IS NULL) OR (plan_encoded_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_reason_check CHECK (((btrim(reason) = reason) AND ((octet_length(reason) >= 1) AND (octet_length(reason) <= 128)))),
+    CONSTRAINT hns_root_import_recovery_findings_safe_resource_sha256_check CHECK (((safe_resource_sha256 IS NULL) OR (safe_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_recovery_findings_supported_action_check CHECK ((supported_action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text])))
+);
+
+ALTER TABLE hns_root_import_recovery_findings ALTER COLUMN recovery_finding_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_recovery_findings_recovery_finding_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE hns_root_import_retention_reviews (
+    retention_review_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    reviewed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    current_observed_at timestamp with time zone,
+    safe_observed_at timestamp with time zone,
+    current_resource_sha256 text,
+    safe_resource_sha256 text,
+    decision text NOT NULL,
+    reason text NOT NULL,
+    evidence_ref text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_retention_review_digest_shape CHECK ((((current_resource_sha256 IS NULL) OR (current_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((safe_resource_sha256 IS NULL) OR (safe_resource_sha256 ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT hns_retention_review_evidence_shape CHECK (((decision <> 'retire_authorized'::text) OR ((current_observed_at IS NOT NULL) AND (safe_observed_at IS NOT NULL)))),
+    CONSTRAINT hns_root_import_retention_reviews_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_retention_reviews_decision_check CHECK ((decision = ANY (ARRAY['retain'::text, 'retire_authorized'::text, 'superseded'::text]))),
+    CONSTRAINT hns_root_import_retention_reviews_evidence_ref_check CHECK (((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 256)))),
+    CONSTRAINT hns_root_import_retention_reviews_reason_check CHECK (((btrim(reason) = reason) AND ((octet_length(reason) >= 1) AND (octet_length(reason) <= 256))))
+);
+
+ALTER TABLE hns_root_import_retention_reviews ALTER COLUMN retention_review_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_root_import_retention_reviews_retention_review_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 CREATE TABLE hns_root_import_sessions (
@@ -27917,6 +29741,8 @@ INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04
 
 INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
 
+INSERT INTO hns_root_import_execution_ownership VALUES ('readiness', false, NULL, NULL, '2000-01-01 00:00:00+00');
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -29038,6 +30864,15 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotion_receipts_pkey PRIMARY KEY (receipt_id);
 
+ALTER TABLE ONLY hns_root_import_recovery_authorizations
+    ADD CONSTRAINT hns_recovery_authorization_unique UNIQUE (recovery_finding_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_findings
+    ADD CONSTRAINT hns_recovery_finding_unique_evidence UNIQUE (root_import_session_id, evidence_ref);
+
+ALTER TABLE ONLY hns_root_import_retention_reviews
+    ADD CONSTRAINT hns_retention_review_unique_evidence UNIQUE (root_import_session_id, evidence_ref);
+
 ALTER TABLE ONLY hns_root_health_renewal_jobs
     ADD CONSTRAINT hns_root_health_renewal_jobs_dns_zone_activation_id_activat_key UNIQUE (dns_zone_activation_id, activation_generation, expected_health_generation);
 
@@ -29056,6 +30891,18 @@ ALTER TABLE ONLY hns_root_import_activation_operations
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY hns_root_import_execution_ownership
+    ADD CONSTRAINT hns_root_import_execution_ownership_pkey PRIMARY KEY (responsibility);
+
+ALTER TABLE ONLY hns_root_import_lifecycle_history
+    ADD CONSTRAINT hns_root_import_lifecycle_history_pkey PRIMARY KEY (history_id);
+
+ALTER TABLE ONLY hns_root_import_lifecycle_jobs
+    ADD CONSTRAINT hns_root_import_lifecycle_jobs_pkey PRIMARY KEY (lifecycle_job_id);
+
+ALTER TABLE ONLY hns_root_import_lifecycle
+    ADD CONSTRAINT hns_root_import_lifecycle_pkey PRIMARY KEY (root_import_session_id);
+
 ALTER TABLE ONLY hns_root_import_name_proof_observations
     ADD CONSTRAINT hns_root_import_name_proof_observati_root_import_session_id_key UNIQUE (root_import_session_id);
 
@@ -29067,6 +30914,15 @@ ALTER TABLE ONLY hns_root_import_observation_jobs
 
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_root_import_session_id_key UNIQUE (root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_authorizations
+    ADD CONSTRAINT hns_root_import_recovery_authorizations_pkey PRIMARY KEY (recovery_authorization_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_findings
+    ADD CONSTRAINT hns_root_import_recovery_findings_pkey PRIMARY KEY (recovery_finding_id);
+
+ALTER TABLE ONLY hns_root_import_retention_reviews
+    ADD CONSTRAINT hns_root_import_retention_reviews_pkey PRIMARY KEY (retention_review_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_actor_id_creation_intent_id_root_i_key UNIQUE (actor_id, creation_intent_id, root_import_session_id);
@@ -30435,7 +32291,21 @@ CREATE INDEX hns_root_health_renewal_jobs_delayed_idx ON hns_root_health_renewal
 
 CREATE INDEX hns_root_import_activation_operations_attachment_idx ON hns_root_import_activation_operations USING btree (actor_id, community_id, attachment_intent_id) WHERE (origin_kind = 'community_attachment'::text);
 
+CREATE UNIQUE INDEX hns_root_import_lifecycle_history_identity_idx ON hns_root_import_lifecycle_history USING btree (root_import_session_id, event_id);
+
+CREATE INDEX hns_root_import_lifecycle_history_order_idx ON hns_root_import_lifecycle_history USING btree (root_import_session_id, recorded_at, history_id);
+
+CREATE INDEX hns_root_import_lifecycle_jobs_due_idx ON hns_root_import_lifecycle_jobs USING btree (state, due_at, lifecycle_job_id);
+
+CREATE INDEX hns_root_import_lifecycle_phase_next_check_idx ON hns_root_import_lifecycle USING btree (phase, next_check_at) WHERE (next_check_at IS NOT NULL);
+
+CREATE INDEX hns_root_import_lifecycle_root_label_idx ON hns_root_import_lifecycle USING btree (root_label);
+
 CREATE INDEX hns_root_import_observation_jobs_claim_idx ON hns_root_import_observation_jobs USING btree (state, created_at, observation_job_id);
+
+CREATE INDEX hns_root_import_recovery_findings_session_idx ON hns_root_import_recovery_findings USING btree (root_import_session_id, recorded_at DESC);
+
+CREATE INDEX hns_root_import_retention_reviews_session_idx ON hns_root_import_retention_reviews USING btree (root_import_session_id, reviewed_at DESC);
 
 CREATE UNIQUE INDEX hns_root_import_sessions_active_root_unique ON hns_root_import_sessions USING btree (root_label) WHERE (status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text]));
 
@@ -31115,9 +32985,19 @@ CREATE TRIGGER hns_root_health_renewal_jobs_retain BEFORE DELETE ON hns_root_hea
 
 CREATE TRIGGER hns_root_import_activation_operations_retain BEFORE DELETE OR UPDATE ON hns_root_import_activation_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
+CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_import_lifecycle FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_lifecycle_anchor_v1();
+
+CREATE TRIGGER hns_root_import_lifecycle_jobs_generation_fill BEFORE INSERT ON hns_root_import_lifecycle_jobs FOR EACH ROW EXECUTE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1();
+
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_observation_jobs_retain BEFORE DELETE ON hns_root_import_observation_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
+
+CREATE TRIGGER hns_root_import_recovery_authorizations_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_recovery_authorizations FOR EACH ROW EXECUTE FUNCTION reject_hns_recovery_record_change_v1();
+
+CREATE TRIGGER hns_root_import_recovery_findings_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_recovery_findings FOR EACH ROW EXECUTE FUNCTION reject_hns_recovery_record_change_v1();
+
+CREATE TRIGGER hns_root_import_retention_reviews_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_retention_reviews FOR EACH ROW EXECUTE FUNCTION reject_hns_retention_review_change_v1();
 
 CREATE TRIGGER hns_root_import_sessions_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_sessions FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_session_change();
 
@@ -32787,6 +34667,12 @@ ALTER TABLE ONLY hns_root_import_activation_operations
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_operations_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
+ALTER TABLE ONLY hns_root_import_lifecycle_history
+    ADD CONSTRAINT hns_root_import_lifecycle_history_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_lifecycle(root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_lifecycle_jobs
+    ADD CONSTRAINT hns_root_import_lifecycle_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_lifecycle(root_import_session_id);
+
 ALTER TABLE ONLY hns_root_import_name_proof_observations
     ADD CONSTRAINT hns_root_import_name_proof_actor_fk FOREIGN KEY (actor_id) REFERENCES users(user_id);
 
@@ -32795,6 +34681,9 @@ ALTER TABLE ONLY hns_root_import_name_proof_observations
 
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_recovery_authorizations
+    ADD CONSTRAINT hns_root_import_recovery_authorization_recovery_finding_id_fkey FOREIGN KEY (recovery_finding_id) REFERENCES hns_root_import_recovery_findings(recovery_finding_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_activated_community_fk FOREIGN KEY (activated_community_id) REFERENCES communities(community_id);

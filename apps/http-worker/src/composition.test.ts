@@ -383,6 +383,66 @@ describe("HTTP production composition", () => {
     expect(calls).toBe(0);
   });
 
+  test("keeps the activation current-view gatherer disabled by default and fails closed when enabled incompletely", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker(configured);
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+        HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+        HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+        HNS_AUTHORITY_CHAIN_NETWORK: "main",
+        HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+        HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+        HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+        HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
+  test("constructs the complete activation current-view gatherer without an upstream request", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+      HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
+  test("rejects a forwarded but out-of-range activation observer setting", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+        HNS_AUTHORITY_HSD_RPC_URL: "https://hsd.example/rpc",
+        HNS_AUTHORITY_HSD_AUTHORIZATION: "Basic hunter2",
+        HNS_AUTHORITY_CHAIN_NETWORK: "main",
+        HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: `${"0".repeat(63)}1`,
+        HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "0",
+        HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+        HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "600",
+        HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "60",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
   test("rejects whitespace-padded Very OAuth credentials before provider composition", async () => {
     const configured = await bindings();
     await expect(

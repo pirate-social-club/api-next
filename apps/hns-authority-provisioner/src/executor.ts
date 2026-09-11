@@ -1,3 +1,10 @@
+import {
+  decideHnsTeardownRetentionV1,
+  type HnsChainObservationResultV1,
+  type HnsChainObservationViewV1,
+  type HnsRetainedAuthorityReferenceV1,
+  hnsRetainedAuthorityFromPlanDocumentV1,
+} from "@pirate/application/namespace-ownership";
 import type {
   HnsRootObservationFinalizeInput,
   HnsRootObservationFinalizeResult,
@@ -42,6 +49,100 @@ function failureCode(error: unknown): string {
   return error instanceof HnsAuthorityProvisionError ? error.code : "provision_failed";
 }
 
+/** Chain-evidence and retirement-evidence inputs the teardown gate consults. */
+export type HnsTeardownRetentionPorts = Readonly<{
+  readonly observe_chain: (
+    rootLabel: string,
+    view: HnsChainObservationViewV1,
+  ) => Promise<HnsChainObservationResultV1>;
+  /**
+   * The persisted, explicit authorization to retire this authority: a
+   * recorded retention review under `retention_review_v1`, or a recorded
+   * supersession. Null means no such authorization exists.
+   *
+   * There is deliberately no wall-clock input here. Spec 012 states that no
+   * wall-clock value alone authorizes deletion or release, and that an
+   * exhausted publication deadline enters `recovery_required` with authority
+   * retained. A gate that derives permission from elapsed time therefore
+   * cannot be correct, however long the interval.
+   */
+  readonly retirement_authorization: (rootImportSessionId: string) => Promise<Readonly<{
+    readonly kind: "retention_review" | "supersession";
+    readonly recorded_at_epoch_ms: number;
+    readonly evidence_ref: string;
+  }> | null>;
+}>;
+
+/**
+ * Both null is a valid absence of plan; exactly one null, or a digest that
+ * does not match, is tampering or corruption.
+ */
+async function plannedBytesMatchDigest(
+  bytes: Uint8Array | null,
+  digest: string | null,
+): Promise<boolean> {
+  if (bytes === null && digest === null) return true;
+  if (bytes === null || digest === null) return false;
+  return (await sha256(bytes)) === digest;
+}
+
+async function resolveTeardownRetention(
+  input: Readonly<{
+    readonly retention: HnsTeardownRetentionPorts;
+    readonly teardown_kind: "teardown_provisional_root_v1" | "teardown_root_v1";
+    readonly root_label: string;
+    readonly root_import_session_id: string;
+    readonly publish_plan_bytes: Uint8Array | null;
+  }>,
+): Promise<Readonly<{ readonly decision: "retain" | "retire_eligible"; readonly reason: string }>> {
+  // Unknown plan provenance retains. A plan we cannot decode is a plan whose
+  // authority we cannot describe, and an authority we cannot describe is one
+  // we cannot prove is unreferenced.
+  let authority: HnsRetainedAuthorityReferenceV1 | null = null;
+  if (input.publish_plan_bytes === null) {
+    // Partial provisioning: infrastructure may exist with no exposed plan.
+    // Nothing was ever issued to the owner, so there is no plan reference to
+    // find, but there is also no provenance — retirement still needs explicit
+    // authorization below.
+    authority = {
+      ns_names: [],
+      ds: [],
+      challenge_txt_value: null,
+    };
+  } else {
+    try {
+      authority = hnsRetainedAuthorityFromPlanDocumentV1(input.publish_plan_bytes);
+    } catch {
+      return { decision: "retain", reason: "unknown_plan_provenance_retained" };
+    }
+  }
+
+  const observe = async (
+    view: HnsChainObservationViewV1,
+  ): Promise<HnsChainObservationResultV1 | null> => {
+    try {
+      return await input.retention.observe_chain(input.root_label, view);
+    } catch {
+      return null;
+    }
+  };
+  const [current, safe, retirement] = await Promise.all([
+    observe("current"),
+    observe("safe"),
+    input.retention.retirement_authorization(input.root_import_session_id).catch(() => null),
+  ]);
+  return decideHnsTeardownRetentionV1({
+    teardown_kind: input.teardown_kind,
+    authority,
+    current,
+    safe,
+    // The only path to retirement is a recorded review or supersession. With
+    // none, a fresh inspection showing no reference still retains: the owner
+    // may broadcast the issued plan later.
+    positive_absence_evidence: retirement !== null,
+  });
+}
+
 async function runObservation(input: {
   readonly executor_id: string;
   readonly queue: HnsRootObservationQueue;
@@ -51,6 +152,7 @@ async function runObservation(input: {
     readonly challenge_txt_value?: string;
     readonly mutation_lease?: HnsZoneMutationLease;
   }) => Promise<void>;
+  readonly retention: HnsTeardownRetentionPorts;
   readonly observation_config: HnsRootReadinessObservationConfig;
 }): Promise<HnsAuthorityProvisionExecutorResult> {
   const claim = await input.queue.claim(input.executor_id, 60);
@@ -70,16 +172,43 @@ async function runObservation(input: {
       const request = decodeHnsAuthorityProvisionRequestV1(claim.request_bytes);
       if (request.root_import_session_id !== claim.root_import_session_id)
         throw new HnsRootReadinessObservationError("authority_mismatch");
-      await input.teardown_zone({
+      // Partial provisioning legitimately carries no plan. Both fields null is
+      // valid; hashing empty bytes and comparing that digest with an empty
+      // string made that case indistinguishable from tampering.
+      // `plannedBytesMatchDigest` is async: without the await this negated a
+      // pending promise, which is always false, so the tamper check never
+      // fired and a corrupted plan reached the deletion path unchallenged.
+      if (!(await plannedBytesMatchDigest(claim.publish_plan_bytes, claim.publish_plan_sha256))) {
+        throw new HnsRootReadinessObservationError("invalid_request");
+      }
+      const retention = await resolveTeardownRetention({
+        retention: input.retention,
+        teardown_kind: "teardown_provisional_root_v1",
         root_label: request.root_label,
-        challenge_txt_value: request.challenge_txt_value,
-        mutation_lease: {
-          job_id: claim.observation_job_id,
-          executor_id: input.executor_id,
-          lease_fence: claim.lease_fence,
-        },
+        root_import_session_id: claim.root_import_session_id,
+        publish_plan_bytes: claim.publish_plan_bytes,
       });
-      completion = { ...base, outcome: "failed", failure_code: "session_expired" };
+      if (retention.decision === "retain") {
+        // The authority is retained: no provider deletion runs. Unknown
+        // evidence and a not-yet-passed exposure horizon retry later; a
+        // chain reference completes the job without deleting.
+        completion = {
+          ...base,
+          outcome: retention.reason === "chain_reference_retained" ? "failed" : "retry",
+          failure_code: `retention_${retention.reason}`,
+        };
+      } else {
+        await input.teardown_zone({
+          root_label: request.root_label,
+          challenge_txt_value: request.challenge_txt_value,
+          mutation_lease: {
+            job_id: claim.observation_job_id,
+            executor_id: input.executor_id,
+            lease_fence: claim.lease_fence,
+          },
+        });
+        completion = { ...base, outcome: "failed", failure_code: "session_expired" };
+      }
     } else {
       if (
         (await sha256(claim.publish_plan_bytes)) !== claim.publish_plan_sha256 ||
@@ -92,10 +221,35 @@ async function runObservation(input: {
         if (provision.root_import_session_id !== claim.root_import_session_id) {
           throw new HnsRootReadinessObservationError("authority_mismatch");
         }
-        if (provision.zone_created) {
-          await input.teardown_zone({ root_label: provision.root_label });
+        const retention = await resolveTeardownRetention({
+          retention: input.retention,
+          teardown_kind: "teardown_root_v1",
+          root_label: provision.root_label,
+          root_import_session_id: claim.root_import_session_id,
+          publish_plan_bytes: claim.publish_plan_bytes,
+        });
+        if (retention.decision === "retain") {
+          completion = {
+            ...base,
+            outcome: retention.reason === "chain_reference_retained" ? "failed" : "retry",
+            failure_code: `retention_${retention.reason}`,
+          };
+        } else {
+          if (provision.zone_created) {
+            await input.teardown_zone({
+              root_label: provision.root_label,
+              // The same mutation fence as the provisional variant: an
+              // unfenced delete can land after another executor has taken the
+              // job over.
+              mutation_lease: {
+                job_id: claim.observation_job_id,
+                executor_id: input.executor_id,
+                lease_fence: claim.lease_fence,
+              },
+            });
+          }
+          completion = { ...base, outcome: "failed", failure_code: "session_expired" };
         }
-        completion = { ...base, outcome: "failed", failure_code: "session_expired" };
       } else {
         const request = decodeHnsRootReadinessObservationRequestV1(claim.request_bytes);
         if (
@@ -158,20 +312,39 @@ export async function runHnsAuthorityProvisionExecutorOnce(input: {
       readonly challenge_txt_value?: string;
       readonly mutation_lease?: HnsZoneMutationLease;
     }) => Promise<void>;
+    readonly retention?: HnsTeardownRetentionPorts;
     readonly config: HnsRootReadinessObservationConfig;
   }>;
+  /**
+   * Restrict this call to one job class, so the service loop can give each
+   * class its own turn. Omitted keeps the original behaviour — provisioning
+   * first, observation only when provisioning is idle — which is what the
+   * one-shot invocation and the existing callers expect.
+   */
+  readonly only?: "provisioning" | "observation";
 }): Promise<HnsAuthorityProvisionExecutorResult> {
-  const claim = await input.queue.claim(input.executor_id, 60);
-  if (claim === null) {
-    return input.observation === undefined
-      ? { outcome: "idle" }
+  const observation = input.observation;
+  const runObservationTurn = (): Promise<HnsAuthorityProvisionExecutorResult> =>
+    observation === undefined
+      ? Promise.resolve({ outcome: "idle" } as const)
       : runObservation({
           executor_id: input.executor_id,
-          queue: input.observation.queue,
-          observe: input.observation.observe,
-          teardown_zone: input.observation.teardown_zone,
-          observation_config: input.observation.config,
+          queue: observation.queue,
+          observe: observation.observe,
+          teardown_zone: observation.teardown_zone,
+          retention:
+            observation.retention ??
+            ({
+              observe_chain: () => Promise.reject(new Error("retention evidence unavailable")),
+              // No ports supplied means no recorded authorization exists.
+              retirement_authorization: () => Promise.resolve(null),
+            } as const satisfies HnsTeardownRetentionPorts),
+          observation_config: observation.config,
         });
+  if (input.only === "observation") return runObservationTurn();
+  const claim = await input.queue.claim(input.executor_id, 60);
+  if (claim === null) {
+    return input.only === "provisioning" ? { outcome: "idle" } : runObservationTurn();
   }
   const base = {
     provision_job_id: claim.provision_job_id,

@@ -31,6 +31,9 @@ export const reusablePostgresTestSuites = [
 export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/comment-thread-repository.pg.test.ts",
   "apps/http-worker/src/hns-community-publication.pg.test.ts",
+  "apps/http-worker/src/hns-community-activation.pg.test.ts",
+  "apps/http-worker/src/hns-community-activation-production-worker.pg.test.ts",
+  "apps/http-worker/src/hns-community-joint-ceremony.pg.test.ts",
   "apps/http-worker/src/public-community-threads-composition.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",
@@ -43,6 +46,29 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
   "packages/platform-cf/src/hns-community-root-import-repository.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",
+  "packages/platform-cf/src/hns-root-import-lifecycle.pg.test.ts",
+  "packages/platform-cf/src/hns-root-import-lifecycle-migration.pg.test.ts",
+  "packages/platform-cf/src/hns-root-import-lifecycle-privileges.pg.test.ts",
+  // Both create their own schema and run every migration, so they classify
+  // with the fresh-schema suites rather than the baseline-reusing ones.
+  "packages/platform-cf/src/hns-root-import-lifecycle-transition.pg.test.ts",
+  "packages/platform-cf/src/hns-root-import-lifecycle-execution.pg.test.ts",
+  "packages/platform-cf/src/hns-lifecycle-readiness-patch.pg.test.ts",
+  "packages/platform-cf/src/hns-retention-review.pg.test.ts",
+  "packages/platform-cf/src/hns-execution-ownership.pg.test.ts",
+  "packages/platform-cf/src/hns-retention-reviewer.pg.test.ts",
+  "packages/platform-cf/src/hns-lifecycle-projection.pg.test.ts",
+  "packages/platform-cf/src/hns-observation-fence.pg.test.ts",
+  "packages/platform-cf/src/hns-readiness-ownership.pg.test.ts",
+  "packages/platform-cf/src/hns-reconciliation-routing.pg.test.ts",
+  "packages/platform-cf/src/hns-incident-recovery.pg.test.ts",
+  // Creates its own schema and additionally needs a reachable regtest node;
+  // it skips itself when either is absent.
+  "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
+  "packages/platform-cf/src/hns-incident-evidence.pg.test.ts",
+  // Drives the provisioner's own entrypoint as a subprocess against a fresh
+  // database and a regtest node; it skips itself when either is absent.
+  "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",
   "packages/platform-cf/src/karaoke-finalization-recovery.pg.test.ts",
   "packages/platform-cf/src/learner-audio-deletion-repository.pg.test.ts",
   "packages/platform-cf/src/localization-foundation.pg.test.ts",

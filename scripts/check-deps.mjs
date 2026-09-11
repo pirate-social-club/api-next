@@ -87,6 +87,12 @@ const HNS_OWNER_VERIFIER_APPLICATION_SEAMS = new Set([
   "@pirate/application/namespace-ownership",
   "@pirate/application/route-revalidation",
 ]);
+const HNS_AUTHORITY_PROVISIONER_PLATFORM_SEAMS = new Set([
+  // The shared bracketed HSD observer relocated from the provisioner into
+  // platform-cf. The provisioner is allowed exactly this subpath and no other
+  // platform-cf surface.
+  "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer",
+]);
 const HNS_OWNER_VERIFIER_PLATFORM_SEAMS = new Set([
   "@pirate/platform-cf/postgres",
   "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport",
@@ -495,6 +501,9 @@ function isAllowedPackageDependency(pkg, spec) {
   }
   if (pkg === "@pirate/hns-owner-verifier" && spec.startsWith("@pirate/platform-cf")) {
     return HNS_OWNER_VERIFIER_PLATFORM_SEAMS.has(spec);
+  }
+  if (pkg === "@pirate/hns-authority-provisioner" && spec.startsWith("@pirate/platform-cf")) {
+    return HNS_AUTHORITY_PROVISIONER_PLATFORM_SEAMS.has(spec);
   }
   if (pkg === "@pirate/hns-platform-gateway" && spec.startsWith("@pirate/platform-cf")) {
     return HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS.has(spec);

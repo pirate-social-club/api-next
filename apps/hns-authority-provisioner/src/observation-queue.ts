@@ -12,7 +12,12 @@ type HnsRootObservationClaim = Readonly<{
   readonly lease_fence: number;
 }> &
   (
-    | Readonly<{ readonly operation_kind: "teardown_provisional_root_v1" }>
+    | Readonly<{
+        readonly operation_kind: "teardown_provisional_root_v1";
+        /** Retained plan evidence from the provision job; null when provisioning never produced a plan. */
+        readonly publish_plan_bytes: Uint8Array | null;
+        readonly publish_plan_sha256: string | null;
+      }>
     | Readonly<{
         readonly operation_kind: "observe_root_v1" | "teardown_root_v1" | "renew_health_v1";
         readonly publish_plan_bytes: Uint8Array;
@@ -113,12 +118,23 @@ export function makePostgresHnsRootObservationQueue(
             leaseFence === null
           )
             throw new Error("HNS provisional teardown returned an invalid job");
+          const provisionalPlanBytes = publishPlanBytes;
+          const provisionalPlanSha =
+            typeof row.publish_plan_sha256 === "string" &&
+            /^[0-9a-f]{64}$/u.test(row.publish_plan_sha256)
+              ? row.publish_plan_sha256
+              : null;
+          if ((provisionalPlanBytes === null) !== (provisionalPlanSha === null)) {
+            throw new Error("HNS provisional teardown returned an invalid plan reference");
+          }
           return {
             observation_job_id: row.observation_job_id,
             root_import_session_id: row.root_import_session_id,
             operation_kind: "teardown_provisional_root_v1" as const,
             request_bytes: requestBytes,
             request_sha256: row.request_sha256,
+            publish_plan_bytes: provisionalPlanBytes,
+            publish_plan_sha256: provisionalPlanSha,
             lease_fence: leaseFence,
           };
         }

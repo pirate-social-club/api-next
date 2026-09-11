@@ -6,10 +6,13 @@ import {
   HNS_AUTHORITY_INVENTORY_VERSION,
   HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
   type HnsChainAuthorityRecord,
+  type HnsChainObservationResultV1,
   type HnsRootDelegationDsV1,
   type HnsRootImportPublishPlanV1,
   type HnsRootResourceRecordV1,
   hnsAuthorityCapabilitySetDigest,
+  hnsObservedResourceMatchesEncodedPlanV1,
+  normalizedHnsResourceMultisetKeyV1,
   validateHnsRootResourceRecordsV1,
 } from "@pirate/application/namespace-ownership";
 import { canonicalJson, validCommunityRouteRoot } from "@pirate/domain";
@@ -37,9 +40,8 @@ export type HnsRootReadinessObservationRequestV1 = Readonly<{
 }>;
 
 export type HnsRootReadinessObservationPorts = Readonly<{
-  readonly inspect_current_resource: (
-    rootLabel: string,
-  ) => Promise<readonly HnsRootResourceRecordV1[]>;
+  /** Typed current-view chain observation (anchor-bracketed, safe=false). */
+  readonly observe_current_resource: (rootLabel: string) => Promise<HnsChainObservationResultV1>;
   readonly inspect_zone: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
@@ -204,11 +206,14 @@ function decodePlan(bytes: Uint8Array): HnsRootImportPublishPlanV1 {
       "added_records",
       "replacement_records",
       "preserved_unknown_record_types",
+      "encoded_resource_sha256",
       "acknowledgement_required",
     ]) ||
     value.version !== "pirate-hns-root-import-publish-plan-v1" ||
     value.replacement_semantics !== "complete_resource" ||
     value.acknowledgement_required !== true ||
+    typeof value.encoded_resource_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.encoded_resource_sha256) ||
     !Array.isArray(value.current_records) ||
     !Array.isArray(value.preserved_records) ||
     !Array.isArray(value.removed_conflicts) ||
@@ -227,7 +232,10 @@ function decodePlan(bytes: Uint8Array): HnsRootImportPublishPlanV1 {
 }
 
 function canonicalRecordMultiset(records: readonly HnsRootResourceRecordV1[]): string {
-  return canonicalJson(records.map((record) => canonicalJson(record)).sort());
+  // Comparison normalization: order, multiplicity, name case and trailing
+  // dot, address canonicalization, and digest case, so a harmless
+  // canonicalization is distinct from a changed resource.
+  return normalizedHnsResourceMultisetKeyV1(records);
 }
 
 function chainAuthorityRecords(
@@ -328,6 +336,14 @@ export async function observeHnsRootReadinessV1(input: {
   readonly request: HnsRootReadinessObservationRequestV1;
   readonly publish_plan_bytes: Uint8Array;
   readonly provision_result_bytes: Uint8Array;
+  /**
+   * The operation's effective, generation-bound encoded-resource digest. After
+   * adoption this is the adopted resource's digest while the session still
+   * carries the original plan document, so readiness must qualify the current
+   * resource against the effective digest or an adopted operation could never
+   * re-establish readiness.
+   */
+  readonly effective_plan_encoded_resource_sha256?: string;
   readonly ports: HnsRootReadinessObservationPorts;
   readonly config: HnsRootReadinessObservationConfig;
 }) {
@@ -346,7 +362,12 @@ export async function observeHnsRootReadinessV1(input: {
     input.config.valid_for_seconds < 60 ||
     input.config.valid_for_seconds > 7 * 86_400 ||
     !Number.isFinite(now) ||
-    (input.operation_kind === "observe_root_v1" && now >= Date.parse(input.request.expires_at)) ||
+    // The retired single import/challenge expiry no longer gates the
+    // adapter: expiry, reservation retention, cleanup, and activation
+    // timing follow hns_root_import_policy_v1's separated clocks (spec 012,
+    // 2026-09-09 amendment). The request retains expires_at only as
+    // transport context; the bounded observation scheduling is owned by
+    // the persisted lifecycle deadlines.
     (await sha256(input.publish_plan_bytes)) !== input.request.publish_plan_sha256 ||
     (await sha256(input.provision_result_bytes)) !== input.request.provision_result_sha256
   ) {
@@ -360,15 +381,48 @@ export async function observeHnsRootReadinessV1(input: {
   ) {
     throw new HnsRootReadinessObservationError("authority_mismatch");
   }
+  const observedChain = await input.ports.observe_current_resource(input.request.root_label);
+  if (observedChain.kind === "unavailable" || observedChain.kind === "finding") {
+    // Unavailable evidence preserves the phase. A name finding during
+    // readiness observation (root no longer active) is likewise not
+    // readiness evidence; classification into lifecycle outcomes belongs to
+    // the transition policy, not to this adapter.
+    throw new HnsRootReadinessObservationError("authority_unavailable");
+  }
+  if (observedChain.observation.view !== "current") {
+    throw new HnsRootReadinessObservationError("invalid_request");
+  }
   let chainRecords: readonly HnsRootResourceRecordV1[];
   try {
-    chainRecords = validateHnsRootResourceRecordsV1(
-      await input.ports.inspect_current_resource(input.request.root_label),
-    );
+    chainRecords = validateHnsRootResourceRecordsV1(observedChain.observation.records);
   } catch {
     throw new HnsRootReadinessObservationError("authority_unavailable");
   }
-  if (canonicalRecordMultiset(chainRecords) !== canonicalRecordMultiset(plan.replacement_records)) {
+  if (input.operation_kind === "renew_health_v1") {
+    // Renewal's authority-relevant comparison is independent from the
+    // original complete import resource (spec 012, renewal comparison):
+    // current control (NS/DS) must match; unrelated TXT drift is accepted
+    // and the original import challenge is never re-verified.
+    if (
+      normalizedHnsResourceMultisetKeyV1(
+        chainRecords.filter((record) => record.type === "NS" || record.type === "DS"),
+      ) !==
+      normalizedHnsResourceMultisetKeyV1(
+        plan.replacement_records.filter((record) => record.type === "NS" || record.type === "DS"),
+      )
+    ) {
+      throw new HnsRootReadinessObservationError("authority_mismatch");
+    }
+  } else if (
+    canonicalRecordMultiset(chainRecords) !== canonicalRecordMultiset(plan.replacement_records) &&
+    !(
+      input.effective_plan_encoded_resource_sha256 !== undefined &&
+      (await hnsObservedResourceMatchesEncodedPlanV1(
+        chainRecords,
+        input.effective_plan_encoded_resource_sha256,
+      ))
+    )
+  ) {
     throw new HnsRootReadinessObservationError("owner_update_pending");
   }
   const authorityRecords = chainAuthorityRecords(chainRecords);
