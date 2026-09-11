@@ -50,7 +50,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 44;
+const testCount = 45;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4198,6 +4198,334 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).rejects.toThrow();
       await admin.query("ROLLBACK");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("replaces a lost workflow for a published song with pending alignment", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const requireRow = <A>(row: A | undefined): A => {
+        if (row === undefined) throw new Error("missing fixture row");
+        return row;
+      };
+      const lyricsAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        lyricsAnalysis: {
+          status: "ready",
+          lyricsRevision: 1,
+          explicitness: "not_explicit",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "published_lyrics_evidence",
+          policyRevision: "published_lyrics_policy",
+          adapterRevision: "published_lyrics_adapter",
+        },
+        lyricsSafety: "allow",
+      };
+      const publishedDecision: PublicationDecision = {
+        ...decision,
+        creationRevision: 3,
+        lyricsRevision: 1,
+      };
+      await createThroughDecision(
+        connection,
+        publishedDecision,
+        lyricsAnalysis,
+        false,
+        "Fixture published lyrics",
+      );
+      const postId = `media-post-${operation}`;
+      expect(
+        await run(connection, (store) =>
+          store.publish({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/publish",
+              "publish-replacement-gate",
+            ),
+            expectedCreationRevision: 3,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            expectedDecisionRevision: 1,
+            postId,
+            outbox: {
+              outboxEventId: "media_pg_published_alignment_outbox",
+              effectIdentity: "media_pg_published_alignment_effect",
+              payload: {
+                kind: "alignment",
+                submission_id: submission,
+                operation_id: operation,
+                post_id: postId,
+                lyrics_revision: 1,
+                workflow_revision: 2,
+                workflow_instance_id: `media-${operation}-r2`,
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed", postId });
+      type SubmissionSnapshot = {
+        readonly status: string;
+        readonly phase: string;
+        readonly workflow_revision: string;
+        readonly workflow_replacement_sequence: string;
+        readonly event_sequence: string;
+        readonly creation_revision: string;
+        readonly audio_revision: string;
+        readonly analysis_revision: string;
+        readonly decision_revision: string;
+        readonly current_lyrics_revision: string;
+      };
+      const snapshot = () =>
+        admin.query<SubmissionSnapshot>(
+          "SELECT status,phase,workflow_revision,workflow_replacement_sequence,event_sequence,creation_revision,audio_revision,analysis_revision,decision_revision,current_lyrics_revision FROM media_post_submissions WHERE submission_id=$1",
+          [submission],
+        );
+      const published = requireRow((await snapshot()).rows[0]);
+      expect(published).toMatchObject({ status: "published", workflow_revision: "2" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,lyrics_revision FROM media_alignment_projections WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ status: "pending", lyrics_revision: "1" });
+      const publicationBefore = (
+        await admin.query("SELECT * FROM media_publication_projections WHERE submission_id=$1", [
+          submission,
+        ])
+      ).rows[0];
+      const rowCount = async (table: string): Promise<string> =>
+        requireRow(
+          (
+            await admin.query<{ count: string }>(
+              `SELECT count(*)::text AS count FROM ${table} WHERE submission_id=$1`,
+              [submission],
+            )
+          ).rows[0],
+        ).count;
+      const eventsBefore = await rowCount("media_submission_events");
+      const outboxesBefore = await rowCount("media_submission_outbox");
+      const bump = () =>
+        admin.query<{
+          readonly event_sequence: string;
+          readonly workflow_revision: string;
+          readonly workflow_replacement_sequence: string;
+        }>(
+          "UPDATE media_post_submissions SET workflow_revision=workflow_revision+1,workflow_replacement_sequence=workflow_replacement_sequence+1,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1 RETURNING event_sequence,workflow_revision,workflow_replacement_sequence",
+          [submission],
+        );
+      const insertReplacementEvent = (
+        bumped: {
+          readonly event_sequence: string;
+          readonly workflow_replacement_sequence: string;
+        },
+        eventId: string,
+        eventWorkflowRevision: string,
+      ) =>
+        admin.query(
+          "INSERT INTO media_submission_events (submission_id,community_id,actor_user_id,author_persona_id,operation_id,event_sequence,event_id,event_kind,creation_revision,audio_revision,analysis_revision,decision_revision,workflow_revision,evidence) VALUES ($1,$2,$3,$4,$5,$6,$7,'workflow_replaced',$8,$9,$10,$11,$12,$13::jsonb)",
+          [
+            submission,
+            community,
+            actor,
+            personaFor(connection),
+            operation,
+            bumped.event_sequence,
+            eventId,
+            published.creation_revision,
+            published.audio_revision,
+            published.analysis_revision,
+            published.decision_revision,
+            eventWorkflowRevision,
+            JSON.stringify({
+              event_kind: "workflow_replaced",
+              replacement_sequence: Number(bumped.workflow_replacement_sequence),
+            }),
+          ],
+        );
+      const expectRejectedWithoutPersistence = async (
+        mutate: () => Promise<unknown>,
+        message: string,
+      ) => {
+        await admin.query("BEGIN");
+        await mutate();
+        await expect(admin.query("COMMIT")).rejects.toThrow(message);
+        await admin.query("ROLLBACK");
+        expect((await snapshot()).rows[0]).toEqual(published);
+        expect(await rowCount("media_submission_events")).toBe(eventsBefore);
+        expect(await rowCount("media_submission_outbox")).toBe(outboxesBefore);
+      };
+      await expectRejectedWithoutPersistence(async () => {
+        await bump();
+      }, "specialized media transition requires its exact event");
+      await expectRejectedWithoutPersistence(async () => {
+        const bumped = requireRow((await bump()).rows[0]);
+        await insertReplacementEvent(
+          bumped,
+          "media-event-published-mismatched",
+          String(Number(bumped.workflow_revision) - 1),
+        );
+      }, "specialized media transition requires its exact event");
+      await expectRejectedWithoutPersistence(async () => {
+        const bumped = requireRow((await bump()).rows[0]);
+        await insertReplacementEvent(
+          bumped,
+          "media-event-published-missing-outbox",
+          bumped.workflow_revision,
+        );
+      }, "workflow replacement lacks its launch outbox");
+      await expectRejectedWithoutPersistence(async () => {
+        await admin.query(
+          "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,author_persona_id,operation_id,creation_revision,audio_revision,analysis_revision,lyrics_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'workflow_replacement',$13,$14::jsonb)",
+          [
+            "media_pg_published_stale_revision_outbox",
+            submission,
+            community,
+            actor,
+            personaFor(connection),
+            operation,
+            published.creation_revision,
+            published.audio_revision,
+            published.analysis_revision,
+            published.current_lyrics_revision,
+            published.workflow_revision,
+            `media-${operation}-r${published.workflow_revision}`,
+            "media-pg-published-stale-revision-effect",
+            JSON.stringify({
+              kind: "workflow_replacement",
+              submission_id: submission,
+              operation_id: operation,
+              replacement_sequence: Number(published.workflow_replacement_sequence),
+              workflow_revision: Number(published.workflow_revision),
+              workflow_instance_id: `media-${operation}-r${published.workflow_revision}`,
+            }),
+          ],
+        );
+        const bumped = requireRow((await bump()).rows[0]);
+        await insertReplacementEvent(
+          bumped,
+          "media-event-published-stale-outbox",
+          bumped.workflow_revision,
+        );
+      }, "workflow replacement lacks its launch outbox");
+      const revision = Number(published.workflow_revision);
+      const nextRevision = revision + 1;
+      const replacementSequence = Number(published.workflow_replacement_sequence) + 1;
+      expect(
+        await run(connection, (store) =>
+          store.replaceLostWorkflow({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            expectedWorkflowRevision: revision,
+            outbox: {
+              outboxEventId: "media_pg_published_replacement_outbox",
+              effectIdentity: "media_pg_published_replacement_effect",
+              payload: {
+                kind: "workflow_replacement",
+                submission_id: submission,
+                operation_id: operation,
+                replacement_sequence: replacementSequence,
+                workflow_revision: nextRevision,
+                workflow_instance_id: `media-${operation}-r${nextRevision}`,
+              },
+            },
+          }),
+        ),
+      ).toEqual({
+        kind: "committed",
+        submissionId: submission,
+        outboxEventId: "media_pg_published_replacement_outbox",
+      });
+      const replaced = requireRow((await snapshot()).rows[0]);
+      expect(replaced).toEqual({
+        ...published,
+        workflow_revision: String(nextRevision),
+        workflow_replacement_sequence: String(replacementSequence),
+        event_sequence: String(Number(published.event_sequence) + 1),
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT event_kind,creation_revision,audio_revision,analysis_revision,decision_revision,workflow_revision,evidence->>'event_kind' AS evidence_kind FROM media_submission_events WHERE submission_id=$1 AND event_sequence=$2",
+            [submission, replaced.event_sequence],
+          )
+        ).rows[0],
+      ).toEqual({
+        event_kind: "workflow_replaced",
+        creation_revision: published.creation_revision,
+        audio_revision: published.audio_revision,
+        analysis_revision: published.analysis_revision,
+        decision_revision: published.decision_revision,
+        workflow_revision: String(nextRevision),
+        evidence_kind: "workflow_replaced",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT event_type,workflow_revision,lyrics_revision,payload FROM media_submission_outbox WHERE outbox_event_id='media_pg_published_replacement_outbox'",
+          )
+        ).rows[0],
+      ).toMatchObject({
+        event_type: "workflow_replacement",
+        workflow_revision: String(nextRevision),
+        lyrics_revision: "1",
+        payload: {
+          kind: "workflow_replacement",
+          replacement_sequence: replacementSequence,
+          workflow_revision: nextRevision,
+        },
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,lyrics_revision FROM media_alignment_projections WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ status: "pending", lyrics_revision: "1" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,workflow_revision FROM media_submission_outbox WHERE outbox_event_id='media_pg_published_alignment_outbox'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "pending", workflow_revision: "2" });
+      expect(
+        (
+          await admin.query("SELECT * FROM media_publication_projections WHERE submission_id=$1", [
+            submission,
+          ])
+        ).rows[0],
+      ).toEqual(publicationBefore);
+      expect(await rowCount("media_song_lyrics_revisions")).toBe("1");
+      expect(await rowCount("media_audio_revisions")).toBe("1");
+      await expect(
+        run(connection, (store) =>
+          store.replaceLostWorkflow({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            expectedWorkflowRevision: revision,
+            outbox: {
+              outboxEventId: "media_pg_published_replacement_stale_outbox",
+              effectIdentity: "media_pg_published_replacement_stale_effect",
+              payload: {
+                kind: "workflow_replacement",
+                submission_id: submission,
+                operation_id: operation,
+                replacement_sequence: replacementSequence + 1,
+                workflow_revision: nextRevision + 1,
+                workflow_instance_id: `media-${operation}-r${nextRevision + 1}`,
+              },
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "stale-revision" });
+      expect((await snapshot()).rows[0]).toEqual(replaced);
     });
     completedTestCount += 1;
   }, 40_000);
