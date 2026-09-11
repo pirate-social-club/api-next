@@ -5,15 +5,16 @@ render on the selected U.2 execution path, the retained pinned-input FFmpeg
 Docker image. It prepares that run; it does not deploy anything or authorize a
 live transaction.
 
-The host executes exactly one dispatch from the existing render attempt
-records. Given a plan id, `scripts/song-video-render-host.ts` claims the
-attempt atomically before FFmpeg runs — a compare-and-set on the attempt row,
-so two hosts or a restarted host cannot both execute it — then loads the
-plan's frozen interval and the sealed source from the same rows the workflow
-froze, renders with the pinned engine, writes the attempt's assigned output
-address once, and seals the accepted master through the existing render store.
-It never retries: an execution that cannot be concluded exits pending and is
-left for reconciliation.
+The host runs as a supervised loop over the existing render attempt records. On
+each pass `scripts/song-video-render-host.ts` first measures songs waiting for
+an authoritative duration, then claims one waiting attempt atomically before
+FFmpeg runs — a compare-and-set on the attempt row with `SKIP LOCKED`, so two
+hosts or a restarted host cannot both execute it and no pass takes more than
+one row. It then loads the plan's frozen interval and the sealed source from the
+same rows the workflow froze, renders with the pinned engine, writes the
+attempt's assigned output address once, and seals the accepted master through
+the existing render store. It never retries: an execution that cannot be
+concluded is reported pending and left claimed for reconciliation.
 
 ## Required inputs
 
@@ -54,12 +55,17 @@ docker run --rm --env-file /private/render-host.env \
   -v "$PWD:/app" -w /app song-video-render-host
 ```
 
-Run one job at a time, against one plan. Set `SONG_VIDEO_RENDER_PLAN_ID` and,
-when a plan has more than one dispatched attempt, `SONG_VIDEO_RENDER_ATTEMPT_ID`.
-Exit 0 with an accepted or refused outcome. A second invocation for the same
-attempt prints `not_claimed` and exits 0 without rendering; exit 2 when the
-execution stayed pending. A pending attempt is not retried by running the
-command again; it is resolved by reconciliation.
+Start the host before publishing; the media-processor Worker dispatches an
+attempt and waits on it. Without `SONG_VIDEO_RENDER_PLAN_ID` the loop measures
+pending songs, claims the oldest waiting attempt, renders it, and repeats until
+SIGINT or SIGTERM, printing one JSON line per concluded attempt. The optional
+`SONG_VIDEO_RENDER_POLL_MS` bounds the idle wait (1000 to 600000, default
+15000). Setting `SONG_VIDEO_RENDER_PLAN_ID`, with `SONG_VIDEO_RENDER_ATTEMPT_ID`
+when a plan has more than one attempt, runs one targeted pass instead: exit 0
+with an accepted or refused outcome, `not_claimed` and exit 0 when another host
+holds the claim or the attempt is concluded, and exit 2 when that execution
+stayed pending. A pending attempt is never retried by another pass; it is
+resolved by reconciliation.
 
 ## What this does not authorize
 

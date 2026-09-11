@@ -22,8 +22,10 @@ import {
  * acceptance is the plan's compare-and-set.
  *
  * It runs on a dedicated PostgreSQL connection per operation because sealing
- * and acceptance manage their own transactions. That makes it a host-side
- * adapter: the renderer it serves runs FFmpeg, which a Worker cannot.
+ * and acceptance manage their own transactions. The host supplies a prober and
+ * soundtrack verifier backed by FFmpeg; the Worker supplies a transaction
+ * search path and a prober that refuses, so a Worker sealing call can only
+ * replay a seal the host already persisted.
  *
  * Execution is fenced here: `beginExecution` is a compare-and-set from
  * `recorded`, so an attempt whose execution may have begun is never started
@@ -62,18 +64,86 @@ function attemptFromRow(planId: string, row: AttemptRow): SongVideoRenderAttempt
       row.execution_started_ms === null ? null : Number(row.execution_started_ms),
   };
 }
+/**
+ * Hyperdrive pools origin connections in transaction mode and resets session
+ * state when a transaction returns to the pool, so a session-level `SET` does
+ * not survive. Every statement is issued inside a transaction whose
+ * `search_path` is set locally: the caller's own transaction when one is open,
+ * otherwise one this wrapper opens and closes around the statement. This is the
+ * same discipline the control-plane adapter applies to its transactions.
+ */
+function withTransactionSearchPath(client: Client, searchPath: string): Client {
+  let inTransaction = false;
+  const run = (text: string, values?: readonly unknown[]): Promise<unknown> =>
+    values === undefined ? client.query(text) : client.query({ text, values: [...values] });
+  const setPath = (): Promise<unknown> =>
+    client.query("SELECT set_config('search_path', $1, true)", [searchPath]);
+  const query = async (
+    first: string | { readonly text: string; readonly values?: readonly unknown[] },
+    values?: readonly unknown[],
+  ): Promise<unknown> => {
+    const text = typeof first === "string" ? first : first.text;
+    const bound = typeof first === "string" ? values : first.values;
+    const command = text.trimStart().toUpperCase();
+    if (command.startsWith("BEGIN")) {
+      const result = await run(text, bound);
+      inTransaction = true;
+      await setPath();
+      return result;
+    }
+    if (command.startsWith("COMMIT") || command.startsWith("ROLLBACK")) {
+      const result = await run(text, bound);
+      inTransaction = false;
+      return result;
+    }
+    if (!inTransaction) {
+      await client.query("BEGIN");
+      try {
+        await setPath();
+        const result = await run(text, bound);
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      }
+    }
+    return run(text, bound);
+  };
+  return new Proxy(client, {
+    get: (target, property) => {
+      if (property === "query") return query;
+      const value = Reflect.get(target, property) as unknown;
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  }) as Client;
+}
+
 export function makeSongVideoRenderStore(
   input: Readonly<{
     connect: () => Promise<Client>;
     output: SongVideoOutputStore;
     prober: SongVideoOutputProbe;
     soundtrack: SongVideoSoundtrackVerifier;
+    /**
+     * When set, every statement runs in a transaction whose `search_path` is
+     * that value. The Worker needs it behind Hyperdrive's transaction pool; the
+     * host's direct connection already selects its schema.
+     */
+    transactionSearchPath?: string;
   }>,
 ): SongVideoRenderStore {
+  const transactionSearchPath = input.transactionSearchPath;
   const withClient = async <T>(use: (client: Client) => Promise<T>): Promise<T> => {
     const client = await input.connect();
     try {
-      return await use(client);
+      return await use(
+        transactionSearchPath === undefined
+          ? client
+          : withTransactionSearchPath(client, transactionSearchPath),
+      );
     } finally {
       await client.end();
     }
@@ -155,13 +225,15 @@ export function makeSongVideoRenderStore(
             ? [outputObjectKey, record.sha256, String(record.byteLength), null]
             : [outputObjectKey, null, null, record.reason];
         // The record is written once, before the output, and only while the
-        // execution that owns the address may still be running.
+        // execution that owns the address may still be running: the Worker may
+        // have acknowledged the submission (`submitted`) or died before
+        // acknowledging it (`submitting`).
         const recorded = await client.query(
           `UPDATE media_song_video_render_attempts
               SET expected_output_sha256 = $2, expected_output_byte_length = $3,
                   execution_refusal_reason = $4
             WHERE dispatch_output_key = $1 AND state = 'started'
-              AND execution_phase = 'submitting'
+              AND execution_phase IN ('submitting', 'submitted')
               AND expected_output_sha256 IS NULL AND execution_refusal_reason IS NULL`,
           values,
         );

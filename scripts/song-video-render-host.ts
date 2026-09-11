@@ -1,9 +1,12 @@
+import { measurePendingSongTimings } from "@pirate/application/video/song-canonical-timing";
 import type {
   SongVideoRenderer,
   SongVideoRenderRequest,
   SongVideoRenderStore,
 } from "@pirate/application/video/song-render";
 import { Client } from "pg";
+import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
+import { makeControlPlaneSongVideoIntervalStore } from "../packages/platform-cf/src/song-video-interval-repository.ts";
 import { makeSongVideoRenderStore } from "../packages/platform-cf/src/song-video-render-store.ts";
 import { makeLocalPinnedFfmpegSongVideoEngine } from "./song-video-ffmpeg.ts";
 import { makeLocalSongVideoRenderer } from "./song-video-local-render.ts";
@@ -15,19 +18,21 @@ import {
 } from "./song-video-render-host-r2.ts";
 
 /**
- * One operator-supervised render on the selected FFmpeg host (U.2).
+ * The operator-supervised FFmpeg host on the selected execution path (U.2).
  *
- * The host claims a dispatch atomically, before FFmpeg runs: the claim is a
- * compare-and-set on the attempt row, so two hosts or a restarted host cannot
- * both execute the same attempt. It then loads the plan, sealed source and
- * frozen interval from the same rows the workflow froze, runs one job at a
- * time, writes the attempt's assigned output address once, records what it
- * measured before writing, and seals the accepted master through the existing
- * render store. An execution that cannot be concluded is reported uncertain
- * and left pending; nothing here retries it or launches a second render.
+ * Run as a supervised loop, it first measures songs waiting for an
+ * authoritative duration, then claims one waiting render attempt at a time:
+ * the claim is a compare-and-set on the attempt row, so two hosts or a
+ * restarted host cannot both execute the same attempt, and exactly one row is
+ * taken per pass. It loads the plan, sealed source and frozen interval from the
+ * same rows the workflow froze, renders with the pinned engine, writes the
+ * attempt's assigned output address once, records what it measured before
+ * writing, and seals the accepted master through the existing render store. An
+ * execution that cannot be concluded is reported uncertain and left pending;
+ * nothing here retries it or launches a second render.
  *
- * This is the staging executor only. It is not wired into the Worker or any
- * deployment, and running it is a separately authorized operation.
+ * A named plan remains accepted for one targeted pass. This is the staging
+ * executor only. Running it is a separately authorized operation.
  */
 
 export type HostRenderFacts = Readonly<{
@@ -58,13 +63,20 @@ export function planHostRenderRequest(facts: HostRenderFacts): SongVideoRenderRe
   };
 }
 
-const CLAIM = `UPDATE media_song_video_render_attempts
+const CLAIM = `UPDATE media_song_video_render_attempts a
     SET execution_claim_id=$1, execution_claimed_at=clock_timestamp()
-  WHERE plan_id=$2 AND state='started' AND execution_phase='submitting'
-    AND expected_output_sha256 IS NULL AND execution_refusal_reason IS NULL
-    AND execution_claim_id IS NULL
-    AND ($3::text IS NULL OR attempt_id=$3)
-  RETURNING attempt_id`;
+  WHERE a.attempt_id = (
+    SELECT b.attempt_id FROM media_song_video_render_attempts b
+     WHERE b.state='started' AND b.execution_phase IN ('submitting','submitted')
+       AND b.expected_output_sha256 IS NULL AND b.execution_refusal_reason IS NULL
+       AND b.execution_claim_id IS NULL
+       AND ($2::text IS NULL OR b.plan_id=$2)
+       AND ($3::text IS NULL OR b.attempt_id=$3)
+     ORDER BY b.execution_started_at NULLS FIRST, b.plan_id, b.generation
+     LIMIT 1
+     FOR UPDATE SKIP LOCKED
+  )
+  RETURNING a.attempt_id`;
 
 const FACTS = `SELECT a.attempt_id,a.generation,a.dispatch_output_key,
   p.plan_id,p.song_asset_id,rp.canonical_audio_sha256,p.song_duration_samples::text,
@@ -118,17 +130,23 @@ function factsFromRow(row: AttemptRow): HostRenderFacts {
 /**
  * Claims one dispatchable attempt for this host and returns its frozen work.
  * The claim and the read happen in one transaction: the winner is the only
- * caller that can receive the attempt, and a loser gets null.
+ * caller that can receive the attempt, and a loser gets null. Without a plan id
+ * it takes the oldest waiting attempt, exactly one row, skipping any row
+ * another host holds.
  */
 export async function claimHostRenderAttempt(
   client: Client,
-  input: Readonly<{ planId: string; attemptId?: string | undefined; claimId: string }>,
+  input: Readonly<{
+    planId?: string | undefined;
+    attemptId?: string | undefined;
+    claimId: string;
+  }>,
 ): Promise<HostRenderClaim | null> {
   await client.query("BEGIN");
   try {
     const claimed = await client.query<{ attempt_id: string }>(CLAIM, [
       input.claimId,
-      input.planId,
+      input.planId ?? null,
       input.attemptId ?? null,
     ]);
     const attemptId = claimed.rows[0]?.attempt_id;
@@ -192,8 +210,46 @@ function required(name: string): string {
   return value;
 }
 
+/** Bounds a poll interval so a typo cannot busy-spin or sleep for hours. */
+function pollIntervalMs(): number {
+  const raw = process.env.SONG_VIDEO_RENDER_POLL_MS?.trim();
+  if (raw === undefined || raw.length === 0) return 15_000;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1_000 || parsed > 600_000)
+    throw new Error("SONG_VIDEO_RENDER_POLL_MS is invalid");
+  return parsed;
+}
+
+/** Stops between passes on SIGINT/SIGTERM rather than mid-render. */
+function stopSignals(): Readonly<{
+  stopped: boolean;
+  sleep: (milliseconds: number) => Promise<void>;
+}> {
+  let stopped = false;
+  let wake: (() => void) | undefined;
+  const onSignal = (): void => {
+    stopped = true;
+    wake?.();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  return {
+    get stopped() {
+      return stopped;
+    },
+    sleep: (milliseconds) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, milliseconds);
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      }),
+  };
+}
+
 async function main(): Promise<void> {
-  const planId = required("SONG_VIDEO_RENDER_PLAN_ID");
+  const planId = process.env.SONG_VIDEO_RENDER_PLAN_ID?.trim() || undefined;
   const attemptId = process.env.SONG_VIDEO_RENDER_ATTEMPT_ID?.trim() || undefined;
   const claimId = process.env.SONG_VIDEO_RENDER_HOST_ID?.trim() || crypto.randomUUID();
   const databaseUrl = required("SONG_VIDEO_RENDER_DATABASE_URL");
@@ -236,24 +292,73 @@ async function main(): Promise<void> {
     evidence: store,
   });
 
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  let claim: HostRenderClaim | null;
-  try {
-    claim = await claimHostRenderAttempt(client, { planId, attemptId, claimId });
-  } finally {
-    await client.end();
-  }
-  if (claim === null) {
-    process.stdout.write(`${JSON.stringify({ plan_id: planId, status: "not_claimed" })}\n`);
+  const claimNext = async (): Promise<HostRenderClaim | null> => {
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      return await claimHostRenderAttempt(client, {
+        ...(planId === undefined ? {} : { planId }),
+        ...(attemptId === undefined ? {} : { attemptId }),
+        claimId,
+      });
+    } finally {
+      await client.end();
+    }
+  };
+
+  if (planId !== undefined) {
+    const claim = await claimNext();
+    if (claim === null) {
+      process.stdout.write(`${JSON.stringify({ plan_id: planId, status: "not_claimed" })}\n`);
+      return;
+    }
+    const outcome = await executeHostRenderAttempt({ facts: claim.facts, renderer, store });
+    process.stdout.write(
+      `${JSON.stringify({ plan_id: planId, attempt_id: claim.facts.attemptId, ...outcome })}\n`,
+    );
+    // A pending execution stays visible for reconciliation; it is not a retry.
+    if (outcome.status === "pending") process.exitCode = 2;
     return;
   }
-  const outcome = await executeHostRenderAttempt({ facts: claim.facts, renderer, store });
-  process.stdout.write(
-    `${JSON.stringify({ plan_id: planId, attempt_id: claim.facts.attemptId, ...outcome })}\n`,
+
+  // Supervised loop: measure songs waiting for a canonical duration, then
+  // claim one waiting attempt per pass. A claimed attempt that cannot be
+  // concluded stays claimed and pending; no pass retries it.
+  const intervalStore = makeControlPlaneSongVideoIntervalStore(
+    makeDirectPostgresControlPlaneLayer(databaseUrl),
   );
-  // A pending execution stays visible for reconciliation; it is not a retry.
-  if (outcome.status === "pending") process.exitCode = 2;
+  const pollMs = pollIntervalMs();
+  const stopping = stopSignals();
+  while (!stopping.stopped) {
+    try {
+      const measured = await measurePendingSongTimings({
+        store: intervalStore,
+        prober: engine.prober,
+      });
+      if (measured.measured + measured.failed > 0) {
+        process.stdout.write(`${JSON.stringify({ status: "measured", ...measured })}\n`);
+      }
+      const claim = await claimNext();
+      if (claim === null) {
+        await stopping.sleep(pollMs);
+        continue;
+      }
+      const outcome = await executeHostRenderAttempt({ facts: claim.facts, renderer, store });
+      process.stdout.write(
+        `${JSON.stringify({
+          plan_id: claim.facts.planId,
+          attempt_id: claim.facts.attemptId,
+          ...outcome,
+        })}\n`,
+      );
+    } catch {
+      // A failed pass is reported without provider or connection text and is
+      // retried. A claimed attempt that may have executed stays claimed and
+      // pending, because a pass never releases a claim.
+      process.stderr.write("song video render host pass failed\n");
+      await stopping.sleep(pollMs);
+    }
+  }
 }
 
 if (import.meta.main) {

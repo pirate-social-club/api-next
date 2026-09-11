@@ -32,7 +32,10 @@ import {
   makeOpenAiTextModerationProvider,
   type OpenAiModerationTransport,
 } from "@pirate/platform-cf/openai-text-moderation";
-import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import {
+  CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+  makeHyperdriveControlPlaneLayer,
+} from "@pirate/platform-cf/postgres";
 import {
   makeQencodeMediaTransform,
   makeQencodeTaskTransport,
@@ -44,6 +47,8 @@ import {
 import { makeSongSourceAcrCloudCatalog } from "@pirate/platform-cf/song-source-acrcloud-catalog";
 import { makeSongSourceRecordingR2Reader } from "@pirate/platform-cf/song-source-recording-r2";
 import { makeSongSourceRecordingRepository } from "@pirate/platform-cf/song-source-recording-repository";
+import { makeR2SongVideoOutputStore } from "@pirate/platform-cf/song-video-master-store";
+import { makeWorkerSongVideoRenderServices } from "@pirate/platform-cf/song-video-worker-render";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import {
   makeConfiguredVideoAnalysisWorkflowLauncher,
@@ -505,6 +510,20 @@ export function makeMediaProcessorComposition(
             analysisProviders: videoProviders,
             transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
             transformAttempts: videoAnalysisRepository,
+            songRender: makeWorkerSongVideoRenderServices({
+              connect: async () => {
+                const { Client } = await import("pg");
+                const client = new Client({
+                  connectionString: controlPlane.connectionString,
+                });
+                await client.connect();
+                return client;
+              },
+              output: makeR2SongVideoOutputStore(
+                requiredBinding(env.MEDIA_IMMUTABLE_ORIGINALS, "MEDIA_IMMUTABLE_ORIGINALS"),
+              ),
+              transactionSearchPath: CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+            }),
           },
           videoAnalysis: {
             launcher: makeConfiguredVideoAnalysisWorkflowLauncher(

@@ -94,6 +94,8 @@
     "./video-multipart-r2": "./src/video-multipart-r2.ts",
     "./video-publication-repository": "./src/video-publication-repository.ts",
     "./song-video-interval-repository": "./src/song-video-interval-repository.ts",
+    "./song-video-worker-render": "./src/song-video-worker-render.ts",
+    "./song-video-master-store": "./src/song-video-master-store.ts",
     "./video-analysis-outbox-repository": "./src/video-analysis-outbox-repository.ts",
     "./video-analysis-workflow-cloudflare": "./src/video-analysis-workflow-cloudflare.ts",
     "./megapot-approval-coordinator": "./src/megapot-approval-coordinator.ts",

@@ -21,7 +21,10 @@ import {
 } from "../packages/application/src/video/publication.ts";
 import { measurePendingSongTimings } from "../packages/application/src/video/song-canonical-timing.ts";
 import { preflightSongVideoInterval } from "../packages/application/src/video/song-interval.ts";
-import type { SongVideoRenderer } from "../packages/application/src/video/song-render.ts";
+import type {
+  SongVideoRenderer,
+  SongVideoRenderStore,
+} from "../packages/application/src/video/song-render.ts";
 import { consumeVideoStreamIngest } from "../packages/application/src/video/stream-ingest.ts";
 import { consumeVideoThumbnail } from "../packages/application/src/video/thumbnail-enrichment.ts";
 import {
@@ -36,6 +39,7 @@ import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src
 import { makeControlPlaneSongVideoIntervalStore } from "../packages/platform-cf/src/song-video-interval-repository.ts";
 import { verifyAndSealMaster } from "../packages/platform-cf/src/song-video-render-repository.ts";
 import { makeSongVideoRenderStore } from "../packages/platform-cf/src/song-video-render-store.ts";
+import { makeWorkerSongVideoRenderServices } from "../packages/platform-cf/src/song-video-worker-render.ts";
 import { makeVideoPublicationAuthorization } from "../packages/platform-cf/src/video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "../packages/platform-cf/src/video-analysis-outbox-repository.ts";
 import { makeVideoPlaybackAuthority } from "../packages/platform-cf/src/video-playback-authority.ts";
@@ -73,6 +77,7 @@ import {
   makeLocalSongVideoRenderer,
   makeLocalVersionedMasterStore,
 } from "./song-video-local-render.ts";
+import { claimHostRenderAttempt, executeHostRenderAttempt } from "./song-video-render-host.ts";
 import { makeLocalPinnedFfmpegVideoAnalysisEngine } from "./video-analysis-ffmpeg.ts";
 
 /**
@@ -298,6 +303,71 @@ function withRenderer(composed: Composed, renderer: SongVideoRenderer): VideoWor
   const render = composed.workflow.songRender;
   if (render === undefined) throw new Error("render stage is not composed");
   return { ...composed.workflow, songRender: { ...render, renderer } };
+}
+
+/**
+ * The deployed arrangement's Worker side: the actual Worker render services,
+ * connecting through the raw control-plane URL so each transaction selects the
+ * scenario's schema itself rather than inheriting it from the connection.
+ */
+function workerSongRender(composed: Composed): {
+  store: SongVideoRenderStore;
+  renderer: SongVideoRenderer;
+  calls: { submit: number; observe: number };
+} {
+  const services = makeWorkerSongVideoRenderServices({
+    connect: async () => {
+      const client = new PgClient({ connectionString: composed.rawConnection });
+      await client.connect();
+      return client;
+    },
+    output: composed.masters,
+    transactionSearchPath: composed.schema,
+  });
+  const { renderer, calls } = countingRenderer(services.renderer);
+  return { store: services.store, renderer, calls };
+}
+
+/** The deployed arrangement's host side: the pinned engine behind the store. */
+function hostRenderServices(composed: Composed) {
+  const store = makeSongVideoRenderStore({
+    connect: async () => {
+      const client = new PgClient({ connectionString: composed.connection });
+      await client.connect();
+      return client;
+    },
+    output: composed.masters,
+    prober: { probe: (bytes) => composed.songEngine.probeMaster(bytes) },
+    soundtrack: composed.songEngine,
+  });
+  const { renderer, calls } = countingRenderer(
+    makeLocalSongVideoRenderer({
+      engine: composed.songEngine,
+      output: composed.masters,
+      evidence: store,
+    }),
+  );
+  return { store, renderer, calls };
+}
+
+/** One host pass: claims the next waiting attempt and renders it, or null. */
+async function runHostPass(composed: Composed, claimId: string) {
+  const client = new PgClient({ connectionString: composed.connection });
+  await client.connect();
+  let claim: Awaited<ReturnType<typeof claimHostRenderAttempt>>;
+  try {
+    claim = await claimHostRenderAttempt(client, { claimId });
+  } finally {
+    await client.end();
+  }
+  if (claim === null) return null;
+  const host = hostRenderServices(composed);
+  const outcome = await executeHostRenderAttempt({
+    facts: claim.facts,
+    renderer: host.renderer,
+    store: host.store,
+  });
+  return { claim, outcome, host };
 }
 
 async function attemptsOf(composed: Composed) {
@@ -572,6 +642,7 @@ async function compose(admin: Client, schema: string, directory: string) {
     admin,
     schema,
     connection,
+    rawConnection: connectionString,
     directory,
     layer,
     media,
@@ -1242,66 +1313,129 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
     });
   }, 600_000);
 
-  test("a worker stopped after sealing resumes at acceptance without rendering again", async () => {
+  test("the Worker submits and waits while a separate host claims, renders and accepts", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "worker-host-handshake");
+      const worker = workerSongRender(composed);
+      let hostPasses = 0;
+      const steps: VideoWorkflowStep = {
+        ...plainStep,
+        sleep: async (name) => {
+          // The Worker has dispatched, acknowledged and is waiting. On its first
+          // wait the separate host takes the submitted attempt exactly as the
+          // deployed arrangement does: claim, render, seal, accept.
+          if (hostPasses === 0) {
+            hostPasses += 1;
+            const pass = await runHostPass(composed, "composed-handshake-host");
+            expect(pass?.outcome).toMatchObject({ status: "accepted" });
+            expect(pass?.host.calls.submit).toBe(1);
+          }
+          await plainStep.sleep(name, 0);
+        },
+      };
+      expect(
+        await runVideoAnalysisWorkflow(submitted.effectIdentity, steps, {
+          ...composed.workflow,
+          songRender: worker,
+        }),
+      ).toEqual({ status: "published" });
+      // The Worker acknowledged once and never rendered; the host claimed the
+      // submitted attempt without a plan id and rendered it once.
+      expect(worker.calls.submit).toBe(1);
+      expect(worker.calls.observe).toBe(1);
+      expect(await attemptsOf(composed)).toEqual(["accepted:submitted"]);
+    });
+  }, 600_000);
+
+  test("a host stopped after sealing is resumed at acceptance without rendering again", async () => {
     await inSchema(async (admin, schema, directory) => {
       const composed = await compose(admin, schema, directory);
       const submitted = await submitCapture(composed, "sealed-resume");
-      const render = composed.workflow.songRender;
-      if (render === undefined) throw new Error("render stage is not composed");
-      const { renderer, calls } = countingRenderer(render.renderer);
-      let stopped = false;
-      const workflow: VideoWorkflowServices = {
-        ...composed.workflow,
-        songRender: {
-          renderer,
-          store: {
-            ...render.store,
-            // The first time, the master is sealed and the worker stops before
-            // acceptance, so the plan has a sealed, unaccepted attempt.
-            sealAndAccept: async (request) => {
-              if (stopped) return render.store.sealAndAccept(request);
-              stopped = true;
-              const client = new PgClient({ connectionString: composed.connection });
-              await client.connect();
-              try {
-                const sealed = await verifyAndSealMaster(
-                  client,
-                  {
-                    store: composed.masters,
-                    prober: { probe: (bytes) => composed.songEngine.probeMaster(bytes) },
-                    soundtrack: composed.songEngine,
-                  },
-                  {
-                    masterRevisionId: `${request.attempt.attemptId}:master`,
-                    attempt: {
-                      attemptId: request.attempt.attemptId,
-                      planId: request.attempt.planId,
-                      generation: request.attempt.generation,
-                    },
-                    sourceImmutableRef: request.sourceImmutableRef,
-                    claimedSourceSha256: request.claimedSourceSha256,
-                    decisionClipStartSamples: request.clipStartSamples,
-                    decisionClipDurationSamples: request.clipDurationSamples,
-                  },
-                );
-                expect(sealed).toMatchObject({ sealed: true });
-              } finally {
-                await client.end();
-              }
-              throw new Error("worker stopped after sealing");
+      // The Worker dispatches, acknowledges and waits; it is stopped mid-wait.
+      const firstWorker = workerSongRender(composed);
+      await expect(
+        runVideoAnalysisWorkflow(
+          submitted.effectIdentity,
+          {
+            ...plainStep,
+            sleep: async (name) => {
+              if (name.startsWith("render-observe"))
+                throw new Error("worker stopped while waiting");
             },
           },
+          { ...composed.workflow, songRender: firstWorker },
+        ),
+      ).rejects.toThrow("worker stopped while waiting");
+      expect(firstWorker.calls.submit).toBe(1);
+      expect(await attemptsOf(composed)).toEqual(["started:submitted"]);
+
+      // The separate host claims the submitted attempt and renders it, but
+      // stops after sealing and before acceptance.
+      const client = new PgClient({ connectionString: composed.connection });
+      await client.connect();
+      let claim: Awaited<ReturnType<typeof claimHostRenderAttempt>>;
+      try {
+        claim = await claimHostRenderAttempt(client, { claimId: "sealed-resume-host" });
+      } finally {
+        await client.end();
+      }
+      if (claim === null) throw new Error("the submitted attempt was not claimable");
+      const host = hostRenderServices(composed);
+      const interrupted: SongVideoRenderStore = {
+        ...host.store,
+        sealAndAccept: async (request) => {
+          const sealing = new PgClient({ connectionString: composed.connection });
+          await sealing.connect();
+          try {
+            const sealed = await verifyAndSealMaster(
+              sealing,
+              {
+                store: composed.masters,
+                prober: { probe: (bytes) => composed.songEngine.probeMaster(bytes) },
+                soundtrack: composed.songEngine,
+              },
+              {
+                masterRevisionId: `${request.attempt.attemptId}:master`,
+                attempt: {
+                  attemptId: request.attempt.attemptId,
+                  planId: request.attempt.planId,
+                  generation: request.attempt.generation,
+                },
+                sourceImmutableRef: request.sourceImmutableRef,
+                claimedSourceSha256: request.claimedSourceSha256,
+                decisionClipStartSamples: request.clipStartSamples,
+                decisionClipDurationSamples: request.clipDurationSamples,
+              },
+            );
+            expect(sealed).toMatchObject({ sealed: true });
+          } finally {
+            await sealing.end();
+          }
+          throw new Error("host stopped after sealing");
         },
       };
       await expect(
-        runVideoAnalysisWorkflow(submitted.effectIdentity, plainStep, workflow),
-      ).rejects.toThrow("worker stopped after sealing");
+        executeHostRenderAttempt({
+          facts: claim.facts,
+          renderer: host.renderer,
+          store: interrupted,
+        }),
+      ).rejects.toThrow("host stopped after sealing");
+      expect(host.calls.submit).toBe(1);
       expect(await attemptsOf(composed)).toEqual(["sealed:submitted"]);
-      // A new run of the same intent resumes the sealed attempt.
-      expect(await runVideoAnalysisWorkflow(submitted.effectIdentity, plainStep, workflow)).toEqual(
-        { status: "published" },
-      );
-      expect(calls.submit).toBe(1);
+
+      // A new Worker run resumes the sealed attempt through the persisted-seal
+      // replay branch with its refusing prober, and accepts the master.
+      const resumed = workerSongRender(composed);
+      expect(
+        await runVideoAnalysisWorkflow(submitted.effectIdentity, plainStep, {
+          ...composed.workflow,
+          songRender: resumed,
+        }),
+      ).toEqual({ status: "published" });
+      expect(resumed.calls.submit).toBe(0);
+      expect(resumed.calls.observe).toBe(0);
       expect(await attemptsOf(composed)).toEqual(["accepted:submitted"]);
     });
   }, 600_000);

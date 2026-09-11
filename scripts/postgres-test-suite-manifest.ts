@@ -84,6 +84,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/verification-start-repository.pg.test.ts",
   "scripts/public-post-slug-backfill.pg.test.ts",
   "scripts/public-profile-backfill.pg.test.ts",
+  "scripts/song-video-render-host.pg.test.ts",
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
