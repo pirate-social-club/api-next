@@ -7505,6 +7505,54 @@ BEGIN
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'DATA registration operation timestamp must advance';
   END IF;
+  -- Terms backfill: a registered song whose confirmation predates the terms
+  -- evidence gains it in place, from the transaction that confirmed the
+  -- registration. The fill must be complete, the share must follow the
+  -- commercial-remix preset, and nothing else about the row may move. A row
+  -- that already has terms is never rewritten here.
+  IF OLD.state = 'registered' AND NEW.state = 'registered'
+     AND OLD.media_kind = 'song' AND NEW.media_kind = 'song'
+     AND OLD.attached_license_terms_id IS NULL
+     AND NEW.attached_license_terms_id IS NOT NULL
+     AND NEW.attached_license_template IS NOT NULL
+     AND NEW.attached_license_preset IS NOT NULL
+     AND (NEW.attached_license_preset = 'commercial-remix')
+         = (NEW.attached_commercial_rev_share_bps IS NOT NULL)
+     AND NEW.terms_attachment_transaction_hash = NEW.confirmed_transaction_hash
+     AND NEW.terms_attachment_block_number = NEW.confirmed_block_number
+     AND NEW.terms_attachment_block_hash = NEW.confirmed_block_hash
+     AND NEW.terms_attachment_log_index IS NOT NULL
+     AND ROW(
+       NEW.workflow_revision, NEW.workflow_instance_id, NEW.current_attempt_id,
+       NEW.registered_ip_id, NEW.confirmed_transaction_hash, NEW.confirmed_block_number,
+       NEW.confirmed_block_hash, NEW.confirmed_log_index, NEW.confirmed_at,
+       NEW.failure_code, NEW.failure_evidence_ref
+     ) IS NOT DISTINCT FROM ROW(
+       OLD.workflow_revision, OLD.workflow_instance_id, OLD.current_attempt_id,
+       OLD.registered_ip_id, OLD.confirmed_transaction_hash, OLD.confirmed_block_number,
+       OLD.confirmed_block_hash, OLD.confirmed_log_index, OLD.confirmed_at,
+       OLD.failure_code, OLD.failure_evidence_ref
+     ) THEN
+    RETURN NEW;
+  END IF;
+  -- Terms evidence is written with a registration and cleared only when the
+  -- registration itself is withdrawn; nothing else may rewrite it.
+  IF ROW(
+    NEW.attached_license_template, NEW.attached_license_terms_id,
+    NEW.attached_license_preset, NEW.attached_commercial_rev_share_bps,
+    NEW.terms_attachment_transaction_hash, NEW.terms_attachment_block_number,
+    NEW.terms_attachment_block_hash, NEW.terms_attachment_log_index
+  ) IS DISTINCT FROM ROW(
+    OLD.attached_license_template, OLD.attached_license_terms_id,
+    OLD.attached_license_preset, OLD.attached_commercial_rev_share_bps,
+    OLD.terms_attachment_transaction_hash, OLD.terms_attachment_block_number,
+    OLD.terms_attachment_block_hash, OLD.terms_attachment_log_index
+  ) AND NOT (
+    (OLD.state <> 'registered' AND NEW.state = 'registered')
+    OR (OLD.state = 'registered' AND NEW.state <> 'registered')
+  ) THEN
+    RAISE EXCEPTION 'DATA attached terms evidence changes only with registration';
+  END IF;
   IF NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
      OR NEW.workflow_instance_id IS DISTINCT FROM OLD.workflow_instance_id THEN
     IF OLD.state = 'registered'
@@ -7527,7 +7575,8 @@ BEGIN
     RETURN NEW;
   END IF;
   IF NOT (
-    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed'))
+    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed', 'waiting_parent'))
+    OR (OLD.state = 'waiting_parent' AND NEW.state IN ('pending', 'failed'))
     OR (OLD.state = 'signing' AND NEW.state IN (
       'broadcast', 'failed', 'reconciliation_required'
     ))
@@ -7544,6 +7593,15 @@ BEGIN
     OR (OLD.state = 'registered' AND NEW.state IN ('failed', 'reconciliation_required'))
   ) THEN
     RAISE EXCEPTION 'invalid DATA registration operation transition';
+  END IF;
+  -- Only a derivative waits on a parent.
+  IF NEW.state = 'waiting_parent' AND NEW.rights_basis <> 'derivative' THEN
+    RAISE EXCEPTION 'only a derivative DATA registration waits for its parent';
+  END IF;
+  -- A song registers only with the terms it attached.
+  IF NEW.state = 'registered' AND OLD.state <> 'registered'
+     AND NEW.media_kind = 'song' AND NEW.attached_license_terms_id IS NULL THEN
+    RAISE EXCEPTION 'a song DATA registration confirms only with its attached terms';
   END IF;
   RETURN NEW;
 END;
@@ -7605,6 +7663,14 @@ BEGIN
     RAISE EXCEPTION 'DATA registration outbox is terminal';
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_registration_parent_reference() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a DATA parent reference is immutable';
 END;
 $$;
 
@@ -8965,6 +9031,23 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_song_canonical_timing() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.state = 'ready' THEN RAISE EXCEPTION 'a measured canonical song timing is immutable'; END IF;
+    RETURN OLD;
+  END IF;
+  IF ROW(NEW.song_post_id, NEW.audio_revision, NEW.song_community_id, NEW.canonical_audio_sha256)
+     IS DISTINCT FROM
+     ROW(OLD.song_post_id, OLD.audio_revision, OLD.song_community_id, OLD.canonical_audio_sha256)
+  THEN RAISE EXCEPTION 'canonical song timing identity is immutable'; END IF;
+  IF OLD.state = 'ready' THEN RAISE EXCEPTION 'a measured canonical song timing is immutable'; END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_submission_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -9201,6 +9284,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_video_reservation_song_plan() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a frozen song-video reservation plan is immutable';
+END;
+$$;
+
 CREATE FUNCTION guard_media_video_reservation_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -9240,6 +9331,14 @@ BEGIN
   IF NEW.state='sealed' AND NEW.multipart_completed_at IS NULL
   THEN RAISE EXCEPTION 'video reservation cannot seal before multipart completion'; END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_video_song_reference() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a published song reference is immutable';
 END;
 $$;
 
@@ -11347,6 +11446,54 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION guard_song_video_render_attempt_execution() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.execution_phase IS DISTINCT FROM OLD.execution_phase AND NOT (
+    (OLD.execution_phase = 'recorded' AND NEW.execution_phase = 'submitting')
+    OR (OLD.execution_phase = 'submitting' AND NEW.execution_phase = 'submitted')
+  ) THEN
+    RAISE EXCEPTION 'a song-video render execution cannot move backwards';
+  END IF;
+  IF OLD.execution_started_at IS NOT NULL
+    AND NEW.execution_started_at IS DISTINCT FROM OLD.execution_started_at THEN
+    RAISE EXCEPTION 'a song-video render execution start is immutable';
+  END IF;
+  -- Recorded outcomes are evidence: once present, nothing rewrites or clears
+  -- them. A later execution at the same address cannot replace another's.
+  IF OLD.expected_output_sha256 IS NOT NULL
+     AND ROW(NEW.expected_output_sha256,NEW.expected_output_byte_length)
+         IS DISTINCT FROM ROW(OLD.expected_output_sha256,OLD.expected_output_byte_length)
+  THEN
+    RAISE EXCEPTION 'a song-video render output record is immutable';
+  END IF;
+  IF OLD.execution_refusal_reason IS NOT NULL
+     AND NEW.execution_refusal_reason IS DISTINCT FROM OLD.execution_refusal_reason
+  THEN
+    RAISE EXCEPTION 'a song-video render refusal record is immutable';
+  END IF;
+  -- A host claim is taken once and never moved or cleared. The attempt it
+  -- names can only be re-rendered through a new generation, never by handing
+  -- the same execution to another host.
+  IF OLD.execution_claim_id IS NOT NULL
+     AND ROW(NEW.execution_claim_id,NEW.execution_claimed_at)
+         IS DISTINCT FROM ROW(OLD.execution_claim_id,OLD.execution_claimed_at)
+  THEN
+    RAISE EXCEPTION 'a song-video render host claim is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_song_video_render_plan() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a song-video render plan is immutable';
+END;
 $$;
 
 CREATE FUNCTION guard_sponsor_daily_totals() RETURNS trigger
@@ -15044,6 +15191,181 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_data_registration_attempt_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM data_registration_operations operation
+     WHERE operation.registration_operation_id = NEW.registration_operation_id
+       AND operation.media_kind = 'video' AND operation.rights_basis = 'derivative'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM data_registration_parent_resolutions resolution
+     WHERE resolution.registration_operation_id = NEW.registration_operation_id
+  ) THEN
+    RAISE EXCEPTION 'a derivative DATA registration signs only after its parent resolves';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_parent_resolution_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  child_state TEXT;
+BEGIN
+  SELECT state INTO child_state FROM data_registration_operations
+   WHERE registration_operation_id = NEW.registration_operation_id
+     AND media_kind = 'video' AND rights_basis = 'derivative'
+   FOR UPDATE;
+  IF child_state IS NULL OR child_state NOT IN ('pending', 'waiting_parent') THEN
+    RAISE EXCEPTION 'a DATA parent resolution needs a derivative video awaiting it';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_operations parent
+     WHERE parent.registration_operation_id = NEW.parent_registration_operation_id
+       AND parent.state = 'registered'
+       AND parent.media_kind = 'song'
+       AND parent.registration_revision = NEW.parent_registration_revision
+       AND parent.registered_ip_id = NEW.parent_ip_id
+       AND parent.confirmed_transaction_hash = NEW.parent_registration_transaction_hash
+       AND parent.confirmed_block_number = NEW.parent_registration_block_number
+       AND parent.confirmed_block_hash = NEW.parent_registration_block_hash
+       AND parent.confirmed_log_index = NEW.parent_registration_log_index
+       AND parent.attached_license_template = NEW.license_template
+       AND parent.attached_license_terms_id = NEW.license_terms_id
+       AND parent.attached_license_preset = NEW.license_preset
+       AND parent.attached_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.commercial_rev_share_bps
+       AND parent.terms_attachment_transaction_hash = NEW.terms_attachment_transaction_hash
+       AND parent.terms_attachment_block_number = NEW.terms_attachment_block_number
+       AND parent.terms_attachment_block_hash = NEW.terms_attachment_block_hash
+       AND parent.terms_attachment_log_index = NEW.terms_attachment_log_index
+     FOR SHARE
+  ) THEN
+    RAISE EXCEPTION 'a DATA parent resolution must restate the parent''s confirmed row';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_parent_references reference
+     WHERE reference.registration_operation_id = NEW.registration_operation_id
+       AND reference.parent_registration_operation_id = NEW.parent_registration_operation_id
+       AND reference.expected_parent_license_preset = NEW.license_preset
+       AND reference.expected_parent_commercial_rev_share_bps
+         IS NOT DISTINCT FROM NEW.commercial_rev_share_bps
+  ) THEN
+    RAISE EXCEPTION 'a DATA parent resolution must consume the expected parent license';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_video_parent_shape() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  has_parent BOOLEAN;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM data_registration_parent_references p
+     WHERE p.registration_operation_id = NEW.registration_operation_id
+  ) INTO has_parent;
+  IF (NEW.rights_basis = 'derivative') <> has_parent THEN
+    RAISE EXCEPTION 'a video DATA intent has a parent exactly when it is derivative';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_media_video_reservation_song_plan() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.media_kind = 'video' AND NEW.video_intent = 'song_reference' AND NOT EXISTS (
+    SELECT 1 FROM media_video_reservation_song_plans p WHERE p.reservation_id = NEW.reservation_id
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video reservation requires its frozen plan';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_media_video_rights_basis_matches_intent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_post_submissions s
+     WHERE s.submission_id = NEW.submission_id AND s.media_kind = 'video'
+       AND ((s.video_intent = 'original_audio' AND NEW.rights_basis = 'original')
+         OR (s.video_intent = 'song_reference' AND NEW.rights_basis = 'derivative'))
+  ) THEN
+    RAISE EXCEPTION 'video rights basis does not match the submission intent';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_projection_edge() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_video_song_references e
+     WHERE e.submission_id = NEW.submission_id
+       AND e.post_id = NEW.post_id
+       AND e.plan_id = NEW.song_video_plan_id
+       AND e.master_revision_id = NEW.song_video_master_revision_id
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video projection requires its song edge';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_rating_floor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM media_post_submissions s
+      JOIN posts video ON video.community_id = s.community_id AND video.post_id = NEW.post_id
+      JOIN posts song ON song.community_id = NEW.song_community_id AND song.post_id = NEW.song_post_id
+     WHERE s.submission_id = NEW.submission_id
+       AND video.post_type = 'video'
+       AND song.post_type = 'song'
+       AND (song.content_rating <> 'adult_18' OR video.content_rating = 'adult_18')
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video must be rated at least as its song';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_render_plan_frozen() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM media_post_submissions s
+      JOIN media_video_reservation_song_plans r ON r.reservation_id = s.audio_reservation_id
+     WHERE s.submission_id = NEW.submission_id
+       AND s.media_kind = 'video'
+       AND s.video_intent = 'song_reference'
+       AND r.song_post_id = NEW.song_post_id
+       AND r.audio_revision = NEW.audio_revision
+       AND r.song_asset_id = NEW.song_asset_id
+       AND r.song_duration_samples = NEW.song_duration_samples
+       AND r.clip_start_samples = NEW.clip_start_samples
+       AND r.clip_duration_samples = NEW.clip_duration_samples
+  ) THEN
+    RAISE EXCEPTION 'a song-video render plan must be its reservation''s frozen plan';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION require_text_moderation_v2_case() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -15134,6 +15456,24 @@ BEGIN
     RAISE EXCEPTION 'V2 text submission requires complete decision evidence';
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_video_publication_decision_anchor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.decision_revision > NEW.creation_revision OR NOT EXISTS (
+    SELECT 1 FROM media_video_publication_decisions d
+     WHERE d.submission_id = NEW.submission_id
+       AND d.creation_revision = NEW.decision_revision
+       AND d.video_revision = NEW.video_revision
+       AND d.analysis_revision = NEW.analysis_revision
+       AND d.outcome IN ('publish', 'review')
+  ) THEN
+    RAISE EXCEPTION 'a video publication must rest on a publishing decision';
+  END IF;
+  RETURN NULL;
 END;
 $$;
 
@@ -18791,9 +19131,38 @@ CREATE FUNCTION validate_media_immutable_object_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE reservation_record media_upload_reservations%ROWTYPE;
+DECLARE master_record media_song_video_masters%ROWTYPE;
+DECLARE submission_record media_post_submissions%ROWTYPE;
 BEGIN
+  IF NEW.reservation_id IS NULL THEN
+    SELECT * INTO master_record
+      FROM media_song_video_masters m
+      JOIN media_song_video_accepted_masters a
+        ON a.master_revision_id = m.master_revision_id AND a.plan_id = m.plan_id
+     WHERE m.verified_object_key = NEW.immutable_ref
+       AND m.plan_submission_id = NEW.submission_id
+     FOR UPDATE OF m;
+    SELECT * INTO submission_record FROM media_post_submissions
+     WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
+       AND submission_id = NEW.submission_id AND operation_id = NEW.operation_id
+     FOR SHARE;
+    IF master_record.master_revision_id IS NULL
+       OR master_record.master_sha256 <> NEW.canonical_sha256
+       OR master_record.master_byte_length <> NEW.size_bytes
+       OR master_record.verified_object_etag IS NULL
+       OR master_record.verified_object_etag <> NEW.etag
+       OR master_record.verified_object_version <> NEW.object_version
+       OR NEW.content_type <> 'video/mp4'
+       OR NEW.identity_kind <> 'content_etag'
+       OR submission_record.submission_id IS NULL
+       OR submission_record.author_persona_id <> NEW.author_persona_id
+    THEN
+      RAISE EXCEPTION 'sealed master facts do not match the accepted master';
+    END IF;
+    RETURN NEW;
+  END IF;
   SELECT * INTO reservation_record FROM media_upload_reservations WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND reservation_id = NEW.reservation_id FOR UPDATE;
-  IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
+  IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) OR NEW.identity_kind <> 'upload_version' THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -24123,17 +24492,30 @@ CREATE TABLE data_registration_operations (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     media_kind text DEFAULT 'song'::text NOT NULL,
     rights_basis text DEFAULT 'original'::text NOT NULL,
+    attached_license_template text,
+    attached_license_terms_id text,
+    attached_license_preset text,
+    attached_commercial_rev_share_bps integer,
+    terms_attachment_transaction_hash text,
+    terms_attachment_block_number bigint,
+    terms_attachment_block_hash text,
+    terms_attachment_log_index integer,
+    CONSTRAINT data_registration_attached_license_shape CHECK ((((attached_license_template IS NULL) AND (attached_license_terms_id IS NULL) AND (attached_license_preset IS NULL) AND (attached_commercial_rev_share_bps IS NULL) AND (terms_attachment_transaction_hash IS NULL) AND (terms_attachment_block_number IS NULL) AND (terms_attachment_block_hash IS NULL) AND (terms_attachment_log_index IS NULL)) OR ((state = 'registered'::text) AND (media_kind = 'song'::text) AND (attached_license_template IS NOT NULL) AND (attached_license_terms_id IS NOT NULL) AND (attached_license_preset IS NOT NULL) AND (terms_attachment_transaction_hash IS NOT NULL) AND (terms_attachment_block_number IS NOT NULL) AND (terms_attachment_block_hash IS NOT NULL) AND (terms_attachment_log_index IS NOT NULL) AND ((attached_license_preset = 'commercial-remix'::text) = (attached_commercial_rev_share_bps IS NOT NULL))))),
     CONSTRAINT data_registration_operation_identity CHECK (((registration_operation_id = ((((('data-registration:'::text || (chain_id)::text) || ':'::text) || asset_id) || ':'::text) || (registration_revision)::text)) AND (asset_id = post_id) AND (workflow_instance_id = ((('data-registration-workflow:'::text || registration_operation_id) || ':r'::text) || (workflow_revision)::text)))),
-    CONSTRAINT data_registration_operation_media_shape CHECK ((((media_kind = 'song'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))) OR ((media_kind = 'video'::text) AND (rights_basis = 'original'::text)))),
+    CONSTRAINT data_registration_operation_media_shape CHECK ((((media_kind = 'song'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))) OR ((media_kind = 'video'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))))),
     CONSTRAINT data_registration_operation_outcome_shape CHECK ((((state = 'registered'::text) AND (current_attempt_id IS NOT NULL) AND (registered_ip_id IS NOT NULL) AND (btrim(registered_ip_id) <> ''::text) AND (confirmed_transaction_hash IS NOT NULL) AND (confirmed_block_number IS NOT NULL) AND (confirmed_block_hash IS NOT NULL) AND (confirmed_log_index IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'failed'::text) AND (failure_code IS NOT NULL) AND (failure_evidence_ref IS NOT NULL) AND (confirmed_at IS NULL)) OR ((state <> ALL (ARRAY['registered'::text, 'failed'::text])) AND (registered_ip_id IS NULL) AND (confirmed_transaction_hash IS NULL) AND (confirmed_block_number IS NULL) AND (confirmed_block_hash IS NULL) AND (confirmed_log_index IS NULL) AND (confirmed_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)))),
     CONSTRAINT data_registration_operations_asset_id_check CHECK (((btrim(asset_id) <> ''::text) AND (asset_id = btrim(asset_id)) AND (octet_length(asset_id) <= 256))),
+    CONSTRAINT data_registration_operations_attached_commercial_rev_shar_check CHECK (((attached_commercial_rev_share_bps IS NULL) OR ((attached_commercial_rev_share_bps >= 0) AND (attached_commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_operations_attached_license_preset_check CHECK (((attached_license_preset IS NULL) OR (attached_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])))),
+    CONSTRAINT data_registration_operations_attached_license_template_check CHECK (((attached_license_template IS NULL) OR (attached_license_template ~ '^0x[0-9a-f]{40}$'::text))),
+    CONSTRAINT data_registration_operations_attached_license_terms_id_check CHECK (((attached_license_terms_id IS NULL) OR (attached_license_terms_id ~ '^[1-9][0-9]{0,77}$'::text))),
     CONSTRAINT data_registration_operations_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT data_registration_operations_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT data_registration_operations_confirmed_block_hash_check CHECK (((confirmed_block_hash IS NULL) OR (confirmed_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_operations_confirmed_block_number_check CHECK (((confirmed_block_number IS NULL) OR (confirmed_block_number >= 0))),
     CONSTRAINT data_registration_operations_confirmed_log_index_check CHECK (((confirmed_log_index IS NULL) OR (confirmed_log_index >= 0))),
     CONSTRAINT data_registration_operations_confirmed_transaction_hash_check CHECK (((confirmed_transaction_hash IS NULL) OR (confirmed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
-    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text])))),
+    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text, 'parent_registration_failed'::text, 'parent_license_mismatch'::text, 'parent_derivatives_not_permitted'::text, 'parent_terms_unrecorded'::text])))),
     CONSTRAINT data_registration_operations_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR ((btrim(failure_evidence_ref) <> ''::text) AND (failure_evidence_ref = btrim(failure_evidence_ref))))),
     CONSTRAINT data_registration_operations_publication_analysis_revisio_check CHECK ((publication_analysis_revision > 0)),
     CONSTRAINT data_registration_operations_publication_audio_revision_check CHECK ((publication_audio_revision > 0)),
@@ -24141,7 +24523,11 @@ CREATE TABLE data_registration_operations (
     CONSTRAINT data_registration_operations_publication_decision_revisio_check CHECK ((publication_decision_revision > 0)),
     CONSTRAINT data_registration_operations_registration_operation_id_check CHECK (((btrim(registration_operation_id) <> ''::text) AND (registration_operation_id = btrim(registration_operation_id)) AND (octet_length(registration_operation_id) <= 512))),
     CONSTRAINT data_registration_operations_registration_revision_check CHECK ((registration_revision > 0)),
-    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'waiting_parent'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_terms_attachment_block_hash_check CHECK (((terms_attachment_block_hash IS NULL) OR (terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_operations_terms_attachment_block_numbe_check CHECK (((terms_attachment_block_number IS NULL) OR (terms_attachment_block_number >= 0))),
+    CONSTRAINT data_registration_operations_terms_attachment_log_index_check CHECK (((terms_attachment_log_index IS NULL) OR (terms_attachment_log_index >= 0))),
+    CONSTRAINT data_registration_operations_terms_attachment_transaction_check CHECK (((terms_attachment_transaction_hash IS NULL) OR (terms_attachment_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_operations_workflow_instance_id_check CHECK (((btrim(workflow_instance_id) <> ''::text) AND (workflow_instance_id = btrim(workflow_instance_id)))),
     CONSTRAINT data_registration_operations_workflow_revision_check CHECK ((workflow_revision > 0))
 );
@@ -24175,6 +24561,65 @@ CREATE TABLE data_registration_outbox (
     CONSTRAINT data_registration_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND (delivery_attempts > 0) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'delivered'::text) AND (delivery_attempts > 0) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 4)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 5) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NOT NULL)))),
     CONSTRAINT data_registration_outbox_workflow_instance_id_check CHECK ((btrim(workflow_instance_id) <> ''::text)),
     CONSTRAINT data_registration_outbox_workflow_revision_check CHECK ((workflow_revision > 0))
+);
+
+CREATE TABLE data_registration_parent_references (
+    registration_operation_id text NOT NULL,
+    relationship text NOT NULL,
+    parent_asset_id text NOT NULL,
+    parent_registration_operation_id text NOT NULL,
+    expected_parent_license_preset text NOT NULL,
+    expected_parent_commercial_rev_share_bps integer,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    owner_derivative_video text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_parent_license_shape CHECK (((expected_parent_license_preset = 'commercial-remix'::text) = (expected_parent_commercial_rev_share_bps IS NOT NULL))),
+    CONSTRAINT data_registration_parent_not_self CHECK ((parent_registration_operation_id <> registration_operation_id)),
+    CONSTRAINT data_registration_parent_ref_expected_parent_commercial_r_check CHECK (((expected_parent_commercial_rev_share_bps IS NULL) OR ((expected_parent_commercial_rev_share_bps >= 0) AND (expected_parent_commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_parent_ref_expected_parent_license_pres_check CHECK ((expected_parent_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text]))),
+    CONSTRAINT data_registration_parent_reference_owner_derivative_video_check CHECK ((owner_derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text]))),
+    CONSTRAINT data_registration_parent_references_created_at_check CHECK (isfinite(created_at)),
+    CONSTRAINT data_registration_parent_references_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_references_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
+    CONSTRAINT data_registration_parent_references_parent_asset_id_check CHECK ((btrim(parent_asset_id) <> ''::text)),
+    CONSTRAINT data_registration_parent_references_relationship_check CHECK ((relationship = 'references_song'::text))
+);
+
+CREATE TABLE data_registration_parent_resolutions (
+    registration_operation_id text NOT NULL,
+    parent_registration_operation_id text NOT NULL,
+    parent_registration_revision bigint NOT NULL,
+    parent_ip_id text NOT NULL,
+    license_template text NOT NULL,
+    license_terms_id text NOT NULL,
+    license_preset text NOT NULL,
+    commercial_rev_share_bps integer,
+    parent_registration_transaction_hash text NOT NULL,
+    parent_registration_block_number bigint NOT NULL,
+    parent_registration_block_hash text NOT NULL,
+    parent_registration_log_index integer NOT NULL,
+    terms_attachment_transaction_hash text NOT NULL,
+    terms_attachment_block_number bigint NOT NULL,
+    terms_attachment_block_hash text NOT NULL,
+    terms_attachment_log_index integer NOT NULL,
+    resolved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_parent_res_parent_registration_block_ha_check CHECK ((parent_registration_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_res_parent_registration_block_nu_check CHECK ((parent_registration_block_number >= 0)),
+    CONSTRAINT data_registration_parent_res_parent_registration_log_inde_check CHECK ((parent_registration_log_index >= 0)),
+    CONSTRAINT data_registration_parent_res_parent_registration_revision_check CHECK ((parent_registration_revision >= 1)),
+    CONSTRAINT data_registration_parent_res_parent_registration_transact_check CHECK ((parent_registration_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_res_terms_attachment_block_numbe_check CHECK ((terms_attachment_block_number >= 0)),
+    CONSTRAINT data_registration_parent_res_terms_attachment_transaction_check CHECK ((terms_attachment_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_reso_terms_attachment_block_hash_check CHECK ((terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_resol_terms_attachment_log_index_check CHECK ((terms_attachment_log_index >= 0)),
+    CONSTRAINT data_registration_parent_resolut_commercial_rev_share_bps_check CHECK (((commercial_rev_share_bps IS NULL) OR ((commercial_rev_share_bps >= 0) AND (commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_parent_resolution_license_shape CHECK (((license_preset = 'commercial-remix'::text) = (commercial_rev_share_bps IS NOT NULL))),
+    CONSTRAINT data_registration_parent_resolutions_license_preset_check CHECK ((license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text]))),
+    CONSTRAINT data_registration_parent_resolutions_license_template_check CHECK ((license_template ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_license_terms_id_check CHECK ((license_terms_id ~ '^[1-9][0-9]{0,77}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_parent_ip_id_check CHECK ((parent_ip_id ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_resolved_at_check CHECK (isfinite(resolved_at))
 );
 
 CREATE TABLE data_registration_pin_verifications (
@@ -25956,7 +26401,7 @@ CREATE TABLE media_immutable_objects (
     immutable_ref text NOT NULL,
     community_id text NOT NULL,
     actor_user_id text NOT NULL,
-    reservation_id text NOT NULL,
+    reservation_id text,
     submission_id text NOT NULL,
     operation_id text NOT NULL,
     destination_ref text NOT NULL,
@@ -25968,10 +26413,12 @@ CREATE TABLE media_immutable_objects (
     sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
+    identity_kind text DEFAULT 'upload_version'::text NOT NULL,
     CONSTRAINT media_immutable_objects_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_immutable_objects_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
     CONSTRAINT media_immutable_objects_destination_ref_check CHECK ((btrim(destination_ref) <> ''::text)),
     CONSTRAINT media_immutable_objects_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_immutable_objects_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
     CONSTRAINT media_immutable_objects_immutable_ref_check CHECK ((btrim(immutable_ref) <> ''::text)),
     CONSTRAINT media_immutable_objects_object_version_check CHECK ((btrim(object_version) <> ''::text)),
     CONSTRAINT media_immutable_objects_size_bytes_check CHECK ((size_bytes > 0))
@@ -26108,13 +26555,13 @@ CREATE TABLE media_post_submissions (
     CONSTRAINT media_post_submissions_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR (btrim(failure_evidence_ref) <> ''::text))),
     CONSTRAINT media_post_submissions_failure_retry_count_check CHECK (((failure_retry_count IS NULL) OR ((failure_retry_count >= 0) AND (failure_retry_count <= 3)))),
     CONSTRAINT media_post_submissions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
-    CONSTRAINT media_post_submissions_last_safe_phase_check CHECK (((last_safe_phase IS NULL) OR (last_safe_phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
+    CONSTRAINT media_post_submissions_last_safe_phase_check CHECK (((last_safe_phase IS NULL) OR (last_safe_phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])) OR ((media_kind = 'video'::text) AND (video_intent = 'song_reference'::text) AND (last_safe_phase = 'render'::text)))),
     CONSTRAINT media_post_submissions_lyrics_revision_check CHECK ((lyrics_revision >= 0)),
     CONSTRAINT media_post_submissions_lyrics_shape CHECK ((((lyrics_revision = 0) AND (current_lyrics_revision IS NULL)) OR ((lyrics_revision > 0) AND (current_lyrics_revision = lyrics_revision)))),
     CONSTRAINT media_post_submissions_moderator_approval_kind_check CHECK (((moderator_approval_kind IS NULL) OR (moderator_approval_kind = ANY (ARRAY['standard'::text, 'acr_override'::text])))),
     CONSTRAINT media_post_submissions_moderator_reason_code_check CHECK (((moderator_reason_code IS NULL) OR (moderator_reason_code = ANY (ARRAY['acr_inconclusive'::text, 'acr_exhausted'::text, 'acr_skipped'::text, 'policy_violation'::text])))),
     CONSTRAINT media_post_submissions_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
-    CONSTRAINT media_post_submissions_phase_check CHECK (((phase IS NULL) OR (phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
+    CONSTRAINT media_post_submissions_phase_check CHECK (((phase IS NULL) OR (phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])) OR ((media_kind = 'video'::text) AND (video_intent = 'song_reference'::text) AND (phase = 'render'::text)))),
     CONSTRAINT media_post_submissions_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_evidence_ref IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_evidence_ref IS NOT NULL) AND (btrim(bound_reference_evidence_ref) <> ''::text) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
     CONSTRAINT media_post_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_post_submissions_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
@@ -26130,7 +26577,7 @@ CREATE TABLE media_post_submissions (
     CONSTRAINT media_post_submissions_start_input_check CHECK ((jsonb_typeof(start_input) = 'object'::text)),
     CONSTRAINT media_post_submissions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'published'::text, 'blocked'::text, 'processing_failed'::text, 'abandoned'::text]))),
     CONSTRAINT media_post_submissions_submission_id_check CHECK ((btrim(submission_id) <> ''::text)),
-    CONSTRAINT media_post_submissions_track_shape CHECK ((((media_kind = 'song'::text) AND (title IS NOT NULL) AND (btrim(title) <> ''::text) AND (char_length(title) <= 200) AND (song_type = ANY (ARRAY['original'::text, 'remix'::text])) AND (video_intent IS NULL) AND (caption IS NULL) AND (video_revision = 0) AND (poster_timestamp_ms IS NULL) AND (video_state_snapshot IS NULL)) OR ((media_kind = 'video'::text) AND (title IS NULL) AND (song_type IS NULL) AND (video_intent = 'original_audio'::text) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (audio_revision = 0) AND (lyrics_revision = 0) AND (current_terms_revision IS NULL) AND (current_lyrics_revision IS NULL) AND (bound_reference_asset_id IS NULL) AND (video_revision >= 0) AND (jsonb_typeof(video_state_snapshot) = 'object'::text) AND ((poster_timestamp_ms IS NULL) OR ((poster_timestamp_ms >= 0) AND (poster_timestamp_ms <= 179999)))))),
+    CONSTRAINT media_post_submissions_track_shape CHECK ((((media_kind = 'song'::text) AND (title IS NOT NULL) AND (btrim(title) <> ''::text) AND (char_length(title) <= 200) AND (song_type = ANY (ARRAY['original'::text, 'remix'::text])) AND (video_intent IS NULL) AND (caption IS NULL) AND (video_revision = 0) AND (poster_timestamp_ms IS NULL) AND (video_state_snapshot IS NULL)) OR ((media_kind = 'video'::text) AND (title IS NULL) AND (song_type IS NULL) AND (video_intent = ANY (ARRAY['original_audio'::text, 'song_reference'::text])) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (audio_revision = 0) AND (lyrics_revision = 0) AND (current_terms_revision IS NULL) AND (current_lyrics_revision IS NULL) AND (bound_reference_asset_id IS NULL) AND (video_revision >= 0) AND (jsonb_typeof(video_state_snapshot) = 'object'::text) AND ((poster_timestamp_ms IS NULL) OR ((poster_timestamp_ms >= 0) AND (poster_timestamp_ms <= 179999)))))),
     CONSTRAINT media_post_submissions_workflow_replacement_sequence_check CHECK ((workflow_replacement_sequence >= 0)),
     CONSTRAINT media_post_submissions_workflow_revision_check CHECK ((workflow_revision >= 0)),
     CONSTRAINT media_video_submission_reconciliation_shape CHECK (((media_kind <> 'video'::text) OR (((NOT (video_state_snapshot ? 'reconciliationRequired'::text)) OR (jsonb_typeof((video_state_snapshot -> 'reconciliationRequired'::text)) = 'boolean'::text)) AND (((video_state_snapshot ->> 'reconciliationRequired'::text) IS DISTINCT FROM 'true'::text) OR ((status = 'processing_failed'::text) AND (retryable IS FALSE))))))
@@ -26248,8 +26695,10 @@ CREATE TABLE media_publication_projections (
     poster_artifact_ref text,
     original_sound_id text,
     canonical_video_sha256 text,
+    song_video_plan_id text,
+    song_video_master_revision_id text,
     CONSTRAINT media_publication_lyrics_shape CHECK ((((lyrics_status = 'ready'::text) AND (lyrics_revision > 0) AND (lyrics_text IS NOT NULL)) OR ((lyrics_status = 'no_lyrics'::text) AND (lyrics_revision IS NULL) AND (lyrics_text IS NULL)))),
-    CONSTRAINT media_publication_projection_track_shape CHECK ((((media_kind = 'song'::text) AND (video_revision = 0) AND (caption IS NULL) AND (video_asset_ref IS NULL) AND (poster_artifact_ref IS NULL) AND (original_sound_id IS NULL) AND (canonical_video_sha256 IS NULL) AND (title IS NOT NULL) AND (audio_asset_ref IS NOT NULL) AND (canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)) OR ((media_kind = 'video'::text) AND (audio_revision = 0) AND (video_revision > 0) AND (title IS NULL) AND (audio_asset_ref IS NULL) AND (canonical_audio_sha256 IS NULL) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (video_asset_ref IS NOT NULL) AND (btrim(video_asset_ref) <> ''::text) AND (poster_artifact_ref IS NOT NULL) AND (btrim(poster_artifact_ref) <> ''::text) AND (original_sound_id IS NOT NULL) AND (btrim(original_sound_id) <> ''::text) AND (canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT media_publication_projection_track_shape CHECK ((((media_kind = 'song'::text) AND (video_revision = 0) AND (caption IS NULL) AND (video_asset_ref IS NULL) AND (poster_artifact_ref IS NULL) AND (original_sound_id IS NULL) AND (canonical_video_sha256 IS NULL) AND (song_video_plan_id IS NULL) AND (song_video_master_revision_id IS NULL) AND (title IS NOT NULL) AND (audio_asset_ref IS NOT NULL) AND (canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)) OR ((media_kind = 'video'::text) AND (audio_revision = 0) AND (video_revision > 0) AND (title IS NULL) AND (audio_asset_ref IS NULL) AND (canonical_audio_sha256 IS NULL) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (video_asset_ref IS NOT NULL) AND (btrim(video_asset_ref) <> ''::text) AND (poster_artifact_ref IS NOT NULL) AND (btrim(poster_artifact_ref) <> ''::text) AND (canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text) AND (((original_sound_id IS NOT NULL) AND (btrim(original_sound_id) <> ''::text) AND (song_video_plan_id IS NULL) AND (song_video_master_revision_id IS NULL)) OR ((original_sound_id IS NULL) AND (song_video_plan_id IS NOT NULL) AND (song_video_master_revision_id IS NOT NULL)))))),
     CONSTRAINT media_publication_projections_alignment_check CHECK ((alignment = ANY (ARRAY['not_applicable'::text, 'pending'::text, 'ready'::text, 'unavailable'::text]))),
     CONSTRAINT media_publication_projections_analysis_badges_check CHECK ((analysis_badges = ANY (ARRAY['[]'::jsonb, '["reference_bound"]'::jsonb]))),
     CONSTRAINT media_publication_projections_audio_asset_ref_check CHECK ((btrim(audio_asset_ref) <> ''::text)),
@@ -26290,6 +26739,39 @@ CREATE TABLE media_reference_evidence (
     CONSTRAINT media_reference_evidence_upstream_commercial_rev_share_bp_check CHECK (((upstream_commercial_rev_share_bps IS NULL) OR ((upstream_commercial_rev_share_bps >= 0) AND (upstream_commercial_rev_share_bps <= 10000))))
 );
 
+CREATE TABLE media_song_canonical_timings (
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    song_community_id text NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    state text NOT NULL,
+    sample_rate_hz integer DEFAULT 48000 NOT NULL,
+    duration_samples bigint,
+    prober_identity text,
+    prober_policy_revision integer,
+    failure_code text,
+    attempts integer DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    requested_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    measured_at timestamp with time zone,
+    CONSTRAINT media_song_canonical_timings_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT media_song_canonical_timings_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT media_song_canonical_timings_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_canonical_timings_duration_samples_check CHECK (((duration_samples IS NULL) OR ((duration_samples > 0) AND (duration_samples <= '9007199254740991'::bigint)))),
+    CONSTRAINT media_song_canonical_timings_failure_code_check CHECK (((failure_code IS NULL) OR (btrim(failure_code) <> ''::text))),
+    CONSTRAINT media_song_canonical_timings_lease_expires_at_check CHECK (((lease_expires_at IS NULL) OR isfinite(lease_expires_at))),
+    CONSTRAINT media_song_canonical_timings_measured_at_check CHECK (((measured_at IS NULL) OR isfinite(measured_at))),
+    CONSTRAINT media_song_canonical_timings_prober_identity_check CHECK (((prober_identity IS NULL) OR (btrim(prober_identity) <> ''::text))),
+    CONSTRAINT media_song_canonical_timings_prober_policy_revision_check CHECK (((prober_policy_revision IS NULL) OR (prober_policy_revision >= 1))),
+    CONSTRAINT media_song_canonical_timings_requested_at_check CHECK (isfinite(requested_at)),
+    CONSTRAINT media_song_canonical_timings_sample_rate_hz_check CHECK ((sample_rate_hz = 48000)),
+    CONSTRAINT media_song_canonical_timings_song_community_id_check CHECK ((btrim(song_community_id) <> ''::text)),
+    CONSTRAINT media_song_canonical_timings_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text)),
+    CONSTRAINT media_song_canonical_timings_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'ready'::text, 'failed'::text]))),
+    CONSTRAINT song_canonical_timing_failed_shape CHECK (((state = 'failed'::text) = (failure_code IS NOT NULL))),
+    CONSTRAINT song_canonical_timing_ready_shape CHECK (((state = 'ready'::text) = ((duration_samples IS NOT NULL) AND (prober_identity IS NOT NULL) AND (prober_policy_revision IS NOT NULL) AND (measured_at IS NOT NULL))))
+);
+
 CREATE TABLE media_song_lyrics_revisions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -26316,6 +26798,122 @@ CREATE TABLE media_song_lyrics_revisions (
     CONSTRAINT media_song_lyrics_revisions_lyrics_sha256_check CHECK ((lyrics_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_song_lyrics_revisions_lyrics_text_check CHECK (((char_length(lyrics_text) >= 1) AND (char_length(lyrics_text) <= 200000) AND (octet_length(convert_to(lyrics_text, 'UTF8'::name)) <= 800000))),
     CONSTRAINT media_song_lyrics_revisions_provenance_check CHECK ((provenance = ANY (ARRAY['asr_accepted'::text, 'pasted'::text, 'corrected'::text])))
+);
+
+CREATE TABLE media_song_video_accepted_masters (
+    plan_id text NOT NULL,
+    master_revision_id text NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_accepted_masters_accepted_at_check CHECK (isfinite(accepted_at))
+);
+
+CREATE TABLE media_song_video_masters (
+    master_revision_id text NOT NULL,
+    plan_id text NOT NULL,
+    attempt_id text NOT NULL,
+    attempt_generation integer NOT NULL,
+    plan_submission_id text NOT NULL,
+    source_immutable_ref text NOT NULL,
+    source_sha256 text NOT NULL,
+    master_sha256 text NOT NULL,
+    master_byte_length bigint NOT NULL,
+    verified_object_key text NOT NULL,
+    verified_object_version text NOT NULL,
+    measured_video_duration_samples bigint NOT NULL,
+    measured_audio_duration_samples bigint NOT NULL,
+    measured_audio_sample_rate_hz integer NOT NULL,
+    measured_audio_channels integer NOT NULL,
+    master_ceiling_bytes bigint NOT NULL,
+    master_policy_revision integer NOT NULL,
+    renderer_identity text NOT NULL,
+    renderer_policy_revision integer NOT NULL,
+    decision_clip_start_samples bigint NOT NULL,
+    decision_clip_duration_samples bigint NOT NULL,
+    sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    soundtrack_sha256 text NOT NULL,
+    verified_object_etag text,
+    CONSTRAINT media_song_video_masters_attempt_generation_check CHECK ((attempt_generation >= 1)),
+    CONSTRAINT media_song_video_masters_decision_clip_duration_samples_check CHECK ((decision_clip_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_decision_clip_start_samples_check CHECK ((decision_clip_start_samples >= 0)),
+    CONSTRAINT media_song_video_masters_master_byte_length_check CHECK ((master_byte_length > 0)),
+    CONSTRAINT media_song_video_masters_master_ceiling_bytes_check CHECK ((master_ceiling_bytes > 0)),
+    CONSTRAINT media_song_video_masters_master_policy_revision_check CHECK ((master_policy_revision = 1)),
+    CONSTRAINT media_song_video_masters_master_revision_id_check CHECK (((length(master_revision_id) >= 1) AND (length(master_revision_id) <= 128) AND (btrim(master_revision_id) = master_revision_id))),
+    CONSTRAINT media_song_video_masters_master_sha256_check CHECK ((master_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_measured_audio_channels_check CHECK ((measured_audio_channels >= 1)),
+    CONSTRAINT media_song_video_masters_measured_audio_duration_samples_check CHECK ((measured_audio_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_measured_audio_sample_rate_hz_check CHECK ((measured_audio_sample_rate_hz = 48000)),
+    CONSTRAINT media_song_video_masters_measured_video_duration_samples_check CHECK ((measured_video_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_renderer_identity_check CHECK ((btrim(renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_masters_renderer_policy_revision_check CHECK ((renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_masters_sealed_at_check CHECK (isfinite(sealed_at)),
+    CONSTRAINT media_song_video_masters_soundtrack_sha256_check CHECK ((soundtrack_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_source_sha256_check CHECK ((source_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_verified_object_etag_check CHECK (((verified_object_etag IS NULL) OR (btrim(verified_object_etag) <> ''::text))),
+    CONSTRAINT media_song_video_masters_verified_object_key_check CHECK ((btrim(verified_object_key) <> ''::text)),
+    CONSTRAINT media_song_video_masters_verified_object_version_check CHECK ((btrim(verified_object_version) <> ''::text)),
+    CONSTRAINT song_video_master_identity_distinct CHECK ((master_sha256 <> source_sha256)),
+    CONSTRAINT song_video_master_ratified_ceiling CHECK ((master_ceiling_bytes = 524288000)),
+    CONSTRAINT song_video_master_tracks_cover_interval CHECK (((measured_video_duration_samples = decision_clip_duration_samples) AND (measured_audio_duration_samples = decision_clip_duration_samples))),
+    CONSTRAINT song_video_master_within_ceiling CHECK ((master_byte_length <= master_ceiling_bytes))
+);
+
+CREATE TABLE media_song_video_render_attempts (
+    attempt_id text NOT NULL,
+    plan_id text NOT NULL,
+    generation integer NOT NULL,
+    state text NOT NULL,
+    dispatch_output_key text NOT NULL,
+    dispatch_renderer_identity text NOT NULL,
+    dispatch_renderer_policy_revision integer NOT NULL,
+    disposition text,
+    started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    execution_phase text DEFAULT 'recorded'::text NOT NULL,
+    execution_started_at timestamp with time zone,
+    expected_output_sha256 text,
+    expected_output_byte_length bigint,
+    execution_refusal_reason text,
+    execution_claim_id text,
+    execution_claimed_at timestamp with time zone,
+    CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_render_attem_expected_output_byte_length_check CHECK (((expected_output_byte_length IS NULL) OR (expected_output_byte_length > 0))),
+    CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempt_claim_shape CHECK (((execution_claim_id IS NULL) = (execution_claimed_at IS NULL))),
+    CONSTRAINT media_song_video_render_attempt_execution_shape CHECK (((execution_phase = 'recorded'::text) = (execution_started_at IS NULL))),
+    CONSTRAINT media_song_video_render_attempt_outcome_shape CHECK ((((expected_output_sha256 IS NULL) = (expected_output_byte_length IS NULL)) AND ((execution_refusal_reason IS NULL) OR (expected_output_sha256 IS NULL)))),
+    CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK (((length(attempt_id) >= 1) AND (length(attempt_id) <= 128) AND (btrim(attempt_id) = attempt_id))),
+    CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_execution_claim_id_check CHECK (((execution_claim_id IS NULL) OR ((length(execution_claim_id) >= 1) AND (length(execution_claim_id) <= 128) AND (btrim(execution_claim_id) = execution_claim_id)))),
+    CONSTRAINT media_song_video_render_attempts_execution_claimed_at_check CHECK (((execution_claimed_at IS NULL) OR isfinite(execution_claimed_at))),
+    CONSTRAINT media_song_video_render_attempts_execution_phase_check CHECK ((execution_phase = ANY (ARRAY['recorded'::text, 'submitting'::text, 'submitted'::text]))),
+    CONSTRAINT media_song_video_render_attempts_execution_refusal_reason_check CHECK (((execution_refusal_reason IS NULL) OR (btrim(execution_refusal_reason) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_execution_started_at_check CHECK (((execution_started_at IS NULL) OR isfinite(execution_started_at))),
+    CONSTRAINT media_song_video_render_attempts_expected_output_sha256_check CHECK (((expected_output_sha256 IS NULL) OR (expected_output_sha256 ~ '^[a-f0-9]{64}$'::text))),
+    CONSTRAINT media_song_video_render_attempts_generation_check CHECK ((generation >= 1)),
+    CONSTRAINT media_song_video_render_attempts_started_at_check CHECK (isfinite(started_at)),
+    CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text])))
+);
+
+CREATE TABLE media_song_video_render_plans (
+    plan_id text NOT NULL,
+    submission_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_asset_id text NOT NULL,
+    audio_revision integer NOT NULL,
+    song_duration_samples bigint NOT NULL,
+    clip_start_samples bigint NOT NULL,
+    clip_duration_samples bigint NOT NULL,
+    frozen_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_render_plans_audio_revision_check CHECK ((audio_revision >= 0)),
+    CONSTRAINT media_song_video_render_plans_clip_duration_samples_check CHECK ((clip_duration_samples > 0)),
+    CONSTRAINT media_song_video_render_plans_clip_start_samples_check CHECK ((clip_start_samples >= 0)),
+    CONSTRAINT media_song_video_render_plans_frozen_at_check CHECK (isfinite(frozen_at)),
+    CONSTRAINT media_song_video_render_plans_plan_id_check CHECK (((length(plan_id) >= 1) AND (length(plan_id) <= 128) AND (btrim(plan_id) = plan_id))),
+    CONSTRAINT media_song_video_render_plans_song_asset_id_check CHECK ((btrim(song_asset_id) <> ''::text)),
+    CONSTRAINT media_song_video_render_plans_song_duration_samples_check CHECK ((song_duration_samples > 0)),
+    CONSTRAINT media_song_video_render_plans_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text)),
+    CONSTRAINT song_video_plan_canonical_containment CHECK (((clip_start_samples + clip_duration_samples) <= song_duration_samples))
 );
 
 CREATE TABLE media_submission_command_replays (
@@ -26530,7 +27128,7 @@ CREATE TABLE media_upload_reservations (
     CONSTRAINT media_upload_reservations_expected_size_bytes_check CHECK ((expected_size_bytes > 0)),
     CONSTRAINT media_upload_reservations_expiry_shape CHECK (((state <> 'expired'::text) OR (expires_at <= updated_at))),
     CONSTRAINT media_upload_reservations_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
-    CONSTRAINT media_upload_reservations_media_shape CHECK ((((media_kind = 'song'::text) AND (video_intent IS NULL) AND (ingest_policy_revision IS NULL) AND (multipart_upload_id IS NULL) AND (multipart_part_size_bytes IS NULL) AND (multipart_part_count IS NULL) AND (multipart_manifest IS NULL) AND (multipart_completed_at IS NULL) AND (multipart_aborted_at IS NULL) AND (upload_url IS NOT NULL) AND (btrim(upload_url) <> ''::text)) OR ((media_kind = 'video'::text) AND (video_intent = 'original_audio'::text) AND (ingest_policy_revision > 0) AND (multipart_upload_id IS NOT NULL) AND (btrim(multipart_upload_id) <> ''::text) AND (multipart_part_size_bytes > 0) AND (multipart_part_count > 0) AND ((multipart_manifest IS NULL) OR (jsonb_typeof(multipart_manifest) = 'array'::text)) AND (NOT ((multipart_completed_at IS NOT NULL) AND (multipart_aborted_at IS NOT NULL))) AND (upload_url IS NULL) AND (upload_headers = '[]'::jsonb)))),
+    CONSTRAINT media_upload_reservations_media_shape CHECK ((((media_kind = 'song'::text) AND (video_intent IS NULL) AND (ingest_policy_revision IS NULL) AND (multipart_upload_id IS NULL) AND (multipart_part_size_bytes IS NULL) AND (multipart_part_count IS NULL) AND (multipart_manifest IS NULL) AND (multipart_completed_at IS NULL) AND (multipart_aborted_at IS NULL) AND (upload_url IS NOT NULL) AND (btrim(upload_url) <> ''::text)) OR ((media_kind = 'video'::text) AND (video_intent = ANY (ARRAY['original_audio'::text, 'song_reference'::text])) AND (ingest_policy_revision > 0) AND (multipart_upload_id IS NOT NULL) AND (btrim(multipart_upload_id) <> ''::text) AND (multipart_part_size_bytes > 0) AND (multipart_part_count > 0) AND ((multipart_manifest IS NULL) OR (jsonb_typeof(multipart_manifest) = 'array'::text)) AND (NOT ((multipart_completed_at IS NOT NULL) AND (multipart_aborted_at IS NOT NULL))) AND (upload_url IS NULL) AND (upload_headers = '[]'::jsonb)))),
     CONSTRAINT media_upload_reservations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_upload_reservations_reservation_id_check CHECK ((btrim(reservation_id) <> ''::text)),
     CONSTRAINT media_upload_reservations_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
@@ -26700,6 +27298,41 @@ CREATE TABLE media_video_reservation_command_replays (
     CONSTRAINT media_video_reservation_replay_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)))
 );
 
+CREATE TABLE media_video_reservation_song_plans (
+    reservation_id text NOT NULL,
+    reservation_community_id text NOT NULL,
+    reservation_intent text DEFAULT 'song_reference'::text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    song_duration_samples bigint NOT NULL,
+    song_asset_id text NOT NULL,
+    clip_start_samples bigint NOT NULL,
+    clip_duration_samples bigint NOT NULL,
+    interval_policy_revision integer NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    derivative_video text NOT NULL,
+    selected_from_kind text NOT NULL,
+    origin_post_id text,
+    origin_verified boolean NOT NULL,
+    frozen_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_reservation_song_pla_interval_policy_revision_check CHECK ((interval_policy_revision >= 1)),
+    CONSTRAINT media_video_reservation_song_plans_clip_duration_samples_check CHECK (((clip_duration_samples >= 144000) AND (clip_duration_samples <= 8640000))),
+    CONSTRAINT media_video_reservation_song_plans_clip_start_samples_check CHECK ((clip_start_samples >= 0)),
+    CONSTRAINT media_video_reservation_song_plans_derivative_video_check CHECK ((derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text]))),
+    CONSTRAINT media_video_reservation_song_plans_frozen_at_check CHECK (isfinite(frozen_at)),
+    CONSTRAINT media_video_reservation_song_plans_origin_post_id_check CHECK (((origin_post_id IS NULL) OR (btrim(origin_post_id) <> ''::text))),
+    CONSTRAINT media_video_reservation_song_plans_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_reservation_song_plans_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
+    CONSTRAINT media_video_reservation_song_plans_reservation_intent_check CHECK ((reservation_intent = 'song_reference'::text)),
+    CONSTRAINT media_video_reservation_song_plans_selected_from_kind_check CHECK ((selected_from_kind = ANY (ARRAY['library'::text, 'feed'::text]))),
+    CONSTRAINT media_video_reservation_song_plans_song_asset_id_check CHECK ((btrim(song_asset_id) <> ''::text)),
+    CONSTRAINT song_video_reservation_plan_containment CHECK (((clip_start_samples + clip_duration_samples) <= song_duration_samples)),
+    CONSTRAINT song_video_reservation_plan_origin_shape CHECK (((selected_from_kind = 'feed'::text) = (origin_post_id IS NOT NULL))),
+    CONSTRAINT song_video_reservation_plan_origin_verified CHECK (((selected_from_kind = 'feed'::text) OR (origin_verified = false)))
+);
+
 CREATE TABLE media_video_review_holds (
     submission_id text NOT NULL,
     creation_revision bigint NOT NULL,
@@ -26741,7 +27374,7 @@ CREATE TABLE media_video_rights (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_video_rights_access_mode_check CHECK ((access_mode = 'public'::text)),
     CONSTRAINT media_video_rights_offered_license_check CHECK ((offered_license IS NULL)),
-    CONSTRAINT media_video_rights_rights_basis_check CHECK ((rights_basis = 'original'::text)),
+    CONSTRAINT media_video_rights_rights_basis_check CHECK ((rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))),
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
 );
 
@@ -26766,6 +27399,36 @@ CREATE TABLE media_video_safety_evidence (
     CONSTRAINT video_safety_no_visual_allow CHECK (COALESCE(((((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = ANY (ARRAY['review_required'::text, 'blocked'::text])) AND (((evidence_snapshot -> 'fact'::text) -> 'minorSafetyEvidenceRef'::text) = 'null'::jsonb)), false))
 );
 
+CREATE TABLE media_video_song_references (
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    actor_account_id text NOT NULL,
+    post_id text NOT NULL,
+    relationship text DEFAULT 'references_song'::text NOT NULL,
+    song_community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    plan_id text NOT NULL,
+    master_revision_id text NOT NULL,
+    policy_transition text DEFAULT 'publication_committed'::text NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    derivative_video text NOT NULL,
+    policy_permitted boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_song_references_audio_revision_check CHECK ((audio_revision >= 1)),
+    CONSTRAINT media_video_song_references_created_at_check CHECK (isfinite(created_at)),
+    CONSTRAINT media_video_song_references_creation_revision_check CHECK ((creation_revision >= 1)),
+    CONSTRAINT media_video_song_references_derivative_video_check CHECK ((derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text]))),
+    CONSTRAINT media_video_song_references_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_song_references_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
+    CONSTRAINT media_video_song_references_policy_permitted_check CHECK (policy_permitted),
+    CONSTRAINT media_video_song_references_policy_transition_check CHECK ((policy_transition = 'publication_committed'::text)),
+    CONSTRAINT media_video_song_references_post_id_check CHECK ((btrim(post_id) <> ''::text)),
+    CONSTRAINT media_video_song_references_relationship_check CHECK ((relationship = 'references_song'::text))
+);
+
 CREATE TABLE media_video_source_grants (
     capability_sha256 text NOT NULL,
     request_id text NOT NULL,
@@ -26780,6 +27443,7 @@ CREATE TABLE media_video_source_grants (
     issued_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     revoked_at timestamp with time zone,
+    identity_kind text DEFAULT 'upload_version'::text NOT NULL,
     CONSTRAINT media_video_source_grants_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_check CHECK ((isfinite(expires_at) AND (expires_at > issued_at))),
@@ -26787,6 +27451,7 @@ CREATE TABLE media_video_source_grants (
     CONSTRAINT media_video_source_grants_consumer_check CHECK ((consumer = ANY (ARRAY['qencode'::text, 'stream'::text]))),
     CONSTRAINT media_video_source_grants_content_type_check CHECK ((content_type = ANY (ARRAY['video/mp4'::text, 'video/quicktime'::text]))),
     CONSTRAINT media_video_source_grants_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_video_source_grants_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
     CONSTRAINT media_video_source_grants_issued_at_check CHECK (isfinite(issued_at)),
     CONSTRAINT media_video_source_grants_object_version_check CHECK ((btrim(object_version) <> ''::text)),
     CONSTRAINT media_video_source_grants_physical_key_check CHECK (((length(physical_key) >= 11) AND (length(physical_key) <= 778))),
@@ -30617,6 +31282,15 @@ ALTER TABLE ONLY data_registration_outbox
 ALTER TABLE ONLY data_registration_outbox
     ADD CONSTRAINT data_registration_outbox_registration_operation_id_workflow_key UNIQUE (registration_operation_id, workflow_revision, event_type);
 
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_reference_pair UNIQUE (registration_operation_id, parent_registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_references_pkey PRIMARY KEY (registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_resolutions
+    ADD CONSTRAINT data_registration_parent_resolutions_pkey PRIMARY KEY (registration_operation_id);
+
 ALTER TABLE ONLY data_registration_pin_verifications
     ADD CONSTRAINT data_registration_pin_verific_registration_operation_id_art_key UNIQUE (registration_operation_id, artifact_id, role, provider_id, attempt_number);
 
@@ -31080,9 +31754,6 @@ ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_submission_id_audio_revision_canonica_key UNIQUE (submission_id, audio_revision, canonical_sha256, immutable_ref);
 
 ALTER TABLE ONLY media_immutable_objects
-    ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_operatio_key UNIQUE (community_id, actor_user_id, operation_id);
-
-ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_immutable_ref_canonica_key UNIQUE (community_id, immutable_ref, canonical_sha256, content_type, size_bytes);
 
 ALTER TABLE ONLY media_immutable_objects
@@ -31093,6 +31764,9 @@ ALTER TABLE ONLY media_immutable_objects
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_pkey PRIMARY KEY (immutable_ref);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_submission_key UNIQUE (immutable_ref, submission_id);
 
 ALTER TABLE ONLY media_moderation_actions
     ADD CONSTRAINT media_moderation_actions_community_id_authority_actor_user__key UNIQUE (community_id, authority_actor_user_id, action_id);
@@ -31151,6 +31825,12 @@ ALTER TABLE ONLY media_publication_projections
 ALTER TABLE ONLY media_reference_evidence
     ADD CONSTRAINT media_reference_evidence_pkey PRIMARY KEY (community_id, actor_user_id, submission_id, operation_id, asset_id, evidence_audio_revision, evidence_analysis_revision, evidence_audio_sha256);
 
+ALTER TABLE ONLY media_song_canonical_timings
+    ADD CONSTRAINT media_song_canonical_timings_fact_key UNIQUE (song_post_id, audio_revision, canonical_audio_sha256, duration_samples);
+
+ALTER TABLE ONLY media_song_canonical_timings
+    ADD CONSTRAINT media_song_canonical_timings_pkey PRIMARY KEY (song_post_id, audio_revision);
+
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_revisions_pkey PRIMARY KEY (submission_id, lyrics_revision);
 
@@ -31159,6 +31839,51 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_revisions_submission_id_audio_revision_ly_key UNIQUE (submission_id, audio_revision, lyrics_revision);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_master_revision_id_key UNIQUE (master_revision_id);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_pair_key UNIQUE (master_revision_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_pkey PRIMARY KEY (plan_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_digest_key UNIQUE (master_revision_id, master_sha256);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_pkey PRIMARY KEY (master_revision_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attem_attempt_id_plan_id_generation_key UNIQUE (attempt_id, plan_id, generation);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_attempt_id_plan_id_key UNIQUE (attempt_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_dispatch_output_key_key UNIQUE (dispatch_output_key);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_plan_id_generation_key UNIQUE (plan_id, generation);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_interval_key UNIQUE (plan_id, clip_start_samples, clip_duration_samples);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_pkey PRIMARY KEY (plan_id);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_submission_key UNIQUE (plan_id, submission_id);
 
 ALTER TABLE ONLY media_submission_events
     ADD CONSTRAINT media_submission_events_event_id_key UNIQUE (event_id);
@@ -31198,6 +31923,9 @@ ALTER TABLE ONLY media_upload_reservations
 
 ALTER TABLE ONLY media_upload_reservations
     ADD CONSTRAINT media_upload_reservations_identity_unique UNIQUE (community_id, actor_user_id, reservation_id);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_intent_key UNIQUE (reservation_id, community_id, video_intent);
 
 ALTER TABLE ONLY media_upload_reservations
     ADD CONSTRAINT media_upload_reservations_persona_identity_unique UNIQUE (community_id, actor_user_id, actor_persona_id, reservation_id);
@@ -31247,6 +31975,9 @@ ALTER TABLE ONLY media_video_publication_wakeups
 ALTER TABLE ONLY media_video_reservation_command_replays
     ADD CONSTRAINT media_video_reservation_command_replays_pkey PRIMARY KEY (actor_account_id, actor_persona_id, endpoint_template, idempotency_key);
 
+ALTER TABLE ONLY media_video_reservation_song_plans
+    ADD CONSTRAINT media_video_reservation_song_plans_pkey PRIMARY KEY (reservation_id);
+
 ALTER TABLE ONLY media_video_review_holds
     ADD CONSTRAINT media_video_review_holds_pkey PRIMARY KEY (submission_id, creation_revision, hold_kind);
 
@@ -31261,6 +31992,15 @@ ALTER TABLE ONLY media_video_safety_evidence
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_request_id_key UNIQUE (request_id);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_master_revision_id_key UNIQUE (master_revision_id);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_post_id_key UNIQUE (post_id);
 
 ALTER TABLE ONLY media_video_source_grants
     ADD CONSTRAINT media_video_source_grants_pkey PRIMARY KEY (capability_sha256);
@@ -31777,6 +32517,9 @@ ALTER TABLE ONLY schema_migrations
 
 ALTER TABLE ONLY song_dance_presentations
     ADD CONSTRAINT song_dance_presentations_pkey PRIMARY KEY (community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY song_derivative_video_policy_observations
+    ADD CONSTRAINT song_derivative_video_policy_observation_snapshot_key UNIQUE (operation_id, observed_at_transition, creation_revision, community_id, post_id, audio_revision, actor_account_id, owner_policy_revision, owner_policy_hash, derivative_video, permitted);
 
 ALTER TABLE ONLY song_derivative_video_policy_observations
     ADD CONSTRAINT song_derivative_video_policy_observations_pkey PRIMARY KEY (operation_id, observed_at_transition, creation_revision);
@@ -32343,11 +33086,23 @@ CREATE INDEX karaoke_sessions_revision_score_idx ON karaoke_sessions USING btree
 
 CREATE INDEX learner_audio_artifacts_stored_account_idx ON learner_audio_artifacts USING btree (account_id, created_at, learner_audio_artifact_id) WHERE (recording_state = 'stored'::text);
 
+CREATE UNIQUE INDEX media_immutable_objects_reservation_operation_key ON media_immutable_objects USING btree (community_id, actor_user_id, operation_id) WHERE (reservation_id IS NOT NULL);
+
 CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (community_id, actor_user_id, updated_at DESC, submission_id);
 
 CREATE UNIQUE INDEX media_post_submissions_localization_identity_uidx ON media_post_submissions USING btree (community_id, actor_user_id, post_id, submission_id);
 
 CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts USING btree (state, next_eligible_at, lease_expires_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'poll_wait'::text]));
+
+CREATE INDEX media_song_canonical_timings_pending_idx ON media_song_canonical_timings USING btree (requested_at) WHERE (state = 'pending'::text);
+
+CREATE INDEX media_song_video_render_attempt_dispatch_idx ON media_song_video_render_attempts USING btree (plan_id) WHERE ((state = 'started'::text) AND (execution_claim_id IS NULL));
+
+CREATE INDEX media_song_video_render_attempts_plan_idx ON media_song_video_render_attempts USING btree (plan_id, state);
+
+CREATE UNIQUE INDEX media_song_video_render_plans_one_per_submission ON media_song_video_render_plans USING btree (submission_id);
+
+CREATE INDEX media_song_video_render_plans_submission_idx ON media_song_video_render_plans USING btree (submission_id);
 
 CREATE UNIQUE INDEX media_submission_command_replays_account_replay_uidx ON media_submission_command_replays USING btree (actor_account_id, endpoint_template, idempotency_key) WHERE (actor_persona_id IS NULL);
 
@@ -32859,9 +33614,17 @@ CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE O
 
 CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
 
+CREATE TRIGGER data_registration_attempt_parent BEFORE INSERT ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION require_data_registration_attempt_parent();
+
 CREATE TRIGGER data_registration_operation_update_guard BEFORE DELETE OR UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_operation_update();
 
 CREATE TRIGGER data_registration_outbox_update_guard BEFORE DELETE OR UPDATE ON data_registration_outbox FOR EACH ROW EXECUTE FUNCTION guard_data_registration_outbox_update();
+
+CREATE TRIGGER data_registration_parent_reference_guard BEFORE DELETE OR UPDATE ON data_registration_parent_references FOR EACH ROW EXECUTE FUNCTION guard_data_registration_parent_reference();
+
+CREATE TRIGGER data_registration_parent_resolution_evidence BEFORE INSERT ON data_registration_parent_resolutions FOR EACH ROW EXECUTE FUNCTION require_data_registration_parent_resolution_evidence();
+
+CREATE TRIGGER data_registration_parent_resolutions_append_only BEFORE DELETE OR UPDATE ON data_registration_parent_resolutions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_pins_append_only BEFORE DELETE OR UPDATE ON data_registration_pin_verifications FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
@@ -32872,6 +33635,8 @@ CREATE TRIGGER data_registration_receipts_append_only BEFORE DELETE OR UPDATE ON
 CREATE TRIGGER data_registration_replays_append_only BEFORE DELETE OR UPDATE ON data_registration_command_replays FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_transitions_append_only BEFORE DELETE OR UPDATE ON data_registration_attempt_transitions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
+CREATE CONSTRAINT TRIGGER data_registration_video_parent_shape AFTER INSERT ON data_registration_operations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'video'::text)) EXECUTE FUNCTION require_data_registration_video_parent_shape();
 
 CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_records FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -33155,7 +33920,11 @@ CREATE TRIGGER media_publication_projection_insert_guard BEFORE INSERT ON media_
 
 CREATE CONSTRAINT TRIGGER media_publication_projection_rating_guard_v1 AFTER INSERT OR UPDATE ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'song'::text)) EXECUTE FUNCTION enforce_song_rating_projection_v1();
 
+CREATE CONSTRAINT TRIGGER media_publication_projection_song_video_edge AFTER INSERT OR UPDATE ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'video'::text) AND (new.song_video_plan_id IS NOT NULL))) EXECUTE FUNCTION require_song_video_projection_edge();
+
 CREATE TRIGGER media_publication_projection_update_guard BEFORE UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION guard_media_publication_projection_update();
+
+CREATE CONSTRAINT TRIGGER media_publication_projection_video_decision_anchor AFTER INSERT ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'video'::text)) EXECUTE FUNCTION require_video_publication_decision_anchor();
 
 CREATE TRIGGER media_publication_song_owner_policy_initialize AFTER INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1();
 
@@ -33165,6 +33934,8 @@ CREATE TRIGGER media_reference_evidence_append_only BEFORE DELETE OR UPDATE ON m
 
 CREATE CONSTRAINT TRIGGER media_reservation_claim_pair AFTER INSERT OR UPDATE ON media_upload_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'song'::text)) EXECUTE FUNCTION validate_media_reservation_claim_pair();
 
+CREATE TRIGGER media_song_canonical_timing_guard BEFORE DELETE OR UPDATE ON media_song_canonical_timings FOR EACH ROW EXECUTE FUNCTION guard_media_song_canonical_timing();
+
 CREATE TRIGGER media_song_lyrics_append_only BEFORE DELETE OR UPDATE ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION guard_media_lyrics_append_only();
 
 CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_insert();
@@ -33172,6 +33943,12 @@ CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics
 CREATE TRIGGER media_song_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'song'::text)) EXECUTE FUNCTION guard_media_reservation_update();
 
 CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update();
+
+CREATE TRIGGER media_song_video_render_attempt_execution_guard BEFORE UPDATE ON media_song_video_render_attempts FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_attempt_execution();
+
+CREATE TRIGGER media_song_video_render_plan_frozen BEFORE INSERT ON media_song_video_render_plans FOR EACH ROW EXECUTE FUNCTION require_song_video_render_plan_frozen();
+
+CREATE TRIGGER media_song_video_render_plan_guard BEFORE DELETE OR UPDATE ON media_song_video_render_plans FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_plan();
 
 CREATE TRIGGER media_submission_command_replays_active_persona BEFORE INSERT ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION require_active_replay_persona();
 
@@ -33203,9 +33980,19 @@ CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON
 
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
+CREATE TRIGGER media_video_reservation_song_plan_guard BEFORE DELETE OR UPDATE ON media_video_reservation_song_plans FOR EACH ROW EXECUTE FUNCTION guard_media_video_reservation_song_plan();
+
+CREATE CONSTRAINT TRIGGER media_video_reservation_song_plan_required AFTER INSERT ON media_upload_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'video'::text) AND (new.video_intent = 'song_reference'::text))) EXECUTE FUNCTION require_media_video_reservation_song_plan();
+
 CREATE TRIGGER media_video_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_reservation_update();
 
+CREATE CONSTRAINT TRIGGER media_video_rights_basis_matches_intent AFTER INSERT OR UPDATE ON media_video_rights DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_media_video_rights_basis_matches_intent();
+
 CREATE TRIGGER media_video_safety_evidence_immutable BEFORE UPDATE ON media_video_safety_evidence FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
+
+CREATE TRIGGER media_video_song_reference_guard BEFORE DELETE OR UPDATE ON media_video_song_references FOR EACH ROW EXECUTE FUNCTION guard_media_video_song_reference();
+
+CREATE CONSTRAINT TRIGGER media_video_song_reference_rating_floor AFTER INSERT ON media_video_song_references DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_song_video_rating_floor();
 
 CREATE TRIGGER media_video_stage_fact_immutable BEFORE UPDATE ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
@@ -34411,6 +35198,15 @@ ALTER TABLE ONLY data_registration_operations
 ALTER TABLE ONLY data_registration_outbox
     ADD CONSTRAINT data_registration_outbox_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
 
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_refe_parent_registration_operatio_fkey FOREIGN KEY (parent_registration_operation_id) REFERENCES data_registration_operations(registration_operation_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_referen_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY data_registration_parent_resolutions
+    ADD CONSTRAINT data_registration_parent_reso_registration_operation_id_pa_fkey FOREIGN KEY (registration_operation_id, parent_registration_operation_id) REFERENCES data_registration_parent_references(registration_operation_id, parent_registration_operation_id) ON DELETE RESTRICT;
+
 ALTER TABLE ONLY data_registration_pin_verifications
     ADD CONSTRAINT data_registration_pin_verifi_registration_operation_id_ar_fkey1 FOREIGN KEY (registration_operation_id, artifact_id) REFERENCES data_registration_artifacts(registration_operation_id, artifact_id);
 
@@ -34906,6 +35702,9 @@ ALTER TABLE ONLY media_post_submissions
 ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_reservation_fk FOREIGN KEY (community_id, actor_user_id, audio_reservation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, reservation_id);
 
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_video_intent_fk FOREIGN KEY (audio_reservation_id, community_id, video_intent) REFERENCES media_upload_reservations(reservation_id, community_id, video_intent);
+
 ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
@@ -34935,6 +35734,12 @@ ALTER TABLE ONLY media_publication_decisions
 
 ALTER TABLE ONLY media_publication_projections
     ADD CONSTRAINT media_publication_lyrics_fk FOREIGN KEY (submission_id, audio_revision, lyrics_revision, canonical_audio_sha256) REFERENCES media_song_lyrics_revisions(submission_id, audio_revision, lyrics_revision, canonical_audio_sha256);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projection_song_video_digest_fk FOREIGN KEY (song_video_master_revision_id, canonical_video_sha256) REFERENCES media_song_video_masters(master_revision_id, master_sha256) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projection_song_video_master_fk FOREIGN KEY (song_video_master_revision_id, song_video_plan_id) REFERENCES media_song_video_accepted_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_publication_projections
     ADD CONSTRAINT media_publication_projections_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
@@ -34968,6 +35773,30 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_transcript_fk FOREIGN KEY (submission_id, audio_revision, base_transcript_revision, canonical_audio_sha256) REFERENCES media_transcript_artifacts(submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_maste_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_attempt_id_plan_id_attempt_genera_fkey FOREIGN KEY (attempt_id, plan_id, attempt_generation) REFERENCES media_song_video_render_attempts(attempt_id, plan_id, generation) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_id_decision_clip_start_sampl_fkey FOREIGN KEY (plan_id, decision_clip_start_samples, decision_clip_duration_samples) REFERENCES media_song_video_render_plans(plan_id, clip_start_samples, clip_duration_samples) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_id_plan_submission_id_fkey FOREIGN KEY (plan_id, plan_submission_id) REFERENCES media_song_video_render_plans(plan_id, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_source_immutable_ref_plan_submiss_fkey FOREIGN KEY (source_immutable_ref, plan_submission_id) REFERENCES media_immutable_objects(immutable_ref, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_verified_object_key_fkey FOREIGN KEY (verified_object_key) REFERENCES media_song_video_render_attempts(dispatch_output_key) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES media_song_video_render_plans(plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_submission_command_replays
     ADD CONSTRAINT media_submission_command_replays_actor_persona_fk FOREIGN KEY (actor_account_id, actor_persona_id) REFERENCES personas(account_id, persona_id);
@@ -35088,6 +35917,18 @@ ALTER TABLE ONLY media_video_rights
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_accepted_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_operation_id_policy_transition_fkey FOREIGN KEY (operation_id, policy_transition, creation_revision, song_community_id, song_post_id, audio_revision, actor_account_id, owner_policy_revision, owner_policy_hash, derivative_video, policy_permitted) REFERENCES song_derivative_video_policy_observations(operation_id, observed_at_transition, creation_revision, community_id, post_id, audio_revision, actor_account_id, owner_policy_revision, owner_policy_hash, derivative_video, permitted) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_plan_id_submission_id_fkey FOREIGN KEY (plan_id, submission_id) REFERENCES media_song_video_render_plans(plan_id, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_video_source_grants
     ADD CONSTRAINT media_video_source_grants_immutable_ref_fkey FOREIGN KEY (immutable_ref) REFERENCES media_immutable_objects(immutable_ref) ON DELETE CASCADE;
@@ -35763,6 +36604,12 @@ ALTER TABLE ONLY song_streaks
 
 ALTER TABLE ONLY song_streaks
     ADD CONSTRAINT song_streaks_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY media_video_reservation_song_plans
+    ADD CONSTRAINT song_video_reservation_plan_reservation_fk FOREIGN KEY (reservation_id, reservation_community_id, reservation_intent) REFERENCES media_upload_reservations(reservation_id, community_id, video_intent) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_reservation_song_plans
+    ADD CONSTRAINT song_video_reservation_plan_timing_fk FOREIGN KEY (song_post_id, audio_revision, canonical_audio_sha256, song_duration_samples) REFERENCES media_song_canonical_timings(song_post_id, audio_revision, canonical_audio_sha256, duration_samples) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY sponsor_daily_ticket_totals
     ADD CONSTRAINT sponsor_daily_ticket_totals_sponsor_account_id_fkey FOREIGN KEY (sponsor_account_id) REFERENCES users(user_id);

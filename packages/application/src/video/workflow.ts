@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import {
+  songVideoFrameWindowMs,
   VIDEO_INGEST_POLICY_V1,
   VIDEO_POSTER_POLICY_V1,
   type VideoTrustedAnalysis,
@@ -19,9 +20,11 @@ import {
 import type { VideoAnalysisOutboxStore } from "./analysis-queue.ts";
 import {
   acceptTrustedVideoAnalysis,
+  attachSongVideoMasterAndPublish,
   type VideoAttemptReconciliationStore,
   type VideoSubmissionRecord,
 } from "./publication.ts";
+import type { SongVideoRenderServices } from "./song-render.ts";
 import {
   type VideoStage,
   type VideoStageFact,
@@ -47,6 +50,8 @@ export type VideoWorkflowServices = VideoAnalysisRuntimeServices &
     stageFacts: VideoStageFactStore;
     verifySource: (submission: VideoSubmissionRecord) => Promise<void>;
     artifactHead: Parameters<typeof verifyVideoStageArtifacts>[1];
+    /** Present only where song-backed video is composed. */
+    songRender?: SongVideoRenderServices;
   }>;
 export type VideoWorkflowResult = Readonly<{
   status: "published" | "stopped" | "superseded" | "reconciliation_required";
@@ -162,10 +167,14 @@ export async function runVideoAnalysisWorkflow(
         sourceDurationMs: (await requiredFact(record, "probe")).snapshot.durationMs,
       };
     const probe = (await requiredFact(record, "probe")).snapshot;
+    const plan = record.state.songPlan;
     return {
       ...common,
       version: "media-transform-video-frames-input-v1",
-      sourceDurationMs: probe.durationMs,
+      // A song-reference master carries only the interval's length of the
+      // capture, so moderation and the poster see only frames it will carry.
+      sourceDurationMs:
+        plan === null ? probe.durationMs : Math.min(probe.durationMs, songVideoFrameWindowMs(plan)),
       sourceDimensions: { width: probe.width, height: probe.height },
       posterPolicy: VIDEO_POSTER_POLICY_V1,
       posterTimestampMs:
@@ -207,12 +216,19 @@ export async function runVideoAnalysisWorkflow(
       return "analyse";
     });
     if (mode === "published") return { status: "published" };
+    // Immutable from reservation. A song-reference capture's audio is discarded,
+    // so it is neither extracted nor recognized (Spec 013 U.3).
+    const intent = await step.do("resolve-intent", async () => (await authority()).state.intent);
+    const capabilities =
+      intent === "song_reference"
+        ? (["probe", "frames"] as const)
+        : (["probe", "audio", "frames"] as const);
     if (mode === "analyse") {
       await step.do("verify-source", async () => {
         await services.verifySource(await active());
         return baseIdentity;
       });
-      for (const capability of ["probe", "audio", "frames"] as const) {
+      for (const capability of capabilities) {
         const accepted = await step.do(
           `${capability}-load-fact`,
           async () => (await fact(await active(), capability)) !== null,
@@ -391,28 +407,29 @@ export async function runVideoAnalysisWorkflow(
           return { status: "reconciliation_required" };
         }
       }
-      await step.do("recognition", async () => {
-        const record = await active();
-        if (await fact(record, "recognition")) return "recognition";
-        const audio = (await requiredFact(record, "audio")).snapshot;
-        const snapshot = await services.analysisProviders.identifySoundtrack({
-          operationId: record.state.operationId,
-          videoRevision: record.state.videoRevision,
-          creationRevision: record.state.creationRevision,
-          clips: audio.clips,
+      if (intent === "original_audio")
+        await step.do("recognition", async () => {
+          const record = await active();
+          if (await fact(record, "recognition")) return "recognition";
+          const audio = (await requiredFact(record, "audio")).snapshot;
+          const snapshot = await services.analysisProviders.identifySoundtrack({
+            operationId: record.state.operationId,
+            videoRevision: record.state.videoRevision,
+            creationRevision: record.state.creationRevision,
+            clips: audio.clips,
+          });
+          await services.stageFacts.write({
+            submission: record.state,
+            observedEventSequence: record.eventSequence,
+            fact: validateVideoStageFact({
+              stage: "recognition",
+              adapterRevision: snapshot.adapterRevision,
+              snapshot,
+              artifacts: [],
+            }),
+          });
+          return "recognition";
         });
-        await services.stageFacts.write({
-          submission: record.state,
-          observedEventSequence: record.eventSequence,
-          fact: validateVideoStageFact({
-            stage: "recognition",
-            adapterRevision: snapshot.adapterRevision,
-            snapshot,
-            artifacts: [],
-          }),
-        });
-        return "recognition";
-      });
       await step.do("safety", async () => {
         const record = await active();
         if (await fact(record, "safety")) return "safety";
@@ -450,11 +467,16 @@ export async function runVideoAnalysisWorkflow(
       let analysis = record.state.analysis;
       if (analysis === null || analysis.videoRevision !== record.state.videoRevision) {
         const probe = await requiredFact(record, "probe");
-        const audio = (await requiredFact(record, "audio")).snapshot;
         const frames = (await requiredFact(record, "frames")).snapshot;
-        const recognition = (await requiredFact(record, "recognition")).snapshot;
         const safety = (await requiredFact(record, "safety")).snapshot;
         const video = source(record);
+        const soundtrack =
+          record.state.intent === "song_reference"
+            ? null
+            : {
+                audio: (await requiredFact(record, "audio")).snapshot,
+                recognition: (await requiredFact(record, "recognition")).snapshot,
+              };
         analysis = {
           version: "video-trusted-analysis-v1",
           operationId: video.operationId,
@@ -465,25 +487,28 @@ export async function runVideoAnalysisWorkflow(
           byteLength: video.byteLength,
           mediaType: video.mediaType,
           probe: probe.snapshot,
-          audio: {
-            intent: "original_audio",
-            soundtrack:
-              recognition.verification === null
-                ? {
-                    extractedAudioRef: audio.artifactRef,
-                    extractedAudioSha256: audio.canonicalSha256,
-                    verification: null,
-                    exhaustion: recognition.exhaustion,
-                    evidenceRef: recognition.evidenceRef,
-                    policyRevision: audio.policyRevision,
-                  }
-                : {
-                    extractedAudioRef: audio.artifactRef,
-                    extractedAudioSha256: audio.canonicalSha256,
-                    verification: recognition.verification,
-                    policyRevision: audio.policyRevision,
-                  },
-          },
+          audio:
+            soundtrack === null
+              ? { intent: "song_reference" }
+              : {
+                  intent: "original_audio",
+                  soundtrack:
+                    soundtrack.recognition.verification === null
+                      ? {
+                          extractedAudioRef: soundtrack.audio.artifactRef,
+                          extractedAudioSha256: soundtrack.audio.canonicalSha256,
+                          verification: null,
+                          exhaustion: soundtrack.recognition.exhaustion,
+                          evidenceRef: soundtrack.recognition.evidenceRef,
+                          policyRevision: soundtrack.audio.policyRevision,
+                        }
+                      : {
+                          extractedAudioRef: soundtrack.audio.artifactRef,
+                          extractedAudioSha256: soundtrack.audio.canonicalSha256,
+                          verification: soundtrack.recognition.verification,
+                          policyRevision: soundtrack.audio.policyRevision,
+                        },
+                },
           frames: {
             posterPolicyRevision: frames.posterPolicyRevision,
             evidenceRef: frames.evidenceRef,
@@ -503,7 +528,7 @@ export async function runVideoAnalysisWorkflow(
           safetyPolicyRevision: safety.policyRevision,
           adapterRevisions: {
             probe: probe.adapterRevision,
-            acr: recognition.adapterRevision,
+            acr: soundtrack === null ? "not_applicable" : soundtrack.recognition.adapterRevision,
             frames: frames.adapterRevision,
             safety: safety.adapterRevision,
           },
@@ -518,15 +543,190 @@ export async function runVideoAnalysisWorkflow(
         ? "published"
         : after.state.status === "manual_review"
           ? "review"
-          : "stopped";
+          : after.state.status === "processing" && after.state.phase === "render"
+            ? "render"
+            : "stopped";
+    };
+    const renderStage = async (): Promise<VideoWorkflowResult> => {
+      const render = services.songRender;
+      if (render === undefined) throw new VideoWorkflowTerminalError("invalid_stage");
+      const rendering = async () => {
+        const record = await authority();
+        const plan = record.state.songPlan;
+        if (
+          plan === null ||
+          record.state.status !== "processing" ||
+          record.state.reconciliationRequired ||
+          record.state.video === null
+        )
+          throw new Superseded();
+        return { record, plan, video: record.state.video };
+      };
+      const renderFailure = async (
+        record: VideoSubmissionRecord,
+        evidenceRef: string,
+        reconciliationRequired = false,
+      ) => {
+        await services.store.recordProcessingFailure({
+          submission: record.state,
+          observedEventSequence: record.eventSequence,
+          failureCode: "transform_failed",
+          evidenceRef,
+          ...(reconciliationRequired ? { reconciliationRequired: true } : {}),
+        });
+      };
+      const attempt = await step.do("render-dispatch", async () => {
+        const { record, plan } = await rendering();
+        if (record.state.phase !== "render") return null;
+        if ((await render.store.acceptedMaster(plan.planId)) !== null) return null;
+        return render.store.dispatch({
+          planId: plan.planId,
+          rendererIdentity: render.renderer.identity,
+          rendererPolicyRevision: render.renderer.policyRevision,
+        });
+      });
+      // A sealed attempt's output is already a verified master: it resumes at
+      // acceptance and is never rendered again.
+      if (attempt !== null && attempt.phase !== "sealed") {
+        const refused = async (record: VideoSubmissionRecord, reason: string) => {
+          // Explicit and final for this attempt; a retry starts a new one.
+          await render.store.abandon(attempt, `renderer_refused:${reason}`);
+          await renderFailure(record, `song-video-render:${attempt.attemptId}:${reason}`);
+        };
+        const submitted = await step.do("render-submit", async () => {
+          const { record, plan, video } = await rendering();
+          if ((await render.store.acceptedMaster(plan.planId)) !== null) return "accepted";
+          // The intent is recorded before the renderer is invoked. When it was
+          // recorded before — a lost response, a retried step, a new Workflow
+          // continuation — the execution may have begun and is only observed.
+          if (!(await render.store.beginExecution(attempt))) return "observe";
+          const outcome = await render.renderer.submit({
+            outputObjectKey: attempt.outputObjectKey,
+            source: {
+              immutableRef: video.immutableRef,
+              sha256: video.canonicalSha256,
+              byteLength: video.sizeBytes,
+            },
+            song: {
+              assetRef: plan.songAssetId,
+              sha256: plan.canonicalAudioSha256,
+              durationSamples: plan.songDurationSamples,
+            },
+            clipStartSamples: plan.clipStartSamples,
+            clipDurationSamples: plan.clipDurationSamples,
+          });
+          if (outcome.status === "refused") {
+            await refused(record, outcome.reason);
+            return "failed";
+          }
+          await render.store.markSubmitted(attempt);
+          return "observe";
+        });
+        if (submitted === "failed") return { status: "stopped" };
+        if (submitted === "observe") {
+          let completed = false;
+          for (let index = 0; index < VIDEO_WORKFLOW_MAX_OBSERVATIONS; index += 1) {
+            const name = `render-observe-${index}`;
+            const observed = await step.do(name, async () => {
+              const { record, plan } = await rendering();
+              if ((await render.store.acceptedMaster(plan.planId)) !== null) return "completed";
+              const outcome = await render.renderer.observe({
+                outputObjectKey: attempt.outputObjectKey,
+              });
+              if (outcome.status === "completed") return "completed";
+              if (outcome.status === "refused") {
+                await refused(record, outcome.reason);
+                return "failed";
+              }
+              const current = await render.store.readAttempt(attempt);
+              // The host may have sealed the attempt while this loop waited. A
+              // sealed attempt resumes at acceptance through the persisted-seal
+              // replay, so advance it now instead of waiting out the window.
+              if (current.phase === "sealed") return "completed";
+              if (current.executionStartedAtMs === null) return "pending";
+              return Date.parse(services.nowIso()) >=
+                current.executionStartedAtMs + VIDEO_WORKFLOW_CAPABILITY_MS
+                ? "deadline"
+                : "pending";
+            });
+            if (observed === "failed") return { status: "stopped" };
+            if (observed === "completed") {
+              completed = true;
+              break;
+            }
+            if (observed === "deadline") break;
+            await step.sleep(`${name}-sleep`, VIDEO_WORKFLOW_POLL_MS);
+          }
+          if (!completed) {
+            // No output and no refusal within the window: the execution is
+            // uncertain. It stays pending for reconciliation and is never
+            // rendered again; the submission cannot be retried until then.
+            await step.do("render-reconciliation-required", async () => {
+              const { record } = await rendering();
+              await renderFailure(
+                record,
+                `song-video-render:${attempt.attemptId}:unconfirmed`,
+                true,
+              );
+              return attempt.attemptId;
+            });
+            return { status: "reconciliation_required" };
+          }
+        }
+      }
+      if (attempt !== null) {
+        const sealed = await step.do("render-seal", async () => {
+          const { record, plan, video } = await rendering();
+          if ((await render.store.acceptedMaster(plan.planId)) !== null) return "accepted";
+          const outcome = await render.store.sealAndAccept({
+            attempt,
+            sourceImmutableRef: video.immutableRef,
+            claimedSourceSha256: video.canonicalSha256,
+            clipStartSamples: plan.clipStartSamples,
+            clipDurationSamples: plan.clipDurationSamples,
+          });
+          if (outcome.status === "refused") {
+            await renderFailure(record, `song-video-seal:${attempt.attemptId}:${outcome.reason}`);
+            return "failed";
+          }
+          return "accepted";
+        });
+        if (sealed === "failed") return { status: "stopped" };
+      }
+      const published = await step.do("render-publish", async () => {
+        const record = await authority();
+        if (record.state.status === "published") return "published";
+        const plan = record.state.songPlan;
+        if (
+          plan === null ||
+          record.state.status !== "processing" ||
+          record.state.reconciliationRequired
+        )
+          return "stopped";
+        const master = record.state.master ?? (await render.store.acceptedMaster(plan.planId));
+        if (master === null) return "stopped";
+        const identity = {
+          submissionId: record.state.submissionId,
+          operationId: record.state.operationId,
+        };
+        await attachSongVideoMasterAndPublish({ ...identity, master }, services);
+        // This commit may itself have re-decided the operation at a later
+        // creation revision, so the outcome is read directly, not through the
+        // fence that revision just moved.
+        const after = await services.store.getSubmissionByOperation(identity);
+        return after?.state.status === "published" ? "published" : "stopped";
+      });
+      return { status: published };
     };
     const outcome = await step.do("decide-and-publish", decideAndPublish);
+    if (outcome === "render") return await renderStage();
     if (outcome !== "review") return { status: outcome };
     await step.waitForEvent("publication-wakeup", {
       type: "video-publication",
       timeout: "365 days",
     });
     const published = await step.do("decide-and-publish-after-review", decideAndPublish);
+    if (published === "render") return await renderStage();
     return { status: published === "published" ? "published" : "stopped" };
   } catch (error) {
     if (error instanceof Superseded) return { status: "superseded" };

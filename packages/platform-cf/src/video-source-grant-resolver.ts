@@ -11,6 +11,7 @@ type GrantRow = {
   content_type: "video/mp4" | "video/quicktime";
   canonical_sha256: string;
   expires_at: Date;
+  identity_kind: "upload_version" | "content_etag";
 };
 
 export function makeVideoSourceGrantResolver(
@@ -26,7 +27,7 @@ export function makeVideoSourceGrantResolver(
           return yield* db.execute<GrantRow>({
             label: "video-source.resolve",
             readonly: true,
-            text: `SELECT physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at
+            text: `SELECT physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at,identity_kind
           FROM media_video_source_grants WHERE capability_sha256=$1
             AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP`,
             values: [digest],
@@ -40,6 +41,7 @@ export function makeVideoSourceGrantResolver(
         expiresAtMs: row.expires_at.getTime(),
         object: {
           key: row.physical_key,
+          identity: row.identity_kind,
           version: row.object_version,
           etag: row.etag,
           size: Number(row.size_bytes),

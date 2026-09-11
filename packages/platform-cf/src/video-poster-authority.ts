@@ -39,22 +39,30 @@ export const readVideoPosterAuthority = Effect.fn("readVideoPosterAuthority")(fu
   db: ControlPlaneTransaction,
   lock = false,
 ) {
+  // The poster is a frame of the sealed capture, extracted by the analysis the
+  // publication's decision accepted. Its key carries that decision's creation
+  // revision and its source is the sealed video revision, not the published
+  // video: for a song reference the published video is the rendered master.
   const result = yield* db.execute({
     label: "video-access.poster-authority",
-    text: `SELECT pub.operation_id, pub.video_revision::text, pub.creation_revision::text,
-        pub.analysis_revision::text,
-        a.artifact_ref, a.canonical_sha256, pub.canonical_video_sha256 AS source_sha256,
+    text: `SELECT pub.operation_id, pub.video_revision::text,
+        pub.decision_revision::text AS creation_revision, pub.analysis_revision::text,
+        a.artifact_ref, a.canonical_sha256, r.canonical_sha256 AS source_sha256,
         v.analysis_snapshot->'frames'->>'posterPolicyRevision' AS poster_policy_revision
       FROM media_publication_projections pub
+      JOIN media_video_revisions r ON r.submission_id=pub.submission_id
+        AND r.operation_id=pub.operation_id AND r.community_id=pub.community_id
+        AND r.video_revision=pub.video_revision
       JOIN media_video_derived_artifacts a ON a.submission_id=pub.submission_id
         AND a.video_revision=pub.video_revision AND a.analysis_revision=pub.analysis_revision
         AND a.artifact_kind='poster' AND a.artifact_ref=pub.poster_artifact_ref
       JOIN media_video_analyses v ON v.submission_id=pub.submission_id
         AND v.community_id=pub.community_id AND v.operation_id=pub.operation_id
         AND v.video_revision=pub.video_revision AND v.analysis_revision=pub.analysis_revision
-        AND v.canonical_video_sha256=pub.canonical_video_sha256
+        AND v.canonical_video_sha256=r.canonical_sha256
       WHERE pub.post_id=$1 AND pub.community_id=$2 AND pub.media_kind='video'
-        AND pub.poster_artifact_ref=$3${lock ? " FOR SHARE OF pub,a,v" : ""}`,
+        AND pub.decision_revision<=pub.creation_revision
+        AND pub.poster_artifact_ref=$3${lock ? " FOR SHARE OF pub,r,a,v" : ""}`,
     values: [input.postId, input.communityId, input.artifactRef],
     readonly: !lock,
   });

@@ -25,6 +25,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
   "packages/platform-cf/src/video-thumbnail-repository.pg.test.ts",
   "scripts/community-purchase-funding-plans.pg.test.ts",
+  "scripts/song-video-composed-flow.pg.test.ts",
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;
 
@@ -75,12 +76,15 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/optional-route-v2-migration.pg.test.ts",
   "packages/platform-cf/src/persona-repository.pg.test.ts",
   "packages/platform-cf/src/public-community-threads-repository.pg.test.ts",
+  "packages/platform-cf/src/song-video-interval-repository.pg.test.ts",
+  "packages/platform-cf/src/song-video-render-repository.pg.test.ts",
   "packages/platform-cf/src/study-v2-foundation.pg.test.ts",
   "packages/platform-cf/src/study-translation-repository.pg.test.ts",
   "packages/platform-cf/src/verification-completion-repository.pg.test.ts",
   "packages/platform-cf/src/verification-start-repository.pg.test.ts",
   "scripts/public-post-slug-backfill.pg.test.ts",
   "scripts/public-profile-backfill.pg.test.ts",
+  "scripts/song-video-render-host.pg.test.ts",
 ] as const;
 
 export const noBaselinePostgresTestSuites = [

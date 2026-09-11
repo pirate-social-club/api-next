@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.70.0",
+  "sourceBranch": "feat/song-video-persistence-publication",
+  "wireContract": "A video submission snapshot may report intent song_reference, and a blocked snapshot's reason_code may be song_reference_invalid, with an optional song_reason_code (song_not_published, song_audio_revision_missing, derivative_video_blocked or derivative_video_owner_only) naming why the referenced song can no longer be used. The public video projection's song_reference soundtrack now carries render_mode canonical_replace. The added enum value is breaking under Spec 000 section 5 and is covered by ten waivers the workspace_owner approved on 2026-09-10 against baseline 4335629e. Only song-reference submissions, which stay disabled, can produce it; this client must ship before they are enabled.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.70.0.tgz",
+    "sha256": "7e45019b955acc8a4374412593412327689159c87b278f1db3fa1688fc4e57fd"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.70.0",
+    "sourceIdentifier": "api-next-contracts@0ca838166c40bdb0df171b1927606eecdcab8a4c718a7acce15a37ada3f50978",
+    "openapiSha256": "0ca838166c40bdb0df171b1927606eecdcab8a4c718a7acce15a37ada3f50978",
+    "clientSha256": "0fb4cbd5a2a8655f5bb30e7e42af7948d137b2102d346a6cad2839031c16de4b"
+  },
+  "verification": {
+    "status": "Focused contract, application, PostgreSQL and composed song-video regressions passed locally; the full required gates and release are pending. Version 0.70.0 may collide with another lane cutting a release concurrently; whichever lands second takes the next version."
+  }
+}
