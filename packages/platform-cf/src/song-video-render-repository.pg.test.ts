@@ -866,4 +866,116 @@ suite("song video render persistence", () => {
       }),
     ).rejects.toThrow(/media_song_video_render_plans_one_per_submission/);
   }, 120_000);
+
+  test("registers an immutable object only for the plan's accepted master", async () => {
+    await bindPlan("plan-immutable-registration");
+    await startRenderAttempt(
+      client,
+      {
+        attemptId: "attempt-immutable-registration",
+        planId: "plan-immutable-registration",
+        generation: 1,
+      },
+      dispatchFor("attempt-immutable-registration"),
+    );
+    const sealed = await seal({
+      masterRevisionId: "master-immutable-registration",
+      attempt: {
+        attemptId: "attempt-immutable-registration",
+        planId: "plan-immutable-registration",
+        generation: 1,
+      },
+      sourceImmutableRef,
+      claimedSourceSha256: storedSourceSha256,
+      decisionClipStartSamples: basePlan.clipStartSamples,
+      decisionClipDurationSamples: basePlan.clipDurationSamples,
+    });
+    expect(sealed).toMatchObject({ sealed: true });
+    const master = await client.query<{
+      verified_object_key: string;
+      verified_object_version: string;
+      verified_object_etag: string;
+      master_sha256: string;
+      master_byte_length: string;
+    }>(
+      `SELECT verified_object_key,verified_object_version,verified_object_etag,
+              master_sha256,master_byte_length::text
+         FROM media_song_video_masters WHERE master_revision_id='master-immutable-registration'`,
+    );
+    const registered = master.rows[0];
+    if (registered === undefined) throw new Error("master missing");
+    const insertImmutable = (etag: string) =>
+      client.query(
+        `INSERT INTO media_immutable_objects
+           (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,operation_id,
+            destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id)
+         SELECT $1,community_id,actor_user_id,NULL,submission_id,operation_id,
+                $2,$3,$4,$5,'video/mp4',$6,author_persona_id
+           FROM media_immutable_objects WHERE immutable_ref=$7`,
+        [
+          registered.verified_object_key,
+          `r2://${registered.verified_object_key.replace("media://immutable/", "immutable/")}`,
+          etag,
+          registered.verified_object_version,
+          registered.master_byte_length,
+          registered.master_sha256,
+          sourceImmutableRef,
+        ],
+      );
+
+    // A sealed but unaccepted master is not an immutable object.
+    await expect(insertImmutable(registered.verified_object_etag)).rejects.toThrow(
+      "sealed master facts do not match the accepted master",
+    );
+    await acceptMaster(client, {
+      planId: "plan-immutable-registration",
+      masterRevisionId: "master-immutable-registration",
+      attemptId: "attempt-immutable-registration",
+    });
+    // An identity field that does not match the accepted master is refused.
+    await expect(insertImmutable("forged-etag")).rejects.toThrow(
+      "sealed master facts do not match the accepted master",
+    );
+    // The accepted facts register exactly once.
+    await insertImmutable(registered.verified_object_etag);
+    const rows = await client.query(
+      "SELECT count(*)::int AS n FROM media_immutable_objects WHERE immutable_ref=$1",
+      [registered.verified_object_key],
+    );
+    expect(rows.rows[0]?.n).toBe(1);
+  }, 120_000);
+
+  test("keeps one reservation-backed original per operation", async () => {
+    await bindPlan("plan-second-original");
+    // The fixture has already finalized its reservation, so the insert guard
+    // would refuse a second original before the index is reached. The index is
+    // what protects the claimed window, so the guard is bypassed for this
+    // insert; the FK to the reservation stays enforced.
+    await client.query(
+      "ALTER TABLE media_immutable_objects DISABLE TRIGGER media_immutable_object_insert_guard",
+    );
+    try {
+      await expect(
+        client.query(
+          `INSERT INTO media_immutable_objects
+             (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,operation_id,
+              destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id)
+           SELECT $1,community_id,actor_user_id,reservation_id,submission_id,operation_id,
+                  $2,$3,$4,size_bytes,content_type,canonical_sha256,author_persona_id
+             FROM media_immutable_objects WHERE immutable_ref=$5`,
+          [
+            `media://immutable/plan-second-original/video/2`,
+            "r2://plan-second-original/video/2",
+            "second-original-etag",
+            "second-original-version",
+            sourceImmutableRef,
+          ],
+        ),
+      ).rejects.toThrow(/media_immutable_objects_reservation_operation_key/);
+    } finally {
+      await client.query(
+        "ALTER TABLE media_immutable_objects ENABLE TRIGGER media_immutable_object_insert_guard",
+      );
+    }
+  }, 120_000);
 });
