@@ -1,5 +1,4 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
-import { mediaRecoveryRequiredSql } from "@pirate/application/media/media-recovery-eligibility";
 import type {
   MediaProcessingAnalysis,
   MediaProcessingAttemptLease,
@@ -19,6 +18,7 @@ import {
 } from "@pirate/contracts";
 import { canonicalJson } from "@pirate/domain";
 import { Data, Effect, type Layer, Option, Schema } from "effect";
+import { mediaRecoveryRequiredSql } from "../../application/src/media/media-recovery-eligibility.ts";
 import type {
   MediaSubmissionState,
   PublicationDecision,
