@@ -77,7 +77,7 @@ describe("media Workflow missing-instance sweep", () => {
 
   test("does not write for present, terminal, or stale candidates", async () => {
     const active = candidate();
-    const terminal = candidate({ operationId: "operation-2", status: "published", phase: null });
+    const terminal = candidate({ operationId: "operation-2", status: "blocked", phase: null });
     let replacementWrites = 0;
     const result = await sweepMissingMediaWorkflows({
       store: {
@@ -138,5 +138,31 @@ describe("media Workflow missing-instance sweep", () => {
       }),
     ).toEqual({ inspected: 1, present: 0, replaced: 0, stale: 0, limitReached: 1 });
     expect(replacementWrites).toBe(0);
+  });
+
+  test("inspects and replaces a published candidate from the pending-alignment policy", async () => {
+    let current = candidate({
+      status: "published",
+      phase: null,
+      postId: "media-post-operation-1",
+      publishedLyricsRevision: 1,
+    });
+    let replacementWrites = 0;
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [current],
+          loadAuthority: async () => current,
+          replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
+            if (expected.workflowRevision !== current.workflowRevision) return "stale";
+            replacementWrites += 1;
+            current = { ...current, workflowRevision: current.workflowRevision + 1 };
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "missing" },
+      }),
+    ).toEqual({ inspected: 1, present: 0, replaced: 1, stale: 0, limitReached: 0 });
+    expect(replacementWrites).toBe(1);
   });
 });

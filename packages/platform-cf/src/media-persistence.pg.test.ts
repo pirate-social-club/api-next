@@ -9,6 +9,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { mediaRecoveryRequiredSql } from "../../application/src/media/media-recovery-eligibility.ts";
 import type {
   MediaProcessingProviders,
   MediaProcessingStore,
@@ -50,7 +51,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 46;
+const testCount = 47;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4812,6 +4813,79 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       suffix: "replacement-unavailable",
       eventType: "workflow_replacement",
       result: { status: "unavailable", failureCode: "alignment_failed" },
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("shares published pending-alignment eligibility between SQL and candidates", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const lyricsAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        lyricsAnalysis: {
+          status: "ready",
+          lyricsRevision: 1,
+          explicitness: "not_explicit",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "eligibility_lyrics_evidence",
+          policyRevision: "eligibility_lyrics_policy",
+          adapterRevision: "eligibility_lyrics_adapter",
+        },
+        lyricsSafety: "allow",
+      };
+      const publishedDecision: PublicationDecision = {
+        ...decision,
+        creationRevision: 3,
+        lyricsRevision: 1,
+      };
+      await createThroughDecision(
+        connection,
+        publishedDecision,
+        lyricsAnalysis,
+        false,
+        "Fixture eligibility lyrics",
+      );
+      const postId = `media-post-${operation}`;
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "publish-eligibility",
+          ),
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId,
+          outbox: {
+            outboxEventId: "media_pg_eligibility_alignment_outbox",
+            effectIdentity: "media_pg_eligibility_alignment_effect",
+            payload: {
+              kind: "alignment",
+              submission_id: submission,
+              operation_id: operation,
+              post_id: postId,
+              lyrics_revision: 1,
+              workflow_revision: 2,
+              workflow_instance_id: `media-${operation}-r2`,
+            },
+          },
+        }),
+      );
+      const eligibleSql = `SELECT COUNT(*)::int AS count FROM media_post_submissions submission WHERE submission.workflow_revision>0 AND ${mediaRecoveryRequiredSql("submission")}`;
+      expect((await admin.query(eligibleSql)).rows[0]).toEqual({ count: 1 });
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      expect((await store.listWorkflowCandidates()).map((entry) => entry.submissionId)).toContain(
+        submission,
+      );
+      await admin.query(
+        "UPDATE media_alignment_projections SET status='unavailable',failure_code='alignment_failed',alignment_revision=alignment_revision+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+        [submission],
+      );
+      expect((await admin.query(eligibleSql)).rows[0]).toEqual({ count: 0 });
+      expect(
+        (await store.listWorkflowCandidates()).map((entry) => entry.submissionId),
+      ).not.toContain(submission);
     });
     completedTestCount += 1;
   }, 40_000);

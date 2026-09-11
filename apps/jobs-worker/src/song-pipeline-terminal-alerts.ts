@@ -1,6 +1,7 @@
 import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import type { Effect as EffectType, Layer } from "effect";
 import { Effect } from "effect";
+import { mediaRecoveryRequiredSql } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import type { AlertSink } from "../../../packages/platform-cf/src/alerts.ts";
 import { alertTick } from "../../../packages/platform-cf/src/alerts.ts";
 import {
@@ -102,9 +103,9 @@ const MEDIA_WORKFLOW_CEILING_ALERT_SQL = `SELECT submission.operation_id,
     ON launch.submission_id=submission.submission_id
    AND launch.operation_id=submission.operation_id
    AND launch.workflow_revision=submission.workflow_revision
-   AND launch.event_type IN ('analysis_launch','workflow_replacement')
+   AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
  WHERE submission.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
-   AND submission.status IN ('processing','action_required','manual_review')
+   AND ${mediaRecoveryRequiredSql("submission")}
    AND launch.state IN ('delivered','exhausted')
  ORDER BY submission.updated_at,submission.operation_id
  LIMIT 25`;
@@ -134,7 +135,7 @@ const dlqSql = (subsystem: Subsystem): string =>
           AND submission.workflow_revision=outbox.workflow_revision
         WHERE outbox.outbox_event_id=$1
           AND outbox.state<>'delivered'
-          AND submission.status IN ('processing','action_required','manual_review')
+          AND ${mediaRecoveryRequiredSql("submission")}
         LIMIT 1`
     : `SELECT operation.registration_operation_id AS operation_id,outbox.outbox_id,
               operation.workflow_revision::text AS workflow_revision,outbox.failure_code

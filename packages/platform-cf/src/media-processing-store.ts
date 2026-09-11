@@ -1,4 +1,5 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import { mediaRecoveryRequiredSql } from "@pirate/application/media/media-recovery-eligibility";
 import type {
   MediaProcessingAnalysis,
   MediaProcessingAttemptLease,
@@ -858,7 +859,7 @@ export function makeMediaProcessingStore(
         const db = yield* ControlPlaneDb;
         return yield* db.execute<Row>({
           label: "media-processing.workflow-candidates",
-          text: "SELECT submission_id,operation_id FROM media_post_submissions WHERE workflow_revision>0 AND status IN ('processing','action_required','manual_review') ORDER BY updated_at,submission_id LIMIT $1",
+          text: `SELECT s.submission_id,s.operation_id FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ORDER BY s.updated_at,s.submission_id LIMIT $1`,
           values: [workflowCandidateLimit],
           readonly: true,
         });

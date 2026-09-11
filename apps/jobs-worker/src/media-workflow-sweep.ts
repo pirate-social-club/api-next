@@ -1,3 +1,4 @@
+import { isMediaTerminalSubmissionStatus } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import type {
   MediaProcessingAuthority,
   MediaProcessingObserver,
@@ -23,13 +24,9 @@ export type MediaWorkflowSweepDependencies = Readonly<{
   readonly observe?: MediaProcessingObserver;
 }>;
 
-const terminalStatuses: ReadonlySet<MediaProcessingAuthority["status"]> = new Set([
-  "published",
-  "blocked",
-  "processing_failed",
-  "abandoned",
-]);
-
+// Published songs are not terminal for recovery: the shared candidate policy
+// lists them while their exact alignment is still pending, so the sweep must
+// inspect them and emit the replacement that routes back into alignment.
 const workflowInstanceId = (authority: MediaProcessingAuthority): string =>
   `media-${authority.operationId}-r${authority.workflowRevision}`;
 
@@ -43,7 +40,8 @@ export async function sweepMissingMediaWorkflows(
   const candidates = await dependencies.store.listWorkflowCandidates();
   const result = { inspected: 0, present: 0, replaced: 0, stale: 0, limitReached: 0 };
   for (const candidate of candidates) {
-    if (candidate.workflowRevision < 1 || terminalStatuses.has(candidate.status)) continue;
+    if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
+      continue;
     result.inspected += 1;
     if (songWorkflowReplacementLimitReached(candidate.workflowRevision)) {
       result.limitReached += 1;
@@ -61,7 +59,7 @@ export async function sweepMissingMediaWorkflows(
     if (
       authority === null ||
       authority.workflowRevision !== candidate.workflowRevision ||
-      terminalStatuses.has(authority.status)
+      isMediaTerminalSubmissionStatus(authority.status)
     ) {
       result.stale += 1;
       continue;
