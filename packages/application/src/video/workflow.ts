@@ -639,6 +639,10 @@ export async function runVideoAnalysisWorkflow(
                 return "failed";
               }
               const current = await render.store.readAttempt(attempt);
+              // The host may have sealed the attempt while this loop waited. A
+              // sealed attempt resumes at acceptance through the persisted-seal
+              // replay, so advance it now instead of waiting out the window.
+              if (current.phase === "sealed") return "completed";
               if (current.executionStartedAtMs === null) return "pending";
               return Date.parse(services.nowIso()) >=
                 current.executionStartedAtMs + VIDEO_WORKFLOW_CAPABILITY_MS

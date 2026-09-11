@@ -37,6 +37,14 @@ const suite = connectionString ? describe : describe.skip;
 
 const SONG_POST = "post-son-video-host";
 const SONG_ASSET = "media://immutable/media-operation-song-host/audio/1";
+const LOOP_SONG_POST = "post-son-video-host-loop";
+const LOOP_SONG_ASSET = "media://immutable/media-operation-song-host-loop/audio/1";
+const LOOP_RESERVATION = "media-reservation-00000000-0000-4000-8000-0000000000e2";
+const LOOP_SUBMISSION = "media-submission-host-loop";
+const LOOP_OPERATION = "media-operation-host-loop";
+const LOOP_PLAN = "plan-host-loop";
+const LOOP_ATTEMPT = "attempt-host-loop";
+const LOOP_MASTER_KEY = "media://immutable/song-video-masters/plan-host-loop/g1";
 const BUCKET = "media-immutable-originals";
 const CLIP_DURATION = 4 * 48_000;
 
@@ -87,6 +95,7 @@ suite("song-video render host entry point", () => {
   let planId = "";
   let attemptId = "";
   let songSha = "";
+  let songDurationSamples = 0;
   let operationId = "";
   let captureSha = "";
   let captureSize = 0;
@@ -137,6 +146,7 @@ suite("song-video render host entry point", () => {
     captureSha = await mediaSha256Bytes(capture);
     captureSize = capture.byteLength;
     const songDuration = await decodedSampleCount(directory, song);
+    songDurationSamples = songDuration;
     const songFixture: PublishedSongFixture = {
       songPostId: SONG_POST,
       communityId: videoCommunity,
@@ -150,6 +160,66 @@ suite("song-video render host entry point", () => {
       commercialRemixShareBps: 1_000,
     };
     await seedPublishedSongFixture(admin, songFixture);
+    // A second song is left unmeasured and a second plan is finalized, so the
+    // no-plan-id loop must measure first, then claim the submitted attempt.
+    const loopSong: PublishedSongFixture = {
+      ...songFixture,
+      songPostId: LOOP_SONG_POST,
+      audioAssetRef: LOOP_SONG_ASSET,
+      title: "Host suite loop song",
+      durationSamples: null,
+    };
+    await seedPublishedSongFixture(admin, loopSong);
+    await admin.query(
+      `INSERT INTO media_song_canonical_timings
+         (song_post_id,audio_revision,song_community_id,canonical_audio_sha256,state)
+       VALUES ($1,1,$2,$3,'pending')`,
+      [LOOP_SONG_POST, videoCommunity, songSha],
+    );
+    const loopIdentity = {
+      reservationId: LOOP_RESERVATION,
+      submissionId: LOOP_SUBMISSION,
+      operationId: LOOP_OPERATION,
+    };
+    await songReferenceFinalizedFixture(scoped.toString(), {
+      identity: loopIdentity,
+      planId: LOOP_PLAN,
+      song: songFixture,
+      clipStartSamples: 0,
+      clipDurationSamples: CLIP_DURATION,
+      source: { sha256: captureSha, sizeBytes: capture.byteLength },
+    });
+    await startRenderAttempt(
+      client,
+      { attemptId: LOOP_ATTEMPT, planId: LOOP_PLAN, generation: 1 },
+      {
+        outputObjectKey: LOOP_MASTER_KEY,
+        rendererIdentity: "ffmpeg-6.1.1-song-video-v1",
+        rendererPolicyRevision: 1,
+      },
+    );
+    await client.query(
+      `UPDATE media_song_video_render_attempts
+          SET execution_phase='submitting', execution_started_at=clock_timestamp()
+        WHERE attempt_id=$1`,
+      [LOOP_ATTEMPT],
+    );
+    // The guard admits the Worker's real transition, submitting -> submitted.
+    await client.query(
+      `UPDATE media_song_video_render_attempts SET execution_phase='submitted'
+        WHERE attempt_id=$1 AND execution_phase='submitting'`,
+      [LOOP_ATTEMPT],
+    );
+    objects.set(LOOP_SONG_ASSET.replace("media://immutable/", "immutable/"), {
+      bytes: song,
+      etag: "loop-song-etag",
+      version: "loop-song-version",
+    });
+    objects.set(`immutable/${LOOP_OPERATION}/video/1`, {
+      bytes: capture,
+      etag: `immutable-etag-${LOOP_SUBMISSION}`,
+      version: `immutable-version-${LOOP_SUBMISSION}`,
+    });
     planId = "plan-host-entry";
     attemptId = "attempt-host-entry";
     const identity = {
@@ -299,6 +369,43 @@ suite("song-video render host entry point", () => {
     return { exit, stdout: stdout.trim() };
   }
 
+  function loopEnv(): Record<string, string> {
+    const env = hostEnv();
+    delete env.SONG_VIDEO_RENDER_PLAN_ID;
+    delete env.SONG_VIDEO_RENDER_ATTEMPT_ID;
+    env.SONG_VIDEO_RENDER_HOST_ID = "host-loop-test";
+    env.SONG_VIDEO_RENDER_POLL_MS = "1000";
+    return env;
+  }
+
+  /** Runs the no-plan-id loop until it accepts, then stops it with SIGTERM. */
+  async function runHostLoop(): Promise<{ exit: number; stdout: string }> {
+    const child = Bun.spawn([process.execPath, "scripts/song-video-render-host.ts"], {
+      env: loopEnv(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let stdout = "";
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      stdout += decoder.decode(chunk.value, { stream: true });
+      const accepted = stdout
+        .split("\n")
+        .some((line) => line.includes('"status":"accepted"') && line.trimEnd().endsWith("}"));
+      if (accepted) break;
+    }
+    reader.releaseLock();
+    child.kill("SIGTERM");
+    const exit = await child.exited;
+    const stderr = await new Response(child.stderr).text();
+    if (exit !== 0) throw new Error(`host loop failed: ${stderr.slice(0, 200)}`);
+    return { exit, stdout: stdout.trim() };
+  }
+
   test("renders once, seals the master and refuses a duplicate invocation", async () => {
     const first = await runHost();
     expect(first.exit).toBe(0);
@@ -430,5 +537,40 @@ suite("song-video render host entry point", () => {
     if (captureEntry === undefined) throw new Error("capture object missing");
     captureEntry.version = "replacement-version";
     expect((await gateway(new Request(captureGrant.url, { method: "HEAD" }))).status).toBe(409);
+  }, 600_000);
+
+  test("the loop measures a pending song and claims without a plan id until signalled", async () => {
+    const result = await runHostLoop();
+    expect(result.exit).toBe(0);
+    const lines = result.stdout
+      .split("\n")
+      .filter((line) => line.trimEnd().endsWith("}"))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    // The first pass measured the unmeasured song, then claimed the submitted
+    // attempt with no plan id, and the signal stopped the loop cleanly.
+    expect(lines).toContainEqual(expect.objectContaining({ status: "measured", measured: 1 }));
+    expect(lines).toContainEqual(
+      expect.objectContaining({ plan_id: LOOP_PLAN, status: "accepted" }),
+    );
+    const timing = await client.query<{ state: string; duration_samples: string }>(
+      `SELECT state,duration_samples::text FROM media_song_canonical_timings
+        WHERE song_post_id=$1`,
+      [LOOP_SONG_POST],
+    );
+    expect(timing.rows[0]).toEqual({
+      state: "ready",
+      duration_samples: String(songDurationSamples),
+    });
+    const masters = await client.query(
+      "SELECT count(*)::int AS n FROM media_song_video_masters WHERE plan_id=$1",
+      [LOOP_PLAN],
+    );
+    expect(masters.rows[0]?.n).toBe(1);
+    const attempts = await client.query<{ state: string; execution_phase: string }>(
+      `SELECT state,execution_phase FROM media_song_video_render_attempts
+        WHERE attempt_id=$1`,
+      [LOOP_ATTEMPT],
+    );
+    expect(attempts.rows[0]).toEqual({ state: "accepted", execution_phase: "submitted" });
   }, 600_000);
 });
