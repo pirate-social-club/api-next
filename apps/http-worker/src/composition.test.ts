@@ -236,6 +236,18 @@ describe("HTTP production composition", () => {
     );
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+    // The song-video interval preflight is mounted with the other media routes:
+    // it asks for authentication rather than answering not found.
+    const preflight = await worker.request(
+      "https://worker.test/communities/community-1/song-video-interval-preflights",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://solid.test" },
+        body: "{}",
+      },
+    );
+    expect(preflight.status).toBe(401);
+    expect(await preflight.json()).toMatchObject({ error: { code: "auth_error" } });
   });
 
   test("default media composition constructs a real reference resolver without a test override", async () => {

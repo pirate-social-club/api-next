@@ -62932,6 +62932,597 @@
         ]
       }
     },
+    "/communities/{communityId}/song-video-interval-preflights": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdSongVideoIntervalPreflights",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "song_post_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "interval": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "clip_start_samples": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          },
+                          "clip_duration_samples": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "clip_start_samples",
+                          "clip_duration_samples"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "song_post_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "song_post_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "canonical_duration_samples": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "interval_policy": {
+                          "type": "object",
+                          "properties": {
+                            "policy_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "sample_rate_hz": {
+                              "type": "number",
+                              "enum": [
+                                48000
+                              ]
+                            },
+                            "min_clip_duration_samples": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "max_clip_duration_samples": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "policy_revision",
+                            "sample_rate_hz",
+                            "min_clip_duration_samples",
+                            "max_clip_duration_samples"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "interval": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "accepted": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "accepted"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "accepted": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        false
+                                      ]
+                                    },
+                                    "reason": {
+                                      "type": "string",
+                                      "enum": [
+                                        "invalid_interval",
+                                        "interval_too_short",
+                                        "interval_too_long",
+                                        "canonical_song_interval_uncovered"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "accepted",
+                                    "reason"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "song_post_id",
+                        "audio_revision",
+                        "canonical_duration_samples",
+                        "interval_policy",
+                        "interval"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "measuring"
+                          ]
+                        },
+                        "song_post_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "retry_after_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "song_post_id",
+                        "audio_revision",
+                        "retry_after_ms"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        },
+                        "song_post_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "canonical_timing_unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "song_post_id",
+                        "audio_revision",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "403": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "eligibility_failed"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "EligibilityFailed",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
     "/communities/{communityId}/media-upload-reservations": {
       "post": {
         "operationId": "post_communitiesCommunityIdMediaUploadReservations",
@@ -63180,6 +63771,33 @@
                                 "additionalProperties": false
                               }
                             ]
+                          },
+                          "audio_revision": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          },
+                          "clip_start_samples": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          },
+                          "clip_duration_samples": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -63191,7 +63809,10 @@
                           "expected_size_bytes",
                           "intent",
                           "song_post_id",
-                          "selected_from"
+                          "selected_from",
+                          "audio_revision",
+                          "clip_start_samples",
+                          "clip_duration_samples"
                         ],
                         "additionalProperties": false
                       }
@@ -63530,6 +64151,44 @@
                                 "observed_at"
                               ],
                               "additionalProperties": false
+                            },
+                            "interval": {
+                              "type": "object",
+                              "properties": {
+                                "clip_start_samples": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "clip_duration_samples": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "song_duration_samples": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "clip_start_samples",
+                                "clip_duration_samples",
+                                "song_duration_samples"
+                              ],
+                              "additionalProperties": false
                             }
                           },
                           "required": [
@@ -63542,7 +64201,8 @@
                             "upload",
                             "intent",
                             "song_reference",
-                            "reservation_policy_snapshot"
+                            "reservation_policy_snapshot",
+                            "interval"
                           ],
                           "additionalProperties": false
                         }
@@ -63809,6 +64469,7 @@
               }
             },
             "x-error-codes": [
+              "eligibility_failed",
               "membership_required"
             ]
           },
@@ -63924,6 +64585,7 @@
             },
             "x-error-codes": [
               "conflict",
+              "conflict",
               "conflict"
             ]
           },
@@ -63990,10 +64652,12 @@
           "AuthError",
           "BadRequest",
           "Conflict",
+          "EligibilityFailed",
           "IdempotencyConflict",
           "MembershipRequired",
           "NotFound",
-          "RateLimited"
+          "RateLimited",
+          "RetryableConflict"
         ]
       }
     },
@@ -64866,7 +65530,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -64887,7 +65551,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -64951,7 +65615,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -64972,7 +65636,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -65061,7 +65725,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -65082,7 +65746,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -65169,7 +65833,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -65190,7 +65854,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -65211,7 +65875,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -65222,6 +65887,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -65274,7 +65955,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -65295,7 +65976,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -65386,7 +66067,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -65407,7 +66088,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -65605,13 +66286,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -66855,7 +67537,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -66876,7 +67558,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -66940,7 +67622,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -66961,7 +67643,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -67050,7 +67732,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -67071,7 +67753,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -67158,7 +67840,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -67179,7 +67861,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -67200,7 +67882,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -67211,6 +67894,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -67263,7 +67962,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -67284,7 +67983,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -67375,7 +68074,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -67396,7 +68095,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -67594,13 +68293,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -68698,7 +69398,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -68719,7 +69419,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -68783,7 +69483,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -68804,7 +69504,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -68893,7 +69593,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -68914,7 +69614,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -69001,7 +69701,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -69022,7 +69722,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -69043,7 +69743,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -69054,6 +69755,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -69106,7 +69823,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -69127,7 +69844,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -69218,7 +69935,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -69239,7 +69956,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -69437,13 +70154,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -70620,7 +71338,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -70641,7 +71359,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -70705,7 +71423,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -70726,7 +71444,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -70815,7 +71533,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -70836,7 +71554,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -70923,7 +71641,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -70944,7 +71662,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -70965,7 +71683,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -70976,6 +71695,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -71028,7 +71763,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -71049,7 +71784,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -71140,7 +71875,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -71161,7 +71896,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -71359,13 +72094,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -71979,6 +72715,44 @@
                             "observed_at"
                           ],
                           "additionalProperties": false
+                        },
+                        "interval": {
+                          "type": "object",
+                          "properties": {
+                            "clip_start_samples": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "clip_duration_samples": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "song_duration_samples": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "clip_start_samples",
+                            "clip_duration_samples",
+                            "song_duration_samples"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -71991,7 +72765,8 @@
                         "upload",
                         "intent",
                         "song_reference",
-                        "reservation_policy_snapshot"
+                        "reservation_policy_snapshot",
+                        "interval"
                       ],
                       "additionalProperties": false
                     }
@@ -73111,7 +73886,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -73132,7 +73907,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -73196,7 +73971,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -73217,7 +73992,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -73306,7 +74081,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -73327,7 +74102,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -73414,7 +74189,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -73435,7 +74210,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -73456,7 +74231,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -73467,6 +74243,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -73519,7 +74311,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -73540,7 +74332,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -73631,7 +74423,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -73652,7 +74444,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -73850,13 +74642,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -74825,7 +75618,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -74846,7 +75639,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -74910,7 +75703,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -74931,7 +75724,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -75020,7 +75813,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -75041,7 +75834,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -75128,7 +75921,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -75149,7 +75942,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -75170,7 +75963,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -75181,6 +75975,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -75233,7 +76043,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -75254,7 +76064,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -75345,7 +76155,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -75366,7 +76176,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -75564,13 +76374,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -76639,7 +77450,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -76660,7 +77471,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -76724,7 +77535,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -76745,7 +77556,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -76834,7 +77645,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -76855,7 +77666,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -76942,7 +77753,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -76963,7 +77774,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -76984,7 +77795,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -76995,6 +77807,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -77047,7 +77875,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -77068,7 +77896,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -77159,7 +77987,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -77180,7 +78008,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -77378,13 +78206,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -77791,7 +78620,7 @@
                           ]
                         },
                         "intent": {
-                          "$ref": "#/$defs/Literal_"
+                          "$ref": "#/$defs/Union_"
                         },
                         "creation_revision": {
                           "type": "integer",
@@ -77812,7 +78641,7 @@
                           ]
                         },
                         "caption": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -77884,7 +78713,7 @@
                           ]
                         },
                         "intent": {
-                          "$ref": "#/$defs/Literal_"
+                          "$ref": "#/$defs/Union_"
                         },
                         "creation_revision": {
                           "type": "integer",
@@ -77905,7 +78734,7 @@
                           ]
                         },
                         "caption": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -77994,7 +78823,7 @@
                           ]
                         },
                         "intent": {
-                          "$ref": "#/$defs/Literal_"
+                          "$ref": "#/$defs/Union_"
                         },
                         "creation_revision": {
                           "type": "integer",
@@ -78015,7 +78844,7 @@
                           ]
                         },
                         "caption": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -78102,7 +78931,7 @@
                           ]
                         },
                         "intent": {
-                          "$ref": "#/$defs/Literal_"
+                          "$ref": "#/$defs/Union_"
                         },
                         "creation_revision": {
                           "type": "integer",
@@ -78123,7 +78952,7 @@
                           ]
                         },
                         "caption": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -78144,7 +78973,8 @@
                           "enum": [
                             "known_recording_requires_song_reference",
                             "policy_violation",
-                            "rights_violation"
+                            "rights_violation",
+                            "song_reference_invalid"
                           ]
                         },
                         "song_post_id": {
@@ -78155,6 +78985,22 @@
                                 {
                                   "minLength": 1
                                 }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "song_reason_code": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "song_not_published",
+                                "song_audio_revision_missing",
+                                "derivative_video_blocked",
+                                "derivative_video_owner_only"
                               ]
                             },
                             {
@@ -78207,7 +79053,7 @@
                           ]
                         },
                         "intent": {
-                          "$ref": "#/$defs/Literal_"
+                          "$ref": "#/$defs/Union_"
                         },
                         "creation_revision": {
                           "type": "integer",
@@ -78228,7 +79074,7 @@
                           ]
                         },
                         "caption": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -78319,7 +79165,7 @@
                           ]
                         },
                         "intent": {
-                          "$ref": "#/$defs/Literal_"
+                          "$ref": "#/$defs/Union_"
                         },
                         "creation_revision": {
                           "type": "integer",
@@ -78340,7 +79186,7 @@
                           ]
                         },
                         "caption": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -78435,13 +79281,14 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Literal_": {
+                    "Union_": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_": {
+                    "Union_1": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -79510,7 +80357,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79531,7 +80378,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79595,7 +80442,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79616,7 +80463,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79705,7 +80552,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79726,7 +80573,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79813,7 +80660,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79834,7 +80681,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79855,7 +80702,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -79866,6 +80714,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -79918,7 +80782,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79939,7 +80803,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -80030,7 +80894,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -80051,7 +80915,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -80249,13 +81113,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -81627,7 +82492,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81648,7 +82513,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81712,7 +82577,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81733,7 +82598,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81822,7 +82687,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81843,7 +82708,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81930,7 +82795,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81951,7 +82816,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81972,7 +82837,8 @@
                               "enum": [
                                 "known_recording_requires_song_reference",
                                 "policy_violation",
-                                "rights_violation"
+                                "rights_violation",
+                                "song_reference_invalid"
                               ]
                             },
                             "song_post_id": {
@@ -81983,6 +82849,22 @@
                                     {
                                       "minLength": 1
                                     }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
                                   ]
                                 },
                                 {
@@ -82035,7 +82917,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -82056,7 +82938,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -82147,7 +83029,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Literal_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -82168,7 +83050,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "updated_at": {
                               "type": "string",
@@ -82366,13 +83248,14 @@
                         "publish"
                       ]
                     },
-                    "Literal_": {
+                    "Union_1": {
                       "type": "string",
                       "enum": [
-                        "original_audio"
+                        "original_audio",
+                        "song_reference"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -85373,11 +86256,18 @@
                                                 "song_author_persona_id"
                                               ],
                                               "additionalProperties": false
+                                            },
+                                            "render_mode": {
+                                              "type": "string",
+                                              "enum": [
+                                                "canonical_replace"
+                                              ]
                                             }
                                           },
                                           "required": [
                                             "kind",
-                                            "song_reference"
+                                            "song_reference",
+                                            "render_mode"
                                           ],
                                           "additionalProperties": false
                                         }
@@ -94933,11 +95823,18 @@
                                                           "song_author_persona_id"
                                                         ],
                                                         "additionalProperties": false
+                                                      },
+                                                      "render_mode": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "canonical_replace"
+                                                        ]
                                                       }
                                                     },
                                                     "required": [
                                                       "kind",
-                                                      "song_reference"
+                                                      "song_reference",
+                                                      "render_mode"
                                                     ],
                                                     "additionalProperties": false
                                                   }
@@ -97680,11 +98577,18 @@
                                                       "song_author_persona_id"
                                                     ],
                                                     "additionalProperties": false
+                                                  },
+                                                  "render_mode": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "canonical_replace"
+                                                    ]
                                                   }
                                                 },
                                                 "required": [
                                                   "kind",
-                                                  "song_reference"
+                                                  "song_reference",
+                                                  "render_mode"
                                                 ],
                                                 "additionalProperties": false
                                               }
@@ -101865,11 +102769,18 @@
                                                           "song_author_persona_id"
                                                         ],
                                                         "additionalProperties": false
+                                                      },
+                                                      "render_mode": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "canonical_replace"
+                                                        ]
                                                       }
                                                     },
                                                     "required": [
                                                       "kind",
-                                                      "song_reference"
+                                                      "song_reference",
+                                                      "render_mode"
                                                     ],
                                                     "additionalProperties": false
                                                   }
@@ -147765,11 +148676,18 @@
                                                     "song_author_persona_id"
                                                   ],
                                                   "additionalProperties": false
+                                                },
+                                                "render_mode": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "canonical_replace"
+                                                  ]
                                                 }
                                               },
                                               "required": [
                                                 "kind",
-                                                "song_reference"
+                                                "song_reference",
+                                                "render_mode"
                                               ],
                                               "additionalProperties": false
                                             }
@@ -151219,11 +152137,18 @@
                                                     "song_author_persona_id"
                                                   ],
                                                   "additionalProperties": false
+                                                },
+                                                "render_mode": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "canonical_replace"
+                                                  ]
                                                 }
                                               },
                                               "required": [
                                                 "kind",
-                                                "song_reference"
+                                                "song_reference",
+                                                "render_mode"
                                               ],
                                               "additionalProperties": false
                                             }

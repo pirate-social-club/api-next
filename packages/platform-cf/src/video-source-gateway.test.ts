@@ -16,6 +16,7 @@ const grant: VideoSourceGrant = {
   expiresAtMs: 2_000,
   object: {
     key: objectKey,
+    identity: "upload_version",
     version: "sealed-version",
     etag: "sealed-etag",
     size: bytes.byteLength,
@@ -23,6 +24,32 @@ const grant: VideoSourceGrant = {
     canonicalSha256,
   },
 };
+
+/** A master-shaped grant: content-identified, with an unrelated R2 version. */
+const masterGrant: VideoSourceGrant = {
+  ...grant,
+  object: { ...grant.object, identity: "content_etag", version: "sealed-etag" },
+};
+
+function masterBucket(etag: string): VideoSourceBucket {
+  const identity = {
+    key: objectKey,
+    version: "an-r2-upload-version",
+    etag,
+    size: bytes.byteLength,
+    checksums: { sha256: Uint8Array.from({ length: 32 }, () => 0xab).buffer },
+    httpMetadata: { contentType: "video/mp4" },
+  };
+  return {
+    head: async () => identity,
+    get: async (_key, options) => {
+      const range = options.range;
+      const selected =
+        range === undefined ? bytes : bytes.slice(range.offset, range.offset + range.length);
+      return { ...identity, body: stream(selected) };
+    },
+  };
+}
 
 function stream(value: Uint8Array): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -147,6 +174,32 @@ describe("sealed video source gateway", () => {
     expect(logs).toEqual([
       { event: "source_request", method: "GET", outcome: "served", status: 206 },
     ]);
+  });
+
+  test("serves a master by content ETag despite a different R2 version", async () => {
+    const logs: VideoSourceGatewayLogEvent[] = [];
+    const gateway = makeVideoSourceGateway({
+      bucket: masterBucket('"sealed-etag"'),
+      grants: { resolve: async () => masterGrant },
+      now: () => 1_000,
+      logger: (event) => logs.push(event),
+    });
+    const url = makeVideoSourceUrl("https://media.example", capability);
+    expect((await gateway(new Request(url, { method: "HEAD" }))).status).toBe(200);
+    const ranged = await gateway(new Request(url, { headers: { range: "bytes=2-5" } }));
+    expect(ranged.status).toBe(206);
+    expect(await ranged.text()).toBe("2345");
+  });
+
+  test("refuses a master whose content ETag changed", async () => {
+    const gateway = makeVideoSourceGateway({
+      bucket: masterBucket('"replacement-etag"'),
+      grants: { resolve: async () => masterGrant },
+      now: () => 1_000,
+    });
+    expect(
+      (await gateway(new Request(makeVideoSourceUrl("https://media.example", capability)))).status,
+    ).toBe(409);
   });
 
   test("constructs only credential-free HTTPS source URLs", () => {

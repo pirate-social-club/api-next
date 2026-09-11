@@ -79,6 +79,7 @@ suite("video source grants PostgreSQL authority", () => {
         expiresAtMs: request.expiresAtMs,
         object: {
           key: request.objectKey,
+          identity: "upload_version",
           version: "immutable-version",
           etag: "immutable-etag",
           size: 1024,

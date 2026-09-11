@@ -24,6 +24,7 @@ import {
   BadRequest,
   CommentsLocked,
   Conflict,
+  EligibilityFailed,
   GateUnsatisfied,
   IdempotencyConflict,
   InternalError,
@@ -32,6 +33,7 @@ import {
   PostVoteIdempotencyConflict,
   RateLimited,
   ReplyDepthExceeded,
+  RetryableConflict,
   UploadObjectMissing,
 } from "./errors.ts";
 import { LanguageTagV1 } from "./language.ts";
@@ -623,6 +625,8 @@ export const VideoSoundtrackProjectionV1 = Schema.Union([
       song_title: Schema.String,
       song_author_persona_id: PersonaIdV1,
     }),
+    /** The soundtrack is the canonical song interval; the capture's audio is discarded. */
+    render_mode: Schema.Literal("canonical_replace"),
   }),
 ]);
 export type VideoSoundtrackProjectionV1 = Schema.Schema.Type<typeof VideoSoundtrackProjectionV1>;
@@ -765,6 +769,9 @@ const NonNegativeRevision = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const NonNegativeSafeInteger = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+);
 export const SONG_LYRICS_TEXT_MAX_LENGTH = 200_000 as const;
 const SongLyricsText = Schema.NonEmptyString.check(Schema.isMaxLength(SONG_LYRICS_TEXT_MAX_LENGTH));
 const SongAuthorString = Schema.NonEmptyString;
@@ -869,9 +876,85 @@ export const ReserveVideoUploadV1 = Schema.Union([
       Schema.Struct({ kind: Schema.Literal("library") }),
       Schema.Struct({ kind: Schema.Literal("feed"), origin_post_id: SongAuthorString }),
     ]),
+    /**
+     * The audio revision the author selected against, as returned by preflight.
+     * Reservation refuses it if the song has moved on, rather than freezing an
+     * interval chosen on different audio.
+     */
+    audio_revision: PositiveRevision,
+    /** The selected interval, half-open, in integer 48 kHz samples. */
+    clip_start_samples: NonNegativeSafeInteger,
+    clip_duration_samples: PositiveSafeInteger,
   }),
 ]);
 export type ReserveVideoUploadV1 = Schema.Schema.Type<typeof ReserveVideoUploadV1>;
+
+/** Why an interval cannot be rendered from the canonical song. */
+export const SongVideoIntervalRefusalV1 = Schema.Literals([
+  "invalid_interval",
+  "interval_too_short",
+  "interval_too_long",
+  "canonical_song_interval_uncovered",
+]);
+
+/**
+ * Interval preflight for a song-backed video. The server answers with the
+ * canonical song's own timing — its audio revision and probed duration in
+ * 48 kHz samples — so a client never supplies either. It is advice for choosing
+ * an interval: reservation revalidates every value itself, and neither
+ * establishes that a recording made later will be usable.
+ */
+export const SongVideoIntervalPreflightInputV1 = Schema.Struct({
+  song_post_id: SongAuthorString,
+  interval: Schema.optional(
+    Schema.Struct({
+      clip_start_samples: NonNegativeSafeInteger,
+      clip_duration_samples: PositiveSafeInteger,
+    }),
+  ),
+});
+export type SongVideoIntervalPreflightInputV1 = Schema.Schema.Type<
+  typeof SongVideoIntervalPreflightInputV1
+>;
+
+const SongVideoIntervalPolicyV1 = Schema.Struct({
+  policy_revision: PositiveRevision,
+  sample_rate_hz: Schema.Literal(48_000),
+  min_clip_duration_samples: PositiveSafeInteger,
+  max_clip_duration_samples: PositiveSafeInteger,
+});
+
+export const SongVideoIntervalPreflightV1 = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("ready"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    canonical_duration_samples: PositiveSafeInteger,
+    interval_policy: SongVideoIntervalPolicyV1,
+    /** The verdict on a proposed interval, or null when none was proposed. */
+    interval: Schema.NullOr(
+      Schema.Union([
+        Schema.Struct({ accepted: Schema.Literal(true) }),
+        Schema.Struct({ accepted: Schema.Literal(false), reason: SongVideoIntervalRefusalV1 }),
+      ]),
+    ),
+  }),
+  /** The canonical duration has not been measured yet for this revision. */
+  Schema.Struct({
+    state: Schema.Literal("measuring"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    retry_after_ms: PositiveSafeInteger,
+  }),
+  /** Measurement failed; this revision cannot back a video until remeasured. */
+  Schema.Struct({
+    state: Schema.Literal("unavailable"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    reason: Schema.Literal("canonical_timing_unavailable"),
+  }),
+]);
+export type SongVideoIntervalPreflightV1 = Schema.Schema.Type<typeof SongVideoIntervalPreflightV1>;
 
 const VideoMultipartPartV1 = Schema.Struct({
   part_number: PositiveSafeInteger,
@@ -912,6 +995,12 @@ export const VideoUploadReservationV1 = Schema.Union([
       owner_policy_hash: Sha256Hex,
       derivative_video: Schema.Literals(["allowed", "owner_only", "blocked"]),
       observed_at: SongAuthorString,
+    }),
+    /** The render plan's interval as frozen, against the canonical duration. */
+    interval: Schema.Struct({
+      clip_start_samples: NonNegativeSafeInteger,
+      clip_duration_samples: PositiveSafeInteger,
+      song_duration_samples: PositiveSafeInteger,
     }),
   }),
 ]);
@@ -1192,7 +1281,8 @@ const VideoMediaSubmissionCommon = {
   author_persona: PublicPersonaV1,
   href: SongAuthorString,
   track: Schema.Literal("video"),
-  intent: Schema.Literal("original_audio"),
+  /** Immutable from reservation; a song-reference snapshot must never read as original audio. */
+  intent: Schema.Literals(["original_audio", "song_reference"]),
   creation_revision: PositiveRevision,
   video_revision: NonNegativeRevision,
   caption: Schema.NullOr(Schema.String.check(Schema.isMaxLength(5_000))),
@@ -1232,8 +1322,18 @@ export const VideoPostSubmissionV1 = Schema.Union([
       "known_recording_requires_song_reference",
       "policy_violation",
       "rights_violation",
+      "song_reference_invalid",
     ]),
     song_post_id: Schema.optional(SongAuthorString),
+    /** Present with `song_reference_invalid`: why the referenced song can no longer be used. */
+    song_reason_code: Schema.optional(
+      Schema.Literals([
+        "song_not_published",
+        "song_audio_revision_missing",
+        "derivative_video_blocked",
+        "derivative_video_owner_only",
+      ]),
+    ),
   }),
   Schema.Struct({
     ...VideoMediaSubmissionCommon,
@@ -1801,6 +1901,16 @@ export const CreatePost = endpoint({
 
 // --- song media -----------------------------------------------------------
 
+export const PreflightSongVideoInterval = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/song-video-interval-preflights",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathCommunity, body: SongVideoIntervalPreflightInputV1 },
+  response: SongVideoIntervalPreflightV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, EligibilityFailed, NotFound, RateLimited],
+});
+
 export const CreateMediaUploadReservation = endpoint({
   method: "POST",
   path: "/communities/:communityId/media-upload-reservations",
@@ -1812,10 +1922,12 @@ export const CreateMediaUploadReservation = endpoint({
     AuthError,
     BadRequest,
     Conflict,
+    EligibilityFailed,
     IdempotencyConflict,
     MembershipRequired,
     NotFound,
     RateLimited,
+    RetryableConflict,
   ],
 });
 
@@ -2113,6 +2225,7 @@ export const v1Registry = {
   FollowCommunity,
   UnfollowCommunity,
   CreatePost,
+  PreflightSongVideoInterval,
   CreateMediaUploadReservation,
   CreateMediaPostSubmission,
   BindMediaPostSubmissionTerms,

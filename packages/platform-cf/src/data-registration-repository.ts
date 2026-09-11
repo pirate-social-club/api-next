@@ -4,6 +4,11 @@ import {
   type ControlPlaneTransaction,
 } from "@pirate/application";
 import {
+  type DataAttachedLicense,
+  type DataLicensePreset,
+  type DataParentReference,
+  type DataParentResolution,
+  type DataReceiptCoordinates,
   type DataRegistrationArtifact,
   type DataRegistrationAttemptFailureCode,
   type DataRegistrationAttemptState,
@@ -29,6 +34,7 @@ type Row = Readonly<Record<string, unknown>>;
 
 const OPERATION_STATES = new Set<DataRegistrationOperationState>([
   "pending",
+  "waiting_parent",
   "signing",
   "broadcast",
   "confirming",
@@ -57,7 +63,18 @@ const OPERATION_FAILURE_CODES = new Set<DataRegistrationFailureCode>([
   "chain_reorganization",
   "invalid_receipt",
   "configuration_invalid",
+  "parent_registration_failed",
+  "parent_license_mismatch",
+  "parent_derivatives_not_permitted",
+  "parent_terms_unrecorded",
 ]);
+const LICENSE_PRESETS = new Set<DataLicensePreset>([
+  "non-commercial",
+  "commercial-use",
+  "commercial-remix",
+]);
+const TERMS_ID = /^[1-9][0-9]{0,77}$/u;
+const LOWER_ADDRESS = /^0x[0-9a-f]{40}$/u;
 const ATTEMPT_FAILURE_CODES = new Set<DataRegistrationAttemptFailureCode>([
   "signing_failed",
   "broadcast_failed",
@@ -83,6 +100,7 @@ export class DataRegistrationRepositoryError extends Data.TaggedError(
     | "receipt"
     | "confirm"
     | "failure"
+    | "parent"
     | "outbox";
   readonly reason:
     | "invalid-input"
@@ -183,11 +201,12 @@ const operationFromRow = (row: Row): DataRegistrationOperation => {
     (failureCode !== null && !OPERATION_FAILURE_CODES.has(failureCode)) ||
     !(
       (mediaKind === "song" && ["original", "derivative"].includes(rightsBasis)) ||
-      (mediaKind === "video" && rightsBasis === "original")
+      (mediaKind === "video" && ["original", "derivative"].includes(rightsBasis))
     )
   ) {
     throw new Error("invalid operation state");
   }
+  const attachedTermsId = nullableText(row, "attached_license_terms_id");
   return {
     registrationOperationId: text(row, "registration_operation_id"),
     communityId: text(row, "community_id"),
@@ -217,6 +236,127 @@ const operationFromRow = (row: Row): DataRegistrationOperation => {
     confirmedAt: nullableInstant(row, "confirmed_at"),
     failureCode,
     failureEvidenceRef: nullableText(row, "failure_evidence_ref"),
+    attachedLicense:
+      attachedTermsId === null
+        ? null
+        : attachedLicenseFrom({
+            licenseTemplate: text(row, "attached_license_template"),
+            licenseTermsId: attachedTermsId,
+            preset: text(row, "attached_license_preset"),
+            commercialRevShareBps: nullableInteger(row, "attached_commercial_rev_share_bps"),
+            attachment: {
+              transactionHash: text(row, "terms_attachment_transaction_hash"),
+              blockNumber: bigint(row, "terms_attachment_block_number"),
+              blockHash: text(row, "terms_attachment_block_hash"),
+              logIndex: integer(row, "terms_attachment_log_index"),
+            },
+          }),
+  };
+};
+
+const validCoordinates = (value: DataReceiptCoordinates): boolean =>
+  validTransactionHash(value.transactionHash) &&
+  value.blockNumber >= 0n &&
+  validTransactionHash(value.blockHash) &&
+  Number.isSafeInteger(value.logIndex) &&
+  value.logIndex >= 0;
+
+/** Terms evidence, with the share present exactly under commercial-remix. */
+const validLicense = (
+  value: Readonly<{
+    licenseTemplate: string;
+    licenseTermsId: string;
+    preset: string;
+    commercialRevShareBps: number | null;
+  }>,
+): boolean =>
+  LOWER_ADDRESS.test(value.licenseTemplate) &&
+  TERMS_ID.test(value.licenseTermsId) &&
+  LICENSE_PRESETS.has(value.preset as DataLicensePreset) &&
+  (value.preset === "commercial-remix") === (value.commercialRevShareBps !== null) &&
+  (value.commercialRevShareBps === null ||
+    (Number.isSafeInteger(value.commercialRevShareBps) &&
+      value.commercialRevShareBps >= 0 &&
+      value.commercialRevShareBps <= 10_000));
+
+const attachedLicenseFrom = (
+  value: Omit<DataAttachedLicense, "preset"> & Readonly<{ preset: string }>,
+): DataAttachedLicense => {
+  if (!validLicense(value) || !validCoordinates(value.attachment)) {
+    throw new Error("invalid attached license");
+  }
+  return { ...value, preset: value.preset as DataLicensePreset };
+};
+
+const parentReferenceFromRow = (row: Row): DataParentReference => {
+  const preset = text(row, "expected_parent_license_preset");
+  const share = nullableInteger(row, "expected_parent_commercial_rev_share_bps");
+  const derivativeVideo = text(row, "owner_derivative_video");
+  if (
+    text(row, "relationship") !== "references_song" ||
+    !LICENSE_PRESETS.has(preset as DataLicensePreset) ||
+    (preset === "commercial-remix") !== (share !== null) ||
+    (derivativeVideo !== "allowed" && derivativeVideo !== "owner_only") ||
+    !HASH.test(text(row, "owner_policy_hash"))
+  ) {
+    throw new Error("invalid parent reference");
+  }
+  return {
+    registrationOperationId: text(row, "registration_operation_id"),
+    relationship: "references_song",
+    parentAssetId: text(row, "parent_asset_id"),
+    parentRegistrationOperationId: text(row, "parent_registration_operation_id"),
+    expectedLicense: {
+      preset: preset as DataLicensePreset,
+      commercialRevShareBps: share,
+    },
+    ownerPolicy: {
+      revision: bigint(row, "owner_policy_revision"),
+      hash: text(row, "owner_policy_hash"),
+      derivativeVideo: derivativeVideo as DataParentReference["ownerPolicy"]["derivativeVideo"],
+    },
+  };
+};
+
+const parentResolutionFromRow = (row: Row): DataParentResolution => {
+  const consumedLicense = {
+    licenseTemplate: text(row, "license_template"),
+    licenseTermsId: text(row, "license_terms_id"),
+    preset: text(row, "license_preset"),
+    commercialRevShareBps: nullableInteger(row, "commercial_rev_share_bps"),
+  };
+  const parentRegistration = {
+    transactionHash: text(row, "parent_registration_transaction_hash"),
+    blockNumber: bigint(row, "parent_registration_block_number"),
+    blockHash: text(row, "parent_registration_block_hash"),
+    logIndex: integer(row, "parent_registration_log_index"),
+  };
+  const termsAttachment = {
+    transactionHash: text(row, "terms_attachment_transaction_hash"),
+    blockNumber: bigint(row, "terms_attachment_block_number"),
+    blockHash: text(row, "terms_attachment_block_hash"),
+    logIndex: integer(row, "terms_attachment_log_index"),
+  };
+  if (
+    !validLicense(consumedLicense) ||
+    !validCoordinates(parentRegistration) ||
+    !validCoordinates(termsAttachment) ||
+    !LOWER_ADDRESS.test(text(row, "parent_ip_id"))
+  ) {
+    throw new Error("invalid parent resolution");
+  }
+  return {
+    registrationOperationId: text(row, "registration_operation_id"),
+    parentRegistrationOperationId: text(row, "parent_registration_operation_id"),
+    parentRegistrationRevision: bigint(row, "parent_registration_revision"),
+    parentIpId: text(row, "parent_ip_id"),
+    consumedLicense: {
+      ...consumedLicense,
+      preset: consumedLicense.preset as DataLicensePreset,
+    },
+    parentRegistration,
+    termsAttachment,
+    resolvedAt: instant(row, "resolved_at"),
   };
 };
 
@@ -333,8 +473,26 @@ const OPERATION_SELECT = `
          canonical_audio_sha256,media_kind,rights_basis,state,workflow_revision,workflow_instance_id,
          current_attempt_id,registered_ip_id,confirmed_transaction_hash,
          confirmed_block_number,confirmed_block_hash,confirmed_log_index,
-         confirmed_at,failure_code,failure_evidence_ref
+         confirmed_at,failure_code,failure_evidence_ref,
+         attached_license_template,attached_license_terms_id,attached_license_preset,
+         attached_commercial_rev_share_bps,terms_attachment_transaction_hash,
+         terms_attachment_block_number,terms_attachment_block_hash,terms_attachment_log_index
     FROM data_registration_operations`;
+const PARENT_REFERENCE_SELECT = `
+  SELECT registration_operation_id,relationship,parent_asset_id,
+         parent_registration_operation_id,expected_parent_license_preset,
+         expected_parent_commercial_rev_share_bps,owner_policy_revision,
+         owner_policy_hash,owner_derivative_video
+    FROM data_registration_parent_references`;
+const PARENT_RESOLUTION_SELECT = `
+  SELECT registration_operation_id,parent_registration_operation_id,
+         parent_registration_revision,parent_ip_id,license_template,license_terms_id,
+         license_preset,commercial_rev_share_bps,parent_registration_transaction_hash,
+         parent_registration_block_number,parent_registration_block_hash,
+         parent_registration_log_index,terms_attachment_transaction_hash,
+         terms_attachment_block_number,terms_attachment_block_hash,
+         terms_attachment_log_index,resolved_at
+    FROM data_registration_parent_resolutions`;
 const ARTIFACT_SELECT = `
   SELECT artifact_id,registration_operation_id,artifact_kind,source_ref,
          media_type,byte_length,canonical_sha256,canonicalization_revision
@@ -1309,7 +1467,11 @@ export function makeDataRegistrationStore(
       ].every((value) => validId(value)) ||
       !validTransactionHash(observation.ipMetadataHash) ||
       !validTransactionHash(observation.nftMetadataHash) ||
-      !validInstant(observation.observedAt)
+      !validInstant(observation.observedAt) ||
+      (observation.attachedLicense !== null &&
+        (!validLicense(observation.attachedLicense) ||
+          !validCoordinates(observation.attachedLicense.attachment) ||
+          observation.attachedLicense.attachment.transactionHash !== observation.transactionHash))
     ) {
       return Promise.reject(fail("confirm", "invalid-input", observation.registrationOperationId));
     }
@@ -1329,6 +1491,12 @@ export function makeDataRegistrationStore(
                 fail("confirm", "not-found", observation.registrationOperationId),
               );
             }
+            // A song confirms with the terms it attached; a video attaches none.
+            if ((operation.mediaKind === "song") !== (observation.attachedLicense !== null)) {
+              return yield* Effect.fail(
+                fail("confirm", "invalid-input", observation.registrationOperationId),
+              );
+            }
             if (
               attempt.registrationOperationId !== observation.registrationOperationId ||
               attempt.transactionHash !== observation.transactionHash
@@ -1344,7 +1512,8 @@ export function makeDataRegistrationStore(
                 operation.confirmedTransactionHash !== observation.transactionHash ||
                 operation.confirmedBlockNumber !== observation.blockNumber ||
                 operation.confirmedBlockHash !== observation.blockHash ||
-                operation.confirmedLogIndex !== observation.logIndex
+                operation.confirmedLogIndex !== observation.logIndex ||
+                !sameAttachedLicense(operation.attachedLicense, observation.attachedLicense)
               ) {
                 return yield* Effect.fail(
                   fail("confirm", "identity-conflict", observation.registrationOperationId),
@@ -1432,7 +1601,18 @@ export function makeDataRegistrationStore(
             );
             const operationUpdate = yield* transaction.execute({
               label: "data-registration.operation.confirm",
-              text: "UPDATE data_registration_operations SET state='registered',current_attempt_id=$2,registered_ip_id=$3,confirmed_transaction_hash=$4,confirmed_block_number=$5,confirmed_block_hash=$6,confirmed_log_index=$7,confirmed_at=$8,failure_code=NULL,failure_evidence_ref=NULL,updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND state IN ('confirming','reconciliation_required','failed')",
+              text: `UPDATE data_registration_operations
+                        SET state='registered',current_attempt_id=$2,registered_ip_id=$3,
+                            confirmed_transaction_hash=$4,confirmed_block_number=$5,
+                            confirmed_block_hash=$6,confirmed_log_index=$7,confirmed_at=$8,
+                            failure_code=NULL,failure_evidence_ref=NULL,
+                            attached_license_template=$9,attached_license_terms_id=$10,
+                            attached_license_preset=$11,attached_commercial_rev_share_bps=$12,
+                            terms_attachment_transaction_hash=$13,terms_attachment_block_number=$14,
+                            terms_attachment_block_hash=$15,terms_attachment_log_index=$16,
+                            updated_at=clock_timestamp()
+                      WHERE registration_operation_id=$1
+                        AND state IN ('confirming','reconciliation_required','failed')`,
               values: [
                 observation.registrationOperationId,
                 observation.submissionAttemptId,
@@ -1442,6 +1622,14 @@ export function makeDataRegistrationStore(
                 observation.blockHash,
                 observation.logIndex,
                 observation.observedAt,
+                observation.attachedLicense?.licenseTemplate ?? null,
+                observation.attachedLicense?.licenseTermsId ?? null,
+                observation.attachedLicense?.preset ?? null,
+                observation.attachedLicense?.commercialRevShareBps ?? null,
+                observation.attachedLicense?.attachment.transactionHash ?? null,
+                observation.attachedLicense?.attachment.blockNumber.toString() ?? null,
+                observation.attachedLicense?.attachment.blockHash ?? null,
+                observation.attachedLicense?.attachment.logIndex ?? null,
               ],
               readonly: false,
             });
@@ -1583,7 +1771,17 @@ export function makeDataRegistrationStore(
             const targetFailed = input.operationState === "failed";
             const updated = yield* transaction.execute({
               label: "data-registration.operation.fail",
-              text: "UPDATE data_registration_operations SET state=$2,registered_ip_id=NULL,confirmed_transaction_hash=NULL,confirmed_block_number=NULL,confirmed_block_hash=NULL,confirmed_log_index=NULL,confirmed_at=NULL,failure_code=$3,failure_evidence_ref=$4,updated_at=clock_timestamp() WHERE registration_operation_id=$1",
+              text: `UPDATE data_registration_operations
+                        SET state=$2,registered_ip_id=NULL,confirmed_transaction_hash=NULL,
+                            confirmed_block_number=NULL,confirmed_block_hash=NULL,
+                            confirmed_log_index=NULL,confirmed_at=NULL,
+                            attached_license_template=NULL,attached_license_terms_id=NULL,
+                            attached_license_preset=NULL,attached_commercial_rev_share_bps=NULL,
+                            terms_attachment_transaction_hash=NULL,
+                            terms_attachment_block_number=NULL,terms_attachment_block_hash=NULL,
+                            terms_attachment_log_index=NULL,
+                            failure_code=$3,failure_evidence_ref=$4,updated_at=clock_timestamp()
+                      WHERE registration_operation_id=$1`,
               values: [
                 input.registrationOperationId,
                 input.operationState,
@@ -1872,9 +2070,270 @@ export function makeDataRegistrationStore(
     );
   };
 
+  const getParentReference: DataRegistrationStore["getParentReference"] = (
+    registrationOperationId,
+  ) => {
+    if (!validId(registrationOperationId)) return Promise.reject(fail("parent", "invalid-input"));
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "data-registration.parent-reference.read",
+          text: `${PARENT_REFERENCE_SELECT} WHERE registration_operation_id=$1`,
+          values: [registrationOperationId],
+          readonly: true,
+        });
+        const row = result.rows[0];
+        if (row === undefined) return null;
+        return yield* decode("parent", row, parentReferenceFromRow, registrationOperationId);
+      }),
+    );
+  };
+
+  const readParentResolution = (db: ControlPlaneTransaction, registrationOperationId: string) =>
+    Effect.gen(function* () {
+      const result = yield* db.execute<Row>({
+        label: "data-registration.parent-resolution.read",
+        text: `${PARENT_RESOLUTION_SELECT} WHERE registration_operation_id=$1`,
+        values: [registrationOperationId],
+        readonly: true,
+      });
+      const row = result.rows[0];
+      if (row === undefined) return null;
+      return yield* decode("parent", row, parentResolutionFromRow, registrationOperationId);
+    });
+
+  const getParentResolution: DataRegistrationStore["getParentResolution"] = (
+    registrationOperationId,
+  ) => {
+    if (!validId(registrationOperationId)) return Promise.reject(fail("parent", "invalid-input"));
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* readParentResolution(db, registrationOperationId);
+      }),
+    );
+  };
+
+  const awaitParent: DataRegistrationStore["awaitParent"] = (registrationOperationId) => {
+    if (!validId(registrationOperationId)) return Promise.reject(fail("parent", "invalid-input"));
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const operation = yield* readOperation(transaction, registrationOperationId, true);
+            if (operation === null) {
+              return yield* Effect.fail(fail("parent", "not-found", registrationOperationId));
+            }
+            if (operation.state === "waiting_parent") return operation;
+            if (operation.state !== "pending" || operation.rightsBasis !== "derivative") {
+              return yield* Effect.fail(fail("parent", "stale-state", registrationOperationId));
+            }
+            yield* transaction.execute({
+              label: "data-registration.operation.await-parent",
+              text: "UPDATE data_registration_operations SET state='waiting_parent',updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND state='pending'",
+              values: [registrationOperationId],
+              readonly: false,
+            });
+            const result = yield* readOperation(transaction, registrationOperationId);
+            if (result === null) {
+              return yield* Effect.fail(fail("parent", "invalid-row", registrationOperationId));
+            }
+            return result;
+          }),
+        );
+      }),
+    );
+  };
+
+  const recordAttachedLicenseBackfill: DataRegistrationStore["recordAttachedLicenseBackfill"] = (
+    registrationOperationId,
+    attachedLicense,
+  ) => {
+    if (
+      !validId(registrationOperationId) ||
+      !validLicense(attachedLicense) ||
+      !validCoordinates(attachedLicense.attachment)
+    ) {
+      return Promise.reject(fail("parent", "invalid-input", registrationOperationId));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const operation = yield* readOperation(transaction, registrationOperationId, true);
+            if (operation === null) {
+              return yield* Effect.fail(fail("parent", "not-found", registrationOperationId));
+            }
+            if (
+              operation.mediaKind !== "song" ||
+              operation.state !== "registered" ||
+              operation.registeredIpId === null ||
+              operation.confirmedTransactionHash === null
+            ) {
+              return yield* Effect.fail(fail("parent", "stale-state", registrationOperationId));
+            }
+            if (operation.attachedLicense !== null) {
+              // Already recorded. A replay must restate it exactly; a
+              // different answer is a conflict, never a rewrite.
+              if (!sameAttachedLicense(operation.attachedLicense, attachedLicense)) {
+                return yield* Effect.fail(
+                  fail("parent", "identity-conflict", registrationOperationId),
+                );
+              }
+              return operation;
+            }
+            // The evidence is the confirming transaction itself.
+            if (attachedLicense.attachment.transactionHash !== operation.confirmedTransactionHash) {
+              return yield* Effect.fail(fail("parent", "invalid-input", registrationOperationId));
+            }
+            const updated = yield* transaction.execute({
+              label: "data-registration.operation.attached-license-backfill",
+              text: `UPDATE data_registration_operations
+                        SET attached_license_template=$2,attached_license_terms_id=$3,
+                            attached_license_preset=$4,attached_commercial_rev_share_bps=$5,
+                            terms_attachment_transaction_hash=$6,terms_attachment_block_number=$7,
+                            terms_attachment_block_hash=$8,terms_attachment_log_index=$9,
+                            updated_at=clock_timestamp()
+                      WHERE registration_operation_id=$1
+                        AND state='registered' AND media_kind='song'
+                        AND attached_license_terms_id IS NULL`,
+              values: [
+                registrationOperationId,
+                attachedLicense.licenseTemplate,
+                attachedLicense.licenseTermsId,
+                attachedLicense.preset,
+                attachedLicense.commercialRevShareBps,
+                attachedLicense.attachment.transactionHash,
+                attachedLicense.attachment.blockNumber.toString(),
+                attachedLicense.attachment.blockHash,
+                attachedLicense.attachment.logIndex,
+              ],
+              readonly: false,
+            });
+            if (updated.rowCount !== 1) {
+              return yield* Effect.fail(fail("parent", "stale-state", registrationOperationId));
+            }
+            const result = yield* readOperation(transaction, registrationOperationId);
+            if (result === null) {
+              return yield* Effect.fail(fail("parent", "invalid-row", registrationOperationId));
+            }
+            return result;
+          }),
+        );
+      }),
+    );
+  };
+
+  const resolveParent: DataRegistrationStore["resolveParent"] = (input) => {
+    if (
+      !validId(input.registrationOperationId) ||
+      !validId(input.parentRegistrationOperationId) ||
+      !positive(input.parentRegistrationRevision) ||
+      !LOWER_ADDRESS.test(input.parentIpId) ||
+      !validLicense(input.consumedLicense) ||
+      !validCoordinates(input.parentRegistration) ||
+      !validCoordinates(input.termsAttachment)
+    ) {
+      return Promise.reject(fail("parent", "invalid-input", input.registrationOperationId));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const operation = yield* readOperation(
+              transaction,
+              input.registrationOperationId,
+              true,
+            );
+            if (operation === null) {
+              return yield* Effect.fail(fail("parent", "not-found", input.registrationOperationId));
+            }
+            const existing = yield* readParentResolution(
+              transaction,
+              input.registrationOperationId,
+            );
+            if (existing !== null) {
+              if (!sameResolution(existing, input)) {
+                return yield* Effect.fail(
+                  fail("parent", "identity-conflict", input.registrationOperationId),
+                );
+              }
+              return { kind: "replay" as const, resolution: existing };
+            }
+            if (operation.state !== "pending" && operation.state !== "waiting_parent") {
+              return yield* Effect.fail(
+                fail("parent", "stale-state", input.registrationOperationId),
+              );
+            }
+            // The insert trigger checks every value against the parent's
+            // confirmed row and the child's frozen expected license.
+            yield* transaction.execute({
+              label: "data-registration.parent-resolution.insert",
+              text: `INSERT INTO data_registration_parent_resolutions
+                (registration_operation_id,parent_registration_operation_id,
+                 parent_registration_revision,parent_ip_id,license_template,license_terms_id,
+                 license_preset,commercial_rev_share_bps,parent_registration_transaction_hash,
+                 parent_registration_block_number,parent_registration_block_hash,
+                 parent_registration_log_index,terms_attachment_transaction_hash,
+                 terms_attachment_block_number,terms_attachment_block_hash,
+                 terms_attachment_log_index)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+              values: [
+                input.registrationOperationId,
+                input.parentRegistrationOperationId,
+                input.parentRegistrationRevision.toString(),
+                input.parentIpId,
+                input.consumedLicense.licenseTemplate,
+                input.consumedLicense.licenseTermsId,
+                input.consumedLicense.preset,
+                input.consumedLicense.commercialRevShareBps,
+                input.parentRegistration.transactionHash,
+                input.parentRegistration.blockNumber.toString(),
+                input.parentRegistration.blockHash,
+                input.parentRegistration.logIndex,
+                input.termsAttachment.transactionHash,
+                input.termsAttachment.blockNumber.toString(),
+                input.termsAttachment.blockHash,
+                input.termsAttachment.logIndex,
+              ],
+              readonly: false,
+            });
+            if (operation.state === "waiting_parent") {
+              yield* transaction.execute({
+                label: "data-registration.operation.parent-resolved",
+                text: "UPDATE data_registration_operations SET state='pending',updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND state='waiting_parent'",
+                values: [input.registrationOperationId],
+                readonly: false,
+              });
+            }
+            const resolution = yield* readParentResolution(
+              transaction,
+              input.registrationOperationId,
+            );
+            if (resolution === null) {
+              return yield* Effect.fail(
+                fail("parent", "invalid-row", input.registrationOperationId),
+              );
+            }
+            return { kind: "created" as const, resolution };
+          }),
+        );
+      }),
+    );
+  };
+
   return {
     createOperation,
     getOperation,
+    getParentReference,
+    getParentResolution,
+    awaitParent,
+    resolveParent,
+    recordAttachedLicenseBackfill,
     recordArtifact,
     recordPinVerification,
     pinsReady,
@@ -1905,5 +2364,42 @@ function dataConfirmationStates(
     (operationState === "confirming" ||
       operationState === "reconciliation_required" ||
       operationState === "failed")
+  );
+}
+
+const sameCoordinates = (left: DataReceiptCoordinates, right: DataReceiptCoordinates): boolean =>
+  left.transactionHash === right.transactionHash &&
+  left.blockNumber === right.blockNumber &&
+  left.blockHash === right.blockHash &&
+  left.logIndex === right.logIndex;
+
+function sameAttachedLicense(
+  left: DataAttachedLicense | null,
+  right: DataAttachedLicense | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.licenseTemplate === right.licenseTemplate &&
+    left.licenseTermsId === right.licenseTermsId &&
+    left.preset === right.preset &&
+    left.commercialRevShareBps === right.commercialRevShareBps &&
+    sameCoordinates(left.attachment, right.attachment)
+  );
+}
+
+function sameResolution(
+  left: DataParentResolution,
+  right: Omit<DataParentResolution, "resolvedAt">,
+): boolean {
+  return (
+    left.parentRegistrationOperationId === right.parentRegistrationOperationId &&
+    left.parentRegistrationRevision === right.parentRegistrationRevision &&
+    left.parentIpId === right.parentIpId &&
+    left.consumedLicense.licenseTemplate === right.consumedLicense.licenseTemplate &&
+    left.consumedLicense.licenseTermsId === right.consumedLicense.licenseTermsId &&
+    left.consumedLicense.preset === right.consumedLicense.preset &&
+    left.consumedLicense.commercialRevShareBps === right.consumedLicense.commercialRevShareBps &&
+    sameCoordinates(left.parentRegistration, right.parentRegistration) &&
+    sameCoordinates(left.termsAttachment, right.termsAttachment)
   );
 }

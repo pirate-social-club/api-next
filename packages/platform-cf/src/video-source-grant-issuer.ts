@@ -35,8 +35,8 @@ export function makeVideoSourceGrantIssuer(
             label: "video-source.issue",
             readonly: false,
             text: `INSERT INTO media_video_source_grants
-            (capability_sha256,request_id,consumer,immutable_ref,physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at)
-            SELECT $1,$2,$3,i.immutable_ref,$4,i.object_version,i.etag,i.size_bytes,i.content_type,i.canonical_sha256,$5::timestamptz
+            (capability_sha256,request_id,consumer,immutable_ref,physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at,identity_kind)
+            SELECT $1,$2,$3,i.immutable_ref,$4,i.object_version,i.etag,i.size_bytes,i.content_type,i.canonical_sha256,$5::timestamptz,i.identity_kind
             FROM media_immutable_objects i WHERE i.immutable_ref=$6
               AND i.canonical_sha256=$7 AND i.size_bytes=$8 AND i.content_type=$9
               AND $5::timestamptz > clock_timestamp()

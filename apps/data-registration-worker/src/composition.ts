@@ -21,6 +21,7 @@ import {
 } from "@pirate/platform-cf/data/registration-aeneid-chain";
 import { makeDataRegistrationAeneidDirectKeySignerLayer } from "@pirate/platform-cf/data/registration-aeneid-direct-key-signer";
 import {
+  DATA_REGISTRATION_MAX_SOURCE_BYTES,
   makeDataRegistrationArtifactPipeline,
   makePostgresDataRegistrationArtifactAuthorityReader,
 } from "@pirate/platform-cf/data/registration-artifact-pipeline";
@@ -32,6 +33,7 @@ import { makeDataRegistrationWorkflowReaders } from "@pirate/platform-cf/data/re
 import { makeDataRegistrationSigningIntentReader } from "@pirate/platform-cf/data/signing-intent-reader";
 import { makeDataRegistrationStore } from "@pirate/platform-cf/data-registration-repository";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import { makeR2SongVideoMasterSource } from "@pirate/platform-cf/song-video-master-store";
 import { Effect } from "effect";
 import type { DataRegistrationWorkerComposition, DataRegistrationWorkerEnv } from "./index.ts";
 
@@ -134,7 +136,11 @@ export const resolveDataRegistrationOperationKind = (
             DATA_REGISTRATION_AENEID_TARGETS.original.toLowerCase() &&
           attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.original
         ? "original"
-        : null;
+        : attempt.targetAddress.toLowerCase() ===
+              DATA_REGISTRATION_AENEID_TARGETS.derivative.toLowerCase() &&
+            attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.derivative
+          ? "derivative"
+          : null;
 
 export function makeDataRegistrationComposition(
   env: DataRegistrationRuntimeEnv,
@@ -194,12 +200,13 @@ export function makeDataRegistrationComposition(
   const artifacts = makeDataRegistrationArtifactPipeline({
     authority,
     immutableOriginals,
+    songVideoMasters: makeR2SongVideoMasterSource(immutableOriginals),
     pinning: makeFilebaseIpfsPinningAdapter({
       enabled: true,
       token: required(env.FILEBASE_IPFS_TOKEN, "FILEBASE_IPFS_TOKEN"),
       transport: makeFilebaseFetchTransport(),
       limits: {
-        max_source_bytes: 64 * 1024 * 1024,
+        max_source_bytes: DATA_REGISTRATION_MAX_SOURCE_BYTES,
         max_response_bytes: 2 * 1024 * 1024,
         timeout_ms: 120_000,
         pin_convergence_attempts: 8,

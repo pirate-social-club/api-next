@@ -158,6 +158,15 @@
     "0155_hns_expiry_consumers_legacy.sql": "97dd927ef8710e26bcafbe46d80e7a3cb54594527a88a01eea6eae5d76de3db3",
     "0156_hns_readiness_deadline_guard_removal.sql": "e33e1eb284ca2ebb15957db9fdf72336b42b0c992f5c24110623d1545205f001",
     "0157_recovery_inspection_cursors.sql": "9a50753f346f224f65faaf77db3f34965ce88d394dd525c64d341233f0257bb4",
-    "0158_hns_readiness_withdrawal.sql": "fd1b2153652e53814c2f6811f2666a2576432f93b9677a15803bda1b63a530d0"
-  }
+    "0158_song_video_render_identities.sql": "f95400045d8475937173fc0dd4c1616a53452eeb9227249d7c4bd3f08727a1e7",
+    "0159_song_video_interval_reservation.sql": "a35a2ed408a7cca9eba6a7b8b78beed6387ae37e743f9dec9f5449d43b8e24ab",
+    "0160_song_video_publication.sql": "013d6b91fdc82b198c75814098c655eb98e4d1ab1db3c4ef08d6a387bbf91eed",
+    "0161_data_registration_derivative_video.sql": "ba5c054305794c821e9d2472eb2987fad8e478f9ed7cc67d2dd2e206e6342292",
+    "0162_data_registration_attached_license_backfill.sql": "6ec593a5fc65b59fa12e905d413ef9219fcc9ede5b64cbe7d15e82deb81cf9c3",
+    "0163_song_video_master_immutable_registration.sql": "d5435fe973890509b0339901b9be83bacef3c0984a73b29f1bc2ff64c30c1f4c",
+    "0164_song_video_render_execution_evidence.sql": "4b2e12ae9ff413786e1978a57384d5b6761a8f71ebed2ea872e916a8b58ac9a5",
+    "0165_song_video_render_host_claim.sql": "e820cfc213423aa89cbf5c95fd6beefea35184b35280bd6bccc9a7e164cba38d",
+    "0166_media_object_identity_kind.sql": "1cad70fa97ba4a9a973352f836e7952cd13c84cf67763ab5da065385525ed62a"
+  },
+  "0167_hns_readiness_withdrawal.sql": "fd1b2153652e53814c2f6811f2666a2576432f93b9677a15803bda1b63a530d0"
 }

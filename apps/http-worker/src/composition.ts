@@ -167,6 +167,7 @@ import {
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
+import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
 import {
   type CloudflareStudyGenerationWorkflowBinding,
   makeCloudflareStudyGenerationWorkflowLauncher,
@@ -365,6 +366,12 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
+  /**
+   * Song-backed video (Spec 013 §5A). Off unless exactly "true". The request path
+   * after reservation is not composed yet, so enabling this alone lets a client
+   * preflight and reserve but not start a submission.
+   */
+  readonly VIDEO_SONG_REFERENCE_ENABLED?: string;
   readonly MEDIA_INGRESS_R2_ACCOUNT_ID?: string;
   readonly MEDIA_INGRESS_R2_BUCKET_NAME?: string;
   readonly MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID?: string;
@@ -833,6 +840,16 @@ export async function createProductionHttpWorker(
       sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
       personaServices: { personaStore },
       nowIso: () => new Date().toISOString(),
+      ...(bindings.VIDEO_SONG_REFERENCE_ENABLED === "true"
+        ? {
+            songInterval: {
+              store: makeControlPlaneSongVideoIntervalStore(controlPlane),
+              // The post read as the viewer: the same access rule as the post
+              // endpoint and video playback.
+              contentStore: makeControlPlaneContentStore(controlPlane),
+            },
+          }
+        : {}),
     } satisfies VideoPublicationServices;
   })();
   const mediaHandlers =

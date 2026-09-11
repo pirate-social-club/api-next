@@ -2,6 +2,7 @@ export const DATA_REGISTRATION_PERSISTENCE_VERSION = "data-registration-persiste
 
 export type DataRegistrationOperationState =
   | "pending"
+  | "waiting_parent"
   | "signing"
   | "broadcast"
   | "confirming"
@@ -39,12 +40,85 @@ export type DataRegistrationFailureCode =
   | "confirmation_timeout"
   | "chain_reorganization"
   | "invalid_receipt"
-  | "configuration_invalid";
+  | "configuration_invalid"
+  | DataRegistrationParentFailureCode;
+
+/** Spec 008 section 3A: why a derivative cannot register against its parent. */
+export type DataRegistrationParentFailureCode =
+  /** The parent's own registration failed. */
+  | "parent_registration_failed"
+  /** The parent's attached terms differ from the license frozen at publication. */
+  | "parent_license_mismatch"
+  /** The parent's attached terms do not allow derivatives at all. */
+  | "parent_derivatives_not_permitted"
+  /** The parent confirmed before its attached terms were recorded. */
+  | "parent_terms_unrecorded";
 
 export type DataRegistrationAttemptFailureCode = Exclude<
   DataRegistrationFailureCode,
-  "pin_verification_failed" | "configuration_invalid"
+  "pin_verification_failed" | "configuration_invalid" | DataRegistrationParentFailureCode
 >;
+
+export type DataLicensePreset = "non-commercial" | "commercial-use" | "commercial-remix";
+
+/**
+ * Whether the PIL terms a preset attaches allow derivatives. Commercial-use
+ * terms do not, so nothing can register as a derivative against them.
+ */
+export const dataLicensePresetAllowsDerivatives = (preset: DataLicensePreset): boolean =>
+  preset !== "commercial-use";
+
+export type DataReceiptCoordinates = Readonly<{
+  transactionHash: string;
+  blockNumber: bigint;
+  blockHash: string;
+  logIndex: number;
+}>;
+
+/**
+ * The terms a song attached when it registered, as its confirmed row retains
+ * them: the template and terms id decoded from the attaching event, and the
+ * preset and share those terms were built from.
+ */
+export type DataAttachedLicense = Readonly<{
+  licenseTemplate: string;
+  licenseTermsId: string;
+  preset: DataLicensePreset;
+  /** Present exactly under `commercial-remix`. */
+  commercialRevShareBps: number | null;
+  attachment: DataReceiptCoordinates;
+}>;
+
+/** A derivative's frozen parent, named only by local identity (Spec 008 `DataParentReferenceV1`). */
+export type DataParentReference = Readonly<{
+  registrationOperationId: string;
+  relationship: "references_song";
+  parentAssetId: string;
+  parentRegistrationOperationId: string;
+  expectedLicense: Readonly<{ preset: DataLicensePreset; commercialRevShareBps: number | null }>;
+  ownerPolicy: Readonly<{
+    revision: bigint;
+    hash: string;
+    derivativeVideo: "allowed" | "owner_only";
+  }>;
+}>;
+
+/** Append-only evidence read from the parent's confirmed row (Spec 008 `DataParentResolutionV1`). */
+export type DataParentResolution = Readonly<{
+  registrationOperationId: string;
+  parentRegistrationOperationId: string;
+  parentRegistrationRevision: bigint;
+  parentIpId: string;
+  consumedLicense: Readonly<{
+    licenseTemplate: string;
+    licenseTermsId: string;
+    preset: DataLicensePreset;
+    commercialRevShareBps: number | null;
+  }>;
+  parentRegistration: DataReceiptCoordinates;
+  termsAttachment: DataReceiptCoordinates;
+  resolvedAt: string;
+}>;
 
 export type DataRegistrationOperation = Readonly<{
   registrationOperationId: string;
@@ -75,6 +149,8 @@ export type DataRegistrationOperation = Readonly<{
   confirmedAt: string | null;
   failureCode: DataRegistrationFailureCode | null;
   failureEvidenceRef: string | null;
+  /** Set only on a registered song confirmed with its attached terms recorded. */
+  attachedLicense: DataAttachedLicense | null;
 }>;
 
 export type DataRegistrationArtifact = Readonly<{
@@ -236,6 +312,8 @@ export type ConfirmDataRegistrationInput = Readonly<{
   nftMetadataHash: string;
   evidenceRef: string;
   observedAt: string;
+  /** Required for a song, whose confirmation includes the terms it attached; null for a video. */
+  attachedLicense: DataAttachedLicense | null;
 }>;
 
 export interface DataRegistrationStore {
@@ -283,6 +361,33 @@ export interface DataRegistrationStore {
   ) => Promise<DataRegistrationSigningAttempt>;
   readonly confirmRegistration: (
     observation: ConfirmDataRegistrationInput,
+  ) => Promise<DataRegistrationOperation>;
+  /** The derivative's frozen parent reference, or null for an original. */
+  readonly getParentReference: (
+    registrationOperationId: string,
+  ) => Promise<DataParentReference | null>;
+  readonly getParentResolution: (
+    registrationOperationId: string,
+  ) => Promise<DataParentResolution | null>;
+  /** Moves a pending derivative to `waiting_parent`; a waiting one is returned unchanged. */
+  readonly awaitParent: (registrationOperationId: string) => Promise<DataRegistrationOperation>;
+  /**
+   * Records the resolution and returns the derivative to `pending` in one
+   * transaction. The resolved time is the database's.
+   */
+  readonly resolveParent: (
+    resolution: Omit<DataParentResolution, "resolvedAt">,
+  ) => Promise<Readonly<{ kind: "created" | "replay"; resolution: DataParentResolution }>>;
+  /**
+   * Spec 008 section 3A: fills the terms a registered song actually attached
+   * when its confirmation predates that evidence. The registration is
+   * untouched: only a registered song with no recorded terms may be filled,
+   * in place, from the transaction that confirmed it. Recorded terms are never
+   * rewritten.
+   */
+  readonly recordAttachedLicenseBackfill: (
+    registrationOperationId: string,
+    attachedLicense: DataAttachedLicense,
   ) => Promise<DataRegistrationOperation>;
   readonly failRegistration: (
     input: Readonly<{
