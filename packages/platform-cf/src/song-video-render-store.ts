@@ -1,4 +1,5 @@
 import type {
+  SongVideoExecutionRecord,
   SongVideoRenderAttempt,
   SongVideoRenderStore,
 } from "@pirate/application/video/song-render";
@@ -109,8 +110,75 @@ export function makeSongVideoRenderStore(
         };
       });
 
+  const executionEvidence = (
+    client: Client,
+    outputObjectKey: string,
+  ): Promise<SongVideoExecutionRecord | null> =>
+    client
+      .query<{
+        expected_output_sha256: string | null;
+        expected_output_byte_length: string | null;
+        execution_refusal_reason: string | null;
+      }>(
+        `SELECT expected_output_sha256, expected_output_byte_length::text,
+                execution_refusal_reason
+           FROM media_song_video_render_attempts
+          WHERE dispatch_output_key = $1`,
+        [outputObjectKey],
+      )
+      .then((result): SongVideoExecutionRecord | null => {
+        const row = result.rows[0];
+        if (row === undefined) return null;
+        if (row.expected_output_sha256 !== null && row.expected_output_byte_length !== null) {
+          return {
+            kind: "output",
+            sha256: row.expected_output_sha256,
+            byteLength: Number(row.expected_output_byte_length),
+          };
+        }
+        if (row.execution_refusal_reason !== null) {
+          return { kind: "refused", reason: row.execution_refusal_reason };
+        }
+        return null;
+      });
+
   return {
     acceptedMaster: (planId) => withClient((client) => acceptedMaster(client, planId)),
+
+    executionEvidence: (outputObjectKey) =>
+      withClient((client) => executionEvidence(client, outputObjectKey)),
+
+    recordExecution: (outputObjectKey, record) =>
+      withClient(async (client) => {
+        const values =
+          record.kind === "output"
+            ? [outputObjectKey, record.sha256, String(record.byteLength), null]
+            : [outputObjectKey, null, null, record.reason];
+        // The record is written once, before the output, and only while the
+        // execution that owns the address may still be running.
+        const recorded = await client.query(
+          `UPDATE media_song_video_render_attempts
+              SET expected_output_sha256 = $2, expected_output_byte_length = $3,
+                  execution_refusal_reason = $4
+            WHERE dispatch_output_key = $1 AND state = 'started'
+              AND execution_phase = 'submitting'
+              AND expected_output_sha256 IS NULL AND execution_refusal_reason IS NULL`,
+          values,
+        );
+        if (recorded.rowCount === 1) return;
+        // A replay may restate the same evidence; a different record is a
+        // crossed execution and is refused, never merged.
+        const existing = await executionEvidence(client, outputObjectKey);
+        const sameRecord =
+          existing === null
+            ? false
+            : existing.kind === "output" && record.kind === "output"
+              ? existing.sha256 === record.sha256 && existing.byteLength === record.byteLength
+              : existing.kind === "refused" && record.kind === "refused"
+                ? existing.reason === record.reason
+                : false;
+        if (!sameRecord) throw new Error("song video execution evidence conflict");
+      }),
 
     dispatch: (request) =>
       withClient(async (client) => {

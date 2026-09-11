@@ -1,4 +1,5 @@
 import type {
+  SongVideoExecutionEvidenceStore,
   SongVideoOutputWriter,
   SongVideoRenderer,
 } from "@pirate/application/video/song-render";
@@ -58,15 +59,19 @@ type LocalRenderEngine = Pick<LocalSongVideoEngine, "identity" | "policyRevision
 
 /**
  * The engine as the render stage's renderer. Locally a submission renders to
- * completion before it returns; the stage still observes the outcome from the
- * output store, exactly as it would a remote render host, so a lost response
- * is resolved by what was written rather than by rendering again. Refusals are
- * kept per output address so an observation after a lost refusal reports it.
+ * completion before it returns; the stage still observes the outcome from
+ * retained evidence and the output store, exactly as it would a remote render
+ * host, so a lost response is resolved by identity rather than by rendering
+ * again. Nothing stateful lives in this object: a recreated renderer reads the
+ * same evidence and reaches the same conclusion.
  */
 export function makeLocalSongVideoRenderer(
-  input: Readonly<{ engine: LocalRenderEngine; output: LocalVersionedMasterStore }>,
+  input: Readonly<{
+    engine: LocalRenderEngine;
+    output: LocalVersionedMasterStore;
+    evidence: SongVideoExecutionEvidenceStore;
+  }>,
 ): SongVideoRenderer {
-  const refusals = new Map<string, string>();
   return {
     identity: input.engine.identity,
     policyRevision: input.engine.policyRevision,
@@ -86,9 +91,19 @@ export function makeLocalSongVideoRenderer(
         clipDurationSamples: request.clipDurationSamples,
       });
       if (!result.ok) {
-        refusals.set(request.outputObjectKey, result.reason);
+        await input.evidence.recordExecution(request.outputObjectKey, {
+          kind: "refused",
+          reason: result.reason,
+        });
         return { status: "refused", reason: result.reason };
       }
+      // The measured output is recorded against the attempt before any byte is
+      // written, so a lost acknowledgement is later resolved by identity.
+      await input.evidence.recordExecution(request.outputObjectKey, {
+        kind: "output",
+        sha256: result.masterSha256,
+        byteLength: result.masterBytes.byteLength,
+      });
       const write = await input.output.writeOnce(
         request.outputObjectKey,
         result.masterBytes,
@@ -104,19 +119,26 @@ export function makeLocalSongVideoRenderer(
           stored.bytes.byteLength !== result.masterBytes.byteLength ||
           (await sha256Hex(stored.bytes)) !== result.masterSha256
         ) {
-          refusals.set(request.outputObjectKey, "output_conflict");
           return { status: "refused", reason: "output_conflict" };
         }
       }
       return { status: "submitted" };
     },
     observe: async ({ outputObjectKey }) => {
-      // A recorded refusal names this address, so it outranks an object that
-      // appeared there afterwards.
-      const reason = refusals.get(outputObjectKey);
-      if (reason !== undefined) return { status: "refused", reason };
-      if ((await input.output.read(outputObjectKey)) !== null) return { status: "completed" };
-      return { status: "pending" };
+      const record = await input.evidence.executionEvidence(outputObjectKey);
+      // Without a recorded execution there is nothing to compare against:
+      // presence alone never establishes that these bytes are this attempt's.
+      if (record === null) return { status: "pending" };
+      if (record.kind === "refused") return { status: "refused", reason: record.reason };
+      const stored = await input.output.read(outputObjectKey);
+      if (stored === null) return { status: "pending" };
+      if (
+        stored.bytes.byteLength !== record.byteLength ||
+        (await sha256Hex(stored.bytes)) !== record.sha256
+      ) {
+        return { status: "refused", reason: "output_conflict" };
+      }
+      return { status: "completed" };
     },
   };
 }

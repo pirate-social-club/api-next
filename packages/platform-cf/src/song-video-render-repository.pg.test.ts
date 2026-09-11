@@ -8,6 +8,7 @@ import {
   startRenderAttempt,
   verifyAndSealMaster,
 } from "./song-video-render-repository.ts";
+import { makeSongVideoRenderStore } from "./song-video-render-store.ts";
 import {
   finalizedFixture,
   type PublishedSongFixture,
@@ -943,6 +944,87 @@ suite("song video render persistence", () => {
       [registered.verified_object_key],
     );
     expect(rows.rows[0]?.n).toBe(1);
+  }, 120_000);
+
+  test("records one execution outcome per attempt and refuses a replaced record", async () => {
+    await bindPlan("plan-execution-evidence");
+    await startRenderAttempt(
+      client,
+      {
+        attemptId: "attempt-execution-evidence",
+        planId: "plan-execution-evidence",
+        generation: 1,
+      },
+      dispatchFor("attempt-execution-evidence"),
+    );
+    const renderStore = makeSongVideoRenderStore({
+      connect: async () => {
+        const connection = new Client({ connectionString: scoped.toString() });
+        await connection.connect();
+        return connection;
+      },
+      output: store,
+      prober,
+      soundtrack,
+    });
+    const attempt = {
+      attemptId: "attempt-execution-evidence",
+      planId: "plan-execution-evidence",
+      generation: 1,
+      outputObjectKey: "master-object/attempt-execution-evidence",
+      phase: "recorded" as const,
+      executionStartedAtMs: null,
+    };
+    await renderStore.beginExecution(attempt);
+    const key = attempt.outputObjectKey;
+    await renderStore.recordExecution(key, {
+      kind: "output",
+      sha256: "a".repeat(64),
+      byteLength: 5,
+    });
+    expect(await renderStore.executionEvidence(key)).toEqual({
+      kind: "output",
+      sha256: "a".repeat(64),
+      byteLength: 5,
+    });
+    // A replay of the same evidence is idempotent; a different one is refused.
+    await renderStore.recordExecution(key, {
+      kind: "output",
+      sha256: "a".repeat(64),
+      byteLength: 5,
+    });
+    await expect(
+      renderStore.recordExecution(key, { kind: "output", sha256: "b".repeat(64), byteLength: 5 }),
+    ).rejects.toThrow("song video execution evidence conflict");
+    // And the database itself keeps the recorded outcome immutable.
+    await expect(
+      client.query(
+        "UPDATE media_song_video_render_attempts SET expected_output_sha256=$2 WHERE dispatch_output_key=$1",
+        [key, "b".repeat(64)],
+      ),
+    ).rejects.toThrow("a song-video render output record is immutable");
+
+    // A refusal is recorded on its own attempt and survives as evidence.
+    await bindPlan("plan-execution-refusal");
+    await startRenderAttempt(
+      client,
+      { attemptId: "attempt-execution-refusal", planId: "plan-execution-refusal", generation: 1 },
+      dispatchFor("attempt-execution-refusal"),
+    );
+    const refusalKey = "master-object/attempt-execution-refusal";
+    await renderStore.beginExecution({
+      attemptId: "attempt-execution-refusal",
+      planId: "plan-execution-refusal",
+      generation: 1,
+      outputObjectKey: refusalKey,
+      phase: "recorded",
+      executionStartedAtMs: null,
+    });
+    await renderStore.recordExecution(refusalKey, { kind: "refused", reason: "master_not_exact" });
+    expect(await renderStore.executionEvidence(refusalKey)).toEqual({
+      kind: "refused",
+      reason: "master_not_exact",
+    });
   }, 120_000);
 
   test("keeps one reservation-backed original per operation", async () => {

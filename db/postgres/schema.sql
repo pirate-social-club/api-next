@@ -11462,6 +11462,19 @@ BEGIN
     AND NEW.execution_started_at IS DISTINCT FROM OLD.execution_started_at THEN
     RAISE EXCEPTION 'a song-video render execution start is immutable';
   END IF;
+  -- Recorded outcomes are evidence: once present, nothing rewrites or clears
+  -- them. A later execution at the same address cannot replace another's.
+  IF OLD.expected_output_sha256 IS NOT NULL
+     AND ROW(NEW.expected_output_sha256,NEW.expected_output_byte_length)
+         IS DISTINCT FROM ROW(OLD.expected_output_sha256,OLD.expected_output_byte_length)
+  THEN
+    RAISE EXCEPTION 'a song-video render output record is immutable';
+  END IF;
+  IF OLD.execution_refusal_reason IS NOT NULL
+     AND NEW.execution_refusal_reason IS DISTINCT FROM OLD.execution_refusal_reason
+  THEN
+    RAISE EXCEPTION 'a song-video render refusal record is immutable';
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -26845,14 +26858,21 @@ CREATE TABLE media_song_video_render_attempts (
     started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     execution_phase text DEFAULT 'recorded'::text NOT NULL,
     execution_started_at timestamp with time zone,
+    expected_output_sha256 text,
+    expected_output_byte_length bigint,
+    execution_refusal_reason text,
     CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_render_attem_expected_output_byte_length_check CHECK (((expected_output_byte_length IS NULL) OR (expected_output_byte_length > 0))),
     CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
     CONSTRAINT media_song_video_render_attempt_execution_shape CHECK (((execution_phase = 'recorded'::text) = (execution_started_at IS NULL))),
+    CONSTRAINT media_song_video_render_attempt_outcome_shape CHECK ((((expected_output_sha256 IS NULL) = (expected_output_byte_length IS NULL)) AND ((execution_refusal_reason IS NULL) OR (expected_output_sha256 IS NULL)))),
     CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK (((length(attempt_id) >= 1) AND (length(attempt_id) <= 128) AND (btrim(attempt_id) = attempt_id))),
     CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
     CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
     CONSTRAINT media_song_video_render_attempts_execution_phase_check CHECK ((execution_phase = ANY (ARRAY['recorded'::text, 'submitting'::text, 'submitted'::text]))),
+    CONSTRAINT media_song_video_render_attempts_execution_refusal_reason_check CHECK (((execution_refusal_reason IS NULL) OR (btrim(execution_refusal_reason) <> ''::text))),
     CONSTRAINT media_song_video_render_attempts_execution_started_at_check CHECK (((execution_started_at IS NULL) OR isfinite(execution_started_at))),
+    CONSTRAINT media_song_video_render_attempts_expected_output_sha256_check CHECK (((expected_output_sha256 IS NULL) OR (expected_output_sha256 ~ '^[a-f0-9]{64}$'::text))),
     CONSTRAINT media_song_video_render_attempts_generation_check CHECK ((generation >= 1)),
     CONSTRAINT media_song_video_render_attempts_started_at_check CHECK (isfinite(started_at)),
     CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text])))

@@ -547,8 +547,8 @@ async function compose(admin: Client, schema: string, directory: string) {
     },
     transform: analysisEngine,
     transformAttempts: outbox,
-    songRender: {
-      store: makeSongVideoRenderStore({
+    songRender: (() => {
+      const renderStore = makeSongVideoRenderStore({
         connect: async () => {
           const client = new PgClient({ connectionString: connection });
           await client.connect();
@@ -557,9 +557,16 @@ async function compose(admin: Client, schema: string, directory: string) {
         output: masters,
         prober: { probe: (bytes) => songEngine.probeMaster(bytes) },
         soundtrack: songEngine,
-      }),
-      renderer: makeLocalSongVideoRenderer({ engine: songEngine, output: masters }),
-    },
+      });
+      return {
+        store: renderStore,
+        renderer: makeLocalSongVideoRenderer({
+          engine: songEngine,
+          output: masters,
+          evidence: renderStore,
+        }),
+      };
+    })(),
   };
   return {
     admin,
@@ -1164,7 +1171,11 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
         },
       };
       const { renderer, calls } = countingRenderer(
-        makeLocalSongVideoRenderer({ engine: composed.songEngine, output: writer }),
+        makeLocalSongVideoRenderer({
+          engine: composed.songEngine,
+          output: writer,
+          evidence: render.store,
+        }),
       );
       expect(
         await runVideoAnalysisWorkflow(

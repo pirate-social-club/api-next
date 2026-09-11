@@ -36,7 +36,33 @@ export type SongVideoSealOutcome =
   | Readonly<{ status: "accepted"; master: AcceptedSongVideoMaster }>
   | Readonly<{ status: "refused"; reason: string }>;
 
-export interface SongVideoRenderStore {
+/**
+ * What one execution of an attempt established, recorded against that attempt
+ * before its output is written. Observation resolves an address from this
+ * retained evidence, never from an object's presence: bytes that do not match
+ * the execution that owns the address are not that execution's output. A
+ * missing record means no execution has been established there yet, so the
+ * address stays unresolved rather than completed.
+ */
+export type SongVideoExecutionRecord =
+  | Readonly<{ kind: "output"; sha256: string; byteLength: number }>
+  | Readonly<{ kind: "refused"; reason: string }>;
+
+export interface SongVideoExecutionEvidenceStore {
+  /**
+   * Records the execution's measured outcome under its output address. The
+   * first record wins; an identical replay is accepted and a different one is
+   * refused, so a crossed execution cannot replace another's evidence.
+   */
+  readonly recordExecution: (
+    outputObjectKey: string,
+    record: SongVideoExecutionRecord,
+  ) => Promise<void>;
+  /** The evidence recorded for that address, or null when none exists. */
+  readonly executionEvidence: (outputObjectKey: string) => Promise<SongVideoExecutionRecord | null>;
+}
+
+export interface SongVideoRenderStore extends SongVideoExecutionEvidenceStore {
   /** The master the plan's compare-and-set accepted, exactly as it was sealed. */
   readonly acceptedMaster: (planId: string) => Promise<AcceptedSongVideoMaster | null>;
   /**
