@@ -53,6 +53,7 @@ import {
 } from "@pirate/contracts";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
+import { makeCommentThreadStore } from "@pirate/platform-cf/comment-thread-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
@@ -198,6 +199,7 @@ import {
 } from "../../../packages/platform-cf/src/telegram-runtime.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
+import { makeCommentThreadHandler } from "./comment-thread-handler.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import { makeLegacyModerationActionCompatibility } from "./community-moderation-compatibility.ts";
 import {
@@ -229,6 +231,10 @@ import { makePublicCommunityThreadsHandler } from "./public-community-threads-ha
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
+import {
+  makeSongPlaybackHandlers,
+  type SongPlaybackBindings,
+} from "./song-playback-composition.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
@@ -238,7 +244,10 @@ import { createHttpWorker, type EndpointHandler, type Principal } from "./transp
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
 
-export interface HttpWorkerBindings extends VideoAccessBindings, TelegramBindings {
+export interface HttpWorkerBindings
+  extends VideoAccessBindings,
+    SongPlaybackBindings,
+    TelegramBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -823,6 +832,7 @@ export async function createProductionHttpWorker(
       : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices, videoServices));
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const videoAccessHandlers = await makeVideoAccessHandlers(bindings, controlPlane);
+  const songPlaybackHandlers = await makeSongPlaybackHandlers(bindings, controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
@@ -1377,6 +1387,7 @@ export async function createProductionHttpWorker(
     hnsEdgeStatus,
     handlers: {
       ...productHandlers,
+      ListPostComments: makeCommentThreadHandler(makeCommentThreadStore(controlPlane)),
       ...telegramHandlers,
       GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
@@ -1403,6 +1414,7 @@ export async function createProductionHttpWorker(
       ...songOwnerVideoPolicyHandlers,
       ...mediaHandlers,
       ...videoAccessHandlers,
+      ...songPlaybackHandlers,
       ...danceReferenceHandlers,
       ...danceAttemptHandlers,
       GetJwks: () => sessionCrypto.jwks(),

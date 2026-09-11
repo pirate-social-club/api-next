@@ -15,6 +15,13 @@ type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 // checks that these classifications agree with both Wrangler configs.
 const HTTP_BINDING_KINDS = {
   ...TELEGRAM_BINDING_KINDS,
+  SONG_PLAYBACK_ENABLED: "var",
+  SONG_PLAYBACK_R2_ACCOUNT_ID: "var",
+  SONG_PLAYBACK_R2_BUCKET: "var",
+  SONG_PLAYBACK_R2_ACCESS_KEY_ID: "secret",
+  SONG_PLAYBACK_R2_SECRET_ACCESS_KEY: "secret",
+  SONG_PLAYBACK_SOURCE_HMAC_BASE64: "secret",
+  SONG_PLAYBACK_RATE_LIMITER: "platform",
   VIDEO_DELIVERY_ENABLED: "var",
   VIDEO_STREAM_CUSTOMER_HOST: "var",
   VIDEO_STREAM_SIGNING_KEY_ID: "var",

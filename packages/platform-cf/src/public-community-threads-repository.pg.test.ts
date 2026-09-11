@@ -62,7 +62,7 @@ const requireDocument = <A>(value: A | null): A => {
 };
 
 suite("Postgres 17 public community threads repository", () => {
-  test("resolves safely, filters public text posts, and paginates without overlap", async () => {
+  test("resolves safely, filters public text and song posts, and paginates without overlap", async () => {
     await withSchema(async (connection, admin) => {
       await apply(connection);
       const base = new Date("2026-08-17T12:00:00.000Z");
@@ -114,6 +114,9 @@ suite("Postgres 17 public community threads repository", () => {
         [base],
       );
 
+      await admin.query(
+        "UPDATE posts SET post_type = 'song', title = 'Original song', body = NULL WHERE post_id = 'post_01'",
+      );
       const repository = makeControlPlanePublicCommunityThreadsRepository({
         now: () => base.getTime(),
       });
@@ -130,6 +133,10 @@ suite("Postgres 17 public community threads repository", () => {
       expect(exact.community.id).toBe("collision");
       expect(exact.community.route_slug).toBe("exact-community");
       expect(exact.items).toHaveLength(20);
+      expect(exact.items[1]).toMatchObject({
+        post: { post_type: "song", song_title: "Original song", body: null },
+        viewer_vote: null,
+      });
       expect(exact.items[0]).toEqual({
         kind: "age_locked",
         content_rating: "adult_18",
@@ -156,9 +163,11 @@ suite("Postgres 17 public community threads repository", () => {
       expect(adultCapable.items[0]).toMatchObject({
         post: { id: "post_00", body: "post_00" },
       });
-      expect(exact.items.every((item) => "kind" in item || item.post.post_type === "text")).toBe(
-        true,
-      );
+      expect(
+        exact.items.every(
+          (item) => "kind" in item || ["text", "song"].includes(item.post.post_type),
+        ),
+      ).toBe(true);
       expect(exact.items.some((item) => !("kind" in item) && item.post.id === "post_members")).toBe(
         false,
       );

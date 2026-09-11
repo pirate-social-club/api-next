@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.5",
+  "sourceBranch": "feat/community-core-reads",
+  "wireContract": "Typed paginated comment children and short-lived full-mix song playback grants. Anonymous community discussions include published text and song posts with unchanged rating redaction.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.5.tgz",
+    "sha256": "38be5256a980b180a6c73b1e00a4124a9f98bf62304bf6d57b8e5f5cc03d8239"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.68.5",
+    "sourceIdentifier": "api-next-contracts@1a0c07ecec8fd44478c0e58c9db76e47cd0e303f6f47d15aa392fbf5c16abcc4",
+    "openapiSha256": "1a0c07ecec8fd44478c0e58c9db76e47cd0e303f6f47d15aa392fbf5c16abcc4",
+    "clientSha256": "289c997f731e6346e7b13cfecacd5a86cfbbeeb137954c8357e6200c48700077"
+  },
+  "verification": {
+    "status": "bun run check and bun run test passed; 3713 unit, 20 Node and 180 Worker tests; five focused PostgreSQL tests passed; local secret-boundary audit has zero violations. Live acceptance and publication have not run."
+  }
+}
