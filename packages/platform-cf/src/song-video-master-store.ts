@@ -1,3 +1,4 @@
+import type { SongVideoOutputWriter } from "@pirate/application/video/song-render";
 import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
 import type { DataRegistrationMasterSource } from "./data/registration-artifact-pipeline.ts";
 import { mediaProcessingPhysicalObjectKey } from "./media-immutable-object-key.ts";
@@ -10,11 +11,13 @@ import type { SongVideoOutputStore } from "./song-video-output-verification.ts";
  * function turns that reference into the physical key, so a master is not a
  * second addressing scheme: it is an immutable object like any sealed original.
  *
- * The write side belongs to the render host, which is not deployed here. These
- * adapters are its read side, and they fail closed when the exact verified
- * version is not what the bucket currently holds. A refusal never leaves the
- * body dangling, a stale version is refused before it is buffered, and the
- * ratified ceiling bounds any allocation.
+ * The host writes each attempt's output once, under a conditional put: a
+ * second write to the same address reports `occupied` and replaces nothing, so
+ * a lost acknowledgement or a restarted execution reconciles from what the
+ * store holds. These adapters fail closed when the exact verified version is
+ * not what the bucket holds. A refusal never leaves a body dangling, a stale
+ * version is refused before it is buffered, and the ratified ceiling bounds
+ * any allocation.
  */
 
 const withinReadBound = (size: number): boolean =>
@@ -50,6 +53,29 @@ export function makeR2SongVideoOutputStore(bucket: R2Bucket): SongVideoOutputSto
         return null;
       }
       return new Uint8Array(await object.arrayBuffer());
+    },
+  };
+}
+
+export function makeR2SongVideoOutputWriter(bucket: R2Bucket): SongVideoOutputWriter {
+  return {
+    writeOnce: async (objectKey, bytes, sha256) => {
+      const object = await bucket.put(mediaProcessingPhysicalObjectKey(objectKey), bytes, {
+        // The conditional is the write-once rule: an address that already holds
+        // an object is never replaced, whoever wrote it.
+        onlyIf: new Headers({ "if-none-match": "*" }),
+        httpMetadata: { contentType: "video/mp4" },
+        // The store verifies the payload against this digest, so bytes it did
+        // not accept never enter the address sealing will read.
+        sha256,
+      });
+      if (object === null) return { status: "occupied" };
+      // Sealing resolves the version it verified, so a store that cannot name
+      // one has produced an object nothing downstream could accept.
+      if (object.version.trim().length === 0 || object.etag.trim().length === 0) {
+        throw new Error("song video output is not addressable");
+      }
+      return { status: "written" };
     },
   };
 }

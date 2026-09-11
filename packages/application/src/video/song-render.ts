@@ -81,6 +81,30 @@ export type SongVideoRenderRequest = Readonly<{
   clipDurationSamples: number;
 }>;
 
+/**
+ * The host's write-once output destination. An attempt's output address is
+ * written at most once: a second write reports `occupied` instead of replacing
+ * bytes. That is what lets a lost write acknowledgement or a restarted
+ * execution reconcile from what the store actually holds, and it keeps a
+ * retried or crossed attempt from overwriting the object sealing will read.
+ */
+export type SongVideoOutputWrite =
+  | Readonly<{ status: "written" }>
+  | Readonly<{ status: "occupied" }>;
+
+export interface SongVideoOutputWriter {
+  /**
+   * Writes `bytes` only if the address holds no object. `sha256` is the
+   * digest measured over those bytes by the caller, so an implementation may
+   * record it with the object and verify the written identity.
+   */
+  readonly writeOnce: (
+    outputObjectKey: string,
+    bytes: Uint8Array,
+    sha256: string,
+  ) => Promise<SongVideoOutputWrite>;
+}
+
 export interface SongVideoRenderer {
   readonly identity: string;
   readonly policyRevision: number;

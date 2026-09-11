@@ -1143,6 +1143,44 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
     });
   }, 600_000);
 
+  test("a lost output-write acknowledgement reconciles from the stored bytes without a second render", async () => {
+    await inSchema(async (admin, schema, directory) => {
+      const composed = await compose(admin, schema, directory);
+      const submitted = await submitCapture(composed, "lost-write");
+      const render = composed.workflow.songRender;
+      if (render === undefined) throw new Error("render stage is not composed");
+      // The host writes the output once; the acknowledgement back to the host
+      // is lost, so the renderer's submit throws even though the bytes exist.
+      let acknowledgementLost = false;
+      const writer = {
+        ...composed.masters,
+        writeOnce: async (key: string, bytes: Uint8Array, sha: string) => {
+          const outcome = await composed.masters.writeOnce(key, bytes, sha);
+          if (!acknowledgementLost) {
+            acknowledgementLost = true;
+            throw new Error("output write response lost");
+          }
+          return outcome;
+        },
+      };
+      const { renderer, calls } = countingRenderer(
+        makeLocalSongVideoRenderer({ engine: composed.songEngine, output: writer }),
+      );
+      expect(
+        await runVideoAnalysisWorkflow(
+          submitted.effectIdentity,
+          retryingStep,
+          withRenderer(composed, renderer),
+        ),
+      ).toEqual({ status: "published" });
+      expect(calls.submit).toBe(1);
+      expect(acknowledgementLost).toBe(true);
+      // Never acknowledged, so still submitting; the stored bytes were sealed
+      // and accepted without rendering again.
+      expect(await attemptsOf(composed)).toEqual(["accepted:submitting"]);
+    });
+  }, 600_000);
+
   test("an execution with no output stays pending for reconciliation and is never re-run", async () => {
     await inSchema(async (admin, schema, directory) => {
       const composed = await compose(admin, schema, directory);

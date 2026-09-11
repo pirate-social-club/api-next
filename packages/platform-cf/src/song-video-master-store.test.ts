@@ -3,6 +3,7 @@ import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
 import {
   makeR2SongVideoMasterSource,
   makeR2SongVideoOutputStore,
+  makeR2SongVideoOutputWriter,
 } from "./song-video-master-store.ts";
 
 const masterRef = "media://immutable/song-video-masters/song-video-plan:submission-1/g1";
@@ -116,5 +117,67 @@ describe("song video master store", () => {
     expect(
       source.open("song-video-masters/plan/g1", "version-7", new AbortController().signal),
     ).rejects.toThrow("invalid immutable media reference");
+  });
+});
+
+function makeWriteBucket(input: Readonly<{ unaddressable?: boolean }> = {}) {
+  const puts: Array<{
+    key: string;
+    onlyIf: string | null;
+    contentType: string | undefined;
+    sha256: string | undefined;
+  }> = [];
+  const objects = new Map<string, Uint8Array>();
+  const bucket = {
+    put: async (
+      key: string,
+      value: Uint8Array,
+      options: Readonly<{
+        onlyIf?: Headers;
+        httpMetadata?: Readonly<{ contentType?: string }>;
+        sha256?: string;
+      }>,
+    ) => {
+      puts.push({
+        key,
+        onlyIf: options.onlyIf?.get("if-none-match") ?? null,
+        contentType: options.httpMetadata?.contentType,
+        sha256: options.sha256,
+      });
+      // The conditional is real in this fake: an occupied address refuses.
+      if (objects.has(key)) return null;
+      objects.set(key, value.slice());
+      return input.unaddressable === true
+        ? { version: "", etag: "etag-7" }
+        : { version: "version-7", etag: "etag-7" };
+    },
+  } as unknown as R2Bucket;
+  return { bucket, puts, objects };
+}
+
+describe("song video master write", () => {
+  test("writes an attempt's output once under a conditional put", async () => {
+    const fake = makeWriteBucket();
+    const writer = makeR2SongVideoOutputWriter(fake.bucket);
+    const masterBytes = new TextEncoder().encode("sealed-master-bytes");
+    expect(await writer.writeOnce(masterRef, masterBytes, "a".repeat(64))).toEqual({
+      status: "written",
+    });
+    expect(
+      await writer.writeOnce(masterRef, new TextEncoder().encode("other"), "b".repeat(64)),
+    ).toEqual({ status: "occupied" });
+    expect(fake.puts).toEqual([
+      { key: physicalKey, onlyIf: "*", contentType: "video/mp4", sha256: "a".repeat(64) },
+      { key: physicalKey, onlyIf: "*", contentType: "video/mp4", sha256: "b".repeat(64) },
+    ]);
+    // The first bytes survive the refused second write.
+    expect(fake.objects.get(physicalKey)).toEqual(masterBytes);
+  });
+
+  test("refuses an output object the store cannot address", async () => {
+    const writer = makeR2SongVideoOutputWriter(makeWriteBucket({ unaddressable: true }).bucket);
+    expect(
+      writer.writeOnce(masterRef, new TextEncoder().encode("sealed-master-bytes"), "a".repeat(64)),
+    ).rejects.toThrow("song video output is not addressable");
   });
 });
