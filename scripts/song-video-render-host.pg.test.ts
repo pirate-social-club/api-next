@@ -388,18 +388,34 @@ suite("song-video render host entry point", () => {
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder();
     let stdout = "";
-    const deadline = Date.now() + 300_000;
-    while (Date.now() < deadline) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      stdout += decoder.decode(chunk.value, { stream: true });
-      const accepted = stdout
-        .split("\n")
-        .some((line) => line.includes('"status":"accepted"') && line.trimEnd().endsWith("}"));
-      if (accepted) break;
+    try {
+      const deadline = Date.now() + 300_000;
+      while (Date.now() < deadline) {
+        // The read is raced against the remaining deadline so a child that
+        // stays alive without printing cannot hold the test open.
+        const remaining = Math.max(1, deadline - Date.now());
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const chunk = await Promise.race([
+          reader.read(),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), remaining);
+          }),
+        ]).finally(() => {
+          if (timer !== undefined) clearTimeout(timer);
+        });
+        if (chunk === null) throw new Error("host loop printed nothing before the deadline");
+        if (chunk.done) break;
+        stdout += decoder.decode(chunk.value, { stream: true });
+        const accepted = stdout
+          .split("\n")
+          .some((line) => line.includes('"status":"accepted"') && line.trimEnd().endsWith("}"));
+        if (accepted) break;
+      }
+    } finally {
+      // The kill is unconditional, so a thrown assertion never leaves the host
+      // running past the test.
+      child.kill("SIGTERM");
     }
-    reader.releaseLock();
-    child.kill("SIGTERM");
     const exit = await child.exited;
     const stderr = await new Response(child.stderr).text();
     if (exit !== 0) throw new Error(`host loop failed: ${stderr.slice(0, 200)}`);
