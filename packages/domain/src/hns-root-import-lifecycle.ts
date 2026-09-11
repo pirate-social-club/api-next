@@ -343,6 +343,7 @@ export function decideHnsRootImportLifecycleV1(
       return replay("preparation_already_completed");
     }
     case "publication_acknowledged": {
+      if (state.phase === "preparing") return rejection("acknowledgement_without_plan");
       if (state.phase === "awaiting_publication") {
         return withState(state, { phase: "checking_publication" }, "acknowledged", []);
       }

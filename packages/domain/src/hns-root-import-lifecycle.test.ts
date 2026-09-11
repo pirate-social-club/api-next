@@ -134,7 +134,7 @@ describe("HNS root-import lifecycle transition policy", () => {
     // Expected resolution per event/phase: T=transition, R=replay,
     // P=pending, X=rejection. Derived line-by-line from the spec table.
     const expected: Record<string, string> = {
-      preparing: "T R X X P P X X X P T X",
+      preparing: "T X X X P P X X X P T X",
       awaiting_publication: "R T T X P P T X X P T X",
       checking_publication: "R R T T P P T X X P T X",
       waiting_safe_commitment: "R R R T P P X T X P T X",
@@ -163,6 +163,19 @@ describe("HNS root-import lifecycle transition policy", () => {
         ).toBe(letter === "T" ? "Tra" : letter === "R" ? "Rep" : letter === "P" ? "Pen" : "Rej");
       }
     }
+  });
+
+  test("acknowledgement before plan exposure is a typed rejection", () => {
+    const decision = decideHnsRootImportLifecycleV1(
+      state("preparing"),
+      event({ event: "publication_acknowledged" }),
+    );
+    expect(decision.outcome).toEqual({
+      kind: "rejection",
+      reason: "acknowledgement_without_plan",
+    });
+    expect(decision.next_state).toBeNull();
+    expect(decision.requested_work).toEqual([]);
   });
 
   test("preparation exposure starts the publication window and finality waits for inclusion", () => {
