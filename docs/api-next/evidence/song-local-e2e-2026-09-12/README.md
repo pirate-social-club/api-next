@@ -60,3 +60,15 @@ configuration overlay only supplies the public Privy app ID and localhost
 origins; tracked source in the b6cf294 export remains unchanged.
 
 No browser journey has run against this local pair yet.
+
+Memory diagnosis — 2026-09-12. The pinned b6cf294 export was rebuilt and its
+build and dev paths re-measured under the same containment that previously
+failed (MemoryMax=4G, MemorySwapMax=0, two-core quota, 3 GB Node heap).
+`bun run build`, including the client and SSR environments and the
+browser-asset prune step, exited 0 with a peak of about 1.6 GB RSS. The dev
+server reached HTTP 200 in about 50 seconds with a peak of about 2.1 GB. The
+same holds on the e2e worktree. The earlier over-cap attempts are therefore
+attributed to host memory exhaustion and swap pressure from concurrent
+sessions, not to the pinned Solid toolchain. Re-run one heavy job at a time
+with several GB of free memory and unloaded swap, keep the scope for
+containment, and allow up to a minute for first dev readiness.
