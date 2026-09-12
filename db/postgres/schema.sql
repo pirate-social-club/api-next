@@ -23758,12 +23758,15 @@ CREATE TABLE community_telegram_deliveries (
     last_error text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    intended jsonb,
+    intended_hash text,
     CONSTRAINT community_telegram_deliveries_attempt_count_check CHECK ((attempt_count >= 0)),
     CONSTRAINT community_telegram_deliveries_check CHECK (((desired IS NULL) = (desired_hash IS NULL))),
     CONSTRAINT community_telegram_deliveries_check1 CHECK (((confirmed IS NULL) = (confirmed_hash IS NULL))),
     CONSTRAINT community_telegram_deliveries_kind_check CHECK ((kind = ANY (ARRAY['publication'::text, 'reply'::text, 'voice'::text, 'setup'::text]))),
     CONSTRAINT community_telegram_deliveries_message_id_check CHECK ((message_id > 0)),
-    CONSTRAINT community_telegram_deliveries_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'sending'::text, 'delivered'::text, 'failed'::text, 'uncertain'::text, 'withdrawn'::text, 'cancelled'::text])))
+    CONSTRAINT community_telegram_deliveries_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'sending'::text, 'delivered'::text, 'failed'::text, 'uncertain'::text, 'withdrawn'::text, 'cancelled'::text]))),
+    CONSTRAINT community_telegram_delivery_intent_pair CHECK (((intended IS NULL) = (intended_hash IS NULL)))
 );
 
 CREATE TABLE community_telegram_inbox (
