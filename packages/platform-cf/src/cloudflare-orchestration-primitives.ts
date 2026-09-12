@@ -47,9 +47,11 @@ export const isFinishedWorkflowStatus = (status: string): boolean =>
 
 /**
  * The installed runtime reports an unknown Workflow instance id as an `Error`
- * whose message is exactly `instance.not_found`; it exposes no typed error.
- * Classification therefore matches that stable message and nothing else, so a
- * transient lookup failure can never be mistaken for a missing instance.
+ * whose message is exactly `instance.not_found`. That is measured behavior of
+ * the installed runtime, not a guaranteed API contract, and the runtime
+ * exposes no typed error. Classification therefore matches only that exact
+ * message: unfamiliar errors must remain visible lookup failures rather than
+ * being mistaken for a missing instance.
  */
 export const isWorkflowInstanceMissingError = (error: unknown): boolean =>
   error instanceof Error && error.message.trim() === "instance.not_found";
