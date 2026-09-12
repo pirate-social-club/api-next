@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeDirectPostgresControlPlaneLayer, type ControlPlaneDb } from "./postgres.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -209,7 +209,7 @@ suite("Study v2 spoken lifecycle", () => {
 
         const runtime = makeDirectPostgresControlPlaneLayer(scoped);
         const study = makeControlPlaneStudyV2Repository();
-        const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
           Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(runtime))));
         const session = await run(
           study.startSession({
