@@ -52,14 +52,22 @@ worktree holds the matching runner scripts and the resume spec
 
 ## Provider budget
 
-`provider-budget.md` specifies and `media-processor/entrypoint.ts` enforces a
-per-session cap of ACRCloud 2, OpenAI 3, OpenRouter 1, ElevenLabs 1 with JSON
-`provider-request` and `provider-budget-exhausted` evidence. Session restarts
-reset the guard, so `provider-ledger.json` holds the cumulative exercise
-counts: three ACRCloud and three OpenAI requests. No exercise-level ceiling was
-authorized; an earlier draft stating ACRCloud 4 and OpenAI 6 is withdrawn.
-The instrumental fixture skips the lyrics classifier and alignment, and
-QEncode is video-only.
+The cumulative ceilings are ACRCloud 2, OpenAI 3, OpenRouter 1 and ElevenLabs
+1, and they are not renewed by restarting a processing session.
+`provider-ledger.json` is the source of truth; `prepare-processing-workers.mjs`
+recomputes the remaining allowance from it and bakes the remaining values into
+the local media processor guard, which logs `provider-request` and throws
+`provider-budget-exhausted` on any call to an exhausted provider.
+
+Consumed to date: ACRCloud three and OpenAI three. ACRCloud is one request over
+its ceiling of two, recorded plainly in the ledger overrun field; the melody
+run, the first published noise run, and the uninterrupted run each spent one
+identify request. Restarting the session did not renew that allowance, and the
+earlier draft that treated the guard as per-session is withdrawn along with the
+unauthorized ACRCloud 4 and OpenAI 6 ceilings. OpenAI is exactly at its ceiling.
+No additional provider calls are authorized, so the generated guard now refuses
+ACRCloud and OpenAI. The instrumental fixture skips the lyrics classifier and
+alignment, and QEncode is video-only.
 
 ## Provider changes
 
@@ -79,6 +87,23 @@ response media-type diagnostics, and `eeade42` resumes a valid cached grant on
 retry instead of pausing. The branch gates passed at `eeade42`: `tsc --noEmit`,
 `lint`, `check:e2e`, `test:app` (694 tests), `test:ssr` (6 tests), `test:api`
 (140 tests), and the Worker build with its provenance prebuild checks.
+
+## Overlay classification
+
+Test configuration, not compensating for a source defect: `run-api.sh`,
+`run-api-media-e2e.sh`, `run-api-resume-e2e.sh`, `run-processing-workers.sh`,
+`run-wt-preview.sh`, the `prepare-*.mjs` generators, the generated
+`wrangler*.json` overlays, `provider-ledger.json`, `provider-budget.md`, the
+CORS files and their readbacks. `media-processor/entrypoint.ts` is test
+instrumentation: it wraps the real entrypoint with the budget guard.
+
+Compensating for a source defect: `jobs/entrypoint.ts`. The tracked jobs
+worker entrypoint still re-exports plain constants that workerd rejects at the
+module boundary, so the shim exports only the default handler and the cron
+lock class. The repair is owned by the planned task
+`api-jobs-worker-entrypoint-startup` in the workspace register; the shim is
+retired once that task lands. The HTTP worker startup defect is not an overlay:
+it is repaired in source at `64f56114`, which is part of the API pull request.
 
 ## Review notes
 

@@ -106,18 +106,31 @@ required.add("OPENROUTER_API_KEY");
 processor.secrets = { ...(processor.secrets ?? {}), required: [...required] };
 const processorDir = write("media-processor", processor);
 const processorEntry = resolve(processorDir, "entrypoint.ts");
+
+// Cumulative budget retention: the ledger holds the authorized ceilings and
+// every consumed request, so restarting a processing session does not renew
+// an allowance. The guard is generated with the remaining allowance baked in
+// and refuses any call to an exhausted provider.
+const ledger = JSON.parse(readFileSync(resolve(here, "provider-ledger.json"), "utf8"));
+const remaining = {};
+const exhausted = [];
+for (const [provider, ceiling] of Object.entries(ledger.authorizedCeilings)) {
+  const left = Math.max(0, ceiling - (ledger.consumed[provider] ?? 0));
+  remaining[provider] = left;
+  if (left === 0) exhausted.push(provider);
+}
+console.log(`provider remaining allowance: ${JSON.stringify(remaining)}`);
+if (exhausted.length > 0) {
+  console.log(`provider budget exhausted; the guard will refuse: ${exhausted.join(", ")}`);
+}
 writeFileSync(
   processorEntry,
   `// Local budget guard for the fixture journey. Counts billable provider
-// requests, logs each one as JSON, and refuses any request over the hard cap.
-// The caps allow one retry per provider stage and stop the workflow with
-// evidence instead of spending beyond the authorized budget.
-const budgets = {
-  "acrcloud.com": 2,
-  "api.openai.com": 3,
-  "openrouter.ai": 1,
-  "api.elevenlabs.io": 1,
-};
+// requests, logs each one as JSON, and refuses any request beyond the
+// remaining allowance baked in from the cumulative ledger. Restarting this
+// session does not renew an allowance: the generator recomputes what is left
+// from every previously consumed request, including the ACRCloud overrun.
+const budgets = ${JSON.stringify(remaining, null, 2)};
 const counts = {};
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {

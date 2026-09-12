@@ -1,12 +1,13 @@
 // Local budget guard for the fixture journey. Counts billable provider
-// requests, logs each one as JSON, and refuses any request over the hard cap.
-// The caps allow one retry per provider stage and stop the workflow with
-// evidence instead of spending beyond the authorized budget.
+// requests, logs each one as JSON, and refuses any request beyond the
+// remaining allowance baked in from the cumulative ledger. Restarting this
+// session does not renew an allowance: the generator recomputes what is left
+// from every previously consumed request, including the ACRCloud overrun.
 const budgets = {
-  "acrcloud.com": 2,
-  "api.openai.com": 3,
+  "acrcloud.com": 0,
+  "api.openai.com": 0,
   "openrouter.ai": 1,
-  "api.elevenlabs.io": 1,
+  "api.elevenlabs.io": 1
 };
 const counts = {};
 const originalFetch = globalThis.fetch;
