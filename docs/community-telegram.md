@@ -136,7 +136,11 @@ messages older than twenty-four hours and include at
 most six exchanges. Private delivery payloads are also scrubbed after that
 retention period. Voice downloads and synthesized audio stay transient.
 Usage counters are independent of conversation retention. Speech attempts
-reserve characters before contacting ElevenLabs, including retries.
+reserve characters before contacting ElevenLabs, including retries. Usage
+reservations and update tombstones are retained deliberately: both are the
+replay guard for their bot epoch and neither has a deletion path; retention
+bounds their content through counter expiry and payload erasure, not their
+keys.
 
 A durable provider stage is written before each transcription or completion
 call. A confirmed result is reused on replay, a definite provider failure is
