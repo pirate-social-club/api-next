@@ -939,4 +939,53 @@ suite("community Telegram persistence", () => {
       );
       expect(await store.claimDelivery(base.id)).not.toBeNull();
     }));
+
+  test("an inbox claim is live only for its attempt, payload and bot epoch", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload) VALUES('live-inbox','telegram-community','epoch',31,'{}'::jsonb)",
+      );
+      const item = await store.claimInbox("live-inbox");
+      if (!item) throw new Error("Missing claim");
+      expect(await store.inboxLive(item)).toBe(true);
+      await admin.query(
+        "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='live-inbox'",
+      );
+      expect(await store.inboxLive(item)).toBe(false);
+      await admin.query(
+        "UPDATE community_telegram_inbox SET state='processing',payload='{}'::jsonb WHERE inbox_id='live-inbox'",
+      );
+      await admin.query(
+        "UPDATE community_telegram_integrations SET bot_epoch='replacement' WHERE community_id='telegram-community'",
+      );
+      expect(await store.inboxLive(item)).toBe(false);
+    }));
+
+  test("an expired chat-lease holder cannot release a newer holder's lease", () =>
+    fixture(async (store, admin) => {
+      const first = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!first) throw new Error("Missing first lease");
+      await admin.query(
+        "UPDATE community_telegram_chat_leases SET lease_expires_at=clock_timestamp()-interval '1 second',next_allowed_at=clock_timestamp()-interval '1 second' WHERE chat_id='7'",
+      );
+      const second = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!second) throw new Error("Missing second lease");
+      expect(second).not.toBe(first);
+      await store.releaseChat("telegram-community", "epoch", "7", first);
+      expect(
+        (
+          await admin.query(
+            "SELECT lease_token FROM community_telegram_chat_leases WHERE chat_id='7'",
+          )
+        ).rows[0],
+      ).toEqual({ lease_token: second });
+      await store.releaseChat("telegram-community", "epoch", "7", second);
+      expect(
+        (
+          await admin.query(
+            "SELECT lease_token FROM community_telegram_chat_leases WHERE chat_id='7'",
+          )
+        ).rows[0],
+      ).toEqual({ lease_token: null });
+    }));
 });

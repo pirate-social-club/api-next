@@ -7,6 +7,7 @@ export function makeTelegramInboxStore(
   TelegramStore,
   | "acceptUpdate"
   | "claimInbox"
+  | "inboxLive"
   | "finishInbox"
   | "pendingWork"
   | "reserveUsage"
@@ -54,6 +55,16 @@ export function makeTelegramInboxStore(
             attempt,
           }
         : null;
+    },
+    async inboxLive(item) {
+      const rows = await db.query(
+        `SELECT 1 FROM community_telegram_inbox i
+        JOIN community_telegram_integrations g USING (community_id)
+        WHERE i.inbox_id=$1 AND i.attempt=$2 AND i.state='processing' AND i.payload IS NOT NULL
+          AND i.bot_epoch=$3 AND g.bot_epoch=$3`,
+        [item.id, item.attempt, item.botEpoch],
+      );
+      return rows.length > 0;
     },
     async finishInbox(item, error) {
       await db.query(

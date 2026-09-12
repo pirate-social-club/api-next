@@ -208,6 +208,7 @@ export interface TelegramStore {
   ): Promise<IntegrationRecord>;
   acceptUpdate(integration: IntegrationRecord, update: IncomingUpdate): Promise<string>;
   claimInbox(id: string): Promise<InboxRecord | null>;
+  inboxLive(item: InboxRecord): Promise<boolean>;
   finishInbox(item: InboxRecord, error: string | null): Promise<void>;
   beginProviderStage(input: ProviderStageInput): Promise<BeginProviderStageResult>;
   completeProviderStage(input: ProviderStageInput & { result: string }): Promise<void>;

@@ -59,6 +59,7 @@ const providerUncertainReply =
 type ProviderStageOutcome =
   | { kind: "completed"; result: string }
   | { kind: "uncertain" }
+  | { kind: "stale" }
   | { kind: "failed"; error: unknown };
 
 async function stagedProvider(
@@ -76,20 +77,30 @@ async function stagedProvider(
     requestHash,
     attempt: item.attempt,
   };
+  // Cleanup and rotation fence every durable continuation. A stale claim must
+  // not start paid work, and an already-issued call is left classified
+  // uncertain rather than repeated.
+  if (!(await services.store.inboxLive(item))) return { kind: "stale" };
   const begun = await services.store.beginProviderStage(identity);
-  if (begun.kind === "completed") return { kind: "completed", result: begun.result };
+  if (begun.kind === "completed") {
+    if (!(await services.store.inboxLive(item))) return { kind: "stale" };
+    return { kind: "completed", result: begun.result };
+  }
   if (begun.kind === "uncertain") return { kind: "uncertain" };
+  if (!(await services.store.inboxLive(item))) return { kind: "stale" };
   try {
     const result = await run();
+    if (!(await services.store.inboxLive(item))) return { kind: "stale" };
     await services.store.completeProviderStage({ ...identity, result });
     return { kind: "completed", result };
   } catch (error) {
     if (error instanceof TelegramFailure && error.reason === "uncertain")
       return { kind: "uncertain" };
-    await services.store.failProviderStage({
-      ...identity,
-      error: error instanceof TelegramFailure ? error.reason : "provider_failed",
-    });
+    if (await services.store.inboxLive(item))
+      await services.store.failProviderStage({
+        ...identity,
+        error: error instanceof TelegramFailure ? error.reason : "provider_failed",
+      });
     return { kind: "failed", error };
   }
 }
@@ -398,9 +409,10 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         services.providers.transcribe(key, await services.api.downloadVoice(bot.token, fileId)),
     );
     if (transcription.kind === "uncertain") {
-      await uncertainReply(services, item, chatId);
+      if (await services.store.inboxLive(item)) await uncertainReply(services, item, chatId);
       return;
     }
+    if (transcription.kind === "stale") return;
     if (transcription.kind === "failed") throw transcription.error;
     prompt = transcription.result;
   }
@@ -436,17 +448,22 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       ]),
   );
   if (completion.kind === "uncertain") {
-    await uncertainReply(services, item, chatId);
+    if (await services.store.inboxLive(item)) await uncertainReply(services, item, chatId);
     return;
   }
+  if (completion.kind === "stale") return;
   if (completion.kind === "failed") throw completion.error;
+  if (!(await services.store.inboxLive(item))) return;
   const answer = boundedTelegramText(completion.result);
   await reply(services, item, chatId, textMessage(answer));
-  if (record.policy.remember_conversations)
-    await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer);
+  if (record.policy.remember_conversations) {
+    if (await services.store.inboxLive(item))
+      await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer);
+  }
   if (
     telegramReplyUsesVoice(record.policy, voice !== null, /^\/voice\b/u.test(input)) &&
-    speech?.status === "valid"
+    speech?.status === "valid" &&
+    (await services.store.inboxLive(item))
   ) {
     await reply(
       services,
@@ -466,7 +483,11 @@ function privateChatId(item: InboxRecord): string | null {
 async function runInbox(services: TelegramServices, item: InboxRecord) {
   try {
     const record = await services.store.integration(item.communityId);
-    if (record.botEpoch === item.botEpoch && record.status === "ready")
+    if (
+      record.botEpoch === item.botEpoch &&
+      record.status === "ready" &&
+      (await services.store.inboxLive(item))
+    )
       await handle(services, item, record);
     await services.store.finishInbox(item, null);
   } catch {

@@ -47,9 +47,12 @@ function services(methods: Partial<TelegramStore>): TelegramServices {
     },
   );
   return {
-    store: new Proxy(methods, {
-      get: (target, property) => Reflect.get(target, property) ?? Reflect.get(missing, property),
-    }) as TelegramStore,
+    store: new Proxy(
+      { inboxLive: async () => true, ...methods },
+      {
+        get: (target, property) => Reflect.get(target, property) ?? Reflect.get(missing, property),
+      },
+    ) as TelegramStore,
     api: missing as TelegramServices["api"],
     providers: missing as TelegramServices["providers"],
     vault: {
@@ -604,4 +607,138 @@ test("inbox replay reuses durable provider stages instead of repeating billable 
     firstAnswer,
     firstAnswer,
   ]);
+});
+
+function assistantVoiceIntegration(): IntegrationRecord {
+  return {
+    ...integration,
+    botToken: "encrypted-token",
+    policy: {
+      ...DEFAULT_ASSISTANT_POLICY,
+      enabled: true,
+      voice_enabled: true,
+      model: "fixture-model",
+    },
+    credentials: {
+      openrouter: {
+        ciphertext: "encrypted-openrouter",
+        status: "valid",
+        checkedAt: "2026-09-08T00:00:00Z",
+      },
+      elevenlabs: {
+        ciphertext: "encrypted-elevenlabs",
+        status: "valid",
+        checkedAt: "2026-09-08T00:00:00Z",
+      },
+    },
+  };
+}
+
+function voiceInboxItem() {
+  return {
+    id: "inbox",
+    communityId: "community",
+    botEpoch: "epoch",
+    attempt: "attempt",
+    update: {
+      update_id: 1,
+      message: {
+        chat: { id: 7, type: "private" },
+        from: { id: 7, is_bot: false },
+        voice: { file_id: "voice-file", duration: 1, file_size: 1 },
+      },
+    },
+  };
+}
+
+function voiceServices(
+  inboxLive: () => Promise<boolean>,
+  completeProviderStage: (input: { stage: string }) => Promise<void>,
+) {
+  const replies: string[] = [];
+  const saved: number[] = [];
+  const stages: string[] = [];
+  let completions = 0;
+  const service = services({
+    claimInbox: async () => voiceInboxItem(),
+    integration: async () => assistantVoiceIntegration(),
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    inboxLive,
+    publicPosts: async () => [],
+    history: async () => [],
+    reserveUsage: async () => true,
+    enqueueDelivery: async (delivery) => {
+      if (delivery.desired !== null && "text" in delivery.desired)
+        replies.push(delivery.desired.text as string);
+    },
+    saveConversation: async () => {
+      saved.push(1);
+    },
+    beginProviderStage: async () => ({ kind: "issued" }) as const,
+    completeProviderStage: async (input) => {
+      stages.push(input.stage);
+      await completeProviderStage(input);
+    },
+    failProviderStage: async () => {},
+    finishInbox: async () => {},
+  });
+  service.vault.open = async (ciphertext) => {
+    if (ciphertext === "encrypted-token")
+      return JSON.stringify({ token: "123:fixture", secret: "fixture-secret" });
+    return ciphertext === "encrypted-openrouter" ? "openrouter-key" : "elevenlabs-key";
+  };
+  service.api = {
+    downloadVoice: async () => new Uint8Array([1, 2, 3]),
+  } as unknown as TelegramServices["api"];
+  service.providers = {
+    ...service.providers,
+    transcribe: async () => "Fixture transcript",
+    complete: async () => {
+      completions += 1;
+      return "Fixture answer";
+    },
+  };
+  return {
+    service,
+    replies,
+    saved,
+    stages,
+    completions: () => completions,
+  };
+}
+
+test("cleanup during a provider call fences the reply, conversation and stage commit", async () => {
+  let live = true;
+  const harness = voiceServices(
+    async () => live,
+    async () => {},
+  );
+  harness.service.providers = {
+    ...harness.service.providers,
+    complete: async () => {
+      live = false;
+      return "Fixture answer";
+    },
+  };
+  await processTelegramInbox(harness.service, "inbox");
+  expect(harness.stages).toEqual(["transcription"]);
+  expect(harness.replies).toEqual([]);
+  expect(harness.saved).toEqual([]);
+});
+
+test("rotation before reply persistence fences the published reply and conversation", async () => {
+  let live = true;
+  const harness = voiceServices(
+    async () => live,
+    async (input) => {
+      if (input.stage === "completion") live = false;
+    },
+  );
+  await processTelegramInbox(harness.service, "inbox");
+  expect(harness.stages).toEqual(["transcription", "completion"]);
+  expect(harness.completions()).toBe(1);
+  expect(harness.replies).toEqual([]);
+  expect(harness.saved).toEqual([]);
 });

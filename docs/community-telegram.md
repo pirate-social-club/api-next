@@ -77,6 +77,14 @@ its item to pending without spending a retry attempt and re-wakes it after the
 interval. Delivery rejections carrying a Telegram retry-after delay the next
 attempt instead of retrying immediately.
 
+Cleanup and bot rotation fence running handlers. Before starting a provider
+call, committing a stage result, publishing a reply or saving a conversation,
+a handler verifies that its attempt still owns a processing inbox item with a
+payload and that the bot epoch still matches the integration. A provider call
+already issued when the fence trips is left classified uncertain rather than
+repeated. Releasing a chat lease is bound to the holder token, so an expired
+holder cannot release a newer holder's lease.
+
 Publication intent and confirmed Telegram payload are separate. A failed edit
 does not advance the confirmed hash. Explicit Telegram rejection preserves
 `retry_after`; a timeout, malformed acknowledgement or expired send lease
