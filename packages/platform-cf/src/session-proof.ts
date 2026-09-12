@@ -10,6 +10,12 @@ export const SESSION_PROOF_MAX_JWKS_BYTES = 64 * 1024;
 export const SESSION_PROOF_MAX_USER_BYTES = 64 * 1024;
 export const SESSION_PROOF_FETCH_TIMEOUT_MS = 5_000;
 export const SESSION_PROOF_CACHE_TTL_MS = 5 * 60 * 1_000;
+/**
+ * Minimum spacing between JWKS fetch attempts for one verifier instance. It
+ * bounds attacker-driven refreshes from unknown key IDs and failure retries
+ * while keeping a bounded recovery path for legitimate key rotation.
+ */
+export const SESSION_PROOF_JWKS_REFRESH_COOLDOWN_MS = 30_000;
 
 const RSA_VERIFY_ALGORITHM = {
   name: "RSASSA-PKCS1-v1_5",
@@ -117,6 +123,7 @@ export interface SessionProofAdapterOptions {
   readonly nowMs?: () => number;
   readonly fetchTimeoutMs?: number;
   readonly cacheTtlMs?: number;
+  readonly jwksRefreshCooldownMs?: number;
 }
 
 type VerifiedProviderToken = {
@@ -155,6 +162,51 @@ function positiveBound(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid bound");
   return value;
+}
+
+function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/**
+ * Reads a provider response body without buffering past the advertised byte
+ * bound. The reader is cancelled on overflow and its lock is released on every
+ * path; callers decode only after the byte limit is enforced. Content-Length is
+ * deliberately ignored because the header can be missing or incorrect.
+ */
+async function readBoundedResponseBytes(
+  response: Response,
+  limit: number,
+): Promise<Uint8Array | undefined> {
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return concatBytes(chunks, total);
+      total += value.byteLength;
+      if (total > limit) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The overflow disposition is already fixed; a cancel failure must
+          // not change it.
+        }
+        return undefined;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function configuredUrl(value: string): string {
@@ -360,7 +412,8 @@ function directPrivySubject(claims: JsonObject): string {
 
 /**
  * Build Privy and generic JWT proof adapters. JWKS documents are cached only
- * after complete validation; an unknown kid gets one bounded refresh.
+ * after complete validation; refresh attempts are shared across concurrent
+ * callers and bounded by a cooldown per verifier instance.
  */
 export function makeJwksSessionProofVerifier(
   options: SessionProofAdapterOptions,
@@ -369,7 +422,13 @@ export function makeJwksSessionProofVerifier(
   const nowMs = options.nowMs ?? Date.now;
   const fetchTimeoutMs = positiveBound(options.fetchTimeoutMs, SESSION_PROOF_FETCH_TIMEOUT_MS);
   const cacheTtlMs = positiveBound(options.cacheTtlMs, SESSION_PROOF_CACHE_TTL_MS);
+  const jwksRefreshCooldownMs = positiveBound(
+    options.jwksRefreshCooldownMs,
+    SESSION_PROOF_JWKS_REFRESH_COOLDOWN_MS,
+  );
   const cache = new Map<string, CachedJwks>();
+  const jwksRefreshInFlight = new Map<string, Promise<readonly ValidJwk[]>>();
+  const jwksLastAttemptAt = new Map<string, number>();
   const providers = {
     privy: {
       ...options.privy,
@@ -390,22 +449,45 @@ export function makeJwksSessionProofVerifier(
   const getJwks = async (url: string, forceRefresh = false): Promise<readonly ValidJwk[]> => {
     const cached = cache.get(url);
     if (!forceRefresh && cached !== undefined && cached.expiresAt > nowMs()) return cached.keys;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+
+    const pending = jwksRefreshInFlight.get(url);
+    if (pending !== undefined) return pending;
+
+    const lastAttemptAt = jwksLastAttemptAt.get(url);
+    if (lastAttemptAt !== undefined && nowMs() - lastAttemptAt < jwksRefreshCooldownMs) {
+      // Refresh is cooling down: serve the last good document when one exists
+      // and fail closed only when keys were never loaded. Forced refreshes are
+      // deliberately not distinguished so unknown key IDs, expiry, and failure
+      // retries share one bound.
+      if (cached !== undefined) return cached.keys;
+      throw new Error("JWKS request failed");
+    }
+
+    const refresh = (async (): Promise<readonly ValidJwk[]> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+      try {
+        const response = await fetcher(url, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("JWKS request failed");
+        const bytes = await readBoundedResponseBytes(response, SESSION_PROOF_MAX_JWKS_BYTES);
+        if (bytes === undefined) throw new Error("JWKS response too large");
+        const keys = validateJwks(JSON.parse(new TextDecoder().decode(bytes)));
+        cache.set(url, { keys, expiresAt: nowMs() + cacheTtlMs });
+        return keys;
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+    jwksRefreshInFlight.set(url, refresh);
+    jwksLastAttemptAt.set(url, nowMs());
     try {
-      const response = await fetcher(url, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error("JWKS request failed");
-      const body = await response.text();
-      if (body.length > SESSION_PROOF_MAX_JWKS_BYTES) throw new Error("JWKS response too large");
-      const keys = validateJwks(JSON.parse(body));
-      cache.set(url, { keys, expiresAt: nowMs() + cacheTtlMs });
-      return keys;
+      return await refresh;
     } finally {
-      clearTimeout(timeout);
+      jwksRefreshInFlight.delete(url);
     }
   };
 
@@ -429,9 +511,9 @@ export function makeJwksSessionProofVerifier(
         signal: controller.signal,
       });
       if (!response.ok) return undefined;
-      const body = await response.text();
-      if (body.length > SESSION_PROOF_MAX_USER_BYTES) return undefined;
-      const document = object(JSON.parse(body));
+      const bytes = await readBoundedResponseBytes(response, SESSION_PROOF_MAX_USER_BYTES);
+      if (bytes === undefined) return undefined;
+      const document = object(JSON.parse(new TextDecoder().decode(bytes)));
       if (document.id !== sourceUserId) return undefined;
       return document;
     } catch {
