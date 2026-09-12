@@ -10,17 +10,15 @@ import {
   type TableKey,
 } from "./registry";
 
-export const COMMUNITY_CATALOG_INTEGRITY_JOB = "community-catalog.integrity-audit";
-export const COMMUNITY_CATALOG_INTEGRITY_LANE = "control-plane-maintenance";
-export const COMMUNITY_CATALOG_INTEGRITY_SCHEDULE = "*/5 * * * *";
-export const COMMUNITY_CATALOG_INTEGRITY_TIMEOUT = "20 seconds";
+const COMMUNITY_CATALOG_INTEGRITY_JOB = "community-catalog.integrity-audit";
+const COMMUNITY_CATALOG_INTEGRITY_LANE = "control-plane-maintenance";
+const COMMUNITY_CATALOG_INTEGRITY_SCHEDULE = "*/5 * * * *";
+const COMMUNITY_CATALOG_INTEGRITY_TIMEOUT = "20 seconds";
 
-export const COMMUNITY_CATALOG_READS = [
-  "postgres:communities",
-] as const satisfies readonly TableKey[];
+const COMMUNITY_CATALOG_READS = ["postgres:communities"] as const satisfies readonly TableKey[];
 
 /** Postgres-only, read-only checks against the api-next community catalog. */
-export const COMMUNITY_CATALOG_INTEGRITY_SQL = `
+const COMMUNITY_CATALOG_INTEGRITY_SQL = `
   SELECT violation, COUNT(*)::integer AS violation_count
   FROM (
     SELECT 'blank_display_name' AS violation

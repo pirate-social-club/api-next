@@ -6,12 +6,12 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
-  defaultRetrySchedule,
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
   makeCommunityCatalogIntegrityJob,
 } from "../../apps/jobs-worker/src/index";
+import { defaultRetrySchedule } from "../../apps/jobs-worker/src/registry";
 
 const env = testEnv as unknown as JobsWorkerEnv;
 

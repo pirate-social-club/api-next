@@ -17,10 +17,10 @@ import {
 
 export const STUDY_SPOKEN_ANSWER_RECOVERY_JOB = "study-spoken-answer.recover-expired";
 export const STUDY_SPOKEN_ANSWER_RECOVERY_LANE = "learner-audio-maintenance";
-export const STUDY_SPOKEN_ANSWER_RECOVERY_SCHEDULE = "* * * * *";
-export const STUDY_SPOKEN_ANSWER_RECOVERY_TIMEOUT = "45 seconds";
+const STUDY_SPOKEN_ANSWER_RECOVERY_SCHEDULE = "* * * * *";
+const STUDY_SPOKEN_ANSWER_RECOVERY_TIMEOUT = "45 seconds";
 
-export const STUDY_SPOKEN_ANSWER_RECOVERY_READS = [
+const STUDY_SPOKEN_ANSWER_RECOVERY_READS = [
   "postgres:study_spoken_answer_commands",
   "postgres:learner_audio_artifacts",
 ] as const satisfies readonly TableKey[];

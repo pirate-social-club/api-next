@@ -10,27 +10,31 @@ import {
   COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_LANE,
   COMMUNITY_PURCHASE_FUNDING_WRITES,
 } from "../../apps/jobs-worker/src/community-purchase-funding";
+import { HNS_ROUTE_REVALIDATION_JOB } from "../../apps/jobs-worker/src/hns-route-revalidation";
 import {
   buildJobRegistry,
-  defaultRetrySchedule,
-  HNS_ROUTE_REVALIDATION_JOB,
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
   default as jobsWorker,
-  KARAOKE_FINALIZATION_RECOVERY_JOB,
-  KARAOKE_FINALIZATION_RECOVERY_LANE,
-  KARAOKE_FINALIZATION_RECOVERY_READS,
-  MEGAPOT_REWARDS_CYCLE_JOB,
   makeCommunityCatalogIntegrityJob,
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
   makeStudySpokenAnswerRecoveryJob,
   runScheduled,
+} from "../../apps/jobs-worker/src/index";
+import {
+  KARAOKE_FINALIZATION_RECOVERY_JOB,
+  KARAOKE_FINALIZATION_RECOVERY_LANE,
+  KARAOKE_FINALIZATION_RECOVERY_READS,
+} from "../../apps/jobs-worker/src/karaoke-finalization-recovery";
+import { MEGAPOT_REWARDS_CYCLE_JOB } from "../../apps/jobs-worker/src/megapot-rewards";
+import { defaultRetrySchedule } from "../../apps/jobs-worker/src/registry";
+import {
   STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
   STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
   STUDY_SPOKEN_ANSWER_RECOVERY_WRITES,
-} from "../../apps/jobs-worker/src/index";
+} from "../../apps/jobs-worker/src/study-spoken-answer-recovery";
 
 const env = testEnv as unknown as JobsWorkerEnv;
 
