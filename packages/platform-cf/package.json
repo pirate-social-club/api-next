@@ -137,6 +137,7 @@
     "./namespace-ownership-hns-owner": "./src/namespace-ownership/hns-owner.ts",
     "./namespace-ownership-hns-root-resource-observer": "./src/namespace-ownership/hns-root-resource-observer.ts",
     "./namespace-ownership-hns-control-observer-hsd-private-transport": "./src/namespace-ownership/hns-control-observer-hsd-private-transport.ts",
+    "./namespace-ownership-hsd-bounded-exchange": "./src/namespace-ownership/hsd-bounded-exchange.ts",
     "./namespace-ownership-hns-private-driver-transport": "./src/namespace-ownership/hns-private-driver-transport.ts",
     "./namespace-ownership-hns-control-observer-postgres": "./src/namespace-ownership/hns-control-observer-postgres.ts",
     "./namespace-ownership-hns-owner-active-lease-renewal-service-binding": "./src/namespace-ownership/hns-owner-active-lease-renewal-service-binding.ts",

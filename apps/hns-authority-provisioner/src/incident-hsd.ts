@@ -1,5 +1,7 @@
 import type { HnsRetainedAuthorityReferenceV1 } from "@pirate/application/namespace-ownership";
+import { readBoundedResponse } from "@pirate/platform-cf/namespace-ownership-hsd-bounded-exchange";
 import type { HnsIncidentNameStateV1, HnsIncidentTransactionV1 } from "./incident-evidence.ts";
+import { redactedProbeCause } from "./schema-compatibility.ts";
 
 /**
  * The read-only hsd calls incident evidence needs beyond a routine
@@ -19,6 +21,8 @@ export type HnsIncidentHsdConfigV1 = Readonly<{
 }>;
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+const HSD_RESPONSE_MAX_BYTES = 1_048_576;
 
 const objectOf = (value: unknown): Record<string, unknown> => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -43,13 +47,22 @@ export function makeHnsIncidentHsdReadsV1(
 }> {
   const timeout = config.timeout_ms ?? 10_000;
   const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
-    const response = await fetcher(config.rpc_url, {
-      method: "POST",
-      headers: { authorization: config.authorization, "content-type": "application/json" },
-      body: JSON.stringify({ method, params }),
-      signal: AbortSignal.timeout(timeout),
-    });
-    const body = objectOf(await response.json());
+    const signal = AbortSignal.timeout(timeout);
+    let body: Record<string, unknown>;
+    try {
+      const response = await fetcher(config.rpc_url, {
+        method: "POST",
+        headers: { authorization: config.authorization, "content-type": "application/json" },
+        body: JSON.stringify({ method, params }),
+        signal,
+      });
+      const bytes = await readBoundedResponse(response, HSD_RESPONSE_MAX_BYTES, signal);
+      body = objectOf(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    } catch (error) {
+      // The cause is bounded and redacted: a node diagnostic can carry a URL
+      // and never a credential or an unbounded body.
+      throw new Error(`hsd ${method} unavailable: ${redactedProbeCause(error) ?? "transport"}`);
+    }
     if (body.error !== null && body.error !== undefined) {
       throw new Error(`hsd ${method} failed`);
     }
@@ -101,6 +114,14 @@ export function makeHnsIncidentHsdReadsV1(
   };
 }
 
+function isUndefinedTable(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { readonly code?: unknown }).code === "42P01"
+  );
+}
+
 /**
  * The retained plan, read from whichever tables the deployment actually has.
  *
@@ -109,6 +130,11 @@ export function makeHnsIncidentHsdReadsV1(
  * answered by the chain and the provider anyway. Reading such an operation and
  * classifying it is useful; persisting a finding against it is not possible,
  * and the report says so rather than failing.
+ *
+ * Only a verified absent relation is pre-lifecycle history. A permission,
+ * connection or unexpected SQL failure while the relation exists means the
+ * evidence is unavailable, and the read reports that rather than converting
+ * the failure into a claim that the operation predates the lifecycle.
  */
 export function makeHnsIncidentRetainedPlanReadV1(
   query: <Row = Record<string, unknown>>(
@@ -123,7 +149,10 @@ export function makeHnsIncidentRetainedPlanReadV1(
       `SELECT root_label, generation, revision, plan_encoded_resource_sha256
          FROM hns_root_import_lifecycle WHERE root_import_session_id = $1`,
       [rootImportSessionId],
-    ).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    ).catch((error: unknown) => {
+      if (isUndefinedTable(error)) return { rows: [] as Record<string, unknown>[] };
+      throw error;
+    });
     const session = await query<Record<string, unknown>>(
       `SELECT root_label, ownership_generation, revision, publish_plan_bytes
          FROM hns_root_import_sessions WHERE root_import_session_id = $1`,

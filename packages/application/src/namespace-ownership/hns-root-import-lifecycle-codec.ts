@@ -121,11 +121,16 @@ export type HnsRootImportLifecycleCommitPlanV1 = Readonly<{
  * `commit_hns_root_import_lifecycle_decision_v1`. The reducer remains the only
  * business-policy owner; this shares the argument construction around it so a
  * change to the SQL contract lands in one place.
+ *
+ * The decision clock is an explicit required argument rather than a default
+ * derived here. Each adapter already decides whether the caller supplies a
+ * clock or the event's own occurrence time, and that choice belongs at the
+ * adapter's transaction boundary, not silently inside the shared planner.
  */
 export function planHnsRootImportLifecycleCommitV1(
   state: HnsRootImportLifecycleStateV1,
   event: HnsRootImportLifecycleEventV1,
-  nowEpochMs: number = event.occurred_at_epoch_ms,
+  nowEpochMs: number,
 ): HnsRootImportLifecycleCommitPlanV1 {
   const decision = decideHnsRootImportLifecycleV1(
     state,

@@ -282,6 +282,122 @@ function loadSession(
   });
 }
 
+type HnsRootImportCommunityOrigin = Readonly<{
+  readonly attachment_intent_id: string;
+  readonly route_binding_id: string;
+}>;
+
+function communityOriginOf(
+  input: HnsRootImportActivationRecord,
+): HnsRootImportCommunityOrigin | undefined {
+  return (
+    input as HnsRootImportActivationRecord & {
+      readonly community_origin?: HnsRootImportCommunityOrigin;
+    }
+  ).community_origin;
+}
+
+/**
+ * The replay branch of an activation command, extracted from the transaction
+ * body so the transaction's phases stay legible. It runs under the caller's
+ * transaction and lock order, reads nothing outside it, and fails with the
+ * same tagged refusal the inline branch used.
+ */
+function replayActivationOperation(
+  transaction: Transaction,
+  input: HnsRootImportActivationRecord,
+  replay: Row,
+  communityOrigin: HnsRootImportCommunityOrigin | undefined,
+  options: HnsRootImportRepositoryOptions,
+): Effect.Effect<
+  HnsRootImportActivationStoreOutcome,
+  ControlPlaneError | HnsRootImportStorageFailed | HnsRootImportActivationRefused
+> {
+  return Effect.gen(function* () {
+    if (
+      replay.request_sha256 !== input.request_sha256 ||
+      (communityOrigin === undefined
+        ? replay.creation_intent_id !== input.input.creation_intent_id
+        : replay.origin_kind !== "community_attachment" ||
+          replay.attachment_intent_id !== communityOrigin.attachment_intent_id) ||
+      replay.community_id !== input.community_id ||
+      positiveInteger(replay.expected_session_revision) !== input.input.expected_revision
+    ) {
+      return yield* Effect.fail(new HnsRootImportActivationRefused({ reason: "conflict" }));
+    }
+    const revision = positiveInteger(replay.result_session_revision);
+    const replayCommunityId = stringValue(replay, "community_id");
+    const replayDnsActivationId = stringValue(replay, "dns_zone_activation_id");
+    const replayAppActivationId = stringValue(replay, "app_host_activation_id");
+    const replaySaleActivationId = stringValue(replay, "sale_namespace_activation_id");
+    const replaySaleHash = stringValue(replay, "sale_namespace_activation_sha256");
+    const replaySession =
+      communityOrigin === undefined
+        ? null
+        : oneRow(
+            yield* transaction.execute<Row>({
+              label: "hns.root-import.activate.load-community-replay",
+              text: `SELECT status,revision,root_label FROM hns_root_import_sessions
+                WHERE actor_id=$1 AND community_id=$2 AND attachment_intent_id=$3
+                  AND root_import_session_id=$4`,
+              values: [
+                input.input.actor_id,
+                input.community_id,
+                communityOrigin.attachment_intent_id,
+                input.input.root_import_session_id,
+              ],
+              readonly: false,
+            }),
+          );
+    const root =
+      communityOrigin === undefined
+        ? yield* loadSession(transaction, input.input, false, options)
+        : replaySession === null || replaySession === undefined
+          ? null
+          : {
+              status: replaySession.status,
+              revision: positiveInteger(replaySession.revision),
+              root_label: stringValue(replaySession, "root_label"),
+            };
+    if (
+      revision === null ||
+      replayCommunityId === null ||
+      replayDnsActivationId === null ||
+      replayAppActivationId === null ||
+      replaySaleActivationId === null ||
+      replaySaleHash === null ||
+      !/^[0-9a-f]{64}$/u.test(replaySaleHash) ||
+      root === null ||
+      root.status !== "activated" ||
+      root.revision !== revision ||
+      root.root_label === null
+    ) {
+      return yield* Effect.fail(storageFailure());
+    }
+    return {
+      kind: "replayed",
+      response: {
+        creation_intent_id: input.input.creation_intent_id,
+        root_import_session_id: input.input.root_import_session_id,
+        root_label: root.root_label,
+        revision,
+        status: "activated",
+        community_id: replayCommunityId,
+        app_host: `app.${root.root_label}`,
+        dns_zone_activation_id: replayDnsActivationId,
+        dns_zone_activation_generation: 1,
+        app_host_activation_id: replayAppActivationId,
+        app_host_activation_generation: 1,
+        sale_namespace_activation_id: replaySaleActivationId,
+        sale_namespace_activation_generation: 1,
+        sale_namespace_activation_sha256: replaySaleHash,
+        handle_issuance_enabled: true,
+        replayed: true,
+      },
+    } as const;
+  });
+}
+
 interface HnsRootImportRepository {
   readonly start: (
     input: HnsRootImportStartRecord,
@@ -651,14 +767,7 @@ export function makeControlPlaneHnsRootImportRepository(
     activate: (input) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const communityOrigin = (
-          input as HnsRootImportActivationRecord & {
-            readonly community_origin?: Readonly<{
-              readonly attachment_intent_id: string;
-              readonly route_binding_id: string;
-            }>;
-          }
-        ).community_origin;
+        const communityOrigin = communityOriginOf(input);
         // Ownership is checked before the policy pre-flight so a wrong
         // principal still receives not_found rather than a policy outcome
         // about an operation it does not own.
@@ -749,90 +858,13 @@ export function makeControlPlaneHnsRootImportRepository(
               const replay = oneRow(replayResult);
               if (replay === undefined) return yield* Effect.fail(storageFailure());
               if (replay !== null) {
-                if (
-                  replay.request_sha256 !== input.request_sha256 ||
-                  (communityOrigin === undefined
-                    ? replay.creation_intent_id !== input.input.creation_intent_id
-                    : replay.origin_kind !== "community_attachment" ||
-                      replay.attachment_intent_id !== communityOrigin.attachment_intent_id) ||
-                  replay.community_id !== input.community_id ||
-                  positiveInteger(replay.expected_session_revision) !==
-                    input.input.expected_revision
-                ) {
-                  return yield* Effect.fail(
-                    new HnsRootImportActivationRefused({ reason: "conflict" }),
-                  );
-                }
-                const revision = positiveInteger(replay.result_session_revision);
-                const replayCommunityId = stringValue(replay, "community_id");
-                const replayDnsActivationId = stringValue(replay, "dns_zone_activation_id");
-                const replayAppActivationId = stringValue(replay, "app_host_activation_id");
-                const replaySaleActivationId = stringValue(replay, "sale_namespace_activation_id");
-                const replaySaleHash = stringValue(replay, "sale_namespace_activation_sha256");
-                const replaySession =
-                  communityOrigin === undefined
-                    ? null
-                    : oneRow(
-                        yield* transaction.execute<Row>({
-                          label: "hns.root-import.activate.load-community-replay",
-                          text: `SELECT status,revision,root_label FROM hns_root_import_sessions
-                            WHERE actor_id=$1 AND community_id=$2 AND attachment_intent_id=$3
-                              AND root_import_session_id=$4`,
-                          values: [
-                            input.input.actor_id,
-                            input.community_id,
-                            communityOrigin.attachment_intent_id,
-                            input.input.root_import_session_id,
-                          ],
-                          readonly: false,
-                        }),
-                      );
-                const root =
-                  communityOrigin === undefined
-                    ? yield* loadSession(transaction, input.input, false, options)
-                    : replaySession === null || replaySession === undefined
-                      ? null
-                      : {
-                          status: replaySession.status,
-                          revision: positiveInteger(replaySession.revision),
-                          root_label: stringValue(replaySession, "root_label"),
-                        };
-                if (
-                  revision === null ||
-                  replayCommunityId === null ||
-                  replayDnsActivationId === null ||
-                  replayAppActivationId === null ||
-                  replaySaleActivationId === null ||
-                  replaySaleHash === null ||
-                  !/^[0-9a-f]{64}$/u.test(replaySaleHash) ||
-                  root === null ||
-                  root.status !== "activated" ||
-                  root.revision !== revision ||
-                  root.root_label === null
-                ) {
-                  return yield* Effect.fail(storageFailure());
-                }
-                return {
-                  kind: "replayed",
-                  response: {
-                    creation_intent_id: input.input.creation_intent_id,
-                    root_import_session_id: input.input.root_import_session_id,
-                    root_label: root.root_label,
-                    revision,
-                    status: "activated",
-                    community_id: replayCommunityId,
-                    app_host: `app.${root.root_label}`,
-                    dns_zone_activation_id: replayDnsActivationId,
-                    dns_zone_activation_generation: 1,
-                    app_host_activation_id: replayAppActivationId,
-                    app_host_activation_generation: 1,
-                    sale_namespace_activation_id: replaySaleActivationId,
-                    sale_namespace_activation_generation: 1,
-                    sale_namespace_activation_sha256: replaySaleHash,
-                    handle_issuance_enabled: true,
-                    replayed: true,
-                  },
-                } as const;
+                return yield* replayActivationOperation(
+                  transaction,
+                  input,
+                  replay,
+                  communityOrigin,
+                  options,
+                );
               }
 
               const sessionResult = yield* transaction.execute<Row>({

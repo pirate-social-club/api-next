@@ -36,47 +36,17 @@ import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts"
  * Skips unless both a PostgreSQL URL and a reachable regtest node are present.
  */
 
-const baseConnectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
-const nodeUrl = process.env.HSD_REGTEST_NODE_URL ?? "http://127.0.0.1:14037/";
-const walletUrl = process.env.HSD_REGTEST_WALLET_URL ?? "http://127.0.0.1:14039/";
-const apiKey = process.env.HSD_REGTEST_API_KEY ?? "controlled-progression";
-const authorization = `Basic ${Buffer.from(`x:${apiKey}`).toString("base64")}`;
+import {
+  hsdRegtestAuthorization as authorization,
+  hsdRegtestConnectionString as baseConnectionString,
+  hsdRegtestReachable,
+  hsdRegtestNode as node,
+  hsdRegtestNodeUrl as nodeUrl,
+  hsdRegtestWallet as wallet,
+} from "./hns-regtest-node.pg-fixture.ts";
 
-async function reachable(): Promise<boolean> {
-  if (baseConnectionString === undefined) return false;
-  try {
-    const response = await fetch(nodeUrl, {
-      method: "POST",
-      headers: { authorization, "content-type": "application/json" },
-      body: JSON.stringify({ method: "getblockchaininfo", params: [] }),
-      signal: AbortSignal.timeout(4_000),
-    });
-    const body = (await response.json()) as { readonly result?: { readonly chain?: string } };
-    return body.result?.chain === "regtest";
-  } catch {
-    return false;
-  }
-}
-
-const suite = (await reachable()) ? describe : describe.skip;
+const suite = (await hsdRegtestReachable()) ? describe : describe.skip;
 const quote = (value: string): string => `"${value.replaceAll('"', '""')}"`;
-
-async function rpc(url: string, method: string, params: readonly unknown[]): Promise<unknown> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { authorization, "content-type": "application/json" },
-    body: JSON.stringify({ method, params }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const body = (await response.json()) as { readonly result?: unknown; readonly error?: unknown };
-  if (body.error !== null && body.error !== undefined) {
-    throw new Error(`${method}: ${JSON.stringify(body.error)}`);
-  }
-  return body.result;
-}
-
-const node = (method: string, params: readonly unknown[] = []) => rpc(nodeUrl, method, params);
-const wallet = (method: string, params: readonly unknown[] = []) => rpc(walletUrl, method, params);
 
 const entrypoint = fileURLToPath(
   new URL("../../../apps/hns-authority-provisioner/src/main.ts", import.meta.url),
