@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MediaProcessingWorkflowPayload } from "../../application/src/media/processing-contracts.ts";
+import { isWorkflowInstanceMissingError } from "./cloudflare-orchestration-primitives.ts";
 import {
   applyMediaProcessingQueueDisposition,
   makeCloudflareMediaProcessingWorkflowLauncher,
@@ -119,6 +120,32 @@ describe("Cloudflare media processing adapters", () => {
     };
     const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
     await expect(launcher.get("media-operation-1-r1")).rejects.toThrow("control plane unavailable");
+  });
+
+  test("maps the runtime's missing-instance error to missing and refuses the transient shape", async () => {
+    const missing = makeCloudflareMediaProcessingWorkflowLauncher(
+      {
+        createBatch: async () => [],
+        get: async () => {
+          throw new Error("instance.not_found");
+        },
+      },
+      isWorkflowInstanceMissingError,
+    );
+    expect(await missing.get("media-operation-1-r1")).toBe("missing");
+
+    const transient = makeCloudflareMediaProcessingWorkflowLauncher(
+      {
+        createBatch: async () => [],
+        get: async () => {
+          throw new Error("instance.not_found.transient");
+        },
+      },
+      isWorkflowInstanceMissingError,
+    );
+    await expect(transient.get("media-operation-1-r1")).rejects.toThrow(
+      "instance.not_found.transient",
+    );
   });
 
   test("maps every disposition to exactly one per-message action", () => {

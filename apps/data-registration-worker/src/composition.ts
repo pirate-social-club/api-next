@@ -7,7 +7,10 @@ import {
   type DataRegistrationSigningPolicy,
   makeDataRegistrationSigningCoordinator,
 } from "@pirate/application/data/signing-coordinator";
-import { isExplicitlyEnabled } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
+import {
+  isExplicitlyEnabled,
+  isWorkflowInstanceMissingError,
+} from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import {
   type FilebaseIpfsTransport,
   makeFilebaseIpfsPinningAdapter,
@@ -117,8 +120,6 @@ function makeFilebaseFetchTransport(): FilebaseIpfsTransport {
   };
 }
 
-const workflowIsNeverMissingByThrownError = (): boolean => false;
-
 const disabledWorkflow = (): DataRegistrationWorkflowDependencies =>
   ({ options: { enabled: false } }) as DataRegistrationWorkflowDependencies;
 
@@ -151,7 +152,7 @@ export function makeDataRegistrationComposition(
   const store = makeDataRegistrationStore(runtime);
   const workflow = makeCloudflareDataRegistrationWorkflowLauncher(
     workflowBinding,
-    workflowIsNeverMissingByThrownError,
+    isWorkflowInstanceMissingError,
   );
   const queue = {
     store,

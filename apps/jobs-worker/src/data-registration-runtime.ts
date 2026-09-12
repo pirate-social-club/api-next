@@ -4,6 +4,7 @@ import {
   type CloudflareDataRegistrationWorkflowBinding,
   makeCloudflareDataRegistrationWorkflowLauncher,
 } from "@pirate/platform-cf/data/registration-workflow-cloudflare";
+import { isWorkflowInstanceMissingError } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import { makeDataRegistrationStore } from "@pirate/platform-cf/data-registration-repository";
 import { Effect, type Layer } from "effect";
 import { dataWorkflowReplacementLimitReached } from "./song-workflow-recovery-policy";
@@ -38,8 +39,6 @@ export type DataRegistrationWorkflowCandidate = Readonly<{
   workflow_instance_id: string;
   launch_state: "delivered" | "exhausted";
 }>;
-
-const workflowIsNeverMissingByThrownError = (): boolean => false;
 
 export async function recoverDataRegistrationWorkflowCandidates(
   candidates: readonly DataRegistrationWorkflowCandidate[],
@@ -171,7 +170,7 @@ export function makeDataRegistrationMaintenance(
   const queue = env.DATA_REGISTRATION_QUEUE;
   const workflow = makeCloudflareDataRegistrationWorkflowLauncher(
     env.DATA_REGISTRATION_WORKFLOW,
-    workflowIsNeverMissingByThrownError,
+    isWorkflowInstanceMissingError,
   );
   const store = makeDataRegistrationStore(runtime);
 

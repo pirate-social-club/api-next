@@ -6,7 +6,10 @@ import type {
   MediaTransformVideoProbeInput,
 } from "@pirate/application/media/transform";
 import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
-import { isExplicitlyEnabled } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
+import {
+  isExplicitlyEnabled,
+  isWorkflowInstanceMissingError,
+} from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -327,8 +330,6 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
   };
 }
 
-const workflowIsNeverMissingByThrownError = (): boolean => false;
-
 function videoTransform(
   env: MediaProcessorRuntimeEnv,
   runtime: ReturnType<typeof makeHyperdriveControlPlaneLayer>,
@@ -383,7 +384,7 @@ export function makeMediaProcessorComposition(
   });
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     workflowBinding,
-    workflowIsNeverMissingByThrownError,
+    isWorkflowInstanceMissingError,
   );
   const enabled = isExplicitlyEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;

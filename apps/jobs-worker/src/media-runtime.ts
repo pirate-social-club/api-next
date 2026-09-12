@@ -5,6 +5,7 @@ import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "@pirate/platform-cf/media-processing-cloudflare";
+import { isWorkflowInstanceMissingError } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-store";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import {
@@ -71,8 +72,6 @@ export async function runMediaMaintenance(
   return Object.freeze({ dispatch, sweep });
 }
 
-const workflowIsNeverMissingByThrownError = (): boolean => false;
-
 export function makeMediaMaintenance(
   env: MediaJobsBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -119,7 +118,7 @@ export function makeMediaMaintenance(
   const store = makeMediaProcessingStore(runtime);
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     env.MEDIA_PROCESSING_WORKFLOW,
-    workflowIsNeverMissingByThrownError,
+    isWorkflowInstanceMissingError,
   );
   return () =>
     runMediaMaintenance({

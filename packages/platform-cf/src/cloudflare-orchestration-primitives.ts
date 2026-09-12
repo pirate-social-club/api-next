@@ -35,6 +35,15 @@ const PRESENT_WORKFLOW_STATUSES = new Set([
 export const isPresentWorkflowStatus = (status: string): boolean =>
   PRESENT_WORKFLOW_STATUSES.has(status);
 
+/**
+ * The installed runtime reports an unknown Workflow instance id as an `Error`
+ * whose message is exactly `instance.not_found`; it exposes no typed error.
+ * Classification therefore matches that stable message and nothing else, so a
+ * transient lookup failure can never be mistaken for a missing instance.
+ */
+export const isWorkflowInstanceMissingError = (error: unknown): boolean =>
+  error instanceof Error && error.message.trim() === "instance.not_found";
+
 export function classifyWorkflowCreateBatch(
   created: readonly unknown[],
   unexpectedCountMessage: string,
