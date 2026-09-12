@@ -178,4 +178,33 @@ describe("PostgreSQL test discovery", () => {
     );
     expect(workflow).toContain('[[ "$RECOVERY_RESULT" == "success" ]]');
   });
+
+  test("pins the song-video sentinel uploads to the shards that own the suites", async () => {
+    const tracked = Bun.spawnSync(["git", "ls-files", "-z", "*.pg.test.ts"]);
+    expect(tracked.exitCode).toBe(0);
+    const files = tracked.stdout
+      .toString()
+      .split("\0")
+      .filter((file) => file.length > 0);
+    const partition = partitionPostgresTestFiles(files);
+    const audited = partitionPostgresRecoveryFiles(partition.general).audited;
+    const weights: Record<string, number> = {};
+    for (const file of partition.general) {
+      const source = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
+      const testCount = source.match(/\btest(?:\.skip)?\s*\(/gu)?.length ?? 0;
+      weights[file] = postgresTestFileWeight(file, testCount);
+    }
+    const shards = shardPostgresTestFiles(audited, postgresGeneralShardCount, weights);
+    const workflow = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
+    for (const target of [
+      { file: "scripts/song-video-composed-flow.pg.test.ts", step: "song-video composed flow" },
+      { file: "scripts/song-video-render-host.pg.test.ts", step: "song-video render host" },
+    ]) {
+      const owner = shards.findIndex((shard) => shard.includes(target.file));
+      expect(owner).toBeGreaterThanOrEqual(0);
+      expect(workflow).toContain(
+        `- name: Upload ${target.step} sentinel\n        if: matrix.shard == ${owner}`,
+      );
+    }
+  });
 });
