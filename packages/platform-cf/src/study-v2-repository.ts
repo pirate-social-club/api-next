@@ -625,7 +625,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
           (grader.kind === "source_token_diff_v1" &&
             item.grader_policy_revision === "script_aware_token_diff_v1") ||
           (grader.kind === "source_token_phonetic_v2" &&
-            item.grader_policy_revision === "script_aware_token_phonetic_v2");
+            item.grader_policy_revision === "script_aware_token_phonetic_v2") ||
+          (grader.kind === "source_token_phonetic_v3" &&
+            item.grader_policy_revision === "script_aware_token_phonetic_v3");
         if (
           item.exercise_type !== "say_it_back" ||
           !supportedSpokenGrader ||
