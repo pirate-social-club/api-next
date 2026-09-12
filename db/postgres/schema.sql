@@ -23719,6 +23719,15 @@ CREATE TABLE community_streaks (
     CONSTRAINT community_streaks_day_order CHECK ((last_day >= started_day))
 );
 
+CREATE TABLE community_telegram_chat_leases (
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    chat_id text NOT NULL,
+    lease_token text,
+    lease_expires_at timestamp with time zone,
+    next_allowed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
 CREATE TABLE community_telegram_commands (
     community_id text NOT NULL,
     command_key text NOT NULL,
@@ -23839,6 +23848,8 @@ CREATE TABLE community_telegram_usage (
     subject text NOT NULL,
     messages integer DEFAULT 0 NOT NULL,
     speech_characters integer DEFAULT 0 NOT NULL,
+    commands integer DEFAULT 0 NOT NULL,
+    CONSTRAINT community_telegram_usage_commands_check CHECK ((commands >= 0)),
     CONSTRAINT community_telegram_usage_messages_check CHECK ((messages >= 0)),
     CONSTRAINT community_telegram_usage_speech_characters_check CHECK ((speech_characters >= 0))
 );
@@ -31151,6 +31162,9 @@ ALTER TABLE ONLY community_streak_days
 ALTER TABLE ONLY community_streaks
     ADD CONSTRAINT community_streaks_pkey PRIMARY KEY (account_id, community_id);
 
+ALTER TABLE ONLY community_telegram_chat_leases
+    ADD CONSTRAINT community_telegram_chat_leases_pkey PRIMARY KEY (community_id, bot_epoch, chat_id);
+
 ALTER TABLE ONLY community_telegram_commands
     ADD CONSTRAINT community_telegram_commands_pkey PRIMARY KEY (community_id, command_key);
 
@@ -35167,6 +35181,9 @@ ALTER TABLE ONLY community_streaks
 
 ALTER TABLE ONLY community_streaks
     ADD CONSTRAINT community_streaks_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_telegram_chat_leases
+    ADD CONSTRAINT community_telegram_chat_leases_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
 
 ALTER TABLE ONLY community_telegram_commands
     ADD CONSTRAINT community_telegram_commands_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);

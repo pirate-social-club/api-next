@@ -1281,6 +1281,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_route_revalidation_start_reservations",
         "community_streak_days",
         "community_streaks",
+        "community_telegram_chat_leases",
         "community_telegram_commands",
         "community_telegram_conversations",
         "community_telegram_deliveries",
