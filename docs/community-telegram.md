@@ -63,9 +63,19 @@ membership changes are not readiness signals.
 
 ## Delivery and privacy
 
-Webhook acceptance follows a durable inbox insert. Duplicate bot-epoch/update
+Webhook acceptance follows a durable inbox insert.Duplicate bot-epoch/update
 IDs retain a tombstone after payload erasure. Queue messages contain only a
 work kind and identifier. A scheduled scan repairs missing notifications.
+
+Command replies such as `/start`, `/songs` and channel-selection
+acknowledgements draw on a separate durable daily command budget rather than the
+model message budget. Each command reservation is keyed to its inbox item, so a
+replay does not charge twice. A per-chat lease serializes private-chat
+processing across concurrent consumers and spaces consecutive replies by a
+one-second interval. A chat that is busy or still inside the interval returns
+its item to pending without spending a retry attempt and re-wakes it after the
+interval. Delivery rejections carrying a Telegram retry-after delay the next
+attempt instead of retrying immediately.
 
 Publication intent and confirmed Telegram payload are separate. A failed edit
 does not advance the confirmed hash. Explicit Telegram rejection preserves

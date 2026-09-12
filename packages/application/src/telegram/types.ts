@@ -257,6 +257,21 @@ export interface TelegramStore {
     policy: CommunityAssistantPolicy,
     speechCharacters: number,
   ): Promise<boolean>;
+  admitCommand(
+    communityId: string,
+    epoch: string,
+    userId: string,
+    key: string,
+    limits: { user: number; community: number },
+  ): Promise<boolean>;
+  claimChat(
+    communityId: string,
+    epoch: string,
+    chatId: string,
+    minIntervalSeconds: number,
+  ): Promise<string | null>;
+  releaseChat(communityId: string, epoch: string, chatId: string, token: string): Promise<void>;
+  deferInbox(item: InboxRecord, delaySeconds: number, reason: string): Promise<void>;
   history(
     communityId: string,
     userId: string,
@@ -279,7 +294,10 @@ export interface TelegramServices {
   publicOrigin: string;
   webhookOrigin: string;
   now: () => number;
-  wake: (work: { kind: "inbox" | "delivery"; id: string }) => Promise<void>;
+  wake: (
+    work: { kind: "inbox" | "delivery"; id: string },
+    options?: { delaySeconds?: number },
+  ) => Promise<void>;
 }
 
 export function integrationView(record: IntegrationRecord): TelegramIntegration {

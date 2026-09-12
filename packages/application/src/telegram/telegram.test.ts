@@ -272,6 +272,9 @@ test("setup permission failures reply with an actionable instruction", async () 
     }),
     integration: async () => ({ ...integration, botToken: "encrypted-token", botId: "123" }),
     privateChatStarted: async () => true,
+    claimChat: async () => "setup-lease",
+    releaseChat: async () => {},
+    admitCommand: async () => true,
     selectSetup: async () => {
       throw new Error("A failed permission check must not select a channel");
     },
@@ -320,6 +323,9 @@ test("a stale channel selection is reported instead of confirmed", async () => {
       }),
       integration: async () => ({ ...integration, botToken: "encrypted-token", botId: "123" }),
       privateChatStarted: async () => true,
+      claimChat: async () => "selection-lease",
+      releaseChat: async () => {},
+      admitCommand: async () => true,
       selectSetup: async () => selected,
       enqueueDelivery: async (delivery) => {
         if (delivery.desired !== null && "text" in delivery.desired)
@@ -345,6 +351,129 @@ test("a stale channel selection is reported instead of confirmed", async () => {
   };
   expect(await run(true)).toContain("Return to community settings");
   expect(await run(false)).toContain("already used or has expired");
+});
+
+test("command replies are admitted once and throttled when the budget is spent", async () => {
+  const keys: string[] = [];
+  const texts: string[] = [];
+  const run = async (allowed: boolean) => {
+    const service = services({
+      claimInbox: async () => ({
+        id: "inbox",
+        communityId: "community",
+        botEpoch: "epoch",
+        attempt: "attempt",
+        update: {
+          update_id: 1,
+          message: {
+            chat: { id: 7, type: "private" },
+            from: { id: 7, is_bot: false },
+            text: "/songs",
+          },
+        },
+      }),
+      integration: async () => integration,
+      privateChatStarted: async () => true,
+      claimChat: async () => "command-lease",
+      releaseChat: async () => {},
+      admitCommand: async (_community, _epoch, _user, key) => {
+        keys.push(key);
+        return allowed;
+      },
+      reserveUsage: async () => {
+        throw new Error("Command replies must not charge the model budget");
+      },
+      publicPosts: async () => [],
+      enqueueDelivery: async (delivery) => {
+        if (delivery.desired !== null && "text" in delivery.desired)
+          texts.push(delivery.desired.text as string);
+      },
+      finishInbox: async () => {},
+    });
+    await processTelegramInbox(service, "inbox");
+  };
+  await run(true);
+  expect(keys).toEqual(["command:inbox"]);
+  expect(texts[0]).toContain("No public songs are available yet.");
+  await run(false);
+  expect(keys).toEqual(["command:inbox", "command:inbox"]);
+  expect(texts[1]).toBe("Too many requests. Please try again in a few minutes.");
+});
+
+test("a paced chat is deferred without spending an attempt and re-woken", async () => {
+  const deferred: { id: string; delay: number; reason: string }[] = [];
+  const wakes: { id: string; delay: number | undefined }[] = [];
+  let handled = false;
+  const service = services({
+    claimInbox: async () => ({
+      id: "inbox",
+      communityId: "community",
+      botEpoch: "epoch",
+      attempt: "attempt",
+      update: {
+        update_id: 1,
+        message: {
+          chat: { id: 7, type: "private" },
+          from: { id: 7, is_bot: false },
+          text: "/songs",
+        },
+      },
+    }),
+    claimChat: async (_community, _epoch, chatId, seconds) => {
+      expect(chatId).toBe("7");
+      expect(seconds).toBe(1);
+      return null;
+    },
+    deferInbox: async (item, delay, reason) => {
+      deferred.push({ id: item.id, delay, reason });
+    },
+    integration: async () => {
+      handled = true;
+      return integration;
+    },
+    finishInbox: async () => {
+      handled = true;
+    },
+  });
+  service.wake = async (work, options) => {
+    wakes.push({ id: work.id, delay: options?.delaySeconds });
+  };
+  await processTelegramInbox(service, "inbox");
+  expect(deferred).toEqual([{ id: "inbox", delay: 1, reason: "chat_paced" }]);
+  expect(wakes).toEqual([{ id: "inbox", delay: 1 }]);
+  expect(handled).toBe(false);
+});
+
+test("a leased chat releases its lease after processing", async () => {
+  const released: string[] = [];
+  const service = services({
+    claimInbox: async () => ({
+      id: "inbox",
+      communityId: "community",
+      botEpoch: "epoch",
+      attempt: "attempt",
+      update: {
+        update_id: 1,
+        message: {
+          chat: { id: 7, type: "private" },
+          from: { id: 7, is_bot: false },
+          text: "/songs",
+        },
+      },
+    }),
+    integration: async () => integration,
+    privateChatStarted: async () => true,
+    claimChat: async () => "leased-token",
+    releaseChat: async (_community, _epoch, _chatId, token) => {
+      released.push(token);
+    },
+    admitCommand: async () => true,
+    publicPosts: async () => [],
+    enqueueDelivery: async () => {},
+    finishInbox: async () => {},
+  });
+  await processTelegramInbox(service, "inbox");
+  expect(released).toEqual(["leased-token"]);
 });
 
 test("inbox replay reuses durable provider stages instead of repeating billable work", async () => {
@@ -401,6 +530,8 @@ test("inbox replay reuses durable provider stages instead of repeating billable 
       finished.push(error);
     },
     privateChatStarted: async () => true,
+    claimChat: async () => "replay-lease",
+    releaseChat: async () => {},
     publicPosts: async () => [],
     history: async () => [],
     reserveUsage: async () => true,

@@ -10,6 +10,10 @@ export function makeTelegramInboxStore(
   | "finishInbox"
   | "pendingWork"
   | "reserveUsage"
+  | "admitCommand"
+  | "claimChat"
+  | "releaseChat"
+  | "deferInbox"
   | "history"
   | "saveConversation"
   | "cleanup"
@@ -114,6 +118,77 @@ export function makeTelegramInboxStore(
         return true;
       });
     },
+    admitCommand(communityId, epoch, userId, key, limits) {
+      return db.transaction(async (query) => {
+        const integration = await query(
+          "SELECT community_id FROM community_telegram_integrations WHERE community_id=$1 AND bot_epoch=$2 FOR UPDATE",
+          [communityId, epoch],
+        );
+        if (integration.length === 0) return false;
+        const previous = await query(
+          "SELECT 1 FROM community_telegram_usage_reservations WHERE community_id=$1 AND bot_epoch=$2 AND reservation_key=$3",
+          [communityId, epoch, key],
+        );
+        if (previous.length > 0) return true;
+        const subjects = ["community", `user:${userId}`];
+        for (const subject of subjects) {
+          await query(
+            "INSERT INTO community_telegram_usage(community_id,usage_day,subject) VALUES($1,(clock_timestamp() AT TIME ZONE 'UTC')::date,$2) ON CONFLICT DO NOTHING",
+            [communityId, subject],
+          );
+        }
+        const rows = await query(
+          "SELECT subject,commands FROM community_telegram_usage WHERE community_id=$1 AND usage_day=(clock_timestamp() AT TIME ZONE 'UTC')::date AND subject=ANY($2::text[]) FOR UPDATE",
+          [communityId, subjects],
+        );
+        if (
+          rows.some(
+            (row) =>
+              Number(row.commands) + 1 >
+              (row.subject === "community" ? limits.community : limits.user),
+          )
+        )
+          return false;
+        await query(
+          "UPDATE community_telegram_usage SET commands=commands+1 WHERE community_id=$1 AND usage_day=(clock_timestamp() AT TIME ZONE 'UTC')::date AND subject=ANY($2::text[])",
+          [communityId, subjects],
+        );
+        await query(
+          "INSERT INTO community_telegram_usage_reservations(community_id,bot_epoch,reservation_key) VALUES($1,$2,$3)",
+          [communityId, epoch, key],
+        );
+        return true;
+      });
+    },
+    claimChat(communityId, epoch, chatId, minIntervalSeconds) {
+      return db.transaction(async (query) => {
+        const token = crypto.randomUUID();
+        const rows = await query(
+          `INSERT INTO community_telegram_chat_leases(community_id,bot_epoch,chat_id,lease_token,lease_expires_at,next_allowed_at)
+          VALUES($1,$2,$3,$4,clock_timestamp()+interval '2 minutes',clock_timestamp()+make_interval(secs=>$5))
+          ON CONFLICT(community_id,bot_epoch,chat_id) DO UPDATE
+          SET lease_token=EXCLUDED.lease_token,lease_expires_at=EXCLUDED.lease_expires_at,next_allowed_at=EXCLUDED.next_allowed_at
+          WHERE community_telegram_chat_leases.next_allowed_at<=clock_timestamp()
+            AND (community_telegram_chat_leases.lease_expires_at IS NULL OR community_telegram_chat_leases.lease_expires_at<clock_timestamp())
+          RETURNING lease_token`,
+          [communityId, epoch, chatId, token, minIntervalSeconds],
+        );
+        return rows[0] ? String(rows[0].lease_token) : null;
+      });
+    },
+    async releaseChat(communityId, epoch, chatId, token) {
+      await db.query(
+        "UPDATE community_telegram_chat_leases SET lease_token=NULL,lease_expires_at=NULL WHERE community_id=$1 AND bot_epoch=$2 AND chat_id=$3 AND lease_token=$4",
+        [communityId, epoch, chatId, token],
+      );
+    },
+    async deferInbox(item, delaySeconds, reason) {
+      await db.query(
+        `UPDATE community_telegram_inbox SET state='pending',attempts=GREATEST(attempts-1,0),attempt=NULL,lease_expires_at=NULL,last_error=$4,next_attempt_at=clock_timestamp()+make_interval(secs=>$3)
+        WHERE inbox_id=$1 AND attempt=$2 AND state='processing'`,
+        [item.id, item.attempt, delaySeconds, reason],
+      );
+    },
     async history(communityId, userId) {
       const rows = await db.query(
         `SELECT prompt,answer FROM community_telegram_conversations WHERE community_id=$1 AND telegram_user_id=$2
@@ -155,6 +230,11 @@ export function makeTelegramInboxStore(
       );
       await db.query(
         "DELETE FROM community_telegram_usage WHERE usage_day<(clock_timestamp() AT TIME ZONE 'UTC')::date-7",
+      );
+      await db.query(
+        `DELETE FROM community_telegram_chat_leases
+        WHERE next_allowed_at<clock_timestamp()-interval '24 hours'
+          AND (lease_expires_at IS NULL OR lease_expires_at<clock_timestamp()-interval '24 hours')`,
       );
       // Deduplication tombstones outlive content. Replayed update IDs never regenerate replies.
     },

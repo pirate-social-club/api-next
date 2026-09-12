@@ -840,4 +840,103 @@ suite("community Telegram persistence", () => {
       await store.channelMembership("telegram-community", "epoch", "-100", null);
       expect((await store.integration("telegram-community")).lastError).toBeNull();
     }));
+
+  test("command admission reserves once and enforces separate limits", () =>
+    fixture(async (store, admin) => {
+      const limits = { user: 2, community: 10 };
+      expect(
+        await store.admitCommand("telegram-community", "epoch", "user-1", "command:a", limits),
+      ).toBe(true);
+      expect(
+        await store.admitCommand("telegram-community", "epoch", "user-1", "command:a", limits),
+      ).toBe(true);
+      expect(
+        await store.admitCommand("telegram-community", "epoch", "user-1", "command:b", limits),
+      ).toBe(true);
+      expect(
+        await store.admitCommand("telegram-community", "epoch", "user-1", "command:c", limits),
+      ).toBe(false);
+      expect(
+        (
+          await admin.query(
+            "SELECT subject,commands FROM community_telegram_usage ORDER BY subject",
+          )
+        ).rows,
+      ).toEqual([
+        { subject: "community", commands: 2 },
+        { subject: "user:user-1", commands: 2 },
+      ]);
+    }));
+
+  test("concurrent command admissions stop at the limit", () =>
+    fixture(async (store, admin) => {
+      const limits = { user: 3, community: 20 };
+      const results = await Promise.all(
+        ["a", "b", "c", "d", "e"].map((key) =>
+          store.admitCommand("telegram-community", "epoch", "user-1", `command:${key}`, limits),
+        ),
+      );
+      expect(results.filter(Boolean)).toHaveLength(3);
+      expect(
+        (
+          await admin.query(
+            "SELECT commands FROM community_telegram_usage WHERE subject='user:user-1'",
+          )
+        ).rows[0],
+      ).toEqual({ commands: 3 });
+    }));
+
+  test("deferred inbox items keep their attempt budget", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload) VALUES('paced-inbox','telegram-community','epoch',21,'{}'::jsonb)",
+      );
+      const claimed = await store.claimInbox("paced-inbox");
+      if (!claimed) throw new Error("Missing claim");
+      await store.deferInbox(claimed, 60, "chat_paced");
+      expect(await store.claimInbox("paced-inbox")).toBeNull();
+      expect(
+        (
+          await admin.query(
+            "SELECT state,attempts FROM community_telegram_inbox WHERE inbox_id='paced-inbox'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "pending", attempts: 0 });
+      await admin.query(
+        "UPDATE community_telegram_inbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE inbox_id='paced-inbox'",
+      );
+      expect(await store.claimInbox("paced-inbox")).not.toBeNull();
+    }));
+
+  test("chat leases serialize and pace consecutive claims", () =>
+    fixture(async (store, admin) => {
+      const first = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!first) throw new Error("Missing lease");
+      expect(await store.claimChat("telegram-community", "epoch", "7", 1)).toBeNull();
+      await store.releaseChat("telegram-community", "epoch", "7", first);
+      expect(await store.claimChat("telegram-community", "epoch", "7", 1)).toBeNull();
+      await admin.query(
+        "UPDATE community_telegram_chat_leases SET next_allowed_at=clock_timestamp()-interval '1 second' WHERE chat_id='7'",
+      );
+      expect(await store.claimChat("telegram-community", "epoch", "7", 1)).not.toBeNull();
+    }));
+
+  test("a Telegram retry-after delays the next delivery attempt", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const claimed = await store.claimDelivery(base.id);
+      if (!claimed) throw new Error("Missing claim");
+      await store.finishDelivery(
+        claimed,
+        { kind: "rejected", code: "telegram_429", retryAfter: 30 },
+        "send",
+      );
+      expect(await store.claimDelivery(base.id)).toBeNull();
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE delivery_id=$1",
+        [base.id],
+      );
+      expect(await store.claimDelivery(base.id)).not.toBeNull();
+    }));
 });

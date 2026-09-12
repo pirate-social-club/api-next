@@ -19,7 +19,10 @@ export interface TelegramBindings {
   readonly TELEGRAM_CREDENTIAL_ACTIVE_VERSION?: string;
   readonly TELEGRAM_CREDENTIAL_KEYS_JSON?: string;
   readonly TELEGRAM_QUEUE?: {
-    send(body: { kind: "inbox" | "delivery"; id: string }): Promise<void>;
+    send(
+      body: { kind: "inbox" | "delivery"; id: string },
+      options?: { delaySeconds?: number },
+    ): Promise<void>;
   };
 }
 
@@ -62,7 +65,7 @@ export async function makeTelegramServices(
     publicOrigin: bindings.TELEGRAM_PUBLIC_ORIGIN,
     webhookOrigin: bindings.TELEGRAM_WEBHOOK_ORIGIN,
     now: Date.now,
-    wake: (work) => queue.send(work),
+    wake: (work, options) => queue.send(work, options),
   };
 }
 

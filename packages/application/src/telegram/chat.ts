@@ -105,6 +105,44 @@ const channelSetupReply: Record<TelegramChannelRejection, string> = {
   bot_missing_rights: "The bot needs post, edit and delete message rights in that channel.",
 };
 
+// Command replies carry their own durable daily budget; the model message
+// budget is not a substitute for command admission. The per-chat pacing lease
+// serializes private-chat processing across concurrent consumers and spaces
+// consecutive replies.
+const commandUserDailyLimit = 40;
+const commandCommunityDailyLimit = 400;
+const chatPacingSeconds = 1;
+
+async function admitCommand(
+  services: TelegramServices,
+  item: InboxRecord,
+  userId: string,
+): Promise<boolean> {
+  return services.store.admitCommand(
+    item.communityId,
+    item.botEpoch,
+    userId,
+    `command:${item.id}`,
+    {
+      user: commandUserDailyLimit,
+      community: commandCommunityDailyLimit,
+    },
+  );
+}
+
+async function commandBudgetReply(
+  services: TelegramServices,
+  item: InboxRecord,
+  chatId: string,
+): Promise<void> {
+  await reply(
+    services,
+    item,
+    chatId,
+    textMessage("Too many requests. Please try again in a few minutes."),
+  );
+}
+
 async function handleMembership(
   services: TelegramServices,
   item: InboxRecord,
@@ -154,6 +192,10 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   const input = typeof message.text === "string" ? message.text.slice(0, 4000) : "";
   const start = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+([A-Za-z0-9_-]{43}))?\s*$/u.exec(input);
   if (start) {
+    if (!(await admitCommand(services, item, userId))) {
+      await commandBudgetReply(services, item, chatId);
+      return;
+    }
     await services.store.startPrivateChat(item.communityId, item.botEpoch, userId);
     if (start[1]) {
       const setup = await services.store.setupByToken(
@@ -241,6 +283,10 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       !Number.isSafeInteger(shared.request_id)
     )
       return;
+    if (!(await admitCommand(services, item, userId))) {
+      await commandBudgetReply(services, item, chatId);
+      return;
+    }
     const verified = await verifyTelegramChannel(services, item.communityId, channelId, userId);
     if (!verified.ok) {
       await reply(services, item, chatId, textMessage(channelSetupReply[verified.code]));
@@ -273,6 +319,10 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     return;
   }
   if (/^\/songs(?:@[A-Za-z0-9_]+)?\s*$/u.test(input)) {
+    if (!(await admitCommand(services, item, userId))) {
+      await commandBudgetReply(services, item, chatId);
+      return;
+    }
     const songs = (await services.store.publicPosts(item.communityId, undefined, "song"))
       .filter((post) => post.kind === "song")
       .slice(0, 8);
@@ -408,9 +458,12 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   }
 }
 
-export async function processTelegramInbox(services: TelegramServices, id: string) {
-  const item = await services.store.claimInbox(id);
-  if (!item) return;
+function privateChatId(item: InboxRecord): string | null {
+  const chat = object(object(item.update.message)?.chat);
+  return chat?.type === "private" ? identifier(chat.id) : null;
+}
+
+async function runInbox(services: TelegramServices, item: InboxRecord) {
   try {
     const record = await services.store.integration(item.communityId);
     if (record.botEpoch === item.botEpoch && record.status === "ready")
@@ -418,5 +471,38 @@ export async function processTelegramInbox(services: TelegramServices, id: strin
     await services.store.finishInbox(item, null);
   } catch {
     await services.store.finishInbox(item, "processing_failed");
+  }
+}
+
+export async function processTelegramInbox(services: TelegramServices, id: string) {
+  const item = await services.store.claimInbox(id);
+  if (!item) return;
+  const chatId = privateChatId(item);
+  if (chatId === null) {
+    // Membership and other channel updates do not reply, so they do not pace.
+    await runInbox(services, item);
+    return;
+  }
+  const token = await services.store.claimChat(
+    item.communityId,
+    item.botEpoch,
+    chatId,
+    chatPacingSeconds,
+  );
+  if (!token) {
+    // Another consumer holds this chat or the pacing interval has not passed.
+    // Returning the item to pending does not spend an inbox attempt.
+    await services.store.deferInbox(item, chatPacingSeconds, "chat_paced");
+    try {
+      await services.wake({ kind: "inbox", id }, { delaySeconds: chatPacingSeconds });
+    } catch {
+      /* The scheduled scan recovers a lost notification. */
+    }
+    return;
+  }
+  try {
+    await runInbox(services, item);
+  } finally {
+    await services.store.releaseChat(item.communityId, item.botEpoch, chatId, token);
   }
 }
