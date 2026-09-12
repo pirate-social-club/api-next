@@ -5,6 +5,7 @@ import {
   classifyWorkflowCreateBatch,
   cloudflareDigestWorkflowId,
   isExplicitlyEnabled,
+  isFinishedWorkflowStatus,
   isPresentWorkflowStatus,
   isWorkflowInstanceMissingError,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
@@ -56,6 +57,11 @@ describe("Cloudflare orchestration primitives", () => {
     expect(["complete", "errored", "terminated", "unknown"].some(isPresentWorkflowStatus)).toBe(
       false,
     );
+  });
+
+  test("classifies terminal Workflow states as finished, not success and not missing", () => {
+    expect(["complete", "errored", "terminated"].every(isFinishedWorkflowStatus)).toBe(true);
+    expect(["queued", "running", "waiting", "unknown"].some(isFinishedWorkflowStatus)).toBe(false);
   });
 
   test("recognizes only the installed runtime's missing-instance error", () => {

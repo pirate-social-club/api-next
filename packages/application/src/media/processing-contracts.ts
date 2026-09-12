@@ -493,7 +493,7 @@ export type MediaProcessingProviders = Readonly<{
 }>;
 
 export interface MediaProcessingWorkflowLauncher {
-  readonly get: (instanceId: string) => Promise<"present" | "missing">;
+  readonly get: (instanceId: string) => Promise<"present" | "finished" | "missing">;
   readonly create: (
     instanceId: string,
     payload: MediaProcessingWorkflowPayload,

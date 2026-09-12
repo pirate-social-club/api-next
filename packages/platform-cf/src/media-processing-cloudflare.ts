@@ -11,6 +11,7 @@ import { consumeMediaProcessingQueueMessage } from "../../application/src/media/
 import {
   applyCloudflareQueueDisposition,
   classifyWorkflowCreateBatch,
+  isFinishedWorkflowStatus,
   isPresentWorkflowStatus,
 } from "./cloudflare-orchestration-primitives.ts";
 
@@ -56,13 +57,15 @@ export interface CloudflareMediaQueueBatch {
 
 export type CloudflareMissingWorkflowErrorClassifier = (error: unknown) => boolean;
 
-async function workflowIsPresent(
+async function workflowState(
   binding: CloudflareMediaWorkflowBinding,
   instanceId: string,
-): Promise<boolean> {
+): Promise<"present" | "finished" | "missing"> {
   const instance = await binding.get(instanceId);
   const status = await instance.status();
-  return isPresentWorkflowStatus(status.status);
+  if (isPresentWorkflowStatus(status.status)) return "present";
+  if (isFinishedWorkflowStatus(status.status)) return "finished";
+  return "missing";
 }
 
 /**
@@ -77,7 +80,7 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
   return {
     get: async (instanceId) => {
       try {
-        return (await workflowIsPresent(binding, instanceId)) ? "present" : "missing";
+        return await workflowState(binding, instanceId);
       } catch (error) {
         if (isMissingInstanceError(error)) return "missing";
         throw error;

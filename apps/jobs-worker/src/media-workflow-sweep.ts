@@ -10,6 +10,7 @@ import { songWorkflowReplacementLimitReached } from "./song-workflow-recovery-po
 export type MediaWorkflowSweepResult = Readonly<{
   readonly inspected: number;
   readonly present: number;
+  readonly finished: number;
   readonly replaced: number;
   readonly stale: number;
   readonly limitReached: number;
@@ -42,6 +43,7 @@ export async function sweepMissingMediaWorkflows(
   const result = {
     inspected: 0,
     present: 0,
+    finished: 0,
     replaced: 0,
     stale: 0,
     limitReached: 0,
@@ -55,7 +57,7 @@ export async function sweepMissingMediaWorkflows(
       result.limitReached += 1;
       continue;
     }
-    let workflowStatus: "present" | "missing";
+    let workflowStatus: "present" | "finished" | "missing";
     try {
       workflowStatus = await dependencies.workflow.get(workflowInstanceId(candidate));
     } catch {
@@ -70,6 +72,32 @@ export async function sweepMissingMediaWorkflows(
     }
     if (workflowStatus === "present") {
       result.present += 1;
+      continue;
+    }
+    // A finished instance is not proof of success and never grounds for a
+    // blind replacement. The persisted operation row stays authoritative: the
+    // normal convergence path reconciles it from persisted state, and this
+    // sweep only reports the unreconciled row.
+    if (workflowStatus === "finished") {
+      const authority = await dependencies.store.loadAuthority(
+        candidate.submissionId,
+        candidate.operationId,
+      );
+      if (
+        authority === null ||
+        authority.workflowRevision !== candidate.workflowRevision ||
+        isMediaTerminalSubmissionStatus(authority.status)
+      ) {
+        result.stale += 1;
+        continue;
+      }
+      result.finished += 1;
+      dependencies.observe?.({
+        event: "workflow_terminal",
+        operationId: authority.operationId,
+        submissionId: authority.submissionId,
+        workflowRevision: authority.workflowRevision,
+      });
       continue;
     }
 

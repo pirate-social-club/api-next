@@ -68,6 +68,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(await sweepMissingMediaWorkflows(dependencies)).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -95,6 +96,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(result).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
       replaced: 0,
       stale: 1,
       limitReached: 0,
@@ -116,6 +118,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(present).toEqual({
       inspected: 1,
       present: 1,
+      finished: 0,
       replaced: 0,
       stale: 0,
       limitReached: 0,
@@ -138,6 +141,7 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
       replaced: 0,
       stale: 1,
       limitReached: 0,
@@ -164,6 +168,7 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
       replaced: 0,
       stale: 0,
       limitReached: 1,
@@ -203,6 +208,7 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -237,6 +243,7 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -273,6 +280,7 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 2,
       present: 0,
+      finished: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -280,5 +288,60 @@ describe("media Workflow missing-instance sweep", () => {
     });
     expect(replacementWrites).toBe(1);
     expect(observed).toContain("workflow_lookup_failed");
+  });
+
+  test("reports a finished instance without replacing the persisted operation", async () => {
+    const active = candidate();
+    let replacementWrites = 0;
+    const observed: string[] = [];
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [active],
+          loadAuthority: async () => active,
+          replaceMissingWorkflow: async () => {
+            replacementWrites += 1;
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "finished" },
+        observe: (event: { event: string }) => observed.push(event.event),
+      }),
+    ).toEqual({
+      inspected: 1,
+      present: 0,
+      finished: 1,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+    expect(replacementWrites).toBe(0);
+    expect(observed).toContain("workflow_terminal");
+  });
+
+  test("concurrent sweepers produce exactly one replacement through the fence", async () => {
+    let current = candidate();
+    let replacementWrites = 0;
+    const dependencies = {
+      store: {
+        listWorkflowCandidates: async () => [current],
+        loadAuthority: async () => current,
+        replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
+          if (expected.workflowRevision !== current.workflowRevision) return "stale" as const;
+          replacementWrites += 1;
+          current = { ...current, workflowRevision: current.workflowRevision + 1 };
+          return "committed" as const;
+        },
+      },
+      workflow: { get: async () => "missing" as const },
+    };
+    const [first, second] = await Promise.all([
+      sweepMissingMediaWorkflows(dependencies),
+      sweepMissingMediaWorkflows(dependencies),
+    ]);
+    expect([first.replaced, second.replaced].sort()).toEqual([0, 1]);
+    expect(first.lookupFailed + second.lookupFailed).toBe(0);
+    expect(replacementWrites).toBe(1);
   });
 });

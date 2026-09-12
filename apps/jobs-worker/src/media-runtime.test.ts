@@ -14,6 +14,7 @@ describe("media scheduled maintenance", () => {
         return {
           inspected: 1,
           present: 1,
+          finished: 0,
           replaced: 0,
           stale: 0,
           limitReached: 0,
@@ -25,7 +26,15 @@ describe("media scheduled maintenance", () => {
     expect(events).toEqual(["dispatch", "sweep"]);
     expect(result).toEqual({
       dispatch: { selected: 2, sent: 2, failed: 0 },
-      sweep: { inspected: 1, present: 1, replaced: 0, stale: 0, limitReached: 0, lookupFailed: 0 },
+      sweep: {
+        inspected: 1,
+        present: 1,
+        finished: 0,
+        replaced: 0,
+        stale: 0,
+        limitReached: 0,
+        lookupFailed: 0,
+      },
     });
   });
 });

@@ -74,7 +74,7 @@ describe("Cloudflare media processing adapters", () => {
     );
   });
 
-  test("projects active statuses as present and terminal statuses as replacement candidates", async () => {
+  test("projects active statuses as present, terminal statuses as finished, and unknown as missing", async () => {
     for (const status of [
       "queued",
       "running",
@@ -96,7 +96,7 @@ describe("Cloudflare media processing adapters", () => {
       expect(await launcher.get("media-operation-1-r1")).toBe("present");
     }
 
-    for (const status of ["unknown", "errored", "terminated", "complete"] as const) {
+    for (const status of ["errored", "terminated", "complete"] as const) {
       const launcher = makeCloudflareMediaProcessingWorkflowLauncher(
         {
           createBatch: async () => [],
@@ -107,8 +107,20 @@ describe("Cloudflare media processing adapters", () => {
         },
         isMissing,
       );
-      expect(await launcher.get("media-operation-1-r1")).toBe("missing");
+      expect(await launcher.get("media-operation-1-r1")).toBe("finished");
     }
+
+    const unknown = makeCloudflareMediaProcessingWorkflowLauncher(
+      {
+        createBatch: async () => [],
+        get: async () => ({
+          status: async () => ({ status: "unknown" as const }),
+          sendEvent: async () => undefined,
+        }),
+      },
+      isMissing,
+    );
+    expect(await unknown.get("media-operation-1-r1")).toBe("missing");
   });
 
   test("does not turn a transient get failure into retained-instance loss", async () => {
