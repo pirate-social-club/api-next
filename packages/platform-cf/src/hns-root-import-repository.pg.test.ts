@@ -1177,6 +1177,25 @@ suite("Postgres 17 HNS root-import repository", () => {
           return;
         }
 
+        // The retired client observation job is still queued after the real
+        // lifecycle path accepted evidence. Give it the removal migration's
+        // named disposition for an existing operation crossing the cutover;
+        // renewal must succeed without it ever reaching completed.
+        const clientObservation = await admin.query<{ observation_job_id: string; state: string }>(
+          `SELECT observation_job_id, state FROM hns_root_import_observation_jobs
+            WHERE root_import_session_id='root-import-session'`,
+        );
+        expect(clientObservation.rows).toMatchObject([
+          { observation_job_id: "observation-root-import", state: "queued" },
+        ]);
+        await admin.query(
+          `UPDATE hns_root_import_observation_jobs
+              SET state='failed', failure_code='readiness_single_owner_cutover',
+                  completed_at=clock_timestamp(), updated_at=clock_timestamp()
+            WHERE observation_job_id=$1`,
+          [clientObservation.rows[0]?.observation_job_id],
+        );
+
         const scheduled = await admin.query<{
           eligible_roots: number;
           enqueued_roots: number;
@@ -1215,6 +1234,34 @@ suite("Postgres 17 HNS root-import repository", () => {
             session_revision: "6",
           },
         ]);
+        // Re-delivering the same accepted envelope and result replays.
+        expect(
+          (
+            await admin.query(
+              "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)",
+              [
+                renewalClaim.rows[0]?.observation_job_id,
+                "authority-executor",
+                Number(renewalClaim.rows[0]?.lease_fence),
+                renewalClaim.rows[0]?.request_sha256,
+                Buffer.from(renewalReadiness.result_bytes),
+                renewalReadiness.result_sha256,
+              ],
+            )
+          ).rows[0]?.outcome,
+        ).toBe("replayed");
+        // The retired job stays in its named cutover disposition throughout.
+        expect(
+          (
+            await admin.query<{ state: string; failure_code: string }>(
+              `SELECT state, failure_code FROM hns_root_import_observation_jobs
+                WHERE observation_job_id='observation-root-import'`,
+            )
+          ).rows[0],
+        ).toMatchObject({
+          state: "failed",
+          failure_code: "readiness_single_owner_cutover",
+        });
         expect(
           (
             await admin.query<{ health_generation: string }>(
@@ -1271,7 +1318,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         ).toEqual({ kind: "not_found" });
       });
     },
-    20_000,
+    60_000,
   );
 
   test("atomically commits a community attachment before activating its HNS services", async () => {
@@ -1990,28 +2037,10 @@ suite("Postgres 17 HNS root-import repository", () => {
       throw new Error(`readiness was not accepted: ${accepted.rows[0]?.outcome}`);
     }
     const after = await lifecycleFixtureRow(admin);
-    // The client's observation request predates the lifecycle runner. Its
-    // legacy job carries the request envelope the renewal claim still reads,
-    // so the fixture completes it with the accepted readiness bytes once the
-    // lifecycle has recorded the real observation evidence. The legacy
-    // finalizer no longer has a readiness branch and cannot do this.
-    const clientObservation = await admin.query<{ observation_job_id: string | null }>(
-      `SELECT observation_job_id FROM hns_root_import_sessions
-        WHERE root_import_session_id=$1`,
-      [FIXTURE_SESSION],
-    );
-    const clientObservationJobId = clientObservation.rows[0]?.observation_job_id;
-    if (clientObservationJobId !== null && clientObservationJobId !== undefined) {
-      await admin.query(
-        `UPDATE hns_root_import_observation_jobs
-            SET state='completed', leased_by=NULL, lease_expires_at=NULL,
-                result_bytes=$2, result_sha256=encode(sha256($2),'hex'),
-                failure_code=NULL, completed_at=clock_timestamp(),
-                updated_at=clock_timestamp()
-          WHERE observation_job_id=$1 AND state IN ('queued','leased')`,
-        [clientObservationJobId, readiness.result_bytes],
-      );
-    }
+    // The client observation job is intentionally left in whatever cutover
+    // disposition it holds. Renewal derives its request envelope from retained
+    // session and lifecycle evidence and must not depend on this retired job
+    // reaching a completed state.
     return {
       readiness,
       lifecycleRevision: Number(after.revision),
@@ -2197,6 +2226,56 @@ suite("Postgres 17 HNS root-import repository", () => {
       expect(state.session).toEqual({ status: "ready", revision: "5" });
       expect(state.operations).toBe(0);
       expect(state.activationHistory).toBe(0);
+    });
+  }, 30_000);
+
+  test("renewal continues across an adopted lifecycle generation", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+      // A later adoption rebinds the operation's lifecycle generation while
+      // the activated authority and retained readiness survive. Renewal is
+      // anchored to the retained evidence and the DNS generation, not to a
+      // retired observation job's generation.
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle
+            SET generation=generation+1
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const scheduled = await admin.query<{ eligible_roots: number; enqueued_roots: number }>(
+        "SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)",
+      );
+      expect(scheduled.rows).toMatchObject([{ eligible_roots: 1, enqueued_roots: 1 }]);
+      const claim = await admin.query<{
+        observation_job_id: string;
+        operation_kind: string;
+        request_sha256: string;
+        lease_fence: string;
+      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
+      expect(claim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
+      const result = await makeReadinessArtifact({
+        ownershipResultHash: ready.provisioned.ownershipResultHash,
+        publishPlanSha256: sha256(ready.provisioned.planBytes),
+        provisionResultSha256: sha256(ready.provisioned.resultBytes),
+      });
+      const finalized = await admin.query<{ outcome: string }>(
+        "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)",
+        [
+          claim.rows[0]?.observation_job_id,
+          "authority-executor",
+          Number(claim.rows[0]?.lease_fence),
+          claim.rows[0]?.request_sha256,
+          Buffer.from(result.result_bytes),
+          result.result_sha256,
+        ],
+      );
+      expect(finalized.rows[0]?.outcome).toBe("ready");
     });
   }, 30_000);
 

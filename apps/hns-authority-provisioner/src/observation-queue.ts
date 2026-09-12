@@ -193,10 +193,9 @@ export function makePostgresHnsRootObservationQueue(
                 `SELECT session.revision
                 FROM hns_root_health_renewal_jobs job
                 JOIN hns_root_import_sessions session USING(root_import_session_id)
-                JOIN hns_root_import_observation_jobs observation USING(root_import_session_id)
                 WHERE job.renewal_job_id=$1 AND job.state='completed'
                   AND job.result_bytes=$2::bytea AND job.result_sha256=$3
-                  AND observation.request_sha256=$4`,
+                  AND job.request_sha256=$4`,
                 [
                   input.observation_job_id,
                   Buffer.from(input.result_bytes),

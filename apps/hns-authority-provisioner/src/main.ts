@@ -36,8 +36,9 @@ import { runHnsRetentionReviewOnce } from "./retention-reviewer.ts";
 import {
   HNS_AUTHORITY_SERVICE_VERSION,
   HNS_LIFECYCLE_JOB_ENVELOPE_VERSION,
-  hnsLifecycleSchemaCompatibilityRefusal,
+  hnsLifecycleSchemaCutoverCheck,
   isBoundedVersion,
+  runHnsLifecycleCutoverProbe,
 } from "./schema-compatibility.ts";
 import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
@@ -191,6 +192,31 @@ function chainInteger(name: string, minimum: number, maximum: number): number {
   return value;
 }
 
+/**
+ * The staged bundle digest this process must prove it is running. The
+ * deployment sequence writes the digest into the deployment manifest; the
+ * environment override exists for operators who stage the bundle by hand.
+ * Missing or malformed identity is reported as absence, never guessed.
+ */
+async function cutoverBundleSha256(): Promise<string | null> {
+  const direct = process.env.HNS_AUTHORITY_BUNDLE_SHA256;
+  if (direct !== undefined && direct.trim() === direct && /^[0-9a-f]{64}$/u.test(direct)) {
+    return direct;
+  }
+  const manifestPath = process.env.HNS_AUTHORITY_DEPLOYMENT_MANIFEST;
+  if (manifestPath === undefined || !isAbsolute(manifestPath)) return null;
+  try {
+    const parsed = JSON.parse(await Bun.file(manifestPath).text()) as {
+      readonly bundle_sha256?: unknown;
+    };
+    return typeof parsed.bundle_sha256 === "string" && /^[0-9a-f]{64}$/u.test(parsed.bundle_sha256)
+      ? parsed.bundle_sha256
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main(serve: boolean): Promise<void> {
   const executorId = required("HNS_AUTHORITY_EXECUTOR_ID");
   const gatewayIpv4 = required("HNS_AUTHORITY_GATEWAY_IPV4");
@@ -202,15 +228,48 @@ async function main(serve: boolean): Promise<void> {
   // Fail closed before any claim when the deployed schema no longer admits
   // this service generation. The refusal is bounded, redacted and named; the
   // launch guard rejects an unsupported old bundle that cannot run this check.
-  const schemaRefusal = await hnsLifecycleSchemaCompatibilityRefusal({
+  const cutover = await hnsLifecycleSchemaCutoverCheck({
     connection_string: connectionString,
     service_version: HNS_AUTHORITY_SERVICE_VERSION,
     job_envelope_version: HNS_LIFECYCLE_JOB_ENVELOPE_VERSION,
   });
-  if (schemaRefusal !== null) {
-    console.error(JSON.stringify({ command: serve ? "serve" : "run-once", ...schemaRefusal }));
+  if (cutover.refusal !== null) {
+    console.error(JSON.stringify({ command: serve ? "serve" : "run-once", ...cutover.refusal }));
     process.exitCode = 1;
     return;
+  }
+  // Past the cutover, serving requires proof that this staged artifact is the
+  // running service and that its executor completed the controlled readiness
+  // probe through the single-owner path. A schema check alone is not proof.
+  if (cutover.post_cutover) {
+    const bundleSha256 = await cutoverBundleSha256();
+    if (bundleSha256 === null) {
+      console.error(
+        JSON.stringify({
+          command: serve ? "serve" : "run-once",
+          outcome: "bundle_identity_missing",
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const probeOutcome = await runHnsLifecycleCutoverProbe({
+      connection_string: connectionString,
+      executor_id: executorId,
+      service_version: HNS_AUTHORITY_SERVICE_VERSION,
+      bundle_sha256: bundleSha256,
+    });
+    if (probeOutcome !== "ready" && probeOutcome !== "replayed") {
+      console.error(
+        JSON.stringify({
+          command: serve ? "serve" : "run-once",
+          outcome: "cutover_probe_failed",
+          reason: probeOutcome,
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
   /**
    * How recent a retention review's inspection must be to authorize deletion.
@@ -568,11 +627,13 @@ async function runSchemaVerification(arguments_: readonly string[]): Promise<num
       return schemaVerificationRefusal("bundle_mismatch", "bundle unreadable");
     }
   }
-  const refusal = await hnsLifecycleSchemaCompatibilityRefusal({
-    connection_string: connectionString,
-    service_version: manifest.service_version,
-    job_envelope_version: manifest.job_envelope_version,
-  });
+  const refusal = (
+    await hnsLifecycleSchemaCutoverCheck({
+      connection_string: connectionString,
+      service_version: manifest.service_version,
+      job_envelope_version: manifest.job_envelope_version,
+    })
+  ).refusal;
   if (refusal !== null) {
     console.error(JSON.stringify({ command: "verify-schema", ...refusal }));
     return 2;

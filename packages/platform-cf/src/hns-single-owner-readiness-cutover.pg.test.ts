@@ -1056,6 +1056,59 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
   );
 
   test(
+    "the controlled cutover probe completes through the single-owner path and replays",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          const seeded = await admin.query<{ outcome: string }>(
+            "SELECT seed_hns_lifecycle_readiness_cutover_probe_v1() AS outcome",
+          );
+          expect(seeded.rows[0]?.outcome).toBe("seeded");
+          const serviceVersion = "pirate-hns-authority-provisioner-v2";
+          const bundleSha = "d".repeat(64);
+          const first = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
+            ["cutover-probe-executor", serviceVersion, bundleSha],
+          );
+          expect(first.rows[0]?.outcome).toBe("ready");
+          const identity = await admin.query<Record<string, unknown>>(
+            `SELECT service_version, bundle_sha256, executor_id, probe_outcome, probe_reason
+               FROM hns_lifecycle_service_identity`,
+          );
+          expect(identity.rows[0]).toMatchObject({
+            service_version: serviceVersion,
+            bundle_sha256: bundleSha,
+            executor_id: "cutover-probe-executor",
+            probe_outcome: "ready",
+            probe_reason: null,
+          });
+          const job = await admin.query<{ state: string; leased_by: string | null }>(
+            `SELECT state, leased_by FROM hns_root_import_lifecycle_jobs
+              WHERE root_import_session_id='cutover-readiness-probe'
+              ORDER BY lifecycle_job_id DESC LIMIT 1`,
+          );
+          expect(job.rows[0]).toMatchObject({ state: "completed", leased_by: null });
+          const replayed = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
+            ["cutover-probe-executor", serviceVersion, bundleSha],
+          );
+          expect(replayed.rows[0]?.outcome).toBe("replayed");
+          await admin.query(
+            "DELETE FROM hns_root_import_lifecycle_jobs WHERE root_import_session_id='cutover-readiness-probe'",
+          );
+          const absent = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
+            ["cutover-probe-executor", serviceVersion, bundleSha],
+          );
+          expect(absent.rows[0]?.outcome).toBe("probe_absent");
+        },
+      );
+    },
+    BUDGET_MS,
+  );
+
+  test(
     "the schema compatibility contract refuses an old bundle and admits restart",
     async () => {
       await withSchema(

@@ -140,23 +140,62 @@ export async function readSchemaCutoverState(
 
 /**
  * The serving path's startup check. Opens one short-lived client, reads the
- * cutover record and returns the bounded refusal or null. The connection
- * string is never included in the refusal.
+ * cutover record and returns the bounded refusal or null, plus whether the
+ * schema is past the cutover record. The connection string is never included
+ * in the refusal.
  */
-export async function hnsLifecycleSchemaCompatibilityRefusal(input: {
+export async function hnsLifecycleSchemaCutoverCheck(input: {
   readonly connection_string: string;
   readonly service_version: string;
   readonly job_envelope_version: string;
-}): Promise<SchemaCompatibilityRefusal | null> {
+}): Promise<Readonly<{ refusal: SchemaCompatibilityRefusal | null; post_cutover: boolean }>> {
   const client = new Client({ connectionString: input.connection_string });
   await client.connect();
   try {
     const state = await readSchemaCutoverState((text) => client.query(text));
-    return schemaCompatibilityRefusal({
-      state,
-      service_version: input.service_version,
-      job_envelope_version: input.job_envelope_version,
-    });
+    return {
+      refusal: schemaCompatibilityRefusal({
+        state,
+        service_version: input.service_version,
+        job_envelope_version: input.job_envelope_version,
+      }),
+      post_cutover: state !== null,
+    };
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+/**
+ * Runs the controlled readiness probe as this service's executor and returns
+ * a bounded outcome. The probe is seeded by the deployment sequence; a
+ * missing probe function on a cutover schema is reported as
+ * `probe_unavailable` rather than falling through to serving.
+ */
+export async function runHnsLifecycleCutoverProbe(input: {
+  readonly connection_string: string;
+  readonly executor_id: string;
+  readonly service_version: string;
+  readonly bundle_sha256: string;
+}): Promise<string> {
+  const client = new Client({ connectionString: input.connection_string });
+  await client.connect();
+  try {
+    const result = await client.query<{ outcome: string }>(
+      "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
+      [input.executor_id, input.service_version, input.bundle_sha256],
+    );
+    const outcome = result.rows[0]?.outcome;
+    return typeof outcome === "string" ? outcome.slice(0, 64) : "probe_unavailable";
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      (error as { readonly code?: unknown }).code === "42883"
+    ) {
+      return "probe_unavailable";
+    }
+    throw error;
   } finally {
     await client.end().catch(() => undefined);
   }

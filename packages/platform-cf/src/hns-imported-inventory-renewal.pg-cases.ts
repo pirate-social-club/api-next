@@ -18,13 +18,23 @@ export async function verifyHnsImportedInventoryRenewal(
     "DROP FUNCTION IF EXISTS prepare_hns_root_inventory_renewal_v1(text,text,bigint,text,text,bytea,text,text)",
   );
   await admin.query(
-    "ALTER TABLE hns_root_health_renewal_jobs DROP COLUMN IF EXISTS expected_app_generation, DROP COLUMN IF EXISTS expected_sale_generation",
+    "ALTER TABLE hns_root_health_renewal_jobs DROP COLUMN IF EXISTS expected_app_generation, DROP COLUMN IF EXISTS expected_sale_generation, DROP COLUMN IF EXISTS request_bytes, DROP COLUMN IF EXISTS request_sha256",
   );
   // Execute the forward migration against a populated, already-serving root.
   await admin.query(
     await Bun.file(
       new URL(
         "../../../db/postgres/migrations/0121_hns_imported_inventory_renewal.sql",
+        import.meta.url,
+      ),
+    ).text(),
+  );
+  // The historical inventory migration carries the pre-cutover claim; restore
+  // the current authoritative-evidence renewal functions before exercising it.
+  await admin.query(
+    await Bun.file(
+      new URL(
+        "../../../db/postgres/migrations/0170_hns_renewal_authoritative_evidence.sql",
         import.meta.url,
       ),
     ).text(),

@@ -190,6 +190,7 @@ TRUNCATE TABLE
   "hns_dns_zone_health_operations",
   "hns_dns_zone_lifecycle_operations",
   "hns_lifecycle_schema_cutover",
+  "hns_lifecycle_service_identity",
   "hns_operator_control_promotion_receipts",
   "hns_readiness_single_owner_cutover_receipt",
   "hns_readiness_single_owner_cutover_unresolved",

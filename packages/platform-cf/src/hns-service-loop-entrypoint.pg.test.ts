@@ -101,6 +101,9 @@ suite("the HNS provisioner entrypoint drives the lifecycle composition", () => {
     const connectionString = url.toString();
     const client = new Client({ connectionString });
     await client.connect();
+    // The cutover contract requires the running service to prove its staged
+    // identity and complete one controlled readiness job before it serves.
+    await client.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
 
     let service: Bun.Subprocess | null = null;
     const output: string[] = [];
@@ -118,6 +121,7 @@ suite("the HNS provisioner entrypoint drives the lifecycle composition", () => {
           ...process.env,
           CONTROL_PLANE_POSTGRES_URL: connectionString,
           HNS_AUTHORITY_EXECUTOR_ID: executorId,
+          HNS_AUTHORITY_BUNDLE_SHA256: "b".repeat(64),
           HNS_AUTHORITY_ENVIRONMENT: "regtest",
           HNS_AUTHORITY_GATEWAY_IPV4: "127.0.0.1",
           HNS_AUTHORITY_GATEWAY_LOCAL_IPV4: "127.0.0.1",
