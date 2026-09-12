@@ -4,7 +4,7 @@ import {
   telegramReplyUsesVoice,
 } from "@pirate/domain/telegram";
 import { telegramBotCredentials } from "./delivery.ts";
-import { verifyTelegramChannel } from "./setup.ts";
+import { type TelegramChannelRejection, verifyTelegramChannel } from "./setup.ts";
 import {
   type InboxRecord,
   type IntegrationRecord,
@@ -98,7 +98,45 @@ async function uncertainReply(services: TelegramServices, item: InboxRecord, cha
   await reply(services, item, chatId, textMessage(providerUncertainReply));
 }
 
+const channelSetupReply: Record<TelegramChannelRejection, string> = {
+  not_channel: "That chat is not a channel. Choose a channel the bot can post to.",
+  user_not_admin: "You need to be an administrator of that channel before selecting it.",
+  bot_not_admin: "Add the bot as an administrator of that channel, then choose it again.",
+  bot_missing_rights: "The bot needs post, edit and delete message rights in that channel.",
+};
+
+async function handleMembership(
+  services: TelegramServices,
+  item: InboxRecord,
+  record: IntegrationRecord,
+) {
+  const membership = object(item.update.my_chat_member);
+  if (!membership) return;
+  const chat = object(membership.chat);
+  const member = object(membership.new_chat_member);
+  const chatId = identifier(chat?.id);
+  const botId = identifier(object(member?.user)?.id);
+  // Only the configured channel carries integration readiness. Private and
+  // unrelated chats are not readiness assets.
+  if (chat?.type !== "channel" || !chatId || !record.channelId || chatId !== record.channelId)
+    return;
+  if (!record.botId || botId !== record.botId) return;
+  const status = typeof member?.status === "string" ? member.status : "";
+  const error =
+    status !== "administrator"
+      ? "channel_membership_lost"
+      : !member?.can_post_messages || !member?.can_edit_messages || !member?.can_delete_messages
+        ? "channel_rights_reduced"
+        : null;
+  if (error !== record.lastError)
+    await services.store.channelMembership(item.communityId, item.botEpoch, chatId, error);
+}
+
 async function handle(services: TelegramServices, item: InboxRecord, record: IntegrationRecord) {
+  if (object(item.update.my_chat_member)) {
+    await handleMembership(services, item, record);
+    return;
+  }
   const message = object(item.update.message);
   const chat = object(message?.chat);
   const from = object(message?.from);
@@ -203,22 +241,31 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       !Number.isSafeInteger(shared.request_id)
     )
       return;
-    const channel = await verifyTelegramChannel(services, item.communityId, channelId, userId);
-    await services.store.selectSetup({
+    const verified = await verifyTelegramChannel(services, item.communityId, channelId, userId);
+    if (!verified.ok) {
+      await reply(services, item, chatId, textMessage(channelSetupReply[verified.code]));
+      return;
+    }
+    const selected = await services.store.selectSetup({
       communityId: item.communityId,
       epoch: item.botEpoch,
       requestId: shared.request_id,
       userId,
       chatId,
       channelId,
-      ...channel,
+      title: verified.title,
+      username: verified.username,
     });
     await reply(
       services,
       item,
       chatId,
       {
-        ...textMessage("Return to community settings in Pirate to confirm your selected channel."),
+        ...textMessage(
+          selected
+            ? "Return to community settings in Pirate to confirm your selected channel."
+            : "This channel selection was already used or has expired. Start a new setup from community settings and choose the channel again.",
+        ),
         keyboard: { remove_keyboard: true },
       },
       "setup",

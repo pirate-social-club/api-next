@@ -773,4 +773,71 @@ suite("community Telegram persistence", () => {
         ).rows[0],
       ).toEqual({ state: "failed", payload: null });
     }));
+
+  test("channel selection binds once and refuses a stale repeat", () =>
+    fixture(async (store, admin) => {
+      await store.createSetup({
+        tokenCiphertext: "sealed-token",
+        commandHash: "command-hash",
+        id: "setup-once",
+        communityId: "telegram-community",
+        ownerId: "telegram-owner",
+        botEpoch: "epoch",
+        tokenHash: "token-hash-once",
+        requestId: 4242,
+        telegramUserId: null,
+        privateChatId: null,
+        channelId: null,
+        channelTitle: null,
+        channelUsername: null,
+        state: "pending",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      expect(await store.bindSetup("setup-once", "7", "7")).toBe(true);
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        requestId: 4242,
+        userId: "7",
+        chatId: "7",
+        channelId: "-100",
+        title: "Fixture channel",
+        username: null,
+      };
+      expect(await store.selectSetup(input)).toBe(true);
+      expect(await store.selectSetup({ ...input, channelId: "-200", title: "Other" })).toBe(false);
+      const record = (
+        await admin.query(
+          "SELECT record FROM community_telegram_setups WHERE setup_id='setup-once'",
+        )
+      ).rows[0]?.record as { channelId: string };
+      expect(record.channelId).toBe("-100");
+    }));
+
+  test("channel membership records and clears readiness for the configured channel", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "UPDATE community_telegram_integrations SET record=record || '{\"channelId\":\"-100\"}'::jsonb WHERE community_id='telegram-community'",
+      );
+      await store.channelMembership(
+        "telegram-community",
+        "epoch",
+        "-100",
+        "channel_membership_lost",
+      );
+      expect((await store.integration("telegram-community")).lastError).toBe(
+        "channel_membership_lost",
+      );
+      await store.channelMembership(
+        "telegram-community",
+        "epoch",
+        "-999",
+        "channel_membership_lost",
+      );
+      expect((await store.integration("telegram-community")).lastError).toBe(
+        "channel_membership_lost",
+      );
+      await store.channelMembership("telegram-community", "epoch", "-100", null);
+      expect((await store.integration("telegram-community")).lastError).toBeNull();
+    }));
 });

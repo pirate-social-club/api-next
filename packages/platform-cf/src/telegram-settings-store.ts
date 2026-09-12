@@ -55,6 +55,7 @@ export function makeTelegramSettingsStore(
   | "saveIntegration"
   | "commandReplay"
   | "configureResult"
+  | "channelMembership"
   | "configuredCandidates"
 > {
   return {
@@ -151,6 +152,16 @@ export function makeTelegramSettingsStore(
         `UPDATE community_telegram_integrations SET record=jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text)),'{lastError}',$4::jsonb),updated_at=clock_timestamp()
         WHERE community_id=$1 AND bot_epoch=$2 AND record->>'status' IN ('configuring','error')`,
         [communityId, epoch, error === null ? "ready" : "error", JSON.stringify(error)],
+      );
+    },
+    async channelMembership(communityId, epoch, chatId, error) {
+      // Readiness is recorded without changing the integration status, so a
+      // later webhook configuration pass cannot clear a channel-level problem.
+      await db.query(
+        `UPDATE community_telegram_integrations
+        SET record=record || jsonb_build_object('lastError', $4::text), updated_at=clock_timestamp()
+        WHERE community_id=$1 AND bot_epoch=$2 AND record->>'channelId'=$3`,
+        [communityId, epoch, chatId, error],
       );
     },
     async configuredCandidates() {

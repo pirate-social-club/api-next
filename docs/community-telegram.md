@@ -51,6 +51,16 @@ Changing a bot token creates a new bot epoch, resets channel selection and
 fences pending work from the prior bot. Disconnect also fences pending work;
 it leaves already published Telegram messages in place.
 
+Channel selection binds to the live setup intent. A selection that has expired,
+was already used or was superseded is reported to the owner instead of being
+confirmed as successful. A failed permission check replies with the specific
+remedy: the bot needs administrator status with post, edit and delete rights,
+and the selecting user must be a channel administrator. Bot membership changes
+for the configured channel are recorded as readiness in the integration's last
+error without changing the integration status, so a later webhook configuration
+pass cannot clear a channel-level problem. Private-chat and unrelated-channel
+membership changes are not readiness signals.
+
 ## Delivery and privacy
 
 Webhook acceptance follows a durable inbox insert. Duplicate bot-epoch/update

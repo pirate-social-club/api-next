@@ -56,10 +56,11 @@ export function makeTelegramSetupStore(
       return rows.length > 0;
     },
     async selectSetup(input) {
-      await db.query(
+      const rows = await db.query(
         `UPDATE community_telegram_setups SET record=record || $7::jsonb
         WHERE community_id=$1 AND bot_epoch=$2 AND record->>'requestId'=$3 AND record->>'telegramUserId'=$4 AND record->>'privateChatId'=$5
-        AND expires_at>clock_timestamp() AND record->>'state'='pending' AND $6::text LIKE '-%'`,
+        AND expires_at>clock_timestamp() AND record->>'state'='pending' AND $6::text LIKE '-%'
+        RETURNING setup_id`,
         [
           input.communityId,
           input.epoch,
@@ -75,6 +76,7 @@ export function makeTelegramSetupStore(
           }),
         ],
       );
+      return rows.length > 0;
     },
     confirmSetup(communityId, ownerId, setupId, revision) {
       return db.transaction(async (query) => {

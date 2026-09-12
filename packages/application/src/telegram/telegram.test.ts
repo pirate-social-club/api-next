@@ -208,6 +208,145 @@ test("rotated bot epochs fence already claimed work before provider access", asy
   expect(held).toBe(true);
 });
 
+test("channel membership changes record readiness only for the configured channel", async () => {
+  const writes: { chatId: string; error: string | null }[] = [];
+  const membership = async (
+    chatId: number,
+    status: string,
+    rights: Record<string, unknown> = {},
+  ) => {
+    const finished: (string | null)[] = [];
+    const service = services({
+      claimInbox: async () => ({
+        id: "inbox",
+        communityId: "community",
+        botEpoch: "epoch",
+        attempt: "attempt",
+        update: {
+          update_id: 1,
+          my_chat_member: {
+            chat: { id: chatId, type: "channel" },
+            new_chat_member: {
+              status,
+              user: { id: 123, is_bot: true },
+              ...rights,
+            },
+          },
+        },
+      }),
+      integration: async () => ({ ...integration, channelId: "-123", botId: "123" }),
+      channelMembership: async (_community, _epoch, changedChatId, error) => {
+        writes.push({ chatId: changedChatId, error });
+      },
+      finishInbox: async (_item, error) => {
+        finished.push(error);
+      },
+    });
+    await processTelegramInbox(service, "inbox");
+    expect(finished).toEqual([null]);
+  };
+  await membership(-123, "left");
+  expect(writes).toEqual([{ chatId: "-123", error: "channel_membership_lost" }]);
+  await membership(-123, "administrator", { can_post_messages: false });
+  expect(writes[1]).toEqual({ chatId: "-123", error: "channel_rights_reduced" });
+  await membership(-999, "left");
+  expect(writes).toHaveLength(2);
+});
+
+test("setup permission failures reply with an actionable instruction", async () => {
+  const texts: string[] = [];
+  const service = services({
+    claimInbox: async () => ({
+      id: "inbox",
+      communityId: "community",
+      botEpoch: "epoch",
+      attempt: "attempt",
+      update: {
+        update_id: 1,
+        message: {
+          chat: { id: 7, type: "private" },
+          from: { id: 7, is_bot: false },
+          chat_shared: { chat_id: -100, request_id: 1 },
+        },
+      },
+    }),
+    integration: async () => ({ ...integration, botToken: "encrypted-token", botId: "123" }),
+    privateChatStarted: async () => true,
+    selectSetup: async () => {
+      throw new Error("A failed permission check must not select a channel");
+    },
+    enqueueDelivery: async (delivery) => {
+      if (delivery.desired !== null && "text" in delivery.desired)
+        texts.push(delivery.desired.text as string);
+    },
+    finishInbox: async () => {},
+  });
+  service.api = {
+    call: async (_token: string, method: string, params: Record<string, unknown>) => {
+      if (method === "getChat") return { type: "channel", title: "Fixture channel" };
+      if (params.user_id === "123")
+        return {
+          status: "administrator",
+          can_post_messages: false,
+          can_edit_messages: true,
+          can_delete_messages: true,
+        };
+      return { status: "administrator" };
+    },
+  } as unknown as TelegramServices["api"];
+  service.vault.open = async () =>
+    JSON.stringify({ token: "123:fixture", secret: "fixture-secret" });
+  await processTelegramInbox(service, "inbox");
+  expect(texts).toEqual(["The bot needs post, edit and delete message rights in that channel."]);
+});
+
+test("a stale channel selection is reported instead of confirmed", async () => {
+  const run = async (selected: boolean) => {
+    const texts: string[] = [];
+    const service = services({
+      claimInbox: async () => ({
+        id: "inbox",
+        communityId: "community",
+        botEpoch: "epoch",
+        attempt: "attempt",
+        update: {
+          update_id: 1,
+          message: {
+            chat: { id: 7, type: "private" },
+            from: { id: 7, is_bot: false },
+            chat_shared: { chat_id: -100, request_id: 1 },
+          },
+        },
+      }),
+      integration: async () => ({ ...integration, botToken: "encrypted-token", botId: "123" }),
+      privateChatStarted: async () => true,
+      selectSetup: async () => selected,
+      enqueueDelivery: async (delivery) => {
+        if (delivery.desired !== null && "text" in delivery.desired)
+          texts.push(delivery.desired.text as string);
+      },
+      finishInbox: async () => {},
+    });
+    service.api = {
+      call: async (_token: string, method: string) =>
+        method === "getChat"
+          ? { type: "channel", title: "Fixture channel" }
+          : {
+              status: "administrator",
+              can_post_messages: true,
+              can_edit_messages: true,
+              can_delete_messages: true,
+            },
+    } as unknown as TelegramServices["api"];
+    service.vault.open = async () =>
+      JSON.stringify({ token: "123:fixture", secret: "fixture-secret" });
+    await processTelegramInbox(service, "inbox");
+    return texts[0];
+  };
+  expect(await run(true)).toContain("Return to community settings");
+  expect(await run(false)).toContain("already used or has expired");
+});
+
 test("inbox replay reuses durable provider stages instead of repeating billable work", async () => {
   const assistantIntegration: IntegrationRecord = {
     ...integration,

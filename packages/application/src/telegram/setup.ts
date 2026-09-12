@@ -83,12 +83,21 @@ export async function getTelegramSetup(
   return view(record, token ? `https://t.me/${integration.botUsername}?start=${token}` : null);
 }
 
+export type TelegramChannelRejection =
+  | "not_channel"
+  | "user_not_admin"
+  | "bot_not_admin"
+  | "bot_missing_rights";
+export type TelegramChannelVerification =
+  | { ok: true; title: string; username: string | null }
+  | { ok: false; code: TelegramChannelRejection };
+
 export async function verifyTelegramChannel(
   services: TelegramServices,
   communityId: string,
   channelId: string,
   userId: string,
-) {
+): Promise<TelegramChannelVerification> {
   const integration = await services.store.integration(communityId);
   const { token } = await telegramBotCredentials(services, integration);
   const [chat, user, bot] = await Promise.all([
@@ -106,17 +115,13 @@ export async function verifyTelegramChannel(
       can_delete_messages?: boolean;
     }>(token, "getChatMember", { chat_id: channelId, user_id: integration.botId }),
   ]);
-  if (
-    chat.type !== "channel" ||
-    !chat.title ||
-    !["creator", "administrator"].includes(user.status) ||
-    bot.status !== "administrator" ||
-    !bot.can_post_messages ||
-    !bot.can_edit_messages ||
-    !bot.can_delete_messages
-  )
-    throw new TelegramFailure({ reason: "invalid" });
-  return { title: chat.title, username: chat.username ?? null };
+  if (chat.type !== "channel" || !chat.title) return { ok: false, code: "not_channel" };
+  if (!["creator", "administrator"].includes(user.status))
+    return { ok: false, code: "user_not_admin" };
+  if (bot.status !== "administrator") return { ok: false, code: "bot_not_admin" };
+  if (!bot.can_post_messages || !bot.can_edit_messages || !bot.can_delete_messages)
+    return { ok: false, code: "bot_missing_rights" };
+  return { ok: true, title: chat.title, username: chat.username ?? null };
 }
 
 export async function confirmTelegramSetup(
@@ -130,7 +135,13 @@ export async function confirmTelegramSetup(
   const record = await services.store.setup(communityId, setupId);
   if (!record || record.ownerId !== ownerId || !record.channelId || !record.telegramUserId)
     throw new TelegramFailure({ reason: "not_found" });
-  await verifyTelegramChannel(services, communityId, record.channelId, record.telegramUserId);
+  const verified = await verifyTelegramChannel(
+    services,
+    communityId,
+    record.channelId,
+    record.telegramUserId,
+  );
+  if (!verified.ok) throw new TelegramFailure({ reason: "invalid" });
   return integrationView(
     await services.store.confirmSetup(communityId, ownerId, setupId, revision),
   );

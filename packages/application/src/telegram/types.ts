@@ -179,6 +179,12 @@ export interface TelegramStore {
   ): Promise<IntegrationRecord>;
   commandReplay(communityId: string, key: string, hash: string): Promise<unknown | null>;
   configureResult(communityId: string, epoch: string, error: string | null): Promise<void>;
+  channelMembership(
+    communityId: string,
+    epoch: string,
+    chatId: string,
+    error: string | null,
+  ): Promise<void>;
   configuredCandidates(): Promise<readonly IntegrationRecord[]>;
   createSetup(record: SetupRecord): Promise<void>;
   setup(communityId: string, id: string): Promise<SetupRecord | null>;
@@ -193,7 +199,7 @@ export interface TelegramStore {
     channelId: string;
     title: string;
     username: string | null;
-  }): Promise<void>;
+  }): Promise<boolean>;
   confirmSetup(
     communityId: string,
     ownerId: string,
