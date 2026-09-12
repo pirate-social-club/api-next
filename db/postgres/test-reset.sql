@@ -115,6 +115,7 @@ TRUNCATE TABLE
   "community_telegram_inbox",
   "community_telegram_integrations",
   "community_telegram_private_chats",
+  "community_telegram_provider_stages",
   "community_telegram_setups",
   "community_telegram_usage",
   "community_telegram_usage_reservations",

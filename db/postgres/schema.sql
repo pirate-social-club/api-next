@@ -23806,6 +23806,23 @@ CREATE TABLE community_telegram_private_chats (
     started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
 );
 
+CREATE TABLE community_telegram_provider_stages (
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    inbox_id text NOT NULL,
+    stage text NOT NULL,
+    request_hash text NOT NULL,
+    attempt text,
+    state text NOT NULL,
+    result text,
+    error text,
+    issued_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_telegram_provider_stages_check CHECK (((state = 'completed'::text) = (result IS NOT NULL))),
+    CONSTRAINT community_telegram_provider_stages_stage_check CHECK ((stage = ANY (ARRAY['transcription'::text, 'completion'::text]))),
+    CONSTRAINT community_telegram_provider_stages_state_check CHECK ((state = ANY (ARRAY['issued'::text, 'completed'::text, 'failed'::text])))
+);
+
 CREATE TABLE community_telegram_setups (
     setup_id text NOT NULL,
     community_id text NOT NULL,
@@ -31161,6 +31178,9 @@ ALTER TABLE ONLY community_telegram_integrations
 ALTER TABLE ONLY community_telegram_private_chats
     ADD CONSTRAINT community_telegram_private_chats_pkey PRIMARY KEY (community_id, bot_epoch, telegram_user_id);
 
+ALTER TABLE ONLY community_telegram_provider_stages
+    ADD CONSTRAINT community_telegram_provider_stages_pkey PRIMARY KEY (community_id, bot_epoch, inbox_id, stage);
+
 ALTER TABLE ONLY community_telegram_setups
     ADD CONSTRAINT community_telegram_setups_pkey PRIMARY KEY (setup_id);
 
@@ -33083,6 +33103,8 @@ CREATE INDEX community_telegram_conversation_recent ON community_telegram_conver
 CREATE INDEX community_telegram_delivery_due ON community_telegram_deliveries USING btree (next_attempt_at) WHERE (state = ANY (ARRAY['pending'::text, 'failed'::text, 'sending'::text]));
 
 CREATE INDEX community_telegram_inbox_due ON community_telegram_inbox USING btree (next_attempt_at) WHERE (state = ANY (ARRAY['pending'::text, 'processing'::text]));
+
+CREATE INDEX community_telegram_provider_stage_cleanup ON community_telegram_provider_stages USING btree (issued_at);
 
 CREATE UNIQUE INDEX community_telegram_publication_destination ON community_telegram_deliveries USING btree (community_id, bot_epoch, chat_id, post_id) WHERE (kind = 'publication'::text);
 
@@ -35166,6 +35188,12 @@ ALTER TABLE ONLY community_telegram_integrations
 
 ALTER TABLE ONLY community_telegram_private_chats
     ADD CONSTRAINT community_telegram_private_chats_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_provider_stages
+    ADD CONSTRAINT community_telegram_provider_stages_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_provider_stages
+    ADD CONSTRAINT community_telegram_provider_stages_inbox_id_fkey FOREIGN KEY (inbox_id) REFERENCES community_telegram_inbox(inbox_id);
 
 ALTER TABLE ONLY community_telegram_setups
     ADD CONSTRAINT community_telegram_setups_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
