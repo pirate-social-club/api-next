@@ -69,6 +69,8 @@ function guarded(handler: EndpointHandler): EndpointHandler {
           throw new RateLimited({ message });
         case "unavailable":
           throw new ProviderUnavailable({ message });
+        case "uncertain":
+          throw new ProviderUnavailable({ message });
       }
     }
   };

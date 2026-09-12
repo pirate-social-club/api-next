@@ -14,7 +14,8 @@ export class TelegramFailure extends Data.TaggedError("TelegramFailure")<{
     | "conflict"
     | "invalid"
     | "unavailable"
-    | "rate_limited";
+    | "rate_limited"
+    | "uncertain";
 }> {}
 
 export const DEFAULT_ASSISTANT_POLICY: CommunityAssistantPolicy = {
@@ -86,6 +87,19 @@ export type InboxRecord = {
   update: IncomingUpdate;
   attempt: string;
 };
+export type ProviderStage = "transcription" | "completion";
+export type ProviderStageInput = {
+  communityId: string;
+  epoch: string;
+  inboxId: string;
+  stage: ProviderStage;
+  requestHash: string;
+  attempt: string;
+};
+export type BeginProviderStageResult =
+  | { kind: "issued" }
+  | { kind: "completed"; result: string }
+  | { kind: "uncertain" };
 export type DeliveryRecord = {
   id: string;
   communityId: string;
@@ -189,6 +203,9 @@ export interface TelegramStore {
   acceptUpdate(integration: IntegrationRecord, update: IncomingUpdate): Promise<string>;
   claimInbox(id: string): Promise<InboxRecord | null>;
   finishInbox(item: InboxRecord, error: string | null): Promise<void>;
+  beginProviderStage(input: ProviderStageInput): Promise<BeginProviderStageResult>;
+  completeProviderStage(input: ProviderStageInput & { result: string }): Promise<void>;
+  failProviderStage(input: ProviderStageInput & { error: string }): Promise<void>;
   pendingWork(): Promise<readonly { kind: "inbox" | "delivery"; id: string }[]>;
   enqueueDelivery(
     record: Omit<

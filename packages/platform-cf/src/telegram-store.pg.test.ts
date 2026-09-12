@@ -626,4 +626,87 @@ suite("community Telegram persistence", () => {
         ).rows[0]?.confirmed,
       ).toBeNull();
     }));
+
+  test("a provider stage reuses a confirmed result and never re-issues an unresolved attempt", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id) VALUES('stage-inbox-a','telegram-community','epoch',11)",
+      );
+      const transcription = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "stage-inbox-a",
+        stage: "transcription" as const,
+        requestHash: "request-a",
+        attempt: "attempt-a",
+      };
+      expect(await store.beginProviderStage(transcription)).toEqual({ kind: "issued" });
+      await store.completeProviderStage({ ...transcription, result: "Transcript" });
+      expect(await store.beginProviderStage({ ...transcription, attempt: "attempt-b" })).toEqual({
+        kind: "completed",
+        result: "Transcript",
+      });
+      const completion = { ...transcription, stage: "completion" as const };
+      expect(await store.beginProviderStage(completion)).toEqual({ kind: "issued" });
+      expect(await store.beginProviderStage({ ...completion, attempt: "attempt-b" })).toEqual({
+        kind: "uncertain",
+      });
+      await store.completeProviderStage({ ...completion, result: "Answer" });
+      expect(await store.beginProviderStage({ ...completion, attempt: "attempt-b" })).toEqual({
+        kind: "completed",
+        result: "Answer",
+      });
+    }));
+
+  test("a definite provider stage failure is re-issued for a later attempt", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id) VALUES('stage-inbox-b','telegram-community','epoch',12)",
+      );
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "stage-inbox-b",
+        stage: "completion" as const,
+        requestHash: "request-b",
+        attempt: "attempt-a",
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await store.failProviderStage({ ...input, error: "rate_limited" });
+      expect(await store.beginProviderStage({ ...input, attempt: "attempt-b" })).toEqual({
+        kind: "issued",
+      });
+      await store.completeProviderStage({ ...input, attempt: "attempt-b", result: "Answer" });
+      expect(await store.beginProviderStage({ ...input, attempt: "attempt-c" })).toEqual({
+        kind: "completed",
+        result: "Answer",
+      });
+    }));
+
+  test("cleanup removes provider stages after retention", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id) VALUES('stage-inbox-c','telegram-community','epoch',13)",
+      );
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "stage-inbox-c",
+        stage: "transcription" as const,
+        requestHash: "request-c",
+        attempt: "attempt-a",
+      };
+      await store.beginProviderStage(input);
+      await admin.query(
+        "UPDATE community_telegram_provider_stages SET issued_at=clock_timestamp()-interval '25 hours' WHERE inbox_id='stage-inbox-c'",
+      );
+      await store.cleanup();
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS rows FROM community_telegram_provider_stages WHERE inbox_id='stage-inbox-c'",
+          )
+        ).rows[0],
+      ).toEqual({ rows: 0 });
+    }));
 });

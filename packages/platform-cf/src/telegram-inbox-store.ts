@@ -147,6 +147,9 @@ export function makeTelegramInboxStore(
         "DELETE FROM community_telegram_setups WHERE expires_at<clock_timestamp()-interval '1 day'",
       );
       await db.query(
+        "DELETE FROM community_telegram_provider_stages WHERE issued_at<clock_timestamp()-interval '24 hours'",
+      );
+      await db.query(
         "DELETE FROM community_telegram_usage WHERE usage_day<(clock_timestamp() AT TIME ZONE 'UTC')::date-7",
       );
       // Deduplication tombstones outlive content. Replayed update IDs never regenerate replies.

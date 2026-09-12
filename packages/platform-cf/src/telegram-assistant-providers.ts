@@ -43,7 +43,10 @@ export function makeTelegramAssistantProviders(fetcher: typeof fetch): Assistant
       return await telegramResponseBytes(response, audio ? 5_242_880 : 2_097_152);
     } catch (error) {
       if (error instanceof TelegramFailure) throw error;
-      throw new TelegramFailure({ reason: "unavailable" });
+      // A transport timeout or network loss after the request was sent may
+      // still have reached the provider, so the outcome is not known to be
+      // a failure and must never be retried silently.
+      throw new TelegramFailure({ reason: "uncertain" });
     }
   }
   async function json(provider: Provider, key: string, path: string, body?: unknown) {
@@ -51,7 +54,9 @@ export function makeTelegramAssistantProviders(fetcher: typeof fetch): Assistant
     try {
       return telegramObject(JSON.parse(new TextDecoder().decode(bytes)));
     } catch {
-      throw new TelegramFailure({ reason: "unavailable" });
+      // The provider answered successfully but the body was unusable; the
+      // request was processed, so this is not a safe-to-retry failure.
+      throw new TelegramFailure({ reason: "uncertain" });
     }
   }
   function options(value: unknown, field: string) {
@@ -91,10 +96,10 @@ export function makeTelegramAssistantProviders(fetcher: typeof fetch): Assistant
         stream: false,
       });
       if (!Array.isArray(result.choices) || result.choices.length === 0)
-        throw new TelegramFailure({ reason: "unavailable" });
+        throw new TelegramFailure({ reason: "uncertain" });
       const message = telegramObject(telegramObject(result.choices[0]).message);
       if (typeof message.content !== "string" || !message.content.trim())
-        throw new TelegramFailure({ reason: "unavailable" });
+        throw new TelegramFailure({ reason: "uncertain" });
       return message.content.slice(0, 4000);
     },
     async transcribe(key, bytes) {
@@ -105,7 +110,7 @@ export function makeTelegramAssistantProviders(fetcher: typeof fetch): Assistant
       body.set("tag_audio_events", "false");
       const result = await json("elevenlabs", key, "/v1/speech-to-text", body);
       if (typeof result.text !== "string" || !result.text.trim() || result.text.length > 4000)
-        throw new TelegramFailure({ reason: "invalid" });
+        throw new TelegramFailure({ reason: "uncertain" });
       return result.text;
     },
     async synthesize(key, policy, text) {

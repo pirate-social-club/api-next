@@ -9,6 +9,7 @@ import { makeTelegramInboxStore } from "./telegram-inbox-store.ts";
 import { makeTelegramPublicContentStore } from "./telegram-public-content-store.ts";
 import { makeTelegramSettingsStore } from "./telegram-settings-store.ts";
 import { makeTelegramSetupStore } from "./telegram-setup-store.ts";
+import { makeTelegramStageStore } from "./telegram-stage-store.ts";
 
 export function makeControlPlaneTelegramStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -19,6 +20,7 @@ export function makeControlPlaneTelegramStore(
     ...makeTelegramSettingsStore(db),
     ...makeTelegramDeliveryStore(db),
     ...makeTelegramInboxStore(db),
+    ...makeTelegramStageStore(db),
     ...makeTelegramSetupStore(db),
     ...makeTelegramPublicContentStore({
       db,

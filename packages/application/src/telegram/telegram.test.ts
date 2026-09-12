@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { processTelegramInbox } from "./chat.ts";
 import { acceptTelegramUpdate, processTelegramDelivery } from "./delivery.ts";
 import { getTelegramSettings, setAssistantCredential } from "./settings.ts";
 import {
@@ -205,4 +206,132 @@ test("rotated bot epochs fence already claimed work before provider access", asy
   });
   await processTelegramDelivery(service, "voice-delivery");
   expect(held).toBe(true);
+});
+
+test("inbox replay reuses durable provider stages instead of repeating billable work", async () => {
+  const assistantIntegration: IntegrationRecord = {
+    ...integration,
+    botToken: "encrypted-token",
+    policy: {
+      ...DEFAULT_ASSISTANT_POLICY,
+      enabled: true,
+      voice_enabled: true,
+      model: "fixture-model",
+    },
+    credentials: {
+      openrouter: {
+        ciphertext: "encrypted-openrouter",
+        status: "valid",
+        checkedAt: "2026-09-08T00:00:00Z",
+      },
+      elevenlabs: {
+        ciphertext: "encrypted-elevenlabs",
+        status: "valid",
+        checkedAt: "2026-09-08T00:00:00Z",
+      },
+    },
+  };
+  const stages = new Map<
+    string,
+    { state: "issued" | "completed" | "failed"; result?: string; attempt: string }
+  >();
+  const replies: { text: string | undefined; kind: string }[] = [];
+  const finished: (string | null)[] = [];
+  let transcriptionCalls = 0;
+  let completionCalls = 0;
+  let saveAttempts = 0;
+  let attempt = "attempt-1";
+  const inboxItem = () => ({
+    id: "inbox",
+    communityId: "community",
+    botEpoch: "epoch",
+    attempt,
+    update: {
+      update_id: 1,
+      message: {
+        chat: { id: 7, type: "private" },
+        from: { id: 7, is_bot: false },
+        voice: { file_id: "voice-file", duration: 1, file_size: 1 },
+      },
+    },
+  });
+  const service = services({
+    claimInbox: async () => inboxItem(),
+    integration: async () => assistantIntegration,
+    finishInbox: async (_item, error) => {
+      finished.push(error);
+    },
+    privateChatStarted: async () => true,
+    publicPosts: async () => [],
+    history: async () => [],
+    reserveUsage: async () => true,
+    enqueueDelivery: async (delivery) => {
+      replies.push({
+        text:
+          delivery.desired === null || !("text" in delivery.desired)
+            ? undefined
+            : (delivery.desired.text as string),
+        kind: delivery.kind,
+      });
+    },
+    saveConversation: async () => {
+      saveAttempts += 1;
+      if (saveAttempts === 1) throw new Error("Fixture interruption after reply enqueue");
+    },
+    beginProviderStage: async (input) => {
+      const existing = stages.get(input.stage);
+      if (!existing) {
+        stages.set(input.stage, { state: "issued", attempt: input.attempt });
+        return { kind: "issued" } as const;
+      }
+      if (existing.state === "completed")
+        return { kind: "completed", result: existing.result ?? "" } as const;
+      if (existing.state === "failed") {
+        stages.set(input.stage, { state: "issued", attempt: input.attempt });
+        return { kind: "issued" } as const;
+      }
+      return { kind: "uncertain" } as const;
+    },
+    completeProviderStage: async (input) => {
+      stages.set(input.stage, {
+        state: "completed",
+        result: input.result,
+        attempt: input.attempt,
+      });
+    },
+    failProviderStage: async (input) => {
+      stages.set(input.stage, { state: "failed", attempt: input.attempt });
+    },
+  });
+  service.vault.open = async (ciphertext) => {
+    if (ciphertext === "encrypted-token")
+      return JSON.stringify({ token: "123:fixture", secret: "fixture-secret" });
+    return ciphertext === "encrypted-openrouter" ? "openrouter-key" : "elevenlabs-key";
+  };
+  service.api = {
+    downloadVoice: async () => new Uint8Array([1, 2, 3]),
+  } as unknown as TelegramServices["api"];
+  service.providers = {
+    ...service.providers,
+    transcribe: async () => {
+      transcriptionCalls += 1;
+      return "Fixture transcript";
+    },
+    complete: async () => {
+      completionCalls += 1;
+      return `Fixture answer ${completionCalls}`;
+    },
+  };
+  await processTelegramInbox(service, "inbox");
+  expect(finished).toEqual(["processing_failed"]);
+  const firstAnswer = replies.find((entry) => entry.kind === "reply")?.text;
+  attempt = "attempt-2";
+  await processTelegramInbox(service, "inbox");
+  expect(finished).toEqual(["processing_failed", null]);
+  expect(transcriptionCalls).toBe(1);
+  expect(completionCalls).toBe(1);
+  expect(replies.filter((entry) => entry.kind === "reply").map((entry) => entry.text)).toEqual([
+    firstAnswer,
+    firstAnswer,
+  ]);
 });

@@ -110,6 +110,14 @@ retention period. Voice downloads and synthesized audio stay transient.
 Usage counters are independent of conversation retention. Speech attempts
 reserve characters before contacting ElevenLabs, including retries.
 
+A durable provider stage is written before each transcription or completion
+call. A confirmed result is reused on replay, a definite provider failure is
+retried within the inbox attempt budget, and a stage left issued by an
+interrupted attempt is never repeated automatically because the provider may
+have processed the request. That uncertainty is resolved by a deterministic
+fallback reply asking the person to send the message again. Stage rows are
+deleted after twenty-four hours.
+
 OpenRouter, its selected model provider and ElevenLabs apply their own data
 retention policies. No zero-retention guarantee is implied. Provider response
 bodies and request URLs must not be logged: Telegram URLs include bot tokens.
@@ -117,12 +125,13 @@ bodies and request URLs must not be logged: Telegram URLs include bot tokens.
 ## Acceptance
 
 Local fixtures cover credential isolation, replay, webhook authentication,
-durable intake, concurrent budgets, uncertain delivery leases and failed edits.
-The native PostgreSQL suite also covers more than ten successful revisions,
-exhausted legacy rows, completed-deletion and confirmed-absence recovery,
-cancelled-publication revival, same-revision cancellation and private-delivery
-fences. Provider retry stages, membership/setup errors, pacing, cleanup races,
-owner delivery filtering and voice presentation remain tracked hardening work.
+durable intake, concurrent budgets, uncertain delivery leases, failed edits and
+provider-stage reuse and uncertainty. The native PostgreSQL suite also covers
+more than ten successful revisions, exhausted legacy rows, completed-deletion
+and confirmed-absence recovery, cancelled-publication revival, same-revision
+cancellation, private-delivery fences and the provider-stage lifecycle.
+Membership/setup errors, pacing, cleanup races, owner delivery filtering and
+voice presentation remain tracked hardening work.
 Before live activation, perform an authorized private/channel test covering
 channel selection and confirmation, content publication/edit/withdrawal,
 reward depletion, text/voice replies, credential replacement and disconnect.
