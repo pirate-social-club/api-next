@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   isBoundedVersion,
+  mapCutoverProbeError,
   readSchemaCutoverState,
+  redactedProbeCause,
   schemaCompatibilityRefusal,
 } from "./schema-compatibility.ts";
 
@@ -131,5 +133,45 @@ describe("HNS lifecycle schema compatibility", () => {
       compatible_service_versions: ["pirate-hns-authority-provisioner-v2"],
       compatible_job_envelope_versions: ["hns-lifecycle-job-envelope-v1"],
     });
+  });
+
+  test("a missing EXECUTE privilege is the named probe_forbidden refusal", () => {
+    const mapped = mapCutoverProbeError(
+      Object.assign(
+        new Error("permission denied for function run_hns_lifecycle_readiness_cutover_probe_v1"),
+        { code: "42501" },
+      ),
+    );
+    expect(mapped).toEqual({
+      outcome: "probe_forbidden",
+      cause: "permission denied for function run_hns_lifecycle_readiness_cutover_probe_v1",
+    });
+  });
+
+  test("a missing probe function is probe_unavailable with a cause", () => {
+    const mapped = mapCutoverProbeError(
+      Object.assign(
+        new Error("function run_hns_lifecycle_readiness_cutover_probe_v1(...) does not exist"),
+        {
+          code: "42883",
+        },
+      ),
+    );
+    expect(mapped).toMatchObject({ outcome: "probe_unavailable" });
+    expect(mapped?.cause).toContain("does not exist");
+  });
+
+  test("the probe cause is bounded, redacted and collapses control characters", () => {
+    const cause = redactedProbeCause(
+      new Error(`failed to connect to postgres://user:secret@host/db\u0000${"x".repeat(300)}`),
+    );
+    expect(cause).not.toBeNull();
+    expect(cause).not.toContain("secret");
+    expect(cause).not.toContain("\u0000");
+    expect((cause ?? "").length).toBeLessThanOrEqual(160);
+  });
+
+  test("an unexpected probe error is not a probe outcome", () => {
+    expect(mapCutoverProbeError(new Error("connection terminated"))).toBeNull();
   });
 });

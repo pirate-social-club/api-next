@@ -295,7 +295,7 @@ async function main(serve: boolean): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const probeOutcome = await runHnsLifecycleCutoverProbe({
+    const probe = await runHnsLifecycleCutoverProbe({
       connection_string: connectionString,
       executor_id: executorId,
       attempt_id: deployment.attempt_id,
@@ -304,12 +304,13 @@ async function main(serve: boolean): Promise<void> {
       measured_bundle_sha256: measuredBundleSha256,
       process_started_at: PROCESS_STARTED_AT,
     });
-    if (probeOutcome !== "ready" && probeOutcome !== "replayed") {
+    if (probe.outcome !== "ready" && probe.outcome !== "replayed") {
       console.error(
         JSON.stringify({
           command: serve ? "serve" : "run-once",
           outcome: "cutover_probe_failed",
-          reason: probeOutcome,
+          reason: probe.outcome,
+          ...(probe.cause === null ? {} : { cause: probe.cause }),
         }),
       );
       process.exitCode = 1;

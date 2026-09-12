@@ -6,6 +6,21 @@ and authority mismatches remain terminal. The database also recognizes explicit
 revocation, invalid delegation, inactive sessions, and superseded generations
 as terminal. A retry never relaxes evidence validation or serving fences.
 
+Claim-time evidence refusals that an operator can repair are delayed, not
+terminal. A missing or mismatched retained plan binding
+(`plan_binding_missing`, `plan_binding_mismatch`), missing accepted readiness
+(`readiness_evidence_missing`), a missing session ownership binding
+(`ownership_evidence_missing`), or a missing activation operation
+(`activation_evidence_missing`) persists `state='delayed'` with the named
+reason, a persisted `next_attempt_at` and the existing 30-second to six-hour
+retry schedule; no new policy value was required. The named codes are outside
+the terminal whitelist in `hns_root_health_renewal_terminal_failure_v1`, so the
+same job identity retries in place once the operator restores the evidence
+through its supported writer or recovery path, and the scheduler requeues the
+same row when it is due instead of inserting a replacement. Only
+`session_not_activated` and `generation_superseded` remain terminal at claim
+time, because obsolete work has no repair path under that job identity.
+
 Every retry records state delayed and next_attempt_at. The first two failures
 wait thirty seconds; the third waits thirty minutes, followed by one, two,
 four, and at most six hours. The thirty-minute scheduler requeues due delayed
@@ -54,6 +69,48 @@ Read back an early successor and both app and existing username serving paths
 before claiming production acceptance. Retained operator roots remain outside
 this queue until adoption; their manual checkpoints and certificate renewal
 remain required.
+
+## Single-owner readiness cutover execution
+
+The reviewed cutover endpoint is
+`0172_hns_cutover_evidence_consistency.sql`. It drops the retired
+three-argument probe overload, records the attempt-bound six-argument probe,
+and owns the runtime privilege contract for the service identity table and the
+probe function in deployment order. A deployment that applies the role template
+before the migration receives the blanket default table privileges when 0171
+creates `hns_lifecycle_service_identity`; the migration must therefore revoke
+those writes itself rather than rely on the template's later revoke. The
+template grants the six-argument probe signature; the three-argument overload
+no longer exists in the deployed schema. When the runtime role lacks EXECUTE on
+the probe, the service reports the named startup outcome `probe_forbidden`
+with a bounded, redacted cause, and it never falls through to serving. The
+template's lifecycle observation grant was also corrected to the live
+twelve-argument `record_hns_root_import_lifecycle_observation_v1` signature.
+
+Artifact measurement covers only the deployed single entry-file bundle
+(`pirate-hns-authority-provisioner.mjs`): the service hashes the file it is
+actually running and compares it with the staged deployment manifest digest.
+Preloaded modules, dependencies and any sidecar files are outside that proof,
+and a changed preload or sidecar without a changed entry file is not detected
+by the digest check.
+
+The deployment sequence seeds the controlled probe after the removal batch and
+starts the compatible service. A recorded attempt identifier is conclusive as
+soon as it appears, including a recorded failure: `artifact_mismatch`,
+`attempt_mismatch`, `probe_absent` and `lease_conflict` are reported
+immediately instead of waiting out the poll deadline. The poll waits only for
+the requested attempt's own result, and reports stale evidence as
+`stale_attempt_result` at the deadline. Explicit attempt-ID reuse is restricted
+to the 120-second probe freshness window: reusing an attempt identifier replays
+its completion only while that completion is fresh, so a deployment that
+re-runs after the window must generate a new attempt identifier. For
+stale-attempt recovery, confirm the previous service process is stopped before
+reseeding the probe, so it cannot record an identity row after the reseed and
+satisfy the new attempt with the previous attempt's outcome. Synthetic probe
+rows are excluded from the normal lifecycle claim selector. Their exclusion
+from operational phase counts is a requirement for the forthcoming
+observability implementation, not an existing reporting feature; the partial
+index on `hns_root_import_lifecycle` marks operational rows for that work.
 
 ## Wallet-independent provisional imports
 

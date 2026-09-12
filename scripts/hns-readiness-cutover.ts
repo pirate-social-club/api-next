@@ -48,10 +48,12 @@ export type HnsRunningIdentity = Readonly<{
   readonly probe_completed_at: Date | null;
   readonly probe_fresh: boolean;
   readonly probe_outcome: string;
+  readonly probe_reason: string | null;
 }>;
 
 export type HnsExecutorProgress = Readonly<{
   readonly probe_outcome: string;
+  readonly probe_reason: string | null;
   readonly probe_fresh: boolean;
 }>;
 
@@ -135,6 +137,24 @@ export function assertMigrationsWithinEndpoint(
   }
 }
 
+/**
+ * Maps a recorded probe outcome to the named immediate refusal, or null when
+ * the outcome is still a success or a still-retryable shape. A failed probe
+ * always names its own reason: `artifact_mismatch` and `attempt_mismatch` are
+ * definite recorded failures, any other failed reason is bounded to
+ * `probe_failed`.
+ */
+export function probeOutcomeRefusal(outcome: string, reason: string | null): string | null {
+  if (outcome === "failed") {
+    return reason === "artifact_mismatch" || reason === "attempt_mismatch"
+      ? reason
+      : "probe_failed";
+  }
+  if (outcome === "probe_absent") return "probe_absent";
+  if (outcome === "lease_conflict") return "lease_conflict";
+  return null;
+}
+
 export async function runHnsReadinessCutover(input: {
   readonly bundle: HnsReadinessCutoverBundle;
   readonly stage_directory: string;
@@ -201,6 +221,16 @@ export async function runHnsReadinessCutover(input: {
       actual_attempt_id: identity.attempt_id.slice(0, 64),
     });
   }
+  // The probe records its own definitive failure with this attempt's
+  // identifier; report that name immediately instead of waiting out the poll
+  // or falling through to the generic artifact check.
+  const identityRefusal = probeOutcomeRefusal(identity.probe_outcome, identity.probe_reason);
+  if (identityRefusal !== null) {
+    throw refused("service_identity", identityRefusal, {
+      probe_outcome: identity.probe_outcome.slice(0, 64),
+      probe_reason: identity.probe_reason === null ? null : identity.probe_reason.slice(0, 64),
+    });
+  }
   if (
     identity.bundle_sha256 !== input.bundle.bundle_sha256 ||
     identity.measured_bundle_sha256 !== input.bundle.bundle_sha256 ||
@@ -225,13 +255,22 @@ export async function runHnsReadinessCutover(input: {
   steps.push("service_identity_verified");
 
   const progress = await input.ports.verifyExecutorProgress();
+  if (progress === null) {
+    throw refused("executor_progress", "executor_progress_missing", { probe_outcome: "absent" });
+  }
+  const progressRefusal = probeOutcomeRefusal(progress.probe_outcome, progress.probe_reason);
+  if (progressRefusal !== null) {
+    throw refused("executor_progress", progressRefusal, {
+      probe_outcome: progress.probe_outcome.slice(0, 64),
+      probe_reason: progress.probe_reason === null ? null : progress.probe_reason.slice(0, 64),
+    });
+  }
   if (
-    progress === null ||
     !progress.probe_fresh ||
     (progress.probe_outcome !== "ready" && progress.probe_outcome !== "replayed")
   ) {
     throw refused("executor_progress", "executor_progress_missing", {
-      probe_outcome: progress === null ? "absent" : progress.probe_outcome.slice(0, 64),
+      probe_outcome: progress.probe_outcome.slice(0, 64),
     });
   }
   steps.push("executor_progress_verified");
@@ -388,12 +427,20 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
             return "incompatible";
           }
         }),
-      verifyRunningIdentity: () => pollCutoverIdentity(bundle.attempt_id),
+      verifyRunningIdentity: () =>
+        pollCutoverIdentity({
+          attempt_id: bundle.attempt_id,
+          read_identity: readCutoverIdentityRow,
+        }),
       verifyExecutorProgress: async () => {
-        const identity = await pollCutoverIdentity(bundle.attempt_id);
+        const identity = await pollCutoverIdentity({
+          attempt_id: bundle.attempt_id,
+          read_identity: readCutoverIdentityRow,
+        });
         if (identity === null) return null;
         return {
-          probe_outcome: identity.probe_outcome ?? "absent",
+          probe_outcome: identity.probe_outcome,
+          probe_reason: identity.probe_reason,
           probe_fresh: identity.probe_fresh,
         };
       },
@@ -402,7 +449,7 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
   console.log(JSON.stringify({ outcome: "cutover_applied", steps }));
 }
 
-type CutoverIdentityRow = Readonly<{
+export type CutoverIdentityRow = Readonly<{
   readonly attempt_id: string | null;
   readonly bundle_sha256: string;
   readonly measured_bundle_sha256: string | null;
@@ -412,33 +459,54 @@ type CutoverIdentityRow = Readonly<{
   readonly probe_job_id: string | null;
   readonly lease_fence: string | null;
   readonly probe_outcome: string;
+  readonly probe_reason: string | null;
   readonly probe_completed_at: Date | null;
   readonly probe_fresh: boolean;
 }>;
 
+export type CutoverIdentityPoll = Readonly<{
+  readonly attempt_id: string;
+  readonly read_identity: () => Promise<CutoverIdentityRow | undefined>;
+  readonly timeout_ms?: number;
+  readonly poll_interval_ms?: number;
+  readonly now?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+}>;
+
+async function readCutoverIdentityRow(): Promise<CutoverIdentityRow | undefined> {
+  return withClient(async (client) => {
+    const result = await client.query<CutoverIdentityRow>(
+      `SELECT attempt_id, bundle_sha256, measured_bundle_sha256, expected_bundle_sha256,
+              service_version, executor_id, probe_job_id, lease_fence, probe_outcome,
+              probe_reason, probe_completed_at,
+              probe_completed_at > clock_timestamp() - interval '120 seconds' AS probe_fresh
+         FROM hns_lifecycle_service_identity
+        WHERE service_name = 'pirate-hns-authority-provisioner'`,
+    );
+    return result.rows[0];
+  });
+}
+
 /**
- * Polls for the identity row of this exact attempt. A previous attempt's row
- * never satisfies the poll because the attempt identifier must match; the
- * bounded deadline reports absence rather than hanging.
+ * Polls for the identity row of this exact attempt. A row that belongs to the
+ * requested attempt is conclusive and returns immediately, including an
+ * explicit failed outcome, so a definite startup failure is reported at once
+ * instead of waiting out the deadline. A previous attempt's row is stale
+ * evidence: the poll keeps waiting for this attempt and surfaces the stale row
+ * only at the bounded deadline so the caller can report `stale_attempt_result`.
+ * Absence at the deadline reports null rather than hanging.
  */
-async function pollCutoverIdentity(
-  attemptId: string,
-  timeoutMs = 120_000,
+export async function pollCutoverIdentity(
+  input: CutoverIdentityPoll,
 ): Promise<HnsRunningIdentity | null> {
-  const deadline = Date.now() + timeoutMs;
+  const timeoutMs = input.timeout_ms ?? 120_000;
+  const pollIntervalMs = input.poll_interval_ms ?? 1_000;
+  const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? ((milliseconds: number) => Bun.sleep(milliseconds));
+  const deadline = now() + timeoutMs;
   let last: HnsRunningIdentity | null = null;
   for (;;) {
-    const row = await withClient(async (client) => {
-      const result = await client.query<CutoverIdentityRow>(
-        `SELECT attempt_id, bundle_sha256, measured_bundle_sha256, expected_bundle_sha256,
-                service_version, executor_id, probe_job_id, lease_fence, probe_outcome,
-                probe_completed_at,
-                probe_completed_at > clock_timestamp() - interval '120 seconds' AS probe_fresh
-           FROM hns_lifecycle_service_identity
-          WHERE service_name = 'pirate-hns-authority-provisioner'`,
-      );
-      return result.rows[0];
-    });
+    const row = await input.read_identity();
     if (row !== undefined) {
       const identity: HnsRunningIdentity = {
         attempt_id: row.attempt_id ?? "",
@@ -452,12 +520,13 @@ async function pollCutoverIdentity(
         probe_completed_at: row.probe_completed_at,
         probe_fresh: row.probe_fresh === true,
         probe_outcome: row.probe_outcome,
+        probe_reason: row.probe_reason,
       };
+      if (identity.attempt_id === input.attempt_id) return identity;
       last = identity;
-      if (identity.attempt_id === attemptId && identity.probe_job_id !== null) return identity;
     }
-    if (Date.now() >= deadline) return last;
-    await Bun.sleep(1_000);
+    if (now() >= deadline) return last;
+    await sleep(pollIntervalMs);
   }
 }
 

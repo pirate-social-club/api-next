@@ -167,10 +167,60 @@ export async function hnsLifecycleSchemaCutoverCheck(input: {
 }
 
 /**
+ * The bounded result of one controlled-probe attempt. The outcome is the
+ * named startup failure or success; the cause is a redacted server
+ * diagnostic, present only when the probe could not be evaluated at all.
+ */
+export type HnsCutoverProbeResult = Readonly<{
+  readonly outcome: string;
+  readonly cause: string | null;
+}>;
+
+const MAX_PROBE_CAUSE_LENGTH = 160;
+
+/**
+ * Redacts an infrastructure error into a bounded diagnostic cause. URLs and
+ * connection strings never survive; control characters collapse to spaces.
+ */
+export function redactedProbeCause(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : "";
+  const redacted = message
+    .replaceAll(/\b(?:postgres(?:ql)?|https?):\/\/\S+/giu, "<redacted>")
+    .replaceAll(/[^\x20-\x7e]/gu, " ")
+    .replaceAll(/\s+/gu, " ")
+    .trim()
+    .slice(0, MAX_PROBE_CAUSE_LENGTH);
+  return redacted.length === 0 ? null : redacted;
+}
+
+/**
+ * Maps a probe infrastructure failure to its named startup result. SQLSTATE
+ * 42501 is the executor's missing EXECUTE privilege: it is a definite
+ * refusal, not a transient connection problem. A missing function (42883)
+ * means the deployment sequence never installed the probe. Other errors are
+ * not probe outcomes; the caller keeps the real failure.
+ */
+export function mapCutoverProbeError(error: unknown): HnsCutoverProbeResult | null {
+  const code =
+    typeof error === "object" && error !== null
+      ? (error as { readonly code?: unknown }).code
+      : undefined;
+  if (code === "42883") {
+    return { outcome: "probe_unavailable", cause: redactedProbeCause(error) };
+  }
+  if (code === "42501") {
+    return { outcome: "probe_forbidden", cause: redactedProbeCause(error) };
+  }
+  return null;
+}
+
+/**
  * Runs the controlled readiness probe as this service's executor and returns
- * a bounded outcome. The probe is seeded by the deployment sequence; a
- * missing probe function on a cutover schema is reported as
- * `probe_unavailable` rather than falling through to serving.
+ * a bounded outcome plus, for infrastructure refusals, a redacted diagnostic
+ * cause. The probe is seeded by the deployment sequence; a missing probe
+ * function on a cutover schema is reported as `probe_unavailable`, and a
+ * missing EXECUTE privilege as `probe_forbidden`, rather than falling through
+ * to serving.
  */
 export async function runHnsLifecycleCutoverProbe(input: {
   readonly connection_string: string;
@@ -180,7 +230,7 @@ export async function runHnsLifecycleCutoverProbe(input: {
   readonly expected_bundle_sha256: string;
   readonly measured_bundle_sha256: string;
   readonly process_started_at: Date;
-}): Promise<string> {
+}): Promise<HnsCutoverProbeResult> {
   const client = new Client({ connectionString: input.connection_string });
   await client.connect();
   try {
@@ -196,15 +246,13 @@ export async function runHnsLifecycleCutoverProbe(input: {
       ],
     );
     const outcome = result.rows[0]?.outcome;
-    return typeof outcome === "string" ? outcome.slice(0, 64) : "probe_unavailable";
+    return {
+      outcome: typeof outcome === "string" ? outcome.slice(0, 64) : "probe_unavailable",
+      cause: null,
+    };
   } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      (error as { readonly code?: unknown }).code === "42883"
-    ) {
-      return "probe_unavailable";
-    }
+    const mapped = mapCutoverProbeError(error);
+    if (mapped !== null) return mapped;
     throw error;
   } finally {
     await client.end().catch(() => undefined);

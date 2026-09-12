@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertMigrationsWithinEndpoint,
+  type CutoverIdentityRow,
   cutoverRefusalJson,
   type HnsReadinessCutoverPorts,
   HnsReadinessCutoverRefused,
+  pollCutoverIdentity,
+  probeOutcomeRefusal,
   runHnsReadinessCutover,
 } from "./hns-readiness-cutover.ts";
 
@@ -78,11 +81,12 @@ function makePorts(overrides: Partial<HnsReadinessCutoverPorts> = {}): {
         probe_completed_at: new Date(),
         probe_fresh: true,
         probe_outcome: "ready",
+        probe_reason: null,
       };
     },
     verifyExecutorProgress: async () => {
       events.push("progress");
-      return { probe_outcome: "ready", probe_fresh: true };
+      return { probe_outcome: "ready", probe_reason: null, probe_fresh: true };
     },
     ...overrides,
   };
@@ -184,6 +188,7 @@ describe("HNS readiness cutover sequence", () => {
         probe_completed_at: new Date(),
         probe_fresh: true,
         probe_outcome: "ready",
+        probe_reason: null,
       }),
     });
     await expect(
@@ -207,6 +212,7 @@ describe("HNS readiness cutover sequence", () => {
         probe_completed_at: new Date(),
         probe_fresh: true,
         probe_outcome: "ready",
+        probe_reason: null,
       }),
     });
     await expect(
@@ -216,17 +222,105 @@ describe("HNS readiness cutover sequence", () => {
     });
   });
 
+  test("reports a recorded artifact mismatch by name without executor progress", async () => {
+    const { ports, events } = makePorts({
+      verifyRunningIdentity: async () => {
+        events.push("identity");
+        return {
+          attempt_id: attemptId,
+          bundle_sha256: bundleSha,
+          measured_bundle_sha256: "b".repeat(64),
+          expected_bundle_sha256: bundleSha,
+          service_version: compatibleService,
+          executor_id: executorId,
+          probe_job_id: null,
+          lease_fence: null,
+          probe_completed_at: null,
+          probe_fresh: false,
+          probe_outcome: "failed",
+          probe_reason: "artifact_mismatch",
+        };
+      },
+    });
+    await expect(
+      runHnsReadinessCutover({ bundle: bundle(), stage_directory: "/stage/current", ports }),
+    ).rejects.toMatchObject({
+      refusal: {
+        step: "service_identity",
+        reason: "artifact_mismatch",
+        detail: { probe_outcome: "failed", probe_reason: "artifact_mismatch" },
+      },
+    });
+    expect(events).not.toContain("progress");
+  });
+
+  test("reports a recorded attempt mismatch by name without executor progress", async () => {
+    const { ports, events } = makePorts({
+      verifyRunningIdentity: async () => {
+        events.push("identity");
+        return {
+          attempt_id: attemptId,
+          bundle_sha256: bundleSha,
+          measured_bundle_sha256: bundleSha,
+          expected_bundle_sha256: bundleSha,
+          service_version: compatibleService,
+          executor_id: executorId,
+          probe_job_id: null,
+          lease_fence: null,
+          probe_completed_at: null,
+          probe_fresh: false,
+          probe_outcome: "failed",
+          probe_reason: "attempt_mismatch",
+        };
+      },
+    });
+    await expect(
+      runHnsReadinessCutover({ bundle: bundle(), stage_directory: "/stage/current", ports }),
+    ).rejects.toMatchObject({
+      refusal: { step: "service_identity", reason: "attempt_mismatch" },
+    });
+    expect(events).not.toContain("progress");
+  });
+
+  test("reports an absent probe by name", async () => {
+    const { ports } = makePorts({
+      verifyRunningIdentity: async () => ({
+        attempt_id: attemptId,
+        bundle_sha256: bundleSha,
+        measured_bundle_sha256: bundleSha,
+        expected_bundle_sha256: bundleSha,
+        service_version: compatibleService,
+        executor_id: executorId,
+        probe_job_id: null,
+        lease_fence: null,
+        probe_completed_at: null,
+        probe_fresh: false,
+        probe_outcome: "probe_absent",
+        probe_reason: "probe job missing",
+      }),
+    });
+    await expect(
+      runHnsReadinessCutover({ bundle: bundle(), stage_directory: "/stage/current", ports }),
+    ).rejects.toMatchObject({
+      refusal: { step: "service_identity", reason: "probe_absent" },
+    });
+  });
+
   test("refuses compatible schema without executor progress", async () => {
     const { ports } = makePorts({
-      verifyExecutorProgress: async () => ({ probe_outcome: "failed", probe_fresh: true }),
+      verifyExecutorProgress: async () => ({
+        probe_outcome: "failed",
+        probe_reason: "artifact_mismatch",
+        probe_fresh: true,
+      }),
     });
     await expect(
       runHnsReadinessCutover({ bundle: bundle(), stage_directory: "/stage/current", ports }),
     ).rejects.toMatchObject({
       refusal: {
         step: "executor_progress",
-        reason: "executor_progress_missing",
-        detail: { probe_outcome: "failed" },
+        reason: "artifact_mismatch",
+        detail: { probe_outcome: "failed", probe_reason: "artifact_mismatch" },
       },
     });
   });
@@ -270,5 +364,124 @@ describe("HNS readiness cutover sequence", () => {
       reason: "schema_incompatible",
       detail: { missing: "service_version" },
     });
+  });
+
+  test("probe outcomes map to immediate named refusals", () => {
+    expect(probeOutcomeRefusal("failed", "artifact_mismatch")).toBe("artifact_mismatch");
+    expect(probeOutcomeRefusal("failed", "attempt_mismatch")).toBe("attempt_mismatch");
+    expect(probeOutcomeRefusal("failed", "something_else")).toBe("probe_failed");
+    expect(probeOutcomeRefusal("probe_absent", "probe job missing")).toBe("probe_absent");
+    expect(probeOutcomeRefusal("lease_conflict", "probe job is not claimable")).toBe(
+      "lease_conflict",
+    );
+    expect(probeOutcomeRefusal("ready", null)).toBeNull();
+    expect(probeOutcomeRefusal("replayed", null)).toBeNull();
+  });
+});
+
+function identityRow(overrides: Partial<CutoverIdentityRow> = {}): CutoverIdentityRow {
+  return {
+    attempt_id: attemptId,
+    bundle_sha256: bundleSha,
+    measured_bundle_sha256: bundleSha,
+    expected_bundle_sha256: bundleSha,
+    service_version: compatibleService,
+    executor_id: executorId,
+    probe_job_id: "7",
+    lease_fence: "1",
+    probe_outcome: "ready",
+    probe_reason: null,
+    probe_completed_at: new Date(),
+    probe_fresh: true,
+    ...overrides,
+  };
+}
+
+describe("HNS cutover identity polling", () => {
+  function fakeClock(): Readonly<{
+    now: () => number;
+    sleep: (milliseconds: number) => Promise<void>;
+    sleeps: () => number;
+  }> {
+    const state = { current: 0, sleeps: 0 };
+    return {
+      now: () => state.current,
+      sleep: async (milliseconds: number) => {
+        state.sleeps += 1;
+        state.current += milliseconds;
+      },
+      sleeps: () => state.sleeps,
+    };
+  }
+
+  test("returns a matching attempt's recorded failure immediately", async () => {
+    const clock = fakeClock();
+    const result = await pollCutoverIdentity({
+      attempt_id: attemptId,
+      read_identity: async () =>
+        identityRow({
+          probe_outcome: "failed",
+          probe_reason: "artifact_mismatch",
+          probe_job_id: null,
+          lease_fence: null,
+          probe_completed_at: null,
+          probe_fresh: false,
+        }),
+      timeout_ms: 60_000,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(result).toMatchObject({
+      attempt_id: attemptId,
+      probe_outcome: "failed",
+      probe_reason: "artifact_mismatch",
+      probe_job_id: null,
+    });
+    expect(clock.sleeps()).toBe(0);
+  });
+
+  test("waits past a stale attempt and returns this attempt's success", async () => {
+    const clock = fakeClock();
+    let reads = 0;
+    const result = await pollCutoverIdentity({
+      attempt_id: attemptId,
+      read_identity: async () => {
+        reads += 1;
+        return reads === 1 ? identityRow({ attempt_id: "attempt-previous" }) : identityRow();
+      },
+      timeout_ms: 60_000,
+      poll_interval_ms: 250,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(result).toMatchObject({ attempt_id: attemptId, probe_outcome: "ready" });
+    expect(clock.sleeps()).toBe(1);
+  });
+
+  test("surfaces stale-attempt evidence only at the bounded deadline", async () => {
+    const clock = fakeClock();
+    const result = await pollCutoverIdentity({
+      attempt_id: attemptId,
+      read_identity: async () => identityRow({ attempt_id: "attempt-previous" }),
+      timeout_ms: 1_000,
+      poll_interval_ms: 400,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(result).toMatchObject({ attempt_id: "attempt-previous", probe_outcome: "ready" });
+    expect(clock.sleeps()).toBeGreaterThan(0);
+  });
+
+  test("reports deadline exhaustion as absence", async () => {
+    const clock = fakeClock();
+    const result = await pollCutoverIdentity({
+      attempt_id: attemptId,
+      read_identity: async () => undefined,
+      timeout_ms: 500,
+      poll_interval_ms: 500,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(result).toBeNull();
   });
 });

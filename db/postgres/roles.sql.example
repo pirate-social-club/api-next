@@ -67,7 +67,7 @@ GRANT EXECUTE ON FUNCTION commit_hns_root_import_lifecycle_decision_v1(
   TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BIGINT, BIGINT, BIGINT
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION record_hns_root_import_lifecycle_observation_v1(
-  TEXT, BIGINT, TEXT, BIGINT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, TIMESTAMPTZ, TEXT, BIGINT, INTEGER
+  TEXT, BIGINT, TEXT, BIGINT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, TIMESTAMPTZ, TEXT, INTEGER
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION claim_hns_root_import_observation_job_v1(TEXT, INTEGER)
   TO api_next_app;
@@ -94,9 +94,12 @@ GRANT EXECUTE ON FUNCTION hns_lifecycle_schema_compatibility_v1(TEXT, TEXT)
   TO api_next_app;
 -- The controlled cutover probe: the running service leases and completes one
 -- synthetic readiness job through the single-owner path and records its
--- bundle identity. It carries no serving authority.
-GRANT EXECUTE ON FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(TEXT, TEXT, TEXT)
-  TO api_next_app;
+-- attempt-bound bundle identity. It carries no serving authority. The
+-- attempt-bound six-argument signature is the only one the deployed schema
+-- exposes; migration 0172 drops the retired three-argument overload.
+GRANT EXECUTE ON FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(
+  TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ
+) TO api_next_app;
 -- The durable unresolved cutover dispositions are diagnostic evidence owned
 -- by the migration and the operator recovery path, never by the runtime.
 REVOKE INSERT, UPDATE, DELETE ON hns_readiness_single_owner_cutover_unresolved

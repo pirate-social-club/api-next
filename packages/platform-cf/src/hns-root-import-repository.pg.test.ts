@@ -2331,13 +2331,17 @@ suite("Postgres 17 HNS root-import repository", () => {
         "SELECT * FROM claim_hns_root_health_renewal_job_v1('authority-executor',60)",
       );
       expect(claim.rows).toHaveLength(0);
+      // A repairable plan-binding failure is a delayed disposition with a
+      // persisted due time, not a terminal job that permanently occupies the
+      // generation.
       expect(
         (
-          await admin.query<{ failure_code: string }>(
-            "SELECT failure_code FROM hns_root_health_renewal_jobs ORDER BY created_at DESC LIMIT 1",
+          await admin.query<{ state: string; failure_code: string; waiting: boolean }>(
+            `SELECT state, failure_code, next_attempt_at > clock_timestamp() AS waiting
+               FROM hns_root_health_renewal_jobs ORDER BY created_at DESC LIMIT 1`,
           )
-        ).rows[0]?.failure_code,
-      ).toBe("plan_binding_mismatch");
+        ).rows[0],
+      ).toMatchObject({ state: "delayed", failure_code: "plan_binding_mismatch", waiting: true });
 
       // Pre-0170 completed renewals carry no derived request digest; a
       // re-delivery is a deliberate conflict, never a replay.
@@ -2346,7 +2350,7 @@ suite("Postgres 17 HNS root-import repository", () => {
             SET state='completed', leased_by=NULL, lease_expires_at=NULL,
                 result_bytes='legacy-result'::bytea,
                 result_sha256=encode(sha256('legacy-result'::bytea),'hex'),
-                request_bytes=NULL, request_sha256=NULL,
+                request_bytes=NULL, request_sha256=NULL, next_attempt_at=NULL,
                 completed_at=clock_timestamp(), failure_code=NULL
           WHERE root_import_session_id='root-import-session'`,
       );
@@ -2369,7 +2373,7 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 30_000);
 
-  test("renewal continues across an adopted lifecycle generation", async () => {
+  test("recoverable renewal evidence failures retry in place once the evidence is restored", async () => {
     await withSchema(async (connection, admin) => {
       const store = makeControlPlaneHnsRootImportStore(
         makeDirectPostgresControlPlaneLayer(connection),
@@ -2379,10 +2383,179 @@ suite("Postgres 17 HNS root-import repository", () => {
       expect(
         await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
       ).toMatchObject({ kind: "activated", response: { status: "activated" } });
-      // A later adoption rebinds the operation's lifecycle generation while
-      // the activated authority and retained readiness survive. Renewal is
-      // anchored to the retained evidence and the DNS generation, not to a
-      // retired observation job's generation.
+
+      const schedule = () =>
+        admin.query<{ eligible_roots: number; enqueued_roots: number }>(
+          "SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)",
+        );
+      const claim = async () =>
+        (
+          await admin.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)",
+            ["authority-executor", 60],
+          )
+        ).rows[0];
+      const latestJob = async () =>
+        (
+          await admin.query<{
+            renewal_job_id: string;
+            state: string;
+            failure_code: string | null;
+            next_attempt_at: Date | null;
+            waiting: boolean;
+          }>(
+            `SELECT renewal_job_id, state, failure_code, next_attempt_at,
+                    next_attempt_at > clock_timestamp() AS waiting
+               FROM hns_root_health_renewal_jobs
+              ORDER BY created_at DESC, renewal_job_id DESC LIMIT 1`,
+          )
+        ).rows[0];
+      // The test clock boundary: the job is delayed with a persisted due time
+      // and the test moves it due rather than resetting the job.
+      const due = () =>
+        admin.query(
+          "UPDATE hns_root_health_renewal_jobs SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE state='delayed'",
+        );
+      const finish = async (job: Record<string, unknown>) => {
+        const result = await makeReadinessArtifact({
+          ownershipResultHash: ready.provisioned.ownershipResultHash,
+          publishPlanSha256: sha256(ready.provisioned.planBytes),
+          provisionResultSha256: sha256(ready.provisioned.resultBytes),
+        });
+        return (
+          await admin.query<{ outcome: string }>(
+            "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)",
+            [
+              job.observation_job_id,
+              "authority-executor",
+              Number(job.lease_fence),
+              job.request_sha256,
+              Buffer.from(result.result_bytes),
+              result.result_sha256,
+            ],
+          )
+        ).rows[0]?.outcome;
+      };
+      const expectDelayedRefusal = async (reason: string) => {
+        expect(await claim()).toBeUndefined();
+        const job = await latestJob();
+        expect(job).toMatchObject({ state: "delayed", failure_code: reason, waiting: true });
+        expect(job?.next_attempt_at).not.toBeNull();
+        // Duplicate suppression while not due: neither the scheduler nor a
+        // direct claim creates or leases replacement work.
+        expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 0 });
+        expect(await claim()).toBeUndefined();
+      };
+      const recover = async () => {
+        await due();
+        expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+        const job = await claim();
+        expect(job).toBeDefined();
+        expect(await finish(job as Record<string, unknown>)).toBe("ready");
+      };
+
+      // Cycle one: a mismatched retained plan binding.
+      expect((await schedule()).rows[0]).toMatchObject({ eligible_roots: 1, enqueued_roots: 1 });
+      // Repeated scheduling is deduplicated by the deterministic job identity.
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 0 });
+      const replacement = Buffer.from('{"replacement":true}');
+      await admin.query(
+        `UPDATE hns_authority_provision_jobs
+            SET publish_plan_bytes=$1, publish_plan_sha256=$2, updated_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        [replacement, sha256(replacement)],
+      );
+      await expectDelayedRefusal("plan_binding_mismatch");
+      await admin.query(
+        `UPDATE hns_authority_provision_jobs
+            SET publish_plan_bytes=$1, publish_plan_sha256=$2, updated_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        [ready.provisioned.planBytes, sha256(ready.provisioned.planBytes)],
+      );
+      await recover();
+
+      // Cycle two: a missing retained plan binding (the provision record is
+      // removed, then restored with its authoritative bytes).
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+      const provisionRow = (
+        await admin.query<{ job: Record<string, unknown> }>(
+          `SELECT to_jsonb(job) AS job FROM hns_authority_provision_jobs AS job
+            WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        )
+      ).rows[0]?.job;
+      if (provisionRow === undefined) throw new Error("provision row missing");
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        "DELETE FROM hns_authority_provision_jobs WHERE root_import_session_id='root-import-session'",
+      );
+      await admin.query("COMMIT");
+      await expectDelayedRefusal("plan_binding_missing");
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `INSERT INTO hns_authority_provision_jobs
+         SELECT (jsonb_populate_record(NULL::hns_authority_provision_jobs, $1::jsonb)).*`,
+        [JSON.stringify(provisionRow)],
+      );
+      await admin.query("COMMIT");
+      await recover();
+
+      // Cycle three: missing accepted readiness. The retention trigger derives
+      // acceptance from the observation, so the fixture models an inherited
+      // inconsistent row and restores acceptance under the same maintenance
+      // boundary rather than touching the renewal job.
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle SET readiness_accepted_at=NULL
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      await admin.query("COMMIT");
+      await expectDelayedRefusal("readiness_evidence_missing");
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle SET readiness_accepted_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      await admin.query("COMMIT");
+      await recover();
+
+      // Obsolete work stays terminal: a queued job for a superseded health
+      // generation is refused at claim time and never retried, while the new
+      // health generation still schedules its own successor.
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+      await admin.query(`INSERT INTO hns_dns_zone_health_observations
+        SELECT (jsonb_populate_record(NULL::hns_dns_zone_health_observations,
+          to_jsonb(health)||jsonb_build_object('health_generation',5))).*
+        FROM hns_dns_zone_health_observations AS health WHERE health_generation=4`);
+      expect(await claim()).toBeUndefined();
+      expect(await latestJob()).toMatchObject({
+        state: "terminal",
+        failure_code: "generation_superseded",
+      });
+      expect(await claim()).toBeUndefined();
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+    });
+  }, 60_000);
+
+  test("renewal continues after a manual lifecycle generation bump, not real adoption", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+      // This fixture writes the lifecycle generation column directly to prove
+      // renewal is anchored to retained evidence and the DNS generation. It
+      // does not exercise real adoption of an activated root; the
+      // operator-authorized recovery and adoption command owns that path and
+      // is exercised by its own suites.
       await admin.query(
         `UPDATE hns_root_import_lifecycle
             SET generation=generation+1

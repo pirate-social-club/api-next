@@ -1245,47 +1245,139 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
   );
 
   test(
-    "the service identity table is not writable by the runtime role after the full grant sequence",
+    "the migration revokes inherited identity writes in deployment order and the probe stays executable",
+    async () => {
+      await withSchema(
+        (version) => version < "0171",
+        async (admin) => {
+          const schema = await currentSchema(admin);
+          const suffix = randomUUID().replaceAll("-", "");
+          const denied = `hns_probe_denied_${suffix}`;
+          const digest = "9".repeat(64);
+          await admin.query("BEGIN");
+          try {
+            // The supported deployment order: the runtime role and the broad
+            // default privileges exist before 0171 creates the identity table.
+            await admin.query("CREATE ROLE api_next_app NOLOGIN");
+            await admin.query(`CREATE ROLE ${denied} NOLOGIN`);
+            await admin.query(`GRANT USAGE ON SCHEMA ${quote(schema)} TO api_next_app, ${denied}`);
+            await admin.query(
+              `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quote(schema)} TO api_next_app`,
+            );
+            await admin.query(
+              `ALTER DEFAULT PRIVILEGES IN SCHEMA ${quote(schema)} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO api_next_app`,
+            );
+            await applyMigration(admin, "0171");
+            const inherited = await admin.query<Record<string, boolean>>(
+              `SELECT has_table_privilege('api_next_app','hns_lifecycle_service_identity','INSERT') AS i,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','UPDATE') AS u`,
+            );
+            expect(inherited.rows[0]).toEqual({ i: true, u: true });
+
+            await applyMigration(admin, "0172");
+            const revoked = await admin.query<Record<string, boolean>>(
+              `SELECT has_table_privilege('api_next_app','hns_lifecycle_service_identity','SELECT') AS s,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','INSERT') AS i,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','UPDATE') AS u,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','DELETE') AS d`,
+            );
+            expect(revoked.rows[0]).toEqual({ s: false, i: false, u: false, d: false });
+            const obsolete = await admin.query<{ present: boolean }>(
+              "SELECT to_regprocedure('run_hns_lifecycle_readiness_cutover_probe_v1(text,text,text)') IS NOT NULL AS present",
+            );
+            expect(obsolete.rows[0]?.present).toBe(false);
+            const current = await admin.query<{ present: boolean }>(
+              "SELECT to_regprocedure('run_hns_lifecycle_readiness_cutover_probe_v1(text,text,text,text,text,timestamptz)') IS NOT NULL AS present",
+            );
+            expect(current.rows[0]?.present).toBe(true);
+
+            await admin.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
+            // Authorized executor: direct identity mutation is refused while
+            // the granted probe function succeeds through the definer.
+            await admin.query("SAVEPOINT denied_identity_write");
+            await admin.query("SET LOCAL ROLE api_next_app");
+            await expect(
+              admin.query(
+                "UPDATE hns_lifecycle_service_identity SET probe_reason='tampered' WHERE service_name='pirate-hns-authority-provisioner'",
+              ),
+            ).rejects.toMatchObject({ code: "42501" });
+            await admin.query("ROLLBACK TO SAVEPOINT denied_identity_write");
+            await admin.query("SET LOCAL ROLE api_next_app");
+            const authorized = await admin.query<{ outcome: string }>(
+              "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+              [
+                "probe-executor",
+                "attempt-00000009",
+                "pirate-hns-authority-provisioner-v2",
+                digest,
+                digest,
+              ],
+            );
+            expect(authorized.rows[0]?.outcome).toBe("ready");
+            await admin.query("RESET ROLE");
+
+            // An unauthorized role without the EXECUTE grant is refused.
+            await admin.query("SAVEPOINT denied_probe_execute");
+            await admin.query(`SET LOCAL ROLE ${denied}`);
+            await expect(
+              admin.query(
+                "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+                [
+                  "probe-executor",
+                  "attempt-00000010",
+                  "pirate-hns-authority-provisioner-v2",
+                  digest,
+                  digest,
+                ],
+              ),
+            ).rejects.toMatchObject({ code: "42501" });
+            await admin.query("ROLLBACK TO SAVEPOINT denied_probe_execute");
+            await admin.query("RESET ROLE");
+          } finally {
+            await admin.query("ROLLBACK");
+          }
+        },
+      );
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the role template applied after migrations produces the same identity and probe contract",
     async () => {
       await withSchema(
         () => true,
         async (admin) => {
-          const suffix = randomUUID().replaceAll("-", "");
-          const role = `hns_identity_acl_${suffix}`;
-          const schemaRow = await admin.query<{ schema: string }>(
-            "SELECT current_schema() AS schema",
+          const schema = await currentSchema(admin);
+          const existing = await admin.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM pg_roles WHERE rolname IN ('api_next_app','api_next_operator')",
           );
-          const schema = schemaRow.rows[0]?.schema;
-          if (schema === undefined) throw new Error("schema missing");
+          expect(existing.rows[0]?.count).toBe("0");
+          const template = await Bun.file(
+            new URL("../../../db/postgres/roles.sql.example", import.meta.url),
+          ).text();
           await admin.query("BEGIN");
           try {
-            await admin.query(`CREATE ROLE ${role} NOLOGIN`);
-            await admin.query(`GRANT USAGE ON SCHEMA ${quote(schema)} TO ${role}`);
-            // The broad template grant first; the template revoke must then
-            // remove every direct path to the identity table.
-            await admin.query(
-              `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quote(schema)} TO ${role}`,
+            await admin.query(`SET LOCAL search_path TO ${quote(schema)}, public`);
+            await admin.query(template);
+            const acl = await admin.query<Record<string, boolean>>(
+              `SELECT has_table_privilege('api_next_app','hns_lifecycle_service_identity','SELECT') AS s,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','INSERT') AS i,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','UPDATE') AS u,
+                      has_table_privilege('api_next_app','hns_lifecycle_service_identity','DELETE') AS d`,
             );
-            const before = await admin.query<{ allowed: boolean }>(
-              "SELECT has_table_privilege($1,'hns_lifecycle_service_identity','INSERT') AS allowed",
-              [role],
-            );
-            expect(before.rows[0]?.allowed).toBe(true);
-            await admin.query(`REVOKE ALL ON hns_lifecycle_service_identity FROM ${role}`);
-            const after = await admin.query<Record<string, boolean>>(
-              `SELECT has_table_privilege($1,'hns_lifecycle_service_identity','SELECT') AS s,
-                      has_table_privilege($1,'hns_lifecycle_service_identity','INSERT') AS i,
-                      has_table_privilege($1,'hns_lifecycle_service_identity','UPDATE') AS u,
-                      has_table_privilege($1,'hns_lifecycle_service_identity','DELETE') AS d`,
-              [role],
-            );
-            expect(after.rows[0]).toEqual({ s: false, i: false, u: false, d: false });
-            const template = await Bun.file(
-              new URL("../../../db/postgres/roles.sql.example", import.meta.url),
-            ).text();
+            expect(acl.rows[0]).toEqual({ s: false, i: false, u: false, d: false });
             expect(template).toContain(
               "REVOKE ALL ON hns_lifecycle_service_identity FROM api_next_app",
             );
+            const execute = await admin.query<{ allowed: boolean }>(
+              "SELECT has_function_privilege('api_next_app','run_hns_lifecycle_readiness_cutover_probe_v1(text,text,text,text,text,timestamptz)','EXECUTE') AS allowed",
+            );
+            expect(execute.rows[0]?.allowed).toBe(true);
+            const obsolete = await admin.query<{ present: boolean }>(
+              "SELECT to_regprocedure('run_hns_lifecycle_readiness_cutover_probe_v1(text,text,text)') IS NOT NULL AS present",
+            );
+            expect(obsolete.rows[0]?.present).toBe(false);
           } finally {
             await admin.query("ROLLBACK");
           }

@@ -3,6 +3,12 @@
 -- Review corrections: startup evidence, probe safety, renewal consistency and
 -- the canonical request encoding. This is the reviewed cutover endpoint.
 
+-- Migration 0171 created the three-argument probe before attempt binding
+-- existed; its body reads the dropped `heartbeat_at` column. Replace it with
+-- the six-argument attempt-bound form rather than leaving a callable overload
+-- whose signature and body both describe the removed identity record.
+DROP FUNCTION IF EXISTS run_hns_lifecycle_readiness_cutover_probe_v1(TEXT, TEXT, TEXT);
+
 ALTER TABLE hns_lifecycle_service_identity
   RENAME COLUMN started_at TO process_started_at;
 ALTER TABLE hns_lifecycle_service_identity
@@ -84,10 +90,13 @@ $$;
 REVOKE ALL ON FUNCTION encode_hns_root_readiness_observation_request_v1(TEXT) FROM PUBLIC;
 
 -- The probe is retained as cutover evidence. Its lifecycle row is synthetic
--- and excluded from the normal claim selector and from operational phase
--- counts (the partial index marks operational rows). It creates no session
--- readiness or activation evidence. The seeder may replace its job on a fresh
--- cutover attempt; the lifecycle row and identity record persist.
+-- and excluded from the normal claim selector, and the partial index that
+-- marks operational rows exists so the forthcoming observability
+-- implementation can exclude synthetic rows from operational phase counts.
+-- That reporting does not exist yet and this migration does not implement it.
+-- The probe creates no session readiness or activation evidence. The seeder
+-- may replace its job on a fresh cutover attempt; the lifecycle row and
+-- identity record persist.
 
 CREATE OR REPLACE FUNCTION seed_hns_lifecycle_readiness_cutover_probe_v1() RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -246,6 +255,25 @@ END;
 $$;
 REVOKE ALL ON FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
 
+-- The migration owns the runtime privilege contract in deployment order. A
+-- deployment that applies the role template before this migration receives the
+-- blanket default table privileges when 0171 creates the identity table; a
+-- template-only revoke cannot repair that database, so the migration revokes
+-- the runtime role directly and grants the exact six-argument probe. A role
+-- template applied afterwards produces the same state. Migrations cannot
+-- assume application roles exist, so the whole contract is guarded by the
+-- repository's role-existence pattern.
+DO $hns_cutover_runtime_privileges$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'api_next_app') THEN
+    EXECUTE
+      'REVOKE ALL ON TABLE hns_lifecycle_service_identity FROM api_next_app';
+    EXECUTE
+      'GRANT EXECUTE ON FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(text,text,text,text,text,timestamptz) TO api_next_app';
+  END IF;
+END;
+$hns_cutover_runtime_privileges$;
+
 -- Renewal and lifecycle claim consistency.
 CREATE OR REPLACE FUNCTION claim_hns_root_health_renewal_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(observation_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, publish_plan_bytes bytea, publish_plan_sha256 text, provision_result_bytes bytea, provision_result_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -313,7 +341,21 @@ BEGIN
   IF session.status IS DISTINCT FROM 'activated'
     OR current_generation IS DISTINCT FROM candidate.activation_generation
     OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-    OR app_generation IS NULL OR sale_generation IS NULL
+  THEN
+    -- Genuinely obsolete work stays terminal. A session that is no longer
+    -- activated and a superseded DNS or health generation have no repair path
+    -- under this job identity, and a terminal job keeps occupying its
+    -- generation so the scheduler never recreates it.
+    UPDATE hns_root_health_renewal_jobs SET state = 'terminal', next_attempt_at = NULL,
+      failure_code = CASE
+        WHEN session.status IS DISTINCT FROM 'activated' THEN 'session_not_activated'
+        ELSE 'generation_superseded' END,
+      completed_at = database_now, updated_at = database_now
+    WHERE renewal_job_id = candidate.renewal_job_id;
+    RETURN;
+  END IF;
+
+  IF app_generation IS NULL OR sale_generation IS NULL
     OR provision.state IS DISTINCT FROM 'completed'
     OR provision.publish_plan_sha256 IS NULL
     OR provision.result_sha256 IS NULL
@@ -331,19 +373,41 @@ BEGIN
       )
     )
   THEN
-    UPDATE hns_root_health_renewal_jobs SET state = 'terminal', next_attempt_at = NULL,
+    -- Repairable evidence absence is not obsolescence. The named condition is
+    -- persisted as a delayed disposition so the same job identity retries
+    -- under the 0120 delay policy once the operator restores the binding or
+    -- accepted readiness through its supported writer; the scheduler requeues
+    -- the same row when due instead of creating a replacement.
+    UPDATE hns_root_health_renewal_jobs SET state = 'delayed', leased_by = NULL,
+      lease_expires_at = NULL, completed_at = NULL,
+      attempt_count = LEAST(candidate.attempt_count + 1, 1024),
       failure_code = CASE
-        WHEN session.status IS DISTINCT FROM 'activated' THEN 'session_not_activated'
-        WHEN current_generation IS DISTINCT FROM candidate.activation_generation
-          OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-        THEN 'generation_superseded'
+        WHEN provision.state IS DISTINCT FROM 'completed'
+          OR provision.publish_plan_sha256 IS NULL
+          OR provision.result_sha256 IS NULL
+        THEN 'plan_binding_missing'
         WHEN session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256
         THEN 'plan_binding_mismatch'
         WHEN lifecycle.root_import_session_id IS NOT NULL
           AND lifecycle.plan_encoded_resource_sha256 IS NULL
         THEN 'plan_binding_missing'
-        ELSE 'evidence_mismatch' END,
-      completed_at = database_now, updated_at = database_now
+        WHEN (
+          lifecycle.root_import_session_id IS NOT NULL
+          AND (
+            lifecycle.phase IS DISTINCT FROM 'activated'
+            OR lifecycle.readiness_observed_at IS NULL
+            OR lifecycle.readiness_accepted_at IS NULL
+          )
+        )
+          OR session.readiness_result_sha256 IS NULL
+          OR session.readiness_result_bytes IS NULL
+        THEN 'readiness_evidence_missing'
+        WHEN session.ownership_result_sha256 IS NULL
+        THEN 'ownership_evidence_missing'
+        ELSE 'activation_evidence_missing' END,
+      next_attempt_at = database_now
+        + hns_root_health_renewal_delay_v1(LEAST(candidate.attempt_count + 1, 1024)),
+      updated_at = database_now
     WHERE renewal_job_id = candidate.renewal_job_id;
     RETURN;
   END IF;

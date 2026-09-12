@@ -61,6 +61,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-lifecycle-projection.pg.test.ts",
   "packages/platform-cf/src/hns-observation-fence.pg.test.ts",
   "packages/platform-cf/src/hns-readiness-ownership.pg.test.ts",
+  "packages/platform-cf/src/hns-single-owner-readiness-cutover.pg.test.ts",
   "packages/platform-cf/src/hns-reconciliation-routing.pg.test.ts",
   "packages/platform-cf/src/hns-incident-recovery.pg.test.ts",
   // Creates its own schema and additionally needs a reachable regtest node;

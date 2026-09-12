@@ -1896,7 +1896,21 @@ BEGIN
   IF session.status IS DISTINCT FROM 'activated'
     OR current_generation IS DISTINCT FROM candidate.activation_generation
     OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-    OR app_generation IS NULL OR sale_generation IS NULL
+  THEN
+    -- Genuinely obsolete work stays terminal. A session that is no longer
+    -- activated and a superseded DNS or health generation have no repair path
+    -- under this job identity, and a terminal job keeps occupying its
+    -- generation so the scheduler never recreates it.
+    UPDATE hns_root_health_renewal_jobs SET state = 'terminal', next_attempt_at = NULL,
+      failure_code = CASE
+        WHEN session.status IS DISTINCT FROM 'activated' THEN 'session_not_activated'
+        ELSE 'generation_superseded' END,
+      completed_at = database_now, updated_at = database_now
+    WHERE renewal_job_id = candidate.renewal_job_id;
+    RETURN;
+  END IF;
+
+  IF app_generation IS NULL OR sale_generation IS NULL
     OR provision.state IS DISTINCT FROM 'completed'
     OR provision.publish_plan_sha256 IS NULL
     OR provision.result_sha256 IS NULL
@@ -1914,19 +1928,41 @@ BEGIN
       )
     )
   THEN
-    UPDATE hns_root_health_renewal_jobs SET state = 'terminal', next_attempt_at = NULL,
+    -- Repairable evidence absence is not obsolescence. The named condition is
+    -- persisted as a delayed disposition so the same job identity retries
+    -- under the 0120 delay policy once the operator restores the binding or
+    -- accepted readiness through its supported writer; the scheduler requeues
+    -- the same row when due instead of creating a replacement.
+    UPDATE hns_root_health_renewal_jobs SET state = 'delayed', leased_by = NULL,
+      lease_expires_at = NULL, completed_at = NULL,
+      attempt_count = LEAST(candidate.attempt_count + 1, 1024),
       failure_code = CASE
-        WHEN session.status IS DISTINCT FROM 'activated' THEN 'session_not_activated'
-        WHEN current_generation IS DISTINCT FROM candidate.activation_generation
-          OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-        THEN 'generation_superseded'
+        WHEN provision.state IS DISTINCT FROM 'completed'
+          OR provision.publish_plan_sha256 IS NULL
+          OR provision.result_sha256 IS NULL
+        THEN 'plan_binding_missing'
         WHEN session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256
         THEN 'plan_binding_mismatch'
         WHEN lifecycle.root_import_session_id IS NOT NULL
           AND lifecycle.plan_encoded_resource_sha256 IS NULL
         THEN 'plan_binding_missing'
-        ELSE 'evidence_mismatch' END,
-      completed_at = database_now, updated_at = database_now
+        WHEN (
+          lifecycle.root_import_session_id IS NOT NULL
+          AND (
+            lifecycle.phase IS DISTINCT FROM 'activated'
+            OR lifecycle.readiness_observed_at IS NULL
+            OR lifecycle.readiness_accepted_at IS NULL
+          )
+        )
+          OR session.readiness_result_sha256 IS NULL
+          OR session.readiness_result_bytes IS NULL
+        THEN 'readiness_evidence_missing'
+        WHEN session.ownership_result_sha256 IS NULL
+        THEN 'ownership_evidence_missing'
+        ELSE 'activation_evidence_missing' END,
+      next_attempt_at = database_now
+        + hns_root_health_renewal_delay_v1(LEAST(candidate.attempt_count + 1, 1024)),
+      updated_at = database_now
     WHERE renewal_job_id = candidate.renewal_job_id;
     RETURN;
   END IF;
@@ -15668,80 +15704,6 @@ CREATE FUNCTION reward_leg_accepts_qualification(leg_id_input text, activity_inp
       AND entry->'policy'->>'qualification_policy_version_id' = version_input)
     FROM song_reward_offer_legs leg WHERE leg.leg_id = leg_id_input), false)
 $$;
-
-CREATE FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(input_executor_id text, input_service_version text, input_bundle_sha256 text) RETURNS text
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $_$
-DECLARE
-  probe_session CONSTANT TEXT := 'cutover-readiness-probe';
-  job hns_root_import_lifecycle_jobs%ROWTYPE;
-  database_now TIMESTAMPTZ := clock_timestamp();
-  probe_outcome TEXT;
-  probe_reason TEXT;
-  finalized RECORD;
-BEGIN
-  IF btrim(input_executor_id) IS DISTINCT FROM input_executor_id
-    OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
-    OR input_executor_id ~ '[[:cntrl:]]'
-    OR input_service_version !~ '^[A-Za-z0-9._:@/-]{1,128}$'
-    OR input_bundle_sha256 !~ '^[0-9a-f]{64}$'
-  THEN
-    RAISE EXCEPTION 'invalid HNS cutover readiness probe request';
-  END IF;
-
-  SELECT * INTO job FROM hns_root_import_lifecycle_jobs
-    WHERE root_import_session_id = probe_session
-      AND job_kind = 'observe_readiness'
-    ORDER BY lifecycle_job_id DESC LIMIT 1 FOR UPDATE;
-  IF job.lifecycle_job_id IS NULL THEN
-    probe_outcome := 'probe_absent';
-    probe_reason := 'probe job missing';
-  ELSIF job.state = 'completed' THEN
-    probe_outcome := 'replayed';
-    probe_reason := NULL;
-  ELSIF job.state = 'queued'
-    OR (job.state = 'leased' AND job.lease_expires_at <= database_now) THEN
-    UPDATE hns_root_import_lifecycle_jobs
-       SET state = 'leased', attempt_count = LEAST(job.attempt_count + 1, 100),
-           lease_fence = job.lease_fence + 1, leased_by = input_executor_id,
-           lease_expires_at = database_now + interval '30 seconds',
-           failure_code = NULL, updated_at = database_now
-     WHERE lifecycle_job_id = job.lifecycle_job_id
-     RETURNING * INTO job;
-    SELECT * INTO finalized FROM finalize_hns_root_import_lifecycle_job_v1(
-      job.lifecycle_job_id, input_executor_id, job.lease_fence, 'completed', NULL
-    ) AS result;
-    IF finalized.outcome = 'completed' THEN
-      probe_outcome := 'ready';
-      probe_reason := NULL;
-    ELSE
-      probe_outcome := 'failed';
-      probe_reason := finalized.outcome;
-    END IF;
-  ELSE
-    probe_outcome := 'lease_conflict';
-    probe_reason := 'probe job is not claimable';
-  END IF;
-
-  INSERT INTO hns_lifecycle_service_identity (
-    service_name, service_version, bundle_sha256, executor_id,
-    started_at, heartbeat_at, probe_outcome, probe_reason
-  ) VALUES (
-    'pirate-hns-authority-provisioner', input_service_version, input_bundle_sha256,
-    input_executor_id, database_now, database_now, probe_outcome, probe_reason
-  )
-  ON CONFLICT (service_name) DO UPDATE SET
-    service_version = EXCLUDED.service_version,
-    bundle_sha256 = EXCLUDED.bundle_sha256,
-    executor_id = EXCLUDED.executor_id,
-    heartbeat_at = EXCLUDED.heartbeat_at,
-    probe_outcome = EXCLUDED.probe_outcome,
-    probe_reason = EXCLUDED.probe_reason;
-
-  RETURN probe_outcome;
-END;
-$_$;
 
 CREATE FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(input_executor_id text, input_attempt_id text, input_service_version text, input_expected_bundle_sha256 text, input_measured_bundle_sha256 text, input_process_started_at timestamp with time zone) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
