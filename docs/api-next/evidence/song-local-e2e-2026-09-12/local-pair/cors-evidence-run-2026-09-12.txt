@@ -1,0 +1,29 @@
+== before 2026-09-12T10:48:20+04:00
+Listing CORS rules for bucket 'pirate-media-ingress-staging'...
+allowed_origins:  https://web-next-staging.pirate.sc
+allowed_methods:  PUT
+allowed_headers:  content-type
+exposed_headers:  (no exposed headers)
+max_age_seconds:  (0 seconds)
+
+== after 2026-09-12T10:48:26+04:00
+Listing CORS rules for bucket 'pirate-media-ingress-staging'...
+allowed_origins:  https://web-next-staging.pirate.sc, http://localhost:8787
+allowed_methods:  PUT
+allowed_headers:  content-type
+exposed_headers:  (no exposed headers)
+max_age_seconds:  (0 seconds)
+
+== pre-restore 2026-09-12T11:49:29+04:00
+allowed_origins:  https://web-next-staging.pirate.sc, http://localhost:8787
+allowed_methods:  PUT
+allowed_headers:  content-type
+exposed_headers:  (no exposed headers)
+max_age_seconds:  (0 seconds)
+
+== restored 2026-09-12T11:49:38+04:00
+allowed_origins:  https://web-next-staging.pirate.sc
+allowed_methods:  PUT
+allowed_headers:  content-type
+exposed_headers:  (no exposed headers)
+max_age_seconds:  (0 seconds)
