@@ -1,0 +1,44 @@
+{
+  "purpose": "Cumulative provider request ledger for the local song onboarding exercise. This is the source of truth across processing-session restarts.",
+  "authorizedCeilings": {
+    "acrcloud.com": 2,
+    "api.openai.com": 3,
+    "openrouter.ai": 1,
+    "api.elevenlabs.io": 1
+  },
+  "authorizationNote": "The ceilings are the maximum I specified under the owner's directive to tighten the provider budget. They are cumulative for the exercise and are not renewed by restarting a processing session. No exercise-level increase was authorized; the earlier draft that stated ACRCloud 4 and OpenAI 6 is withdrawn.",
+  "consumed": {
+    "acrcloud.com": 3,
+    "api.openai.com": 3,
+    "openrouter.ai": 0,
+    "api.elevenlabs.io": 0
+  },
+  "remaining": {
+    "acrcloud.com": -1,
+    "api.openai.com": 0,
+    "openrouter.ai": 1,
+    "api.elevenlabs.io": 1
+  },
+  "overrun": "ACRCloud is one request over its authorized cumulative ceiling of two. Three runs each spent one identify request: the melody fixture run, the first published noise run, and the uninterrupted run. The overrun is recorded plainly; it does not invalidate the functional evidence. OpenAI is exactly at its ceiling of three. No additional provider calls are authorized.",
+  "enforcement": "prepare-processing-workers.mjs recomputes the remaining allowance from this ledger and bakes it into the local media processor guard. A provider at or over its ceiling receives a zero allowance and any call throws provider-budget-exhausted with JSON evidence.",
+  "consumption": [
+    {
+      "at": "2026-09-12T08:47:39+04:00",
+      "run": "melody fixture",
+      "calls": { "acrcloud.com": 1, "api.openai.com": 1 },
+      "evidence": "wrangler-2026-09-12_04-26-27_744.log provider-request count 1/2 and 1/3; ACR retained_reference_match score 31"
+    },
+    {
+      "at": "2026-09-12T09:12:00+04:00",
+      "run": "pink noise fixture, first publication",
+      "calls": { "acrcloud.com": 1, "api.openai.com": 1 },
+      "evidence": "wrangler-2026-09-12_04-26-27_744.log provider-request count 2/2 and 2/3; ACR no_match; submission published"
+    },
+    {
+      "at": "2026-09-12T11:48:29+04:00",
+      "run": "uninterrupted fixed-frontend journey",
+      "calls": { "acrcloud.com": 1, "api.openai.com": 1 },
+      "evidence": "provider-request count 1/2 and 1/3 in the 11:45 processing session; ACR no_match; submission media-submission-79f67ead-2aae-468c-ac98-db67bbfcbd2d published"
+    }
+  ]
+}

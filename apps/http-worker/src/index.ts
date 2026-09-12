@@ -10,6 +10,7 @@ import type { ExecutionContext, ScheduledController } from "@cloudflare/workers-
 import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 
+// The Worker module exports only its default handler and runtime entrypoint classes.
 export { HnsForwarderReplayStoreDO } from "@pirate/platform-cf/hns-forwarder-replay-store-do";
 export { KaraokeAttemptDO } from "@pirate/platform-cf/karaoke-attempt-do";
 export { KaraokeResetOperatorEntrypoint } from "@pirate/platform-cf/karaoke-reset-operator-entrypoint";
@@ -18,40 +19,7 @@ export {
   RegistrationIpRateLimiterDO,
 } from "@pirate/platform-cf/registration-rate-limiter-do";
 export { VideoPlaybackRateLimiterDO } from "@pirate/platform-cf/video-playback-rate-limiter-do";
-export { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
-export { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
-export { makeCommunityPurchaseFundingHandlers } from "./community-purchase-funding-handlers.ts";
-export {
-  createProductionHttpWorker,
-  type HttpWorkerBindings,
-  type HttpWorkerCompositionDependencies,
-} from "./composition.ts";
-export {
-  disabledProductionHnsCommunityAppApiComposition,
-  type HnsCommunityAppApiComposition,
-  type HnsCommunityAppApiCompositionDependencies,
-  makeHnsCommunityAppApiComposition,
-} from "./hns-community-app-api-composition.ts";
-export {
-  HNS_FORWARDER_V3_KEY_REGISTRY_MAX_BYTES,
-  HNS_FORWARDER_V3_KEY_REGISTRY_SCHEMA,
-  makeProductionHnsCommunityAppApiComposition,
-} from "./hns-community-app-api-production-composition.ts";
-export {
-  disabledProductionHnsHandleHostApiComposition,
-  type HnsHandleHostApiComposition,
-  type HnsHandleHostApiCompositionDependencies,
-  makeHnsHandleHostApiComposition,
-} from "./hns-handle-host-api-composition.ts";
-export {
-  disabledProductionHnsHostServingComposition,
-  makeHnsHostServingComposition,
-} from "./hns-host-serving-composition.ts";
-export { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
-export { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 export { StudyGenerationWorkflow } from "./study-generation-entrypoint.ts";
-export { makeStudyV2Handlers } from "./study-v2-handlers.ts";
-export { createHttpWorker, withEndpointResult } from "./transport.ts";
 
 let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefined;
 
@@ -61,7 +29,7 @@ let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefin
  * validated lazily on the first request and cached for the isolate; missing
  * configuration fails that health-check request before any route is served.
  */
-export const app = {
+const app = {
   async scheduled(
     _event: ScheduledController,
     bindings: HttpWorkerBindings,

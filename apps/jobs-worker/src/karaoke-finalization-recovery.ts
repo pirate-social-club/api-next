@@ -21,8 +21,8 @@ import {
 
 export const KARAOKE_FINALIZATION_RECOVERY_JOB = "karaoke.finalization-recovery";
 export const KARAOKE_FINALIZATION_RECOVERY_LANE = "learner-audio-maintenance";
-export const KARAOKE_FINALIZATION_RECOVERY_SCHEDULE = "* * * * *";
-export const KARAOKE_FINALIZATION_RECOVERY_TIMEOUT = "45 seconds";
+const KARAOKE_FINALIZATION_RECOVERY_SCHEDULE = "* * * * *";
+const KARAOKE_FINALIZATION_RECOVERY_TIMEOUT = "45 seconds";
 
 export const KARAOKE_FINALIZATION_RECOVERY_READS = [
   "postgres:karaoke_sessions",

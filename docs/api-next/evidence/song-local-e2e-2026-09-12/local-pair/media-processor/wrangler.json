@@ -1,0 +1,255 @@
+{
+  "name": "pirate-media-processor-worker",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "main": "/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-song-local-e2e/.tmp/local-pair/media-processor/entrypoint.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true
+    }
+  },
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "workflows": [
+    {
+      "binding": "MEDIA_PROCESSING_WORKFLOW",
+      "name": "pirate-media-processing",
+      "class_name": "MediaProcessingWorkflow"
+    },
+    {
+      "binding": "VIDEO_ANALYSIS_WORKFLOW",
+      "name": "pirate-video-analysis",
+      "class_name": "VideoAnalysisWorkflow"
+    }
+  ],
+  "queues": {
+    "consumers": [
+      {
+        "queue": "pirate-media-processing-development",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "pirate-media-processing-development-dlq"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+      "bucket_name": "pirate-media-immutable-staging",
+      "remote": true
+    },
+    {
+      "binding": "MEDIA_DERIVED_ARTIFACTS",
+      "bucket_name": "pirate-media-derived-staging",
+      "remote": true
+    }
+  ],
+  "images": {
+    "binding": "IMAGE_TRANSFORMATIONS"
+  },
+  "vars": {
+    "OPENAI_MODERATION_ENABLED": "false",
+    "MEDIA_PROCESSING_ENABLED": "true",
+    "VIDEO_ANALYSIS_ENABLED": "false",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
+    "DATA_REGISTRATION_ENABLED": "false",
+    "SONG_SOURCE_RECORDING_ENABLED": "false",
+    "ACRCLOUD_CONSOLE_ORIGIN": "",
+    "ACRCLOUD_SOURCE_BUCKET_ID": "",
+    "DATA_REGISTRATION_CHAIN_ID": "1315",
+    "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
+  },
+  "secrets": {
+    "required": [
+      "ACRCLOUD_ACCESS_KEY",
+      "ACRCLOUD_ACCESS_SECRET",
+      "ELEVENLABS_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY"
+    ]
+  },
+  "env": {
+    "staging": {
+      "name": "pirate-media-processor-worker-staging",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-staging",
+          "class_name": "MediaProcessingWorkflow"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-staging",
+          "class_name": "VideoAnalysisWorkflow"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "pirate-media-processing-staging",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 3,
+            "dead_letter_queue": "pirate-media-processing-staging-dlq"
+          }
+        ]
+      },
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-staging"
+        },
+        {
+          "binding": "MEDIA_DERIVED_ARTIFACTS",
+          "bucket_name": "pirate-media-derived-staging"
+        }
+      ],
+      "images": {
+        "binding": "IMAGE_TRANSFORMATIONS"
+      },
+      "vars": {
+        "OPENAI_MODERATION_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "true",
+        "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
+        "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
+        "DATA_REGISTRATION_ENABLED": "true",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "ACRCLOUD_CONSOLE_ORIGIN": "",
+        "ACRCLOUD_SOURCE_BUCKET_ID": "",
+        "DATA_REGISTRATION_CHAIN_ID": "1315",
+        "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
+      },
+      "secrets": {
+        "required": [
+          "VIDEO_WORKFLOW_READ_TOKEN",
+          "VIDEO_STREAM_API_TOKEN",
+          "ACRCLOUD_ACCESS_KEY",
+          "ACRCLOUD_ACCESS_SECRET",
+          "ELEVENLABS_API_KEY",
+          "OPENAI_API_KEY",
+          "OPENROUTER_API_KEY",
+          "QENCODE_API_KEY"
+        ]
+      }
+    },
+    "production": {
+      "name": "pirate-media-processor-worker-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "884b68c5a7904982a86620ed90032b77",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-production",
+          "class_name": "MediaProcessingWorkflow"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-production",
+          "class_name": "VideoAnalysisWorkflow"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "pirate-media-processing-production",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 3,
+            "dead_letter_queue": "pirate-media-processing-production-dlq"
+          }
+        ]
+      },
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-production"
+        },
+        {
+          "binding": "MEDIA_DERIVED_ARTIFACTS",
+          "bucket_name": "pirate-media-derived-production"
+        }
+      ],
+      "images": {
+        "binding": "IMAGE_TRANSFORMATIONS"
+      },
+      "vars": {
+        "OPENAI_MODERATION_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "false",
+        "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
+        "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
+        "DATA_REGISTRATION_ENABLED": "false",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "ACRCLOUD_CONSOLE_ORIGIN": "",
+        "ACRCLOUD_SOURCE_BUCKET_ID": "",
+        "DATA_REGISTRATION_CHAIN_ID": "1315",
+        "ACRCLOUD_IDENTIFY_HOST": ""
+      },
+      "secrets": {
+        "required": []
+      }
+    }
+  }
+}
