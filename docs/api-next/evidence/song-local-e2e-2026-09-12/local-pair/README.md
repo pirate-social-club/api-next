@@ -41,8 +41,10 @@ and media processor overlays. `wrangler.local-e2e.json`,
 `run-processing-workers.sh` starts the jobs worker and media processor in one
 multi-worker session with a shared persist directory so the
 `pirate-media-processing-development` queue connects. The jobs worker entrypoint
-re-exports plain constants that workerd rejects locally, so `jobs/entrypoint.ts`
-is a local-only shim exporting just the default handler and the cron lock class.
+previously re-exported plain constants that workerd rejects locally, so
+`jobs/entrypoint.ts` is a local-only shim exporting just the default handler and
+the cron lock class; the tracked worker is repaired at `f4c98557` and the shim
+is kept as historical evidence.
 `media-processor/entrypoint.ts` wraps the real entrypoint with the provider
 budget guard.
 
@@ -97,13 +99,14 @@ Test configuration, not compensating for a source defect: `run-api.sh`,
 CORS files and their readbacks. `media-processor/entrypoint.ts` is test
 instrumentation: it wraps the real entrypoint with the budget guard.
 
-Compensating for a source defect: `jobs/entrypoint.ts`. The tracked jobs
-worker entrypoint still re-exports plain constants that workerd rejects at the
-module boundary, so the shim exports only the default handler and the cron
-lock class. The repair is owned by the planned task
-`api-jobs-worker-entrypoint-startup` in the workspace register; the shim is
-retired once that task lands. The HTTP worker startup defect is not an overlay:
-it is repaired in source at `64f56114`, which is part of the API pull request.
+Compensating for a source defect: `jobs/entrypoint.ts`, retained as historical
+evidence. The tracked jobs worker entrypoint previously re-exported plain
+constants that workerd rejects at the module boundary, and the shim exported
+only the default handler and the cron lock class. The tracked entrypoint is
+repaired by `f4c98557` under the task `api-jobs-worker-entrypoint-startup`, so
+the shim is no longer needed for a local boot. The HTTP worker startup defect
+is not an overlay: it is repaired in source at `64f56114`, which is part of the
+API pull request.
 
 ## Review notes
 
