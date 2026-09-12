@@ -117,13 +117,3 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_recovery_v1(
 GRANT EXECUTE ON FUNCTION apply_hns_root_import_recovery_v1(
   TEXT, TEXT, BIGINT, TEXT, JSONB, INTEGER
 ) TO api_next_operator;
--- The readiness ownership handover is an operator transaction: it refuses
--- while a conflicting lease is live, disposes obsolete rows and enables the
--- persisted marker. It is deliberately not a runtime grant.
-GRANT EXECUTE ON FUNCTION begin_hns_root_import_readiness_ownership_v1(TEXT)
-  TO api_next_operator;
--- The reverse handover is the same operator-only transaction in the other
--- direction: it refuses unsafe resumes and live leases, returns readiness to
--- the legacy executor and disables the marker.
-GRANT EXECUTE ON FUNCTION withdraw_hns_root_import_readiness_ownership_v1(TEXT)
-  TO api_next_operator;
