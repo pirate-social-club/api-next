@@ -74,7 +74,7 @@ describe("Cloudflare media processing adapters", () => {
     );
   });
 
-  test("projects active statuses as present, terminal statuses as finished, and unknown as missing", async () => {
+  test("projects active statuses as present, terminal as finished, and unknown as indeterminate", async () => {
     for (const status of [
       "queued",
       "running",
@@ -120,7 +120,7 @@ describe("Cloudflare media processing adapters", () => {
       },
       isMissing,
     );
-    expect(await unknown.get("media-operation-1-r1")).toBe("missing");
+    expect(await unknown.get("media-operation-1-r1")).toBe("indeterminate");
   });
 
   test("does not turn a transient get failure into retained-instance loss", async () => {

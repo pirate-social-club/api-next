@@ -11,6 +11,7 @@ export type MediaWorkflowSweepResult = Readonly<{
   readonly inspected: number;
   readonly present: number;
   readonly finished: number;
+  readonly indeterminate: number;
   readonly replaced: number;
   readonly stale: number;
   readonly limitReached: number;
@@ -44,6 +45,7 @@ export async function sweepMissingMediaWorkflows(
     inspected: 0,
     present: 0,
     finished: 0,
+    indeterminate: 0,
     replaced: 0,
     stale: 0,
     limitReached: 0,
@@ -57,7 +59,7 @@ export async function sweepMissingMediaWorkflows(
       result.limitReached += 1;
       continue;
     }
-    let workflowStatus: "present" | "finished" | "missing";
+    let workflowStatus: "present" | "finished" | "indeterminate" | "missing";
     try {
       workflowStatus = await dependencies.workflow.get(workflowInstanceId(candidate));
     } catch {
@@ -72,6 +74,12 @@ export async function sweepMissingMediaWorkflows(
     }
     if (workflowStatus === "present") {
       result.present += 1;
+      continue;
+    }
+    // An existing instance with an unrecognized status proves no absence and
+    // never grounds for replacement; leave the durable row untouched.
+    if (workflowStatus === "indeterminate") {
+      result.indeterminate += 1;
       continue;
     }
     // A finished instance is not proof of success and never grounds for a

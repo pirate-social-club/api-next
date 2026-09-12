@@ -69,6 +69,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -97,6 +98,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 1,
       limitReached: 0,
@@ -119,6 +121,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 1,
       finished: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 0,
       limitReached: 0,
@@ -142,6 +145,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 1,
       limitReached: 0,
@@ -169,6 +173,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 0,
       limitReached: 1,
@@ -209,6 +214,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -244,6 +250,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -281,6 +288,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 2,
       present: 0,
       finished: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -311,6 +319,7 @@ describe("media Workflow missing-instance sweep", () => {
       inspected: 1,
       present: 0,
       finished: 1,
+      indeterminate: 0,
       replaced: 0,
       stale: 0,
       limitReached: 0,
@@ -343,5 +352,33 @@ describe("media Workflow missing-instance sweep", () => {
     expect([first.replaced, second.replaced].sort()).toEqual([0, 1]);
     expect(first.lookupFailed + second.lookupFailed).toBe(0);
     expect(replacementWrites).toBe(1);
+  });
+
+  test("never replaces an existing instance whose status is indeterminate", async () => {
+    const active = candidate();
+    let replacementWrites = 0;
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [active],
+          loadAuthority: async () => active,
+          replaceMissingWorkflow: async () => {
+            replacementWrites += 1;
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "indeterminate" },
+      }),
+    ).toEqual({
+      inspected: 1,
+      present: 0,
+      finished: 0,
+      indeterminate: 1,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+    expect(replacementWrites).toBe(0);
   });
 });

@@ -60,12 +60,14 @@ export type CloudflareMissingWorkflowErrorClassifier = (error: unknown) => boole
 async function workflowState(
   binding: CloudflareMediaWorkflowBinding,
   instanceId: string,
-): Promise<"present" | "finished" | "missing"> {
+): Promise<"present" | "finished" | "indeterminate" | "missing"> {
   const instance = await binding.get(instanceId);
   const status = await instance.status();
   if (isPresentWorkflowStatus(status.status)) return "present";
   if (isFinishedWorkflowStatus(status.status)) return "finished";
-  return "missing";
+  // An existing instance reporting an unknown status is not necessarily
+  // absent; never classify it as missing without runtime evidence.
+  return "indeterminate";
 }
 
 /**
