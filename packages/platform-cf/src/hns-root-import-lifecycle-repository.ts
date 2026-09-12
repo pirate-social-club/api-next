@@ -1,4 +1,5 @@
 import {
+  type ControlPlaneError,
   type ControlPlaneTransaction,
   hnsRootImportLifecycleDeadlinePatchV1,
   hnsRootImportLifecycleStateFromRowV1,
@@ -33,7 +34,7 @@ export function commitHnsRootImportLifecycleEventV1(
   rootImportSessionId: string,
   event: HnsRootImportLifecycleEventV1,
   nowEpochMs: number = event.occurred_at_epoch_ms,
-): Effect.Effect<HnsRootImportLifecycleTransitionResultV1, never, never> {
+): Effect.Effect<HnsRootImportLifecycleTransitionResultV1, ControlPlaneError, never> {
   return Effect.gen(function* () {
     const loaded = yield* transaction.execute<Row>({
       label: "hns.root-import-lifecycle.load-for-update",
@@ -94,5 +95,5 @@ export function commitHnsRootImportLifecycleEventV1(
       readonly: false,
     });
     return { outcome: decision.outcome.kind, reason: decision.outcome.reason } as const;
-  }) as Effect.Effect<HnsRootImportLifecycleTransitionResultV1, never, never>;
+  });
 }

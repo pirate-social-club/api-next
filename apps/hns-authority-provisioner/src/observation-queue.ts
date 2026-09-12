@@ -44,7 +44,15 @@ export type HnsRootObservationFinalizeInput = Readonly<{
   );
 
 export type HnsRootObservationFinalizeResult = Readonly<{
-  readonly outcome: "ready" | "retry" | "failed" | "replayed" | "conflict" | "lost" | "not_found";
+  readonly outcome:
+    | "ready"
+    | "retry"
+    | "failed"
+    | "replayed"
+    | "conflict"
+    | "lost"
+    | "not_found"
+    | "ownership_conflict";
   readonly root_import_session_id: string | null;
   readonly session_revision: number | null;
 }>;
@@ -228,7 +236,7 @@ export function makePostgresHnsRootObservationQueue(
         const row = result.rows[0];
         const revision =
           row?.session_revision === null ? null : positiveInteger(row?.session_revision);
-        const outcomes = [
+        const outcomes: readonly HnsRootObservationFinalizeResult["outcome"][] = [
           "ready",
           "retry",
           "failed",
@@ -238,17 +246,18 @@ export function makePostgresHnsRootObservationQueue(
           "not_found",
           "ownership_conflict",
         ];
+        const isOutcome = (value: unknown): value is HnsRootObservationFinalizeResult["outcome"] =>
+          typeof value === "string" && (outcomes as readonly string[]).includes(value);
         if (
           row === undefined ||
-          typeof row.outcome !== "string" ||
-          !outcomes.includes(row.outcome) ||
+          !isOutcome(row.outcome) ||
           (row.root_import_session_id !== null && typeof row.root_import_session_id !== "string") ||
           (row.session_revision !== null && revision === null)
         ) {
           throw new Error("HNS observation finalizer returned an invalid result");
         }
         return {
-          outcome: row.outcome as HnsRootObservationFinalizeResult["outcome"],
+          outcome: row.outcome,
           root_import_session_id: row.root_import_session_id as string | null,
           session_revision: revision,
         };
