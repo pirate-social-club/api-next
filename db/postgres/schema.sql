@@ -2424,6 +2424,8 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   result JSONB;
   database_now TIMESTAMPTZ;
+  observed_at TIMESTAMPTZ;
+  valid_until TIMESTAMPTZ;
   readiness_event_id TEXT;
   committed RECORD;
   problem TEXT;
@@ -2527,12 +2529,34 @@ BEGIN
       problem := 'session';
     ELSIF result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256 THEN
       problem := 'plan';
-    ELSIF (result->>'observed_at')::TIMESTAMPTZ > database_now THEN
-      problem := 'observed_future';
-    ELSIF (result->>'valid_until')::TIMESTAMPTZ <= database_now THEN
-      problem := 'expired';
+    -- Both timestamps are required, typed, parseable and finite before any
+    -- freshness comparison. A missing key, JSON null, a number, or an
+    -- infinity sentinel is invalid evidence, not a boundary case to clamp.
+    ELSIF jsonb_typeof(result->'observed_at') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(result->'valid_until') IS DISTINCT FROM 'string' THEN
+      problem := 'timestamp_shape';
     ELSE
-      problem := NULL;
+      BEGIN
+        observed_at := (result->>'observed_at')::TIMESTAMPTZ;
+        valid_until := (result->>'valid_until')::TIMESTAMPTZ;
+      EXCEPTION WHEN others THEN
+        problem := 'timestamp_unreadable';
+      END;
+      IF problem IS NULL THEN
+        IF NOT isfinite(observed_at) OR NOT isfinite(valid_until) THEN
+          problem := 'timestamp_infinite';
+        ELSIF observed_at > database_now THEN
+          problem := 'observed_future';
+        -- The frozen readiness_freshness_v1 window is measured from the
+        -- observation itself, not from its later acceptance.
+        ELSIF observed_at <= database_now - interval '1800 seconds' THEN
+          problem := 'observed_stale';
+        ELSIF valid_until <= database_now THEN
+          problem := 'expired';
+        ELSE
+          problem := NULL;
+        END IF;
+      END IF;
     END IF;
   EXCEPTION WHEN others THEN
     problem := 'unreadable';
@@ -2551,8 +2575,11 @@ BEGIN
     'readiness_retained',
     'ready',
     jsonb_build_object(
-      'readiness_observed_at', database_now,
-      'next_check_at', database_now + interval '1800 seconds',
+      -- The accepted observation keeps its own timestamp; the acceptance
+      -- clock is recorded separately by the lifecycle acceptance trigger,
+      -- and the refresh horizon moves with the observation it belongs to.
+      'readiness_observed_at', observed_at,
+      'next_check_at', observed_at + interval '1800 seconds',
       'pending_reason', NULL
     ),
     '[]'::jsonb,
@@ -11525,6 +11552,46 @@ CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id t
   ), FALSE)
 $$;
 
+CREATE FUNCTION hns_lifecycle_schema_compatibility_v1(input_service_version text, input_job_envelope_version text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  state hns_lifecycle_schema_cutover%ROWTYPE;
+BEGIN
+  IF input_service_version IS NULL
+    OR btrim(input_service_version) IS DISTINCT FROM input_service_version
+    OR octet_length(input_service_version) NOT BETWEEN 1 AND 128
+    OR input_service_version ~ '[[:cntrl:]]'
+    OR input_job_envelope_version IS NULL
+    OR btrim(input_job_envelope_version) IS DISTINCT FROM input_job_envelope_version
+    OR octet_length(input_job_envelope_version) NOT BETWEEN 1 AND 128
+    OR input_job_envelope_version ~ '[[:cntrl:]]'
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle schema compatibility request';
+  END IF;
+  SELECT * INTO state
+    FROM hns_lifecycle_schema_cutover
+   ORDER BY recorded_at DESC, cutover_version DESC
+   LIMIT 1;
+  IF NOT FOUND THEN
+    RETURN 'pre_cutover';
+  END IF;
+  IF NOT (input_service_version = ANY (state.compatible_service_versions)) THEN
+    RAISE EXCEPTION
+      'hns_lifecycle_schema_incompatible: service % is not compatible with cutover % (%)',
+      input_service_version, state.cutover_version, state.compatible_service_versions;
+  END IF;
+  IF NOT (input_job_envelope_version = ANY (state.compatible_job_envelope_versions)) THEN
+    RAISE EXCEPTION
+      'hns_lifecycle_schema_incompatible: job envelope % is not compatible with cutover % (%)',
+      input_job_envelope_version, state.cutover_version,
+      state.compatible_job_envelope_versions;
+  END IF;
+  RETURN 'compatible';
+END;
+$$;
+
 CREATE FUNCTION hns_root_health_renewal_delay_v1(attempt integer) RETURNS interval
     LANGUAGE sql IMMUTABLE
     SET search_path FROM CURRENT
@@ -11541,6 +11608,22 @@ CREATE FUNCTION hns_root_health_renewal_terminal_failure_v1(code text) RETURNS b
   SELECT COALESCE(code IN ('invalid_request', 'authority_mismatch',
     'evidence_mismatch', 'ownership_revoked', 'invalid_delegation',
     'session_expired', 'session_not_activated', 'generation_superseded'), FALSE)
+$$;
+
+CREATE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.readiness_observed_at IS NULL THEN
+    NEW.readiness_accepted_at := NULL;
+  ELSIF NEW.readiness_observed_at IS DISTINCT FROM OLD.readiness_observed_at THEN
+    NEW.readiness_accepted_at := clock_timestamp();
+  ELSE
+    NEW.readiness_accepted_at := OLD.readiness_accepted_at;
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION hns_root_import_lifecycle_transition_allowed_v1(input_from text, input_to text) RETURNS boolean
@@ -25151,6 +25234,16 @@ CREATE TABLE hns_dns_zone_lifecycle_operations (
     CONSTRAINT hns_dns_zone_lifecycle_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND ((expected_activation_generation >= 1) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND is_hns_host_persistence_identity(reason_code, 256) AND (result_activation_generation = (expected_activation_generation + 1))))
 );
 
+CREATE TABLE hns_lifecycle_schema_cutover (
+    cutover_version text NOT NULL,
+    compatible_service_versions text[] NOT NULL,
+    compatible_job_envelope_versions text[] NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_lifecycle_schema_cutover_envelope_check CHECK ((cardinality(compatible_job_envelope_versions) >= 1)),
+    CONSTRAINT hns_lifecycle_schema_cutover_service_check CHECK ((cardinality(compatible_service_versions) >= 1)),
+    CONSTRAINT hns_lifecycle_schema_cutover_version_shape CHECK ((cutover_version ~ '^[0-9]{4}$'::text))
+);
+
 CREATE TABLE hns_operator_control_promotion_receipts (
     receipt_id text NOT NULL,
     operation_id text NOT NULL,
@@ -25190,14 +25283,42 @@ CREATE TABLE hns_readiness_single_owner_cutover_receipt (
     applied_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     dispositioned_jobs bigint NOT NULL,
     successor_jobs bigint NOT NULL,
+    duplicate_jobs bigint DEFAULT 0 NOT NULL,
+    inconsistent_jobs bigint DEFAULT 0 NOT NULL,
+    superseded_jobs bigint DEFAULT 0 NOT NULL,
     legacy_readiness_functions bigint,
     readiness_writers bigint,
     ownership_functions bigint,
-    CONSTRAINT hns_readiness_single_owner_cutover_receipt_counts CHECK (((dispositioned_jobs >= 0) AND (successor_jobs >= 0)))
+    CONSTRAINT hns_readiness_single_owner_cutover_receipt_counts CHECK (((dispositioned_jobs >= 0) AND (successor_jobs >= 0) AND (duplicate_jobs >= 0) AND (inconsistent_jobs >= 0) AND (superseded_jobs >= 0)))
 );
 
 ALTER TABLE hns_readiness_single_owner_cutover_receipt ALTER COLUMN cutover_receipt_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME hns_readiness_single_owner_cutover_recei_cutover_receipt_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE hns_readiness_single_owner_cutover_unresolved (
+    unresolved_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    blocker text NOT NULL,
+    required_evidence jsonb NOT NULL,
+    recovery_owner text NOT NULL,
+    observed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    resolved_at timestamp with time zone,
+    resolution text,
+    CONSTRAINT hns_readiness_cutover_unresolved_blocker_check CHECK ((blocker = 'missing_lifecycle_row'::text)),
+    CONSTRAINT hns_readiness_cutover_unresolved_evidence_shape CHECK (((jsonb_typeof(required_evidence) = 'array'::text) AND (jsonb_array_length(required_evidence) > 0))),
+    CONSTRAINT hns_readiness_cutover_unresolved_identity_shape CHECK (((btrim(root_import_session_id) = root_import_session_id) AND ((octet_length(root_import_session_id) >= 1) AND (octet_length(root_import_session_id) <= 256)) AND (root_import_session_id !~ '[[:cntrl:]]'::text))),
+    CONSTRAINT hns_readiness_cutover_unresolved_owner_check CHECK ((recovery_owner = 'operator_authorized_recovery_adoption'::text)),
+    CONSTRAINT hns_readiness_cutover_unresolved_resolution_shape CHECK ((((resolved_at IS NULL) = (resolution IS NULL)) AND ((resolved_at IS NULL) OR (resolved_at >= observed_at)) AND ((resolution IS NULL) OR ((btrim(resolution) = resolution) AND ((octet_length(resolution) >= 1) AND (octet_length(resolution) <= 128)) AND (resolution !~ '[[:cntrl:]]'::text)))))
+);
+
+ALTER TABLE hns_readiness_single_owner_cutover_unresolved ALTER COLUMN unresolved_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_readiness_single_owner_cutover_unresolved_unresolved_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -25295,6 +25416,7 @@ CREATE TABLE hns_root_import_lifecycle (
     last_observation_commitment_height bigint,
     last_observation_at timestamp with time zone,
     last_observation_recorded_at timestamp with time zone,
+    readiness_accepted_at timestamp with time zone,
     CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
     CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
     CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
@@ -30076,6 +30198,8 @@ INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04
 
 INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
 
+INSERT INTO hns_lifecycle_schema_cutover VALUES ('0169', '{pirate-hns-authority-provisioner-v2}', '{hns-lifecycle-job-envelope-v1,hns-root-observation-envelope-v1}', '2000-01-01 00:00:00+00');
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -31197,6 +31321,9 @@ ALTER TABLE ONLY hns_dns_zone_lifecycle_operations
 ALTER TABLE ONLY hns_dns_zone_lifecycle_operations
     ADD CONSTRAINT hns_dns_zone_lifecycle_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY hns_lifecycle_schema_cutover
+    ADD CONSTRAINT hns_lifecycle_schema_cutover_pkey PRIMARY KEY (cutover_version);
+
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotio_operator_principal_id_idempot_key UNIQUE (operator_principal_id, idempotency_key);
 
@@ -31211,6 +31338,9 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 
 ALTER TABLE ONLY hns_readiness_single_owner_cutover_receipt
     ADD CONSTRAINT hns_readiness_single_owner_cutover_receipt_pkey PRIMARY KEY (cutover_receipt_id);
+
+ALTER TABLE ONLY hns_readiness_single_owner_cutover_unresolved
+    ADD CONSTRAINT hns_readiness_single_owner_cutover_unresolved_pkey PRIMARY KEY (unresolved_id);
 
 ALTER TABLE ONLY hns_root_import_recovery_authorizations
     ADD CONSTRAINT hns_recovery_authorization_unique UNIQUE (recovery_finding_id);
@@ -32702,6 +32832,8 @@ CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_obs
 
 CREATE INDEX hns_dns_zone_activation_operations_live_idx ON hns_dns_zone_activation_operations USING btree (lease_expires_at, operation_id) WHERE (state = 'reserved'::text);
 
+CREATE UNIQUE INDEX hns_readiness_cutover_unresolved_open_key ON hns_readiness_single_owner_cutover_unresolved USING btree (root_import_session_id) WHERE (resolved_at IS NULL);
+
 CREATE INDEX hns_root_health_renewal_jobs_claim_idx ON hns_root_health_renewal_jobs USING btree (state, created_at, renewal_job_id);
 
 CREATE INDEX hns_root_health_renewal_jobs_delayed_idx ON hns_root_health_renewal_jobs USING btree (next_attempt_at, renewal_job_id) WHERE (state = 'delayed'::text);
@@ -33427,6 +33559,8 @@ CREATE TRIGGER hns_root_import_activation_operations_retain BEFORE DELETE OR UPD
 CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_import_lifecycle FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_lifecycle_anchor_v1();
 
 CREATE TRIGGER hns_root_import_lifecycle_jobs_generation_fill BEFORE INSERT ON hns_root_import_lifecycle_jobs FOR EACH ROW EXECUTE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1();
+
+CREATE TRIGGER hns_root_import_lifecycle_readiness_acceptance BEFORE UPDATE ON hns_root_import_lifecycle FOR EACH ROW EXECUTE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1();
 
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 

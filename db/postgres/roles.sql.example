@@ -82,11 +82,20 @@ GRANT EXECUTE ON FUNCTION record_hns_root_import_retention_review_v1(
 GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
   TO api_next_app;
 -- The atomic readiness acceptance: result bytes, session readiness, the
--- lifecycle transition and job completion in one statement. It acts only
--- when the persisted readiness ownership marker is enabled.
+-- lifecycle transition and job completion in one statement. It is the one
+-- readiness writer after the single-owner cutover.
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
   TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
 ) TO api_next_app;
+-- The serving startup check: a pre-cutover schema is compatible with both
+-- bundles; after the cutover only the recorded service and job-envelope
+-- versions may claim work.
+GRANT EXECUTE ON FUNCTION hns_lifecycle_schema_compatibility_v1(TEXT, TEXT)
+  TO api_next_app;
+-- The durable unresolved cutover dispositions are diagnostic evidence owned
+-- by the migration and the operator recovery path, never by the runtime.
+REVOKE INSERT, UPDATE, DELETE ON hns_readiness_single_owner_cutover_unresolved
+FROM api_next_app;
 -- The lifecycle half of activation commits inside the existing activation
 -- transaction, revalidating phase, revision, generation, freshness and the
 -- pre-gathered current-view binding before the activation effects commit.

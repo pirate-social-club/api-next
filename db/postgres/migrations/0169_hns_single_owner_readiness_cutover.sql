@@ -1,31 +1,46 @@
--- HNS single-owner readiness cutover.
+-- HNS single-owner readiness cutover removal.
 --
 -- Ratified specification: spec 012 section "HNS single-owner readiness
 -- cutover - 2026-09-11" (anchor hns-single-owner-readiness-cutover-v1).
 --
--- This is the removal migration. It preserves valid queued or leased
--- current-generation lifecycle readiness work, dispositions queued legacy
--- readiness work with `readiness_single_owner_cutover`, provisions exactly one
--- readiness successor where the phase supports it, and refuses with identified
--- blockers when a live legacy lease or a session without a lifecycle row
--- cannot be represented safely. It then makes `observe_readiness` claimable
--- without the ownership marker, strips the legacy readiness acceptance from
--- the observation finalizer, and drops the marker, the handover and
--- withdrawal functions, and the private legacy finalizer. Teardown and
--- renewal routes are untouched.
+-- This is the removal migration. The preceding 0168 preflight migration has
+-- already inspected sessions directly and committed a durable
+-- `readiness_single_owner_cutover_unresolved` disposition for every session
+-- that cannot receive a deterministic migration-matrix target. This
+-- migration refuses by identity while any such disposition is open, with
+-- state unchanged; because the dispositions were committed independently,
+-- they survive this transaction's rollback.
+--
+-- It preserves valid queued or leased current-generation lifecycle readiness
+-- work, gives pre-existing duplicate or inconsistent readiness work a
+-- deterministic disposition, dispositions queued legacy readiness work with
+-- `readiness_single_owner_cutover`, provisions exactly one readiness
+-- successor where the phase supports it, and refuses with identified
+-- blockers when a live legacy lease remains. It then makes
+-- `observe_readiness` claimable without the ownership marker, strips the
+-- legacy readiness acceptance from the observation finalizer, and drops the
+-- marker, the handover and withdrawal functions, and the private legacy
+-- finalizer. Teardown and renewal routes are untouched.
 --
 -- Historical migrations, evidence and import/recovery data remain history,
 -- not compatibility code.
 
 -- 1. Refuse unsafe cutover states and serialize against claims. The marker
 --    row lock is the common lock order every old claim and finalizer takes
---    FOR SHARE, so no claim is granted between this check and the schema
---    replacement below.
+--    FOR SHARE, so no old worker is admitted between this check and the
+--    schema replacement below. The operation lock is taken later, before any
+--    successor decision, in the common lock order the lifecycle decision and
+--    readiness writers use.
 DO $cutover_preflight$
 DECLARE
   database_now TIMESTAMPTZ := clock_timestamp();
   blockers TEXT;
 BEGIN
+  IF to_regclass('hns_readiness_single_owner_cutover_unresolved') IS NULL THEN
+    RAISE EXCEPTION
+      'readiness_single_owner_cutover_blocked: preflight 0168 must be applied before removal';
+  END IF;
+
   IF to_regclass('hns_root_import_execution_ownership') IS NOT NULL THEN
     PERFORM 1 FROM hns_root_import_execution_ownership
      WHERE responsibility = 'readiness'
@@ -44,62 +59,192 @@ BEGIN
     RAISE EXCEPTION 'readiness_single_owner_cutover_blocked: live legacy readiness lease: %', blockers;
   END IF;
 
-  SELECT string_agg(DISTINCT session_id, ', ' ORDER BY session_id) INTO blockers
+  -- A session without a lifecycle row is resolvable only through the
+  -- persisted unresolved disposition. Refuse a session that the preflight
+  -- did not classify rather than letting it leave the legacy path silently.
+  SELECT string_agg(entry, ', ' ORDER BY entry) INTO blockers
     FROM (
-      SELECT job.root_import_session_id AS session_id
-        FROM hns_root_import_observation_jobs AS job
-       WHERE job.operation_kind = 'observe_root_v1'
-         AND (
-           job.state = 'queued'
-           OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
-         )
+      SELECT session.root_import_session_id || ' [missing_lifecycle_row]' AS entry
+        FROM hns_root_import_sessions AS session
+       WHERE NOT EXISTS (
+         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+          WHERE lifecycle.root_import_session_id = session.root_import_session_id
+       )
          AND NOT EXISTS (
-           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-            WHERE lifecycle.root_import_session_id = job.root_import_session_id
+           SELECT 1 FROM hns_readiness_single_owner_cutover_unresolved AS unresolved
+            WHERE unresolved.root_import_session_id = session.root_import_session_id
+              AND unresolved.resolved_at IS NULL
          )
-    ) AS unresolved_sessions;
+    ) AS unrecorded_unresolved;
   IF blockers IS NOT NULL THEN
     RAISE EXCEPTION
-      'readiness_single_owner_cutover_blocked: session without lifecycle row requires recovery before removal: %',
+      'readiness_single_owner_cutover_blocked: session without lifecycle row and without persisted disposition: %',
+      blockers;
+  END IF;
+
+  -- The durable disposition is the refusal identity and the owner of the
+  -- next action. Removal stays blocked until every row is resolved.
+  SELECT string_agg(unresolved.root_import_session_id || ' [' || unresolved.blocker || ']',
+                    ', ' ORDER BY unresolved.root_import_session_id)
+    INTO blockers
+    FROM hns_readiness_single_owner_cutover_unresolved AS unresolved
+   WHERE unresolved.resolved_at IS NULL;
+  IF blockers IS NOT NULL THEN
+    RAISE EXCEPTION
+      'readiness_single_owner_cutover_unresolved: operator_authorized_recovery_adoption owns the next action for: %',
       blockers;
   END IF;
 END;
 $cutover_preflight$;
 
--- 2. Disposition queued legacy readiness work for lifecycle-managed sessions
---    and provision the exactly-one readiness successor. A valid queued or
---    leased current-generation lifecycle readiness job is preserved and
---    counted as that successor.
+-- 2. Lock every operation before deciding, then re-read the database clock,
+--    phase, generation and existing jobs after the lock. A `NOT EXISTS`
+--    evaluated from a snapshot taken before waiting for the operation lock
+--    can still be stale, so the lock statement and the decision statements
+--    are separate. Every lifecycle decision and the readiness writer locks
+--    the operation row, and claims lock the operation's job rows, so holding
+--    the operation lock here serializes the successor decision against all
+--    of them. Pre-existing duplicate or inconsistent readiness work receives
+--    a deterministic named disposition, and exactly one successor is queued
+--    only when no valid current-generation queued or leased job survives.
 CREATE TABLE hns_readiness_single_owner_cutover_receipt (
     cutover_receipt_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     applied_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     dispositioned_jobs bigint NOT NULL,
     successor_jobs bigint NOT NULL,
+    duplicate_jobs bigint NOT NULL DEFAULT 0,
+    inconsistent_jobs bigint NOT NULL DEFAULT 0,
+    superseded_jobs bigint NOT NULL DEFAULT 0,
     legacy_readiness_functions bigint,
     readiness_writers bigint,
     ownership_functions bigint,
     CONSTRAINT hns_readiness_single_owner_cutover_receipt_counts CHECK (
       dispositioned_jobs >= 0 AND successor_jobs >= 0
+      AND duplicate_jobs >= 0 AND inconsistent_jobs >= 0 AND superseded_jobs >= 0
     )
 );
 
 DO $cutover_disposition$
 DECLARE
-  database_now TIMESTAMPTZ := clock_timestamp();
+  legacy_now TIMESTAMPTZ := clock_timestamp();
+  database_now TIMESTAMPTZ;
   dispositioned BIGINT := 0;
+  duplicates BIGINT := 0;
+  inconsistent BIGINT := 0;
+  superseded BIGINT := 0;
   successors BIGINT := 0;
 BEGIN
   UPDATE hns_root_import_observation_jobs AS job
      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
          failure_code = 'readiness_single_owner_cutover',
-         completed_at = database_now, updated_at = database_now
+         completed_at = legacy_now, updated_at = legacy_now
    WHERE job.operation_kind = 'observe_root_v1'
      AND (
        job.state = 'queued'
-       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+       OR (job.state = 'leased' AND job.lease_expires_at <= legacy_now)
      );
   GET DIAGNOSTICS dispositioned = ROW_COUNT;
 
+  -- The operation lock in the common lock order: decisions and the readiness
+  -- writer hold these rows, so every read below observes any decision that
+  -- committed before the lock was granted and no decision can interleave
+  -- between the reads and the successor insert.
+  PERFORM 1
+    FROM hns_root_import_lifecycle
+   ORDER BY root_import_session_id
+   FOR UPDATE;
+
+  database_now := clock_timestamp();
+
+  -- Generation-superseded readiness work fails deterministically.
+  UPDATE hns_root_import_lifecycle_jobs AS job
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'generation_superseded',
+         completed_at = database_now, updated_at = database_now
+   WHERE job.lifecycle_job_id IN (
+     SELECT candidate.lifecycle_job_id
+       FROM hns_root_import_lifecycle_jobs AS candidate
+       JOIN hns_root_import_lifecycle AS lifecycle
+         ON lifecycle.root_import_session_id = candidate.root_import_session_id
+      WHERE candidate.job_kind = 'observe_readiness'
+        AND candidate.state IN ('queued', 'leased')
+        AND candidate.generation < lifecycle.generation
+   );
+  GET DIAGNOSTICS superseded = ROW_COUNT;
+
+  -- Readiness work the operation's phase cannot consume fails
+  -- deterministically rather than being preserved or duplicated.
+  UPDATE hns_root_import_lifecycle_jobs AS job
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'readiness_single_owner_cutover_inconsistent',
+         completed_at = database_now, updated_at = database_now
+   WHERE job.lifecycle_job_id IN (
+     SELECT candidate.lifecycle_job_id
+       FROM hns_root_import_lifecycle_jobs AS candidate
+       JOIN hns_root_import_lifecycle AS lifecycle
+         ON lifecycle.root_import_session_id = candidate.root_import_session_id
+      WHERE candidate.job_kind = 'observe_readiness'
+        AND candidate.state IN ('queued', 'leased')
+        AND candidate.generation IS DISTINCT FROM lifecycle.generation
+        AND candidate.generation >= lifecycle.generation
+   ) OR job.lifecycle_job_id IN (
+     SELECT candidate.lifecycle_job_id
+       FROM hns_root_import_lifecycle_jobs AS candidate
+       JOIN hns_root_import_lifecycle AS lifecycle
+         ON lifecycle.root_import_session_id = candidate.root_import_session_id
+      WHERE candidate.job_kind = 'observe_readiness'
+        AND candidate.state IN ('queued', 'leased')
+        AND candidate.generation = lifecycle.generation
+        AND NOT (
+          lifecycle.phase = 'checking_authority'
+          OR (
+            lifecycle.phase = 'ready'
+            AND (
+              lifecycle.readiness_observed_at IS NULL
+              OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+            )
+          )
+        )
+   );
+  GET DIAGNOSTICS inconsistent = ROW_COUNT;
+
+  -- Duplicate valid work: the earliest due job (tie: lowest identity) is the
+  -- operation's one survivor and counts as its successor; every other live
+  -- duplicate fails deterministically.
+  WITH ranked AS (
+    SELECT candidate.lifecycle_job_id,
+           row_number() OVER (
+             PARTITION BY candidate.root_import_session_id
+             ORDER BY candidate.due_at, candidate.lifecycle_job_id
+           ) AS survivor_rank
+      FROM hns_root_import_lifecycle_jobs AS candidate
+      JOIN hns_root_import_lifecycle AS lifecycle
+        ON lifecycle.root_import_session_id = candidate.root_import_session_id
+     WHERE candidate.job_kind = 'observe_readiness'
+       AND candidate.state IN ('queued', 'leased')
+       AND candidate.generation = lifecycle.generation
+       AND (
+         lifecycle.phase = 'checking_authority'
+         OR (
+           lifecycle.phase = 'ready'
+           AND (
+             lifecycle.readiness_observed_at IS NULL
+             OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
+           )
+         )
+       )
+  )
+  UPDATE hns_root_import_lifecycle_jobs AS job
+     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+         failure_code = 'readiness_single_owner_cutover_duplicate',
+         completed_at = database_now, updated_at = database_now
+    FROM ranked
+   WHERE job.lifecycle_job_id = ranked.lifecycle_job_id
+     AND ranked.survivor_rank > 1;
+  GET DIAGNOSTICS duplicates = ROW_COUNT;
+
+  -- The exactly-one successor: queued only when no valid current-generation
+  -- queued or leased job survived.
   INSERT INTO hns_root_import_lifecycle_jobs (
     root_import_session_id, job_kind, due_at, generation
   )
@@ -127,10 +272,12 @@ BEGIN
 
   -- A fresh baseline has no cutover work and stays deterministic; a real
   -- cutover records its counts once.
-  IF dispositioned > 0 OR successors > 0 THEN
+  IF dispositioned > 0 OR successors > 0 OR duplicates > 0
+     OR inconsistent > 0 OR superseded > 0 THEN
     INSERT INTO hns_readiness_single_owner_cutover_receipt (
-      dispositioned_jobs, successor_jobs
-    ) VALUES (dispositioned, successors);
+      dispositioned_jobs, successor_jobs, duplicate_jobs, inconsistent_jobs,
+      superseded_jobs
+    ) VALUES (dispositioned, successors, duplicates, inconsistent, superseded);
   END IF;
 END;
 $cutover_disposition$;
@@ -342,6 +489,44 @@ BEGIN
 
 END;
 $$;
+
+-- 3a. Accepted readiness evidence preserves the observation's own timestamp
+--     and records the database acceptance clock separately. The trigger owns
+--     the acceptance stamp: it moves only when accepted evidence moves, and
+--     it is cleared with the evidence so a stale acceptance can never
+--     outlive the observation it belonged to.
+ALTER TABLE hns_root_import_lifecycle
+  ADD COLUMN readiness_accepted_at timestamp with time zone;
+
+-- Evidence accepted before this migration was stamped under the old writer,
+-- whose persisted `readiness_observed_at` was the acceptance clock. Backfill
+-- the separate acceptance stamp with that value so no accepted operation
+-- loses its acceptance record at the cutover.
+UPDATE hns_root_import_lifecycle
+   SET readiness_accepted_at = readiness_observed_at
+ WHERE readiness_observed_at IS NOT NULL;
+
+CREATE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.readiness_observed_at IS NULL THEN
+    NEW.readiness_accepted_at := NULL;
+  ELSIF NEW.readiness_observed_at IS DISTINCT FROM OLD.readiness_observed_at THEN
+    NEW.readiness_accepted_at := clock_timestamp();
+  ELSE
+    NEW.readiness_accepted_at := OLD.readiness_accepted_at;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1() FROM PUBLIC;
+
+CREATE TRIGGER hns_root_import_lifecycle_readiness_acceptance
+    BEFORE UPDATE ON hns_root_import_lifecycle
+    FOR EACH ROW EXECUTE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1();
+
 CREATE OR REPLACE FUNCTION commit_hns_root_import_readiness_v1(input_session_id text, input_lifecycle_job_id bigint, input_executor_id text, input_lease_fence bigint, input_expected_revision bigint, input_result_bytes bytea, input_result_sha256 text) RETURNS TABLE(outcome text, revision bigint, readiness_result_sha256 text)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -352,6 +537,8 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   result JSONB;
   database_now TIMESTAMPTZ;
+  observed_at TIMESTAMPTZ;
+  valid_until TIMESTAMPTZ;
   readiness_event_id TEXT;
   committed RECORD;
   problem TEXT;
@@ -455,12 +642,34 @@ BEGIN
       problem := 'session';
     ELSIF result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256 THEN
       problem := 'plan';
-    ELSIF (result->>'observed_at')::TIMESTAMPTZ > database_now THEN
-      problem := 'observed_future';
-    ELSIF (result->>'valid_until')::TIMESTAMPTZ <= database_now THEN
-      problem := 'expired';
+    -- Both timestamps are required, typed, parseable and finite before any
+    -- freshness comparison. A missing key, JSON null, a number, or an
+    -- infinity sentinel is invalid evidence, not a boundary case to clamp.
+    ELSIF jsonb_typeof(result->'observed_at') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(result->'valid_until') IS DISTINCT FROM 'string' THEN
+      problem := 'timestamp_shape';
     ELSE
-      problem := NULL;
+      BEGIN
+        observed_at := (result->>'observed_at')::TIMESTAMPTZ;
+        valid_until := (result->>'valid_until')::TIMESTAMPTZ;
+      EXCEPTION WHEN others THEN
+        problem := 'timestamp_unreadable';
+      END;
+      IF problem IS NULL THEN
+        IF NOT isfinite(observed_at) OR NOT isfinite(valid_until) THEN
+          problem := 'timestamp_infinite';
+        ELSIF observed_at > database_now THEN
+          problem := 'observed_future';
+        -- The frozen readiness_freshness_v1 window is measured from the
+        -- observation itself, not from its later acceptance.
+        ELSIF observed_at <= database_now - interval '1800 seconds' THEN
+          problem := 'observed_stale';
+        ELSIF valid_until <= database_now THEN
+          problem := 'expired';
+        ELSE
+          problem := NULL;
+        END IF;
+      END IF;
     END IF;
   EXCEPTION WHEN others THEN
     problem := 'unreadable';
@@ -479,8 +688,11 @@ BEGIN
     'readiness_retained',
     'ready',
     jsonb_build_object(
-      'readiness_observed_at', database_now,
-      'next_check_at', database_now + interval '1800 seconds',
+      -- The accepted observation keeps its own timestamp; the acceptance
+      -- clock is recorded separately by the lifecycle acceptance trigger,
+      -- and the refresh horizon moves with the observation it belongs to.
+      'readiness_observed_at', observed_at,
+      'next_check_at', observed_at + interval '1800 seconds',
       'pending_reason', NULL
     ),
     '[]'::jsonb,
@@ -638,6 +850,77 @@ DROP TABLE hns_root_import_execution_ownership;
 DROP FUNCTION begin_hns_root_import_readiness_ownership_v1(TEXT);
 DROP FUNCTION withdraw_hns_root_import_readiness_ownership_v1(TEXT);
 
+-- 4b. Record the compatible service/schema pair. The removal release requires
+--     the lifecycle service generation that performs readiness without the
+--     marker. A pre-cutover bundle must fail closed after this point: the
+--     compatible binary checks this record before it claims work, and the
+--     launch guard refuses an old bundle whose deployment manifest declares a
+--     service version outside the compatible set.
+CREATE TABLE hns_lifecycle_schema_cutover (
+    cutover_version text PRIMARY KEY,
+    compatible_service_versions text[] NOT NULL,
+    compatible_job_envelope_versions text[] NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_lifecycle_schema_cutover_version_shape CHECK (
+      cutover_version ~ '^[0-9]{4}$'
+    ),
+    CONSTRAINT hns_lifecycle_schema_cutover_service_check CHECK (
+      cardinality(compatible_service_versions) >= 1
+    ),
+    CONSTRAINT hns_lifecycle_schema_cutover_envelope_check CHECK (
+      cardinality(compatible_job_envelope_versions) >= 1
+    )
+);
+
+INSERT INTO hns_lifecycle_schema_cutover (
+  cutover_version, compatible_service_versions, compatible_job_envelope_versions
+) VALUES (
+  '0169',
+  ARRAY['pirate-hns-authority-provisioner-v2'],
+  ARRAY['hns-lifecycle-job-envelope-v1', 'hns-root-observation-envelope-v1']
+);
+
+CREATE FUNCTION hns_lifecycle_schema_compatibility_v1(input_service_version text, input_job_envelope_version text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  state hns_lifecycle_schema_cutover%ROWTYPE;
+BEGIN
+  IF input_service_version IS NULL
+    OR btrim(input_service_version) IS DISTINCT FROM input_service_version
+    OR octet_length(input_service_version) NOT BETWEEN 1 AND 128
+    OR input_service_version ~ '[[:cntrl:]]'
+    OR input_job_envelope_version IS NULL
+    OR btrim(input_job_envelope_version) IS DISTINCT FROM input_job_envelope_version
+    OR octet_length(input_job_envelope_version) NOT BETWEEN 1 AND 128
+    OR input_job_envelope_version ~ '[[:cntrl:]]'
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle schema compatibility request';
+  END IF;
+  SELECT * INTO state
+    FROM hns_lifecycle_schema_cutover
+   ORDER BY recorded_at DESC, cutover_version DESC
+   LIMIT 1;
+  IF NOT FOUND THEN
+    RETURN 'pre_cutover';
+  END IF;
+  IF NOT (input_service_version = ANY (state.compatible_service_versions)) THEN
+    RAISE EXCEPTION
+      'hns_lifecycle_schema_incompatible: service % is not compatible with cutover % (%)',
+      input_service_version, state.cutover_version, state.compatible_service_versions;
+  END IF;
+  IF NOT (input_job_envelope_version = ANY (state.compatible_job_envelope_versions)) THEN
+    RAISE EXCEPTION
+      'hns_lifecycle_schema_incompatible: job envelope % is not compatible with cutover % (%)',
+      input_job_envelope_version, state.cutover_version,
+      state.compatible_job_envelope_versions;
+  END IF;
+  RETURN 'compatible';
+END;
+$$;
+REVOKE ALL ON FUNCTION hns_lifecycle_schema_compatibility_v1(TEXT, TEXT) FROM PUBLIC;
+
 -- 5. Record the target-schema readback and assert the single-owner invariant.
 DO $cutover_receipt$
 DECLARE
@@ -674,6 +957,18 @@ BEGIN
   END IF;
   IF to_regclass('hns_root_import_execution_ownership') IS NOT NULL THEN
     RAISE EXCEPTION 'readiness_single_owner_cutover_incomplete: ownership marker table remains';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+     WHERE attrelid = 'hns_root_import_lifecycle'::regclass
+       AND attname = 'readiness_accepted_at'
+       AND NOT attisdropped
+  ) THEN
+    RAISE EXCEPTION 'readiness_single_owner_cutover_incomplete: readiness acceptance column missing';
+  END IF;
+  IF (SELECT count(*) FROM hns_lifecycle_schema_cutover) <> 1 THEN
+    RAISE EXCEPTION
+      'readiness_single_owner_cutover_incomplete: compatible service/schema record missing';
   END IF;
   UPDATE hns_readiness_single_owner_cutover_receipt
      SET legacy_readiness_functions = legacy_functions,

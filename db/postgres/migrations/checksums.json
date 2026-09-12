@@ -168,6 +168,7 @@
     "0165_song_video_render_host_claim.sql": "e820cfc213423aa89cbf5c95fd6beefea35184b35280bd6bccc9a7e164cba38d",
     "0166_media_object_identity_kind.sql": "1cad70fa97ba4a9a973352f836e7952cd13c84cf67763ab5da065385525ed62a",
     "0167_hns_readiness_withdrawal.sql": "fd1b2153652e53814c2f6811f2666a2576432f93b9677a15803bda1b63a530d0",
-    "0168_hns_single_owner_readiness_cutover.sql": "0439d415e3ade4051fb146eaceb0d042b02a9355cd4bf8f3d48396c05d61c08e"
+    "0168_hns_readiness_cutover_preflight.sql": "9e561f1327fc6a5d61d98a5bb330f323fc8e44fac107f8a7b8d8b1113149b25d",
+    "0169_hns_single_owner_readiness_cutover.sql": "6b783bff58e5e15af6c9bbbd65a1bb64c2c42c51a903ccb705bf0b715e44f26f"
   }
 }

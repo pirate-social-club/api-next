@@ -2117,12 +2117,6 @@ suite("Postgres 17 HNS root-import repository", () => {
       const ready = await prepareReadyActivation(store, admin);
       await seedCommittedCommunityRoute(admin);
       await admin.query(
-        `UPDATE hns_root_import_execution_ownership
-            SET enabled=TRUE, enabled_at=clock_timestamp(), evidence_ref='refresh-test',
-                updated_at=clock_timestamp()
-          WHERE responsibility='readiness'`,
-      );
-      await admin.query(
         `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
           VALUES ('root-import-session','observe_readiness',clock_timestamp() - interval '1 second')`,
       );

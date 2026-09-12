@@ -8,6 +8,7 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString ? describe : describe.skip;
+const BUDGET_MS = 180_000;
 
 function quote(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -19,12 +20,15 @@ const planBytes = Buffer.from("single-owner-cutover-plan");
 const planSha = createHash("sha256").update(planBytes).digest("hex");
 const requestBytes = Buffer.from("single-owner-cutover-request");
 const requestSha = createHash("sha256").update(requestBytes).digest("hex");
+const provisionResultBytes = Buffer.from("single-owner-cutover-provision-result");
+const provisionResultSha = createHash("sha256").update(provisionResultBytes).digest("hex");
 
 type SeedSessionOptions = Readonly<{
   readonly session: string;
   readonly label: string;
   readonly withLifecycle: boolean;
-  readonly phase?: "checking_authority" | "ready";
+  readonly phase?: "checking_authority" | "ready" | "preparing" | "failed";
+  readonly sessionStatus?: string;
   readonly readinessObservedAt?: string | null;
 }>;
 
@@ -48,15 +52,42 @@ async function withSchema<A>(
   }
 }
 
-const beforeCutover = (version: string): boolean => !version.startsWith("0168");
-const afterCutover = (): boolean => true;
+const beforePreflight = (version: string): boolean =>
+  !version.startsWith("0168") && !version.startsWith("0169");
+
+async function applyMigration(admin: Client, prefix: string): Promise<void> {
+  const migration = (await loadPostgresMigrations()).find((entry) =>
+    entry.version.startsWith(prefix),
+  );
+  if (migration === undefined) throw new Error(`migration ${prefix} missing`);
+  await admin.query(migration.sql);
+}
+
+async function applyPreflight(admin: Client): Promise<void> {
+  await applyMigration(admin, "0168");
+}
+
+async function applyRemoval(admin: Client): Promise<void> {
+  await applyMigration(admin, "0169");
+}
 
 async function applyCutover(admin: Client): Promise<void> {
-  const cutover = (await loadPostgresMigrations()).find((migration) =>
-    migration.version.startsWith("0168"),
-  );
-  if (cutover === undefined) throw new Error("cutover migration missing");
-  await admin.query(cutover.sql);
+  await applyPreflight(admin);
+  await applyRemoval(admin);
+}
+
+async function currentSchema(admin: Client): Promise<string> {
+  const row = await admin.query<{ schema: string }>("SELECT current_schema() AS schema");
+  const schema = row.rows[0]?.schema;
+  if (schema === undefined) throw new Error("test schema missing");
+  return schema;
+}
+
+async function connectToSchema(schema: string): Promise<Client> {
+  const client = new Client({ connectionString });
+  await client.connect();
+  await client.query(`SET search_path TO ${quote(schema)}`);
+  return client;
 }
 
 async function seedOwners(admin: Client): Promise<void> {
@@ -90,12 +121,12 @@ async function seedSession(admin: Client, options: SeedSessionOptions): Promise<
        community_id, attachment_intent_id, origin_kind, created_at, expires_at
      ) VALUES (
        $1,$2,
-       'namespace-' || $1,1,1,$3,$4,'observing',3,
+       'namespace-' || $1,1,1,$3,$4,$7,3,
        'start-' || $1,$5,'provision-' || $1,
        'namespace_ownership',$5,'idem-' || $1,$5,
        $6,$5,$5,
        'observation-' || $1,'obs-idem-' || $1,$5,
-       $7,'attachment-' || $1,'community_attachment',
+       $8,'attachment-' || $1,'community_attachment',
        clock_timestamp(), clock_timestamp() + interval '30 days'
      )`,
     [
@@ -105,6 +136,7 @@ async function seedSession(admin: Client, options: SeedSessionOptions): Promise<
       `pirate-verification=${options.label}`,
       planSha,
       planBytes,
+      options.sessionStatus ?? "observing",
       communityId,
     ],
   );
@@ -118,8 +150,8 @@ async function seedSession(admin: Client, options: SeedSessionOptions): Promise<
          policy_name, policy_digest, plan_encoded_resource_sha256
        ) VALUES ($1,$2,$3,1,1,
          clock_timestamp() - interval '1 day', clock_timestamp() + interval '13 days',
-         CASE WHEN $3 = 'checking_authority' THEN clock_timestamp() - interval '2 hours' END,
-         CASE WHEN $3 = 'checking_authority' THEN clock_timestamp() + interval '22 hours' END,
+         CASE WHEN $3 IN ('checking_authority', 'ready') THEN clock_timestamp() - interval '2 hours' END,
+         CASE WHEN $3 IN ('checking_authority', 'ready') THEN clock_timestamp() + interval '22 hours' END,
          $4,
          'hns_root_import_lifecycle_v1','readiness',$5)`,
       [options.session, options.label, phase, options.readinessObservedAt ?? null, planSha],
@@ -128,25 +160,62 @@ async function seedSession(admin: Client, options: SeedSessionOptions): Promise<
   await admin.query("COMMIT");
 }
 
+async function seedCompletedProvision(admin: Client, session: string): Promise<void> {
+  await admin.query(
+    `INSERT INTO hns_authority_provision_jobs (
+       provision_job_id, root_import_session_id, operation_kind,
+       request_bytes, request_sha256, state, attempt_count, lease_fence,
+       publish_plan_bytes, publish_plan_sha256, result_bytes, result_sha256, completed_at
+     ) VALUES ($1,$2,'provision_root_v1',$3,$4,'completed',0,0,$5,$6,$7,$8,clock_timestamp())`,
+    [
+      `provision-${session}`,
+      session,
+      requestBytes,
+      requestSha,
+      planBytes,
+      planSha,
+      provisionResultBytes,
+      provisionResultSha,
+    ],
+  );
+}
+
 async function seedLegacyObservation(
   admin: Client,
   input: Readonly<{
     readonly job: string;
     readonly session: string;
-    readonly state: "queued" | "leased";
-    readonly leaseExpiresAt?: string;
+    readonly state: "queued" | "leased" | "completed";
+    readonly leaseExpiresAt?: Date;
   }>,
 ): Promise<void> {
+  const leased = input.state === "leased";
+  const completed = input.state === "completed";
   await admin.query(
     `INSERT INTO hns_root_import_observation_jobs (
        observation_job_id, root_import_session_id, operation_kind,
        request_bytes, request_sha256, state, attempt_count, lease_fence,
        leased_by, lease_expires_at
-     ) VALUES ($1,$2,'observe_root_v1',$3,$4,$5,0,0,
-       CASE WHEN $5::text = 'leased' THEN 'legacy-executor' END,
-       ${input.leaseExpiresAt ?? "NULL"})`,
-    [input.job, input.session, requestBytes, requestSha, input.state],
+     ) VALUES ($1,$2,'observe_root_v1',$3,$4,$5,0,0,$6,$7)`,
+    [
+      input.job,
+      input.session,
+      requestBytes,
+      requestSha,
+      completed ? "queued" : input.state,
+      leased ? "legacy-executor" : null,
+      leased ? (input.leaseExpiresAt ?? null) : null,
+    ],
   );
+  if (completed) {
+    await admin.query(
+      `UPDATE hns_root_import_observation_jobs
+          SET state='completed', result_bytes=$2, result_sha256=$3,
+              completed_at=clock_timestamp(), updated_at=clock_timestamp()
+        WHERE observation_job_id=$1`,
+      [input.job, requestBytes, requestSha],
+    );
+  }
 }
 
 async function seedLifecycleReadinessJob(
@@ -155,26 +224,47 @@ async function seedLifecycleReadinessJob(
     readonly session: string;
     readonly state: "queued" | "leased";
     readonly generation?: number;
+    readonly dueAt?: Date;
+    readonly executor?: string;
   }>,
 ): Promise<string> {
+  const leased = input.state === "leased";
   const row = await admin.query<{ lifecycle_job_id: string }>(
     `INSERT INTO hns_root_import_lifecycle_jobs (
        root_import_session_id, job_kind, due_at, state, attempt_count, lease_fence,
        leased_by, lease_expires_at, generation
-     ) VALUES ($1,'observe_readiness',clock_timestamp() - interval '1 second',
-       $2,0,0,
-       CASE WHEN $2::text = 'leased' THEN 'lifecycle-executor' END,
-       CASE WHEN $2 = 'leased' THEN clock_timestamp() + interval '60 seconds' END,
-       $3)
+     ) VALUES ($1,'observe_readiness',$2,$3,0,0,$4,$5,$6)
      RETURNING lifecycle_job_id`,
-    [input.session, input.state, input.generation ?? 1],
+    [
+      input.session,
+      input.dueAt ?? new Date(Date.now() - 1_000),
+      input.state,
+      leased ? (input.executor ?? "lifecycle-executor") : null,
+      leased ? new Date(Date.now() + 60_000) : null,
+      input.generation ?? 1,
+    ],
   );
   const id = row.rows[0]?.lifecycle_job_id;
   if (id === undefined) throw new Error("lifecycle job seed failed");
   return id;
 }
 
-async function legacyReadinessJobCount(admin: Client, session: string): Promise<number> {
+async function latestReceipt(
+  admin: Client,
+): Promise<Readonly<{ successor_jobs: number; duplicate_jobs: number }> | null> {
+  const receipt = await admin.query<{ successor_jobs: string; duplicate_jobs: string }>(
+    `SELECT successor_jobs, duplicate_jobs FROM hns_readiness_single_owner_cutover_receipt
+      ORDER BY cutover_receipt_id DESC LIMIT 1`,
+  );
+  const row = receipt.rows[0];
+  if (row === undefined) return null;
+  return {
+    successor_jobs: Number(row.successor_jobs),
+    duplicate_jobs: Number(row.duplicate_jobs),
+  };
+}
+
+async function readinessJobCount(admin: Client, session: string): Promise<number> {
   const row = await admin.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM hns_root_import_lifecycle_jobs
       WHERE root_import_session_id=$1 AND job_kind='observe_readiness'
@@ -184,16 +274,79 @@ async function legacyReadinessJobCount(admin: Client, session: string): Promise<
   return Number(row.rows[0]?.count ?? "-1");
 }
 
-suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
-  test("the target schema exposes one readiness path and no ownership controls", async () => {
-    await withSchema(afterCutover, async (admin) => {
-      const marker = await admin.query<{ present: boolean }>(
-        "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
-      );
-      expect(marker.rows[0]?.present).toBe(false);
+function readinessResult(session: string, overrides: Record<string, unknown> = {}) {
+  const observedAt = new Date(Date.now() - 5_000);
+  const bytes = Buffer.from(
+    JSON.stringify({
+      version: "pirate-hns-root-import-readiness-result-v1",
+      root_import_session_id: session,
+      publish_plan_sha256: planSha,
+      observed_at: observedAt.toISOString(),
+      valid_until: new Date(observedAt.getTime() + 3_600_000).toISOString(),
+      ...overrides,
+    }),
+  );
+  return { bytes, sha: createHash("sha256").update(bytes).digest("hex") };
+}
 
-      const functions = await admin.query<{ name: string; count: string }>(
-        `SELECT proname AS name, count(*)::text AS count
+async function commitReadiness(
+  admin: Client,
+  input: Readonly<{
+    readonly session: string;
+    readonly job: Record<string, unknown>;
+    readonly revision?: number;
+    readonly holder?: string;
+    readonly fence?: number;
+    readonly result?: Readonly<{ bytes: Buffer; sha: string }>;
+  }>,
+) {
+  const result = input.result ?? readinessResult(input.session);
+  const committed = await admin.query<Record<string, unknown>>(
+    `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      input.session,
+      input.job.lifecycle_job_id,
+      input.holder ?? "lifecycle-executor",
+      input.fence === undefined ? Number(input.job.lease_fence) : input.fence,
+      input.revision ?? 1,
+      result.bytes,
+      result.sha,
+    ],
+  );
+  return { row: committed.rows[0], sha: result.sha };
+}
+
+async function claimLifecycle(admin: Client, executor = "lifecycle-executor") {
+  const claimed = await admin.query<Record<string, unknown>>(
+    "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+    [executor, 60],
+  );
+  return claimed.rows[0];
+}
+
+async function enableReadinessOwnership(admin: Client): Promise<void> {
+  await admin.query(
+    `UPDATE hns_root_import_execution_ownership
+        SET enabled=TRUE, enabled_at=clock_timestamp(), evidence_ref='cutover-test',
+            updated_at=clock_timestamp()
+      WHERE responsibility='readiness'`,
+  );
+}
+
+suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
+  test(
+    "the target schema exposes one readiness path and no ownership controls",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          const marker = await admin.query<{ present: boolean }>(
+            "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
+          );
+          expect(marker.rows[0]?.present).toBe(false);
+
+          const functions = await admin.query<{ name: string; count: string }>(
+            `SELECT proname AS name, count(*)::text AS count
              FROM pg_proc AS procedure
              JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
             WHERE namespace.nspname = current_schema()
@@ -204,190 +357,735 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
                 'commit_hns_root_import_readiness_v1',
                 'finalize_hns_root_import_observation_job_v1',
                 'claim_hns_root_import_lifecycle_job_v1',
-                'claim_hns_root_import_observation_job_v1'
+                'claim_hns_root_import_observation_job_v1',
+                'hns_lifecycle_schema_compatibility_v1'
               )
             GROUP BY proname ORDER BY proname`,
-      );
-      const counts = new Map(functions.rows.map((row) => [row.name, Number(row.count)]));
-      expect(counts.get("begin_hns_root_import_readiness_ownership_v1")).toBeUndefined();
-      expect(counts.get("withdraw_hns_root_import_readiness_ownership_v1")).toBeUndefined();
-      expect(counts.get("finalize_hns_root_import_observation_job_legacy_v1")).toBeUndefined();
-      expect(counts.get("commit_hns_root_import_readiness_v1")).toBe(1);
-      expect(counts.get("finalize_hns_root_import_observation_job_v1")).toBe(1);
-      expect(counts.get("claim_hns_root_import_lifecycle_job_v1")).toBe(1);
-      expect(counts.get("claim_hns_root_import_observation_job_v1")).toBe(1);
-    });
-  }, 180_000);
+          );
+          const counts = new Map(functions.rows.map((row) => [row.name, Number(row.count)]));
+          expect(counts.get("begin_hns_root_import_readiness_ownership_v1")).toBeUndefined();
+          expect(counts.get("withdraw_hns_root_import_readiness_ownership_v1")).toBeUndefined();
+          expect(counts.get("finalize_hns_root_import_observation_job_legacy_v1")).toBeUndefined();
+          expect(counts.get("commit_hns_root_import_readiness_v1")).toBe(1);
+          expect(counts.get("finalize_hns_root_import_observation_job_v1")).toBe(1);
+          expect(counts.get("claim_hns_root_import_lifecycle_job_v1")).toBe(1);
+          expect(counts.get("claim_hns_root_import_observation_job_v1")).toBe(1);
+          expect(counts.get("hns_lifecycle_schema_compatibility_v1")).toBe(1);
 
-  test("a session without a lifecycle row blocks the cutover with unchanged state", async () => {
-    await withSchema(beforeCutover, async (admin) => {
-      await seedOwners(admin);
-      await seedSession(admin, {
-        session: "cutover-unresolved",
-        label: "unresolve",
-        withLifecycle: false,
-      });
-      await seedLegacyObservation(admin, {
-        job: "legacy-unresolved",
-        session: "cutover-unresolved",
-        state: "queued",
-      });
-      await expect(applyCutover(admin)).rejects.toThrow(
-        /readiness_single_owner_cutover_blocked.*cutover-unresolved/s,
-      );
-      const marker = await admin.query<{ present: boolean }>(
-        "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
-      );
-      expect(marker.rows[0]?.present).toBe(true);
-    });
-  }, 180_000);
+          const acceptance = await admin.query<{ present: boolean }>(
+            `SELECT EXISTS (
+           SELECT 1 FROM pg_attribute
+            WHERE attrelid = 'hns_root_import_lifecycle'::regclass
+              AND attname = 'readiness_accepted_at' AND NOT attisdropped
+         ) AS present`,
+          );
+          expect(acceptance.rows[0]?.present).toBe(true);
 
-  test("a live legacy readiness lease blocks the cutover with unchanged state", async () => {
-    await withSchema(beforeCutover, async (admin) => {
-      await seedOwners(admin);
-      await seedSession(admin, {
-        session: "cutover-live-lease",
-        label: "livelease",
-        withLifecycle: true,
-      });
-      await seedLegacyObservation(admin, {
-        job: "legacy-live-lease",
-        session: "cutover-live-lease",
-        state: "leased",
-        leaseExpiresAt: "clock_timestamp() + interval '10 minutes'",
-      });
-      await expect(applyCutover(admin)).rejects.toThrow(
-        /readiness_single_owner_cutover_blocked.*live legacy readiness lease/s,
+          const cutover = await admin.query<{ cutover_version: string }>(
+            "SELECT cutover_version FROM hns_lifecycle_schema_cutover",
+          );
+          expect(cutover.rows.map((row) => row.cutover_version)).toEqual(["0169"]);
+        },
       );
-      const marker = await admin.query<{ present: boolean }>(
-        "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
-      );
-      expect(marker.rows[0]?.present).toBe(true);
-    });
-  }, 180_000);
+    },
+    BUDGET_MS,
+  );
 
-  test("valid queued and leased current-generation lifecycle readiness work survives the cutover", async () => {
-    await withSchema(beforeCutover, async (admin) => {
-      await seedOwners(admin);
-      await seedSession(admin, {
-        session: "cutover-queued",
-        label: "queuedwork",
-        withLifecycle: true,
+  test(
+    "unresolved sessions are persisted before removal refuses by identity",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-unresolved-none",
+          label: "unresnone",
+          withLifecycle: false,
+        });
+        await seedSession(admin, {
+          session: "cutover-unresolved-done",
+          label: "unresdone",
+          withLifecycle: false,
+        });
+        await seedLegacyObservation(admin, {
+          job: "legacy-unresolved-done",
+          session: "cutover-unresolved-done",
+          state: "completed",
+        });
+
+        await applyPreflight(admin);
+        const dispositions = await admin.query<{
+          root_import_session_id: string;
+          blocker: string;
+          required_evidence: readonly { readonly kind: string }[];
+          recovery_owner: string;
+          resolved_at: Date | null;
+        }>(
+          `SELECT root_import_session_id, blocker, required_evidence, recovery_owner, resolved_at
+           FROM hns_readiness_single_owner_cutover_unresolved
+          ORDER BY root_import_session_id`,
+        );
+        expect(dispositions.rows.map((row) => row.root_import_session_id)).toEqual([
+          "cutover-unresolved-done",
+          "cutover-unresolved-none",
+        ]);
+        for (const row of dispositions.rows) {
+          expect(row.blocker).toBe("missing_lifecycle_row");
+          expect(row.recovery_owner).toBe("operator_authorized_recovery_adoption");
+          expect(row.resolved_at).toBeNull();
+          expect(row.required_evidence.map((entry) => entry.kind)).toEqual([
+            "current_view_read",
+            "safe_view_read",
+            "session_plan_binding",
+          ]);
+        }
+
+        // The removal refuses by identity, and the independently committed
+        // dispositions survive the failed removal transaction.
+        await expect(applyRemoval(admin)).rejects.toThrow(
+          /readiness_single_owner_cutover_unresolved.*cutover-unresolved-done/s,
+        );
+        const persisted = await admin.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM hns_readiness_single_owner_cutover_unresolved
+          WHERE resolved_at IS NULL`,
+        );
+        expect(Number(persisted.rows[0]?.count)).toBe(2);
+        const marker = await admin.query<{ present: boolean }>(
+          "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
+        );
+        expect(marker.rows[0]?.present).toBe(true);
+        const sessions = await admin.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM hns_root_import_sessions
+          WHERE root_import_session_id IN
+            ('cutover-unresolved-none','cutover-unresolved-done')`,
+        );
+        expect(Number(sessions.rows[0]?.count)).toBe(2);
       });
-      await seedSession(admin, {
-        session: "cutover-leased",
-        label: "leasedwork",
-        withLifecycle: true,
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a live legacy readiness lease blocks the cutover with unchanged state",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-live-lease",
+          label: "livelease",
+          withLifecycle: true,
+        });
+        await seedLegacyObservation(admin, {
+          job: "legacy-live-lease",
+          session: "cutover-live-lease",
+          state: "leased",
+          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+        });
+        await applyPreflight(admin);
+        await expect(applyRemoval(admin)).rejects.toThrow(
+          /readiness_single_owner_cutover_blocked.*live legacy readiness lease/s,
+        );
+        const marker = await admin.query<{ present: boolean }>(
+          "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
+        );
+        expect(marker.rows[0]?.present).toBe(true);
       });
-      await seedLifecycleReadinessJob(admin, { session: "cutover-queued", state: "queued" });
-      await seedLifecycleReadinessJob(admin, { session: "cutover-leased", state: "leased" });
-      await applyCutover(admin);
-      expect(await legacyReadinessJobCount(admin, "cutover-queued")).toBe(1);
-      expect(await legacyReadinessJobCount(admin, "cutover-leased")).toBe(1);
-      const states = await admin.query<{ state: string }>(
-        `SELECT state FROM hns_root_import_lifecycle_jobs
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "valid queued and leased current-generation lifecycle readiness work survives the cutover",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-queued",
+          label: "queuedwork",
+          withLifecycle: true,
+        });
+        await seedSession(admin, {
+          session: "cutover-leased",
+          label: "leasedwork",
+          withLifecycle: true,
+        });
+        await seedLifecycleReadinessJob(admin, { session: "cutover-queued", state: "queued" });
+        await seedLifecycleReadinessJob(admin, { session: "cutover-leased", state: "leased" });
+        await applyCutover(admin);
+        expect(await readinessJobCount(admin, "cutover-queued")).toBe(1);
+        expect(await readinessJobCount(admin, "cutover-leased")).toBe(1);
+        const states = await admin.query<{ state: string }>(
+          `SELECT state FROM hns_root_import_lifecycle_jobs
             WHERE root_import_session_id IN ('cutover-queued','cutover-leased')
               AND job_kind='observe_readiness' ORDER BY root_import_session_id`,
-      );
-      expect(states.rows.map((row) => row.state).sort()).toEqual(["leased", "queued"]);
-    });
-  }, 180_000);
+        );
+        expect(states.rows.map((row) => row.state).sort()).toEqual(["leased", "queued"]);
+        expect((await latestReceipt(admin))?.successor_jobs ?? 0).toBe(0);
+      });
+    },
+    BUDGET_MS,
+  );
 
-  test("queued legacy readiness work is dispositioned and exactly one successor is queued", async () => {
-    await withSchema(beforeCutover, async (admin) => {
-      await seedOwners(admin);
-      await seedSession(admin, {
-        session: "cutover-successor",
-        label: "successor",
-        withLifecycle: true,
-      });
-      await seedLegacyObservation(admin, {
-        job: "legacy-successor",
-        session: "cutover-successor",
-        state: "queued",
-      });
-      await applyCutover(admin);
-      const legacy = await admin.query<{ state: string; failure_code: string }>(
-        `SELECT state, failure_code FROM hns_root_import_observation_jobs
+  test(
+    "queued legacy readiness work is dispositioned and exactly one successor is queued",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-successor",
+          label: "successor",
+          withLifecycle: true,
+        });
+        await seedLegacyObservation(admin, {
+          job: "legacy-successor",
+          session: "cutover-successor",
+          state: "queued",
+        });
+        await applyCutover(admin);
+        const legacy = await admin.query<{ state: string; failure_code: string }>(
+          `SELECT state, failure_code FROM hns_root_import_observation_jobs
             WHERE observation_job_id='legacy-successor'`,
-      );
-      expect(legacy.rows[0]?.state).toBe("failed");
-      expect(legacy.rows[0]?.failure_code).toBe("readiness_single_owner_cutover");
-      expect(await legacyReadinessJobCount(admin, "cutover-successor")).toBe(1);
-    });
-  }, 180_000);
+        );
+        expect(legacy.rows[0]?.state).toBe("failed");
+        expect(legacy.rows[0]?.failure_code).toBe("readiness_single_owner_cutover");
+        expect(await readinessJobCount(admin, "cutover-successor")).toBe(1);
+        expect((await latestReceipt(admin))?.successor_jobs ?? 0).toBe(1);
+      });
+    },
+    BUDGET_MS,
+  );
 
-  test("concurrent lifecycle claims return distinct readiness jobs and never duplicate", async () => {
-    await withSchema(afterCutover, async (admin) => {
-      const schemaRow = await admin.query<{ schema: string }>("SELECT current_schema() AS schema");
-      const currentSchema = schemaRow.rows[0]?.schema;
-      if (currentSchema === undefined) throw new Error("test schema missing");
-      await seedOwners(admin);
-      await seedSession(admin, {
-        session: "cutover-race-a",
-        label: "raceone",
-        withLifecycle: true,
+  test(
+    "pre-existing duplicate readiness work receives one deterministic survivor",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-duplicates",
+          label: "duplicates",
+          withLifecycle: true,
+        });
+        const survivor = await seedLifecycleReadinessJob(admin, {
+          session: "cutover-duplicates",
+          state: "queued",
+          dueAt: new Date(Date.now() - 120_000),
+        });
+        await seedLifecycleReadinessJob(admin, {
+          session: "cutover-duplicates",
+          state: "queued",
+          dueAt: new Date(Date.now() - 60_000),
+        });
+        await applyCutover(admin);
+        const jobs = await admin.query<{
+          lifecycle_job_id: string;
+          state: string;
+          failure_code: string | null;
+        }>(
+          `SELECT lifecycle_job_id, state, failure_code FROM hns_root_import_lifecycle_jobs
+          WHERE root_import_session_id='cutover-duplicates' AND job_kind='observe_readiness'
+          ORDER BY lifecycle_job_id`,
+        );
+        expect(jobs.rows.map((row) => row.state)).toEqual(["queued", "failed"]);
+        expect(jobs.rows[0]?.lifecycle_job_id).toBe(survivor);
+        expect(jobs.rows[1]?.failure_code).toBe("readiness_single_owner_cutover_duplicate");
+        const receipt = await latestReceipt(admin);
+        expect(receipt?.successor_jobs ?? 0).toBe(0);
+        expect(receipt?.duplicate_jobs ?? 0).toBe(1);
       });
-      await seedSession(admin, {
-        session: "cutover-race-b",
-        label: "racetwo",
-        withLifecycle: true,
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "readiness work in an unsupported phase receives a named disposition",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-inconsistent",
+          label: "inconsistent",
+          withLifecycle: true,
+          phase: "preparing",
+        });
+        await seedLifecycleReadinessJob(admin, {
+          session: "cutover-inconsistent",
+          state: "queued",
+        });
+        await applyCutover(admin);
+        const jobs = await admin.query<{ state: string; failure_code: string | null }>(
+          `SELECT state, failure_code FROM hns_root_import_lifecycle_jobs
+          WHERE root_import_session_id='cutover-inconsistent' AND job_kind='observe_readiness'`,
+        );
+        expect(jobs.rows[0]?.state).toBe("failed");
+        expect(jobs.rows[0]?.failure_code).toBe("readiness_single_owner_cutover_inconsistent");
+        expect(await readinessJobCount(admin, "cutover-inconsistent")).toBe(0);
       });
-      await seedLifecycleReadinessJob(admin, { session: "cutover-race-a", state: "queued" });
-      await seedLifecycleReadinessJob(admin, { session: "cutover-race-b", state: "queued" });
-      const claim = async (executor: string) => {
-        const client = new Client({ connectionString });
-        await client.connect();
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a concurrent claim cannot duplicate readiness work across the removal",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-claim-race",
+          label: "claimrace",
+          withLifecycle: true,
+        });
+        await seedLifecycleReadinessJob(admin, { session: "cutover-claim-race", state: "queued" });
+        await applyPreflight(admin);
+        await enableReadinessOwnership(admin);
+        const schema = await currentSchema(admin);
+        const holder = await connectToSchema(schema);
         try {
-          await client.query(`SET search_path TO ${quote(currentSchema)}`);
-          const result = await client.query<{ lifecycle_job_id: string; job_kind: string }>(
-            "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
-            [executor, 60],
+          await holder.query("BEGIN");
+          await holder.query(
+            `SELECT 1 FROM hns_root_import_execution_ownership
+            WHERE responsibility='readiness' FOR SHARE`,
           );
-          return result.rows[0];
+          const claimed = await holder.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+            ["claim-race-executor", 60],
+          );
+          expect(claimed.rows[0]?.job_kind).toBe("observe_readiness");
+          const removal = applyRemoval(admin);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          await holder.query("COMMIT");
+          await removal;
         } finally {
-          await client.end().catch(() => undefined);
+          await holder.end().catch(() => undefined);
         }
-      };
-      const [first, second] = await Promise.all([claim("cutover-one"), claim("cutover-two")]);
-      expect(first?.job_kind).toBe("observe_readiness");
-      expect(second?.job_kind).toBe("observe_readiness");
-      expect(first?.lifecycle_job_id).not.toBe(second?.lifecycle_job_id);
-      const outstanding = await admin.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM hns_root_import_lifecycle_jobs
-            WHERE state='queued' AND job_kind='observe_readiness'
-              AND root_import_session_id IN ('cutover-race-a','cutover-race-b')`,
-      );
-      expect(Number(outstanding.rows[0]?.count)).toBe(0);
-    });
-  }, 180_000);
+        const jobs = await admin.query<{ state: string; leased_by: string }>(
+          `SELECT state, leased_by FROM hns_root_import_lifecycle_jobs
+          WHERE root_import_session_id='cutover-claim-race' AND job_kind='observe_readiness'
+          ORDER BY lifecycle_job_id`,
+        );
+        expect(jobs.rows).toHaveLength(1);
+        expect(jobs.rows[0]).toMatchObject({
+          state: "leased",
+          leased_by: "claim-race-executor",
+        });
+        expect((await latestReceipt(admin))?.successor_jobs ?? 0).toBe(0);
+      });
+    },
+    BUDGET_MS,
+  );
 
-  test("teardown and renewal claims survive while the legacy readiness route no longer returns work", async () => {
-    await withSchema(afterCutover, async (admin) => {
-      const functions = await admin.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM pg_proc AS procedure
-             JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
-            WHERE namespace.nspname = current_schema()
-              AND proname IN ('claim_hns_root_import_observation_job_v1',
-                              'claim_hns_root_health_renewal_job_v1',
-                              'finalize_hns_root_import_observation_job_v1')`,
-      );
-      expect(Number(functions.rows[0]?.count)).toBe(3);
-      await seedOwners(admin);
-      await seedSession(admin, {
-        session: "cutover-teardown",
-        label: "teardown",
-        withLifecycle: true,
+  test(
+    "a readiness acceptance in flight across the removal is preserved as the successor",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-refresh-race",
+          label: "refreshrace",
+          withLifecycle: true,
+        });
+        await seedLifecycleReadinessJob(admin, {
+          session: "cutover-refresh-race",
+          state: "queued",
+        });
+        await applyPreflight(admin);
+        await enableReadinessOwnership(admin);
+        const schema = await currentSchema(admin);
+        const holder = await connectToSchema(schema);
+        try {
+          await holder.query("BEGIN");
+          const claimed = await holder.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+            ["refresh-race-executor", 60],
+          );
+          const job = claimed.rows[0];
+          if (job === undefined) throw new Error("no readiness job was claimable");
+          const result = readinessResult("cutover-refresh-race");
+          const written = await holder.query<{ outcome: string }>(
+            "SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)",
+            [
+              "cutover-refresh-race",
+              job.lifecycle_job_id,
+              "refresh-race-executor",
+              Number(job.lease_fence),
+              1,
+              result.bytes,
+              result.sha,
+            ],
+          );
+          expect(written.rows[0]?.outcome).toBe("ready");
+          const removal = applyRemoval(admin);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          await holder.query("COMMIT");
+          await removal;
+        } finally {
+          await holder.end().catch(() => undefined);
+        }
+        expect(await readinessJobCount(admin, "cutover-refresh-race")).toBe(0);
+        const lifecycle = await admin.query<{
+          phase: string;
+          readiness_observed_at: Date;
+          readiness_accepted_at: Date;
+        }>(
+          `SELECT phase, readiness_observed_at, readiness_accepted_at
+           FROM hns_root_import_lifecycle WHERE root_import_session_id='cutover-refresh-race'`,
+        );
+        expect(lifecycle.rows[0]?.phase).toBe("ready");
+        expect(lifecycle.rows[0]?.readiness_observed_at).not.toBeNull();
+        expect(lifecycle.rows[0]?.readiness_accepted_at).not.toBeNull();
+        expect((await latestReceipt(admin))?.successor_jobs ?? 0).toBe(0);
       });
-      await seedLegacyObservation(admin, {
-        job: "legacy-disposed",
-        session: "cutover-teardown",
-        state: "queued",
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "an in-flight lifecycle decision is re-read before successor scheduling",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-decision-race",
+          label: "decisionrace",
+          withLifecycle: true,
+        });
+        await applyPreflight(admin);
+        const schema = await currentSchema(admin);
+        const holder = await connectToSchema(schema);
+        try {
+          await holder.query("BEGIN");
+          await holder.query(
+            `SELECT 1 FROM hns_root_import_lifecycle
+            WHERE root_import_session_id='cutover-decision-race' FOR UPDATE`,
+          );
+          const removal = applyRemoval(admin);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const decided = await holder.query<{ outcome: string }>(
+            `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1(
+             $1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [
+              "cutover-decision-race",
+              1,
+              "cutover-decision-race-event",
+              "recovery_decided",
+              "transition",
+              "recovery decision racing the removal",
+              "recovery_required",
+              "{}",
+              "[]",
+            ],
+          );
+          expect(decided.rows[0]?.outcome).toBe("transition");
+          await holder.query("COMMIT");
+          await removal;
+        } finally {
+          await holder.end().catch(() => undefined);
+        }
+        expect(await readinessJobCount(admin, "cutover-decision-race")).toBe(0);
+        const lifecycle = await admin.query<{ phase: string }>(
+          `SELECT phase FROM hns_root_import_lifecycle
+          WHERE root_import_session_id='cutover-decision-race'`,
+        );
+        expect(lifecycle.rows[0]?.phase).toBe("recovery_required");
       });
-      const claim = await admin.query(
-        "SELECT * FROM claim_hns_root_import_observation_job_v1('legacy-executor',60)",
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the readiness writer rejects invalid evidence without changing state",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          await seedOwners(admin);
+          await seedSession(admin, {
+            session: "cutover-evidence",
+            label: "evidence",
+            withLifecycle: true,
+          });
+          await seedLifecycleReadinessJob(admin, { session: "cutover-evidence", state: "queued" });
+          const job = await claimLifecycle(admin);
+          if (job === undefined) throw new Error("no readiness job was claimable");
+
+          const invalidResults: readonly (readonly [string, Record<string, unknown>])[] = [
+            ["omitted observed_at", { observed_at: undefined }],
+            ["null observed_at", { observed_at: null }],
+            ["omitted valid_until", { valid_until: undefined }],
+            ["null valid_until", { valid_until: null }],
+            ["numeric observed_at", { observed_at: 1_700_000_000 }],
+            ["malformed observed_at", { observed_at: "not-a-timestamp" }],
+            ["infinite observed_at", { observed_at: "infinity" }],
+            ["infinite valid_until", { valid_until: "infinity" }],
+            [
+              "stale observation with future expiry",
+              {
+                observed_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+                valid_until: new Date(Date.now() + 3_600_000).toISOString(),
+              },
+            ],
+            [
+              "future observation",
+              {
+                observed_at: new Date(Date.now() + 60_000).toISOString(),
+                valid_until: new Date(Date.now() + 3_600_000).toISOString(),
+              },
+            ],
+            [
+              "beyond the freshness boundary",
+              {
+                observed_at: new Date(Date.now() - 1_900_000).toISOString(),
+                valid_until: new Date(Date.now() + 3_600_000).toISOString(),
+              },
+            ],
+          ];
+          for (const [label, overrides] of invalidResults) {
+            const attempted = await commitReadiness(admin, {
+              session: "cutover-evidence",
+              job,
+              result: readinessResult("cutover-evidence", overrides),
+            });
+            expect(attempted.row?.outcome, label).toBe("invalid_result");
+          }
+
+          const unchanged = await admin.query<{
+            phase: string;
+            revision: string;
+            readiness_observed_at: Date | null;
+            readiness_accepted_at: Date | null;
+          }>(
+            `SELECT phase, revision, readiness_observed_at, readiness_accepted_at
+           FROM hns_root_import_lifecycle WHERE root_import_session_id='cutover-evidence'`,
+          );
+          expect(unchanged.rows[0]).toMatchObject({
+            phase: "checking_authority",
+            revision: "1",
+            readiness_observed_at: null,
+            readiness_accepted_at: null,
+          });
+          const session = await admin.query<{ status: string; revision: string }>(
+            `SELECT status, revision FROM hns_root_import_sessions
+          WHERE root_import_session_id='cutover-evidence'`,
+          );
+          expect(session.rows[0]).toMatchObject({ status: "observing", revision: "3" });
+
+          // Fresh evidence inside the window is accepted, and the observation
+          // timestamp is preserved while acceptance is recorded separately.
+          const observedAt = new Date(Date.now() - 1_790_000);
+          const accepted = await commitReadiness(admin, {
+            session: "cutover-evidence",
+            job,
+            result: readinessResult("cutover-evidence", {
+              observed_at: observedAt.toISOString(),
+            }),
+          });
+          expect(accepted.row?.outcome).toBe("ready");
+          const after = await admin.query<{
+            phase: string;
+            revision: string;
+            readiness_observed_at: Date;
+            readiness_accepted_at: Date;
+            next_check_at: Date;
+          }>(
+            `SELECT phase, revision, readiness_observed_at, readiness_accepted_at, next_check_at
+           FROM hns_root_import_lifecycle WHERE root_import_session_id='cutover-evidence'`,
+          );
+          const row = after.rows[0];
+          if (row === undefined) throw new Error("accepted lifecycle state missing");
+          expect(row.phase).toBe("ready");
+          expect(row.revision).toBe("2");
+          expect(Math.abs(row.readiness_observed_at.getTime() - observedAt.getTime())).toBeLessThan(
+            1_000,
+          );
+          expect(row.readiness_accepted_at.getTime()).toBeGreaterThanOrEqual(
+            row.readiness_observed_at.getTime(),
+          );
+          expect(
+            Math.abs(row.next_check_at.getTime() - (observedAt.getTime() + 1_800_000)),
+          ).toBeLessThan(1_000);
+          const finished = await admin.query<{ state: string }>(
+            "SELECT state FROM hns_root_import_lifecycle_jobs WHERE lifecycle_job_id=$1",
+            [job.lifecycle_job_id],
+          );
+          expect(finished.rows[0]?.state).toBe("completed");
+        },
       );
-      expect(claim.rows.length).toBe(0);
-    });
-  }, 180_000);
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "teardown work leased before the cutover finalizes and reclaims after it",
+    async () => {
+      await withSchema(beforePreflight, async (admin) => {
+        await seedOwners(admin);
+        await seedSession(admin, {
+          session: "cutover-teardown-lease",
+          label: "teardownlease",
+          withLifecycle: true,
+          phase: "failed",
+          sessionStatus: "failed",
+        });
+        await seedCompletedProvision(admin, "cutover-teardown-lease");
+        await admin.query(
+          `INSERT INTO hns_root_import_teardown_jobs (
+           teardown_job_id, root_import_session_id, state, attempt_count, lease_fence,
+           leased_by, lease_expires_at
+         ) VALUES ('teardown-before-cutover','cutover-teardown-lease','leased',1,3,
+           'teardown-executor', clock_timestamp() + interval '10 minutes')`,
+        );
+        await applyCutover(admin);
+        const finalized = await admin.query<{ outcome: string }>(
+          `SELECT * FROM finalize_hns_root_import_observation_job_v1(
+           $1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            "teardown-before-cutover",
+            "teardown-executor",
+            3,
+            requestSha,
+            "retry",
+            null,
+            null,
+            "provider_unavailable",
+          ],
+        );
+        expect(finalized.rows[0]?.outcome).toBe("retry");
+        const reclaimed = await admin.query<Record<string, unknown>>(
+          "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
+          ["teardown-executor", 60],
+        );
+        expect(reclaimed.rows[0]).toMatchObject({
+          observation_job_id: "teardown-before-cutover",
+          operation_kind: "teardown_root_v1",
+          lease_fence: "4",
+        });
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "renewal claims and stale renewal fences survive the cutover",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          const claim = await admin.query(
+            "SELECT * FROM claim_hns_root_health_renewal_job_v1('renewal-executor',60)",
+          );
+          expect(claim.rows).toHaveLength(0);
+          const finalized = await admin.query<{ outcome: string }>(
+            `SELECT * FROM finalize_hns_root_health_renewal_job_v1(
+           $1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              "missing-renewal",
+              "renewal-executor",
+              1,
+              requestSha,
+              "failed",
+              null,
+              null,
+              "no_such_job",
+            ],
+          );
+          expect(finalized.rows[0]?.outcome).toBe("not_found");
+        },
+      );
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "a stale old-worker readiness delivery is refused without acceptance",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          await seedOwners(admin);
+          await seedSession(admin, {
+            session: "cutover-stale-worker",
+            label: "staleworker",
+            withLifecycle: true,
+          });
+          await seedLegacyObservation(admin, {
+            job: "legacy-stale-worker",
+            session: "cutover-stale-worker",
+            state: "leased",
+            leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+          });
+          const result = readinessResult("cutover-stale-worker");
+          const finalized = await admin.query<{ outcome: string }>(
+            `SELECT * FROM finalize_hns_root_import_observation_job_v1(
+               $1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              "legacy-stale-worker",
+              "legacy-executor",
+              1,
+              requestSha,
+              "ready",
+              result.bytes,
+              result.sha,
+              null,
+            ],
+          );
+          expect(finalized.rows[0]?.outcome).not.toBe("ready");
+          const session = await admin.query<Record<string, unknown>>(
+            `SELECT status, revision, readiness_result_sha256 FROM hns_root_import_sessions
+              WHERE root_import_session_id='cutover-stale-worker'`,
+          );
+          expect(session.rows[0]).toMatchObject({
+            status: "observing",
+            revision: "3",
+            readiness_result_sha256: null,
+          });
+          const lifecycle = await admin.query<Record<string, unknown>>(
+            `SELECT phase, revision, readiness_observed_at FROM hns_root_import_lifecycle
+              WHERE root_import_session_id='cutover-stale-worker'`,
+          );
+          expect(lifecycle.rows[0]).toMatchObject({
+            phase: "checking_authority",
+            revision: "1",
+            readiness_observed_at: null,
+          });
+          const claim = await admin.query(
+            "SELECT * FROM claim_hns_root_import_observation_job_v1('legacy-executor',60)",
+          );
+          expect(claim.rows).toHaveLength(0);
+        },
+      );
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the schema compatibility contract refuses an old bundle and admits restart",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          const compatible = await admin.query<{ compatibility: string }>(
+            "SELECT hns_lifecycle_schema_compatibility_v1($1,$2) AS compatibility",
+            ["pirate-hns-authority-provisioner-v2", "hns-lifecycle-job-envelope-v1"],
+          );
+          expect(compatible.rows[0]?.compatibility).toBe("compatible");
+          const restarted = await admin.query<{ compatibility: string }>(
+            "SELECT hns_lifecycle_schema_compatibility_v1($1,$2) AS compatibility",
+            ["pirate-hns-authority-provisioner-v2", "hns-lifecycle-job-envelope-v1"],
+          );
+          expect(restarted.rows[0]?.compatibility).toBe("compatible");
+          await expect(
+            admin.query("SELECT hns_lifecycle_schema_compatibility_v1($1,$2)", [
+              "pirate-hns-authority-provisioner-v1",
+              "hns-lifecycle-job-envelope-v1",
+            ]),
+          ).rejects.toThrow(/hns_lifecycle_schema_incompatible/);
+          await expect(
+            admin.query("SELECT hns_lifecycle_schema_compatibility_v1($1,$2)", [
+              "pirate-hns-authority-provisioner-v2",
+              "hns-lifecycle-job-envelope-v0",
+            ]),
+          ).rejects.toThrow(/hns_lifecycle_schema_incompatible/);
+        },
+      );
+    },
+    BUDGET_MS,
+  );
 });

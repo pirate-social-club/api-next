@@ -27,6 +27,38 @@ observation. Database leases and finalization fences make a service restart
 safe; PowerDNS reconciliation is idempotent. HSD and PowerDNS calls have
 five-second request deadlines.
 
+## Single-owner readiness cutover
+
+The cutover is one reviewed deployment sequence, not a bare migration run. The
+compatible release is `pirate-hns-authority-provisioner-v2` with job envelope
+`hns-lifecycle-job-envelope-v1`; the removal migration records that pair in
+`hns_lifecycle_schema_cutover`. Build the bundle from the cutover commit and
+run the sequence with the migration administrator URL:
+
+```bash
+bun run --cwd apps/hns-authority-provisioner build:vps-bundle
+CONTROL_PLANE_POSTGRES_ADMIN_URL=... bun scripts/hns-readiness-cutover.ts \
+  --bundle apps/hns-authority-provisioner/dist/pirate-hns-authority-provisioner.mjs \
+  --stage-directory /srv/pirate-hns-authority-provisioner/current
+```
+
+The sequence refuses an unsupported bundle against the recorded schema pair,
+stages the bundle and its `deployment-manifest.json`, quiesces the unit,
+refuses while a live legacy readiness lease remains, applies the 0168
+preflight in its own transaction, applies the 0169 removal in a second
+transaction, starts the unit and verifies the compatible claim path. The two
+migration transactions are deliberate: the preflight's durable
+`readiness_single_owner_cutover_unresolved` dispositions must survive a
+refused removal. Do not apply the preflight and removal as one ordinary
+all-pending migration run.
+
+The installed unit runs the bundle once with `--verify-schema` before
+`ExecStart`, so an older bundle that predates the flag is rejected after the
+cutover even though the old binary cannot know about the compatibility
+record. The compatible binary also performs the same check at startup and
+refuses with a bounded, redacted `schema_incompatible` outcome before claiming
+any work.
+
 Use the maximum seven-day readiness lifetime in production. Activation records
 the initial DNS health lease from this observation; it does not replace the
 existing append-only successor ceremony that renews health after activation.
