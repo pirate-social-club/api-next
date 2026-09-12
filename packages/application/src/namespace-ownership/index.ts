@@ -459,11 +459,12 @@ export {
   hnsPrivateDriverErrorStatus,
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
+export * from "./hns-readiness-observation-request.ts";
 export * from "./hns-resource-codec.ts";
 export * from "./hns-retention-review.ts";
 export * from "./hns-root-import.ts";
+export * from "./hns-root-import-lifecycle-codec.ts";
 export * from "./hns-root-import-lifecycle-projection.ts";
-export * from "./hns-root-import-lifecycle-service.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,
   HnsRootImportNameProofMessageInput,

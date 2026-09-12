@@ -6,6 +6,7 @@ import {
   encodeHnsAuthorityInventory,
   encodeHnsRootImportNameProofResultV1,
   encodeHnsRootImportReadinessResultV1,
+  encodeHnsRootReadinessObservationRequestV1,
   HNS_AUTHORITY_INVENTORY_VERSION,
   HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
   HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
@@ -2288,8 +2289,10 @@ suite("Postgres 17 HNS root-import repository", () => {
         );
         const storedRow = stored.rows[0];
         if (storedRow === undefined) throw new Error("encoded session row missing");
-        const expected = canonicalJson({
-          version: "pirate-hns-root-readiness-observation-request-v1",
+        // The TypeScript side of the byte-for-byte comparison is the shared
+        // application builder, so this test pins the SQL encoder to the one
+        // builder every caller uses.
+        const expected = encodeHnsRootReadinessObservationRequestV1({
           root_import_session_id: session,
           namespace_session_id: sample.namespace,
           root_label: `encodeprobe${index}`,
@@ -2301,7 +2304,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         });
         const bytes = encoded.rows[0]?.request_bytes;
         if (!(bytes instanceof Uint8Array)) throw new Error("request bytes missing");
-        expect(Buffer.from(bytes).toString("utf8")).toBe(expected);
+        expect(Buffer.from(bytes).toString("utf8")).toBe(Buffer.from(expected).toString("utf8"));
         expect(encoded.rows[0]?.request_sha256).toBe(sha256(Buffer.from(expected)));
       }
     });
