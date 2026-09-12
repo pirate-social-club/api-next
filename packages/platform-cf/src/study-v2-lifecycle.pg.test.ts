@@ -24,9 +24,7 @@ const digest = async (value: string): Promise<string> =>
   );
 
 suite("Study v2 spoken lifecycle", () => {
-  test("requeues a missed spoken card, keeps reload presentation continuity, and replays completed commands", {
-    timeout: 60_000,
-  }, async () => {
+  test("requeues a missed spoken card, keeps reload presentation continuity, and replays completed commands", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const schema = `api_next_study_lifecycle_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const scoped = connectionForSchema(connectionString, schema);
@@ -448,5 +446,5 @@ suite("Study v2 spoken lifecycle", () => {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
-  });
+  }, 60_000);
 });
