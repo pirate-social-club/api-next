@@ -31,6 +31,7 @@ describe("media upload handlers", () => {
       return { route };
     };
     const services: MediaUploadHandlerServices = {
+      preflightSongVideo: call("song-video-preflight"),
       reserve: call("reserve"),
       create: call("create"),
       bindTerms: call("terms"),
@@ -95,6 +96,7 @@ describe("media upload handlers", () => {
       return null;
     };
     const handlers = makeMediaUploadHandlers({
+      preflightSongVideo: unavailable,
       reserve: unavailable,
       create: unavailable,
       bindTerms: unavailable,
@@ -123,5 +125,37 @@ describe("media upload handlers", () => {
       ),
     ).toThrow(AuthError);
     expect(calls).toBe(0);
+  });
+
+  test("forwards a song-video interval preflight with its community and actor", async () => {
+    let received: unknown;
+    const none = () => null;
+    const handlers = makeMediaUploadHandlers({
+      preflightSongVideo: (input) => {
+        received = input;
+        return { state: "measuring" };
+      },
+      reserve: none,
+      create: none,
+      bindTerms: none,
+      bindLyrics: none,
+      finalize: none,
+      renewParts: none,
+      get: none,
+      bindReference: none,
+      retry: none,
+      retryPoster: none,
+      cancel: none,
+      moderate: none,
+    });
+    expect(await handlers.PreflightSongVideoInterval(request())).toEqual({ state: "measuring" });
+    expect(received).toEqual({
+      communityId: "community_media",
+      actor: { kind: "user", userId: "account_media" },
+      body: { fixture: true },
+    });
+    expect(() => handlers.PreflightSongVideoInterval(request({ principal: null }))).toThrow(
+      AuthError,
+    );
   });
 });

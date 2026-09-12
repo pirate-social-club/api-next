@@ -54,6 +54,7 @@ function storeWith(overrides: Partial<VideoPublicationStore> = {}): VideoPublica
     createReservation: unused,
     getReservationForAuthor: unused,
     getReservationForAccount: unused,
+    getReservationSongPlan: unused,
     renewParts: unused,
     createSubmission: unused,
     getSubmissionForAccount: unused,
@@ -68,6 +69,9 @@ function storeWith(overrides: Partial<VideoPublicationStore> = {}): VideoPublica
     commitAnalysisDecision: unused,
     recordProcessingFailure: unused,
     publish: unused,
+    observeSongReferencePolicy: unused,
+    attachSongVideoMaster: unused,
+    publishSongReference: unused,
     retryPoster: unused,
     retryTechnical: unused,
     cancel: unused,
@@ -131,6 +135,7 @@ describe("video publication application", () => {
   test("rejects claiming a reservation through another owned persona", async () => {
     const reservation: VideoReservationRecord = {
       reservationId: "media-reservation-video",
+      intent: "original_audio",
       communityId: "community_video",
       actorAccountId: actor.userId,
       authorPersonaId: persona.persona_id,
@@ -358,6 +363,9 @@ describe("video publication application", () => {
             intent: "song_reference",
             song_post_id: "song_post",
             selected_from: { kind: "library" },
+            audio_revision: 1,
+            clip_start_samples: 0,
+            clip_duration_samples: 30 * 48_000,
           },
         },
         services,
@@ -430,6 +438,9 @@ describe("video publication application", () => {
             intent: "song_reference",
             song_post_id: "song_post",
             selected_from: { kind: "library" },
+            audio_revision: 1,
+            clip_start_samples: 0,
+            clip_duration_samples: 30 * 48_000,
           },
         },
         services,
@@ -462,6 +473,7 @@ describe("video publication application", () => {
     };
     const reservation: VideoReservationRecord = {
       reservationId: state.reservationId,
+      intent: "original_audio",
       communityId: state.communityId,
       actorAccountId: state.actorAccountId,
       authorPersonaId: state.authorPersonaId,
