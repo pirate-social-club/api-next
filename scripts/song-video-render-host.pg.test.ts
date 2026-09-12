@@ -28,6 +28,8 @@ import { runPostgresMigrations } from "./postgres-migrations.ts";
  * Exercises the actual host entry point against real PostgreSQL, real pinned
  * FFmpeg and a fake S3 endpoint: a real render, the atomic claim, a duplicate
  * invocation, and the object identity downstream consumers resolve.
+ * Run only in a dedicated disposable PostgreSQL cluster. Setup replaces the
+ * cluster-global song_video_render_host role; runs must never share a cluster.
  */
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -93,6 +95,9 @@ suite("song-video render host entry point", () => {
   const admin = new Client({ connectionString });
   const scoped = new URL(connectionString ?? "postgresql://unused/unused");
   scoped.searchParams.set("options", `-c search_path=${schema}`);
+  const roleScoped = new URL(scoped.toString());
+  roleScoped.username = "song_video_render_host";
+  roleScoped.password = "postgres";
   const client = new Client({ connectionString: scoped.toString() });
   const objects = new Map<string, StoredObject>();
   const masterKey = `media://immutable/song-video-masters/plan-host-entry/g1`;
@@ -113,6 +118,39 @@ suite("song-video render host entry point", () => {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     await admin.query(`SET search_path TO "${schema}"`);
     await runPostgresMigrations({ connectionString: scoped.toString() });
+    await admin.query("DROP OWNED BY song_video_render_host").catch(() => undefined);
+    await admin.query("DROP ROLE IF EXISTS song_video_render_host");
+    await admin.query("CREATE ROLE song_video_render_host LOGIN PASSWORD 'postgres'");
+    await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO song_video_render_host`);
+    await admin.query(
+      `GRANT SELECT ON
+         "${schema}".media_song_video_render_attempts,
+         "${schema}".media_song_video_render_plans,
+         "${schema}".media_post_submissions,
+         "${schema}".media_video_reservation_song_plans,
+         "${schema}".media_video_revisions,
+         "${schema}".media_immutable_objects,
+         "${schema}".media_song_video_masters,
+         "${schema}".media_song_video_accepted_masters,
+         "${schema}".media_publication_projections,
+         "${schema}".media_song_canonical_timings
+       TO song_video_render_host`,
+    );
+    await admin.query(
+      `GRANT UPDATE ON
+         "${schema}".media_song_video_render_attempts,
+         "${schema}".media_song_canonical_timings
+       TO song_video_render_host`,
+    );
+    await admin.query(
+      `GRANT UPDATE (etag) ON "${schema}".media_immutable_objects TO song_video_render_host`,
+    );
+    await admin.query(
+      `GRANT INSERT ON
+         "${schema}".media_song_video_masters,
+         "${schema}".media_song_video_accepted_masters
+       TO song_video_render_host`,
+    );
     await client.connect();
     await seedVideoActors(admin);
     await seedSongOwner(admin);
@@ -319,7 +357,7 @@ suite("song-video render host entry point", () => {
       SONG_VIDEO_RENDER_PLAN_ID: planId,
       SONG_VIDEO_RENDER_ATTEMPT_ID: attemptId,
       SONG_VIDEO_RENDER_HOST_ID: "host-entry-test",
-      SONG_VIDEO_RENDER_DATABASE_URL: scoped.toString(),
+      SONG_VIDEO_RENDER_DATABASE_URL: roleScoped.toString(),
       SONG_VIDEO_RENDER_R2_ACCOUNT_ID: "a".repeat(32),
       SONG_VIDEO_RENDER_R2_BUCKET: BUCKET,
       SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "test-access-key",
@@ -596,5 +634,35 @@ suite("song-video render host entry point", () => {
       [LOOP_ATTEMPT],
     );
     expect(attempts.rows[0]).toEqual({ state: "accepted", execution_phase: "submitted" });
+  }, 600_000);
+
+  test("the host role cannot rewrite a sealed immutable object", async () => {
+    const roleClient = new Client({ connectionString: roleScoped.toString() });
+    await roleClient.connect();
+    try {
+      const identity = await roleClient.query<{ current_user: string }>("SELECT current_user");
+      expect(identity.rows[0]?.current_user).toBe("song_video_render_host");
+      const readObject = () =>
+        roleClient.query<{ object: Record<string, unknown> }>(
+          `SELECT to_jsonb(object) AS object FROM media_immutable_objects AS object
+            WHERE immutable_ref = $1`,
+          [`media://immutable/${operationId}/video/1`],
+        );
+      const before = await readObject();
+      expect(before.rows).toHaveLength(1);
+      // The column grant exists for the FOR SHARE lock the seal takes; the
+      // append-only trigger must still refuse any actual mutation.
+      await expect(
+        roleClient.query(
+          `UPDATE media_immutable_objects SET etag = etag || '-mutated'
+            WHERE immutable_ref = $1`,
+          [`media://immutable/${operationId}/video/1`],
+        ),
+      ).rejects.toThrow(/append-only/u);
+      const after = await readObject();
+      expect(after.rows).toEqual(before.rows);
+    } finally {
+      await roleClient.end();
+    }
   }, 600_000);
 });
