@@ -14,7 +14,7 @@ Replacement credentials are checked before replacing the current credential.
 
 ## Deployment configuration
 
-All environments remain disabled. The prepared staging configuration uses
+All checked-in environments keep Telegram disabled. The prepared staging configuration uses
 public links on `web-next-staging.pirate.sc` and webhooks on
 `api-next-staging.pirate.sc`. Before enabling and deploying it, provision
 the environment-specific `pirate-community-telegram-<environment>` queue and
@@ -62,13 +62,37 @@ does not advance the confirmed hash. Explicit Telegram rejection preserves
 `retry_after`; a timeout, malformed acknowledgement or expired send lease
 requires review rather than automatically creating a duplicate. The moderation
 delivery panel lets an owner confirm an existing Telegram message, confirm
-that it is absent before retrying, or cancel the delivery. A content-kind
-change requires operator review. Existing publications are reconsidered for
-withdrawal when they cease to be eligible.
+that it is absent, or cancel the current operation. Confirming absence clears
+the stored message ID and confirmed payload. A remaining desired publication
+then becomes pending for a new send; a withdrawal becomes withdrawn without
+another delete attempt. The API also accepts confirmed resolution without a
+message ID when the desired payload is null, to acknowledge a completed deletion.
+Confirming a delivered publication still requires its Telegram message ID.
+
+Attempts are bounded per desired revision. Successful finalization or a changed
+desired payload resets the retry counter; replaying the same failed revision
+does not. Previously stranded pending rows without an error can resume, while
+exhausted rows carrying a failure become failed and available for owner recovery.
+Cancelling a publication suppresses that revision, but a newer desired revision
+or withdrawal can proceed. Replaying the cancelled revision remains cancelled.
+Private reply, voice and setup cancellations remain terminal. Sending and
+uncertain operations retain their existing reconciliation fences.
+
+A content-kind change requires operator review. Existing publications are
+reconsidered for withdrawal when they cease to be eligible. Telegram's
+message-to-delete-not-found response is recorded as deletion_target_unavailable
+and requires review. It does not establish absence: Telegram's
+[server implementation](https://github.com/tdlib/telegram-bot-api/blob/master/telegram-bot-api/Client.cpp)
+also produces that description when message access is unavailable. Keep the
+copy metadata until an operator confirms absence. The interaction between
+deletion age and administrator rights remains a controlled live acceptance
+check, with no universal cutoff or exemption asserted here.
 
 The public post route authority gates all retrieved content. Reward copy uses
 the existing direct-bonus and pool projections and never promises a personal
-claim. Public-content publication includes canonical app links. It starts with
+claim. Publication is one-way from Pirate to Telegram and currently sends text
+and canonical app links; the public projection supplies no native media. There
+is no inbound channel-post mirroring. It starts with
 new posts after automatic publishing is enabled; a manual request can select
 up to twenty post IDs, and an empty selection backfills the latest twenty
 eligible posts.
@@ -89,6 +113,11 @@ bodies and request URLs must not be logged: Telegram URLs include bot tokens.
 
 Local fixtures cover credential isolation, replay, webhook authentication,
 durable intake, concurrent budgets, uncertain delivery leases and failed edits.
+The native PostgreSQL suite also covers more than ten successful revisions,
+exhausted legacy rows, completed-deletion and confirmed-absence recovery,
+cancelled-publication revival, same-revision cancellation and private-delivery
+fences. Provider retry stages, membership/setup errors, pacing, cleanup races,
+owner delivery filtering and voice presentation remain tracked hardening work.
 Before live activation, perform an authorized private/channel test covering
 channel selection and confirmation, content publication/edit/withdrawal,
 reward depletion, text/voice replies, credential replacement and disconnect.

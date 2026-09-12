@@ -50,6 +50,38 @@ async function fixture(
   });
 }
 
+function publication() {
+  return {
+    id: "publication",
+    communityId: "telegram-community",
+    botEpoch: "epoch",
+    chatId: "-100",
+    kind: "publication" as const,
+    postId: "telegram-post",
+    state: "pending" as const,
+    desired: { kind: "text" as const, text: "Original", media: null, buttons: [] },
+    desiredHash: "original",
+  };
+}
+
+async function publicationFixture(
+  use: (store: ReturnType<typeof makeControlPlaneTelegramStore>, admin: Client) => Promise<void>,
+) {
+  return fixture(async (store, admin) => {
+    await admin.query(
+      "INSERT INTO posts (community_id,post_id,post_type,status,visibility,title,author_declared_rating,content_rating,created_at,updated_at) VALUES ('telegram-community','telegram-post','text','published','public','Fixture','general','general',clock_timestamp(),clock_timestamp())",
+    );
+    await use(store, admin);
+  });
+}
+
+const recoveryCommand = {
+  ownerId: "telegram-owner",
+  revision: 1,
+  key: "recover-publication",
+  hash: "recovery",
+};
+
 suite("community Telegram persistence", () => {
   test("channel selection is bound to the initiating Telegram user and owner confirmation", () =>
     fixture(async (store) => {
@@ -237,5 +269,277 @@ suite("community Telegram persistence", () => {
       if (!withdrawn) throw new Error("Missing withdrawal");
       await store.finishDelivery(withdrawn, { kind: "confirmed", messageId: 9 }, "delete");
       expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("withdrawn");
+    }));
+
+  for (const withdrawal of [false, true]) {
+    test(
+      withdrawal
+        ? "withdrawal remains claimable after ten successful revisions"
+        : "a new edit remains claimable after ten successful revisions",
+      () =>
+        publicationFixture(async (store) => {
+          const base = publication();
+          for (let revision = 0; revision < 10; revision++) {
+            await store.enqueueDelivery({
+              ...base,
+              desired: { ...base.desired, text: `Revision ${revision}` },
+              desiredHash: `revision-${revision}`,
+            });
+            const claimed = await store.claimDelivery(base.id);
+            if (!claimed) throw new Error("Missing successful revision claim");
+            await store.finishDelivery(
+              claimed,
+              { kind: "confirmed", messageId: 42 },
+              revision === 0 ? "send" : "edit",
+            );
+          }
+          await store.enqueueDelivery({
+            ...base,
+            desired: withdrawal ? null : { ...base.desired, text: "Next revision" },
+            desiredHash: withdrawal ? null : "next",
+          });
+          const claimed = await store.claimDelivery(base.id);
+          expect(claimed).not.toBeNull();
+          if (!claimed) throw new Error("Successful history exhausted future attempts");
+          await store.finishDelivery(
+            claimed,
+            { kind: "confirmed", messageId: 42 },
+            withdrawal ? "delete" : "edit",
+          );
+          const result = (await store.listDeliveries(base.communityId)).items[0];
+          expect(result?.state).toBe(withdrawal ? "withdrawn" : "delivered");
+          expect(result?.attempt_count).toBe(0);
+        }),
+    );
+  }
+
+  for (const resolution of ["confirmed", "not_sent"] as const) {
+    test(`uncertain withdrawal can be resolved as ${resolution}`, () =>
+      publicationFixture(async (store, admin) => {
+        const base = publication();
+        await store.enqueueDelivery(base);
+        const sent = await store.claimDelivery(base.id);
+        if (!sent) throw new Error("Missing send");
+        await store.finishDelivery(sent, { kind: "confirmed", messageId: 42 }, "send");
+        await store.enqueueDelivery({ ...base, desired: null, desiredHash: null });
+        const deletion = await store.claimDelivery(base.id);
+        if (!deletion) throw new Error("Missing deletion");
+        await store.finishDelivery(
+          deletion,
+          { kind: "uncertain", code: "acknowledgement_unavailable" },
+          "delete",
+        );
+        const result = await store.resolveDelivery(
+          base.communityId,
+          base.id,
+          resolution,
+          recoveryCommand,
+        );
+        expect(result.state).toBe("withdrawn");
+        expect(
+          (
+            await admin.query(
+              "SELECT message_id,confirmed,confirmed_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
+              [base.id],
+            )
+          ).rows[0],
+        ).toEqual({ message_id: null, confirmed: null, confirmed_hash: null });
+        expect(
+          await store.resolveDelivery(base.communityId, base.id, resolution, recoveryCommand),
+        ).toEqual(result);
+        await store.finishDelivery(deletion, { kind: "confirmed", messageId: 42 }, "edit");
+        expect(await store.claimDelivery(base.id)).toBeNull();
+        expect((await store.listDeliveries(base.communityId)).items[0]?.state).toBe("withdrawn");
+      }));
+  }
+
+  for (const withdrawal of [false, true]) {
+    test(
+      withdrawal
+        ? "a cancelled failed edit permits a newer withdrawal"
+        : "a cancelled failed send permits a newer revision",
+      () =>
+        publicationFixture(async (store) => {
+          const base = publication();
+          await store.enqueueDelivery(base);
+          const sent = await store.claimDelivery(base.id);
+          if (!sent) throw new Error("Missing send");
+          if (withdrawal) {
+            await store.finishDelivery(sent, { kind: "confirmed", messageId: 42 }, "send");
+            await store.enqueueDelivery({
+              ...base,
+              desired: { ...base.desired, text: "Failed edit" },
+              desiredHash: "failed-edit",
+            });
+          }
+          const failed = withdrawal ? await store.claimDelivery(base.id) : sent;
+          if (!failed) throw new Error("Missing failed operation");
+          await store.finishDelivery(
+            failed,
+            { kind: "rejected", code: "telegram_400", retryAfter: null },
+            withdrawal ? "edit" : "send",
+          );
+          await store.resolveDelivery(base.communityId, base.id, "cancel", recoveryCommand);
+          const cancelled = { ...base, desired: failed.desired, desiredHash: failed.desiredHash };
+          await store.enqueueDelivery(cancelled);
+          expect((await store.listDeliveries(base.communityId)).items[0]?.state).toBe("cancelled");
+          await store.enqueueDelivery({
+            ...base,
+            desired: withdrawal ? null : { ...base.desired, text: "New revision" },
+            desiredHash: withdrawal ? null : "new",
+          });
+          expect((await store.listDeliveries(base.communityId)).items[0]?.state).toBe("pending");
+          const resumed = await store.claimDelivery(base.id);
+          expect(resumed).not.toBeNull();
+          expect(resumed?.messageId).toBe(withdrawal ? 42 : null);
+          expect(resumed?.desiredHash).toBe(withdrawal ? null : "new");
+        }),
+    );
+  }
+
+  test("same-revision failures retain their retry limit while a new revision gets a budget", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const claimed = await store.claimDelivery(base.id);
+        if (!claimed) throw new Error("Missing retry within budget");
+        await store.finishDelivery(
+          claimed,
+          { kind: "rejected", code: "telegram_429", retryAfter: 1 },
+          "send",
+        );
+        await admin.query(
+          "UPDATE community_telegram_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE delivery_id=$1",
+          [base.id],
+        );
+        await store.enqueueDelivery(base);
+      }
+      expect(await store.claimDelivery(base.id)).toBeNull();
+      expect((await store.listDeliveries(base.communityId)).items[0]?.state).toBe("failed");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "New revision" },
+        desiredHash: "new",
+      });
+      const next = await store.claimDelivery(base.id);
+      expect(next?.attemptCount).toBe(1);
+    }));
+
+  test("previously stranded pending rows can proceed or reach operator recovery", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET attempt_count=10 WHERE delivery_id=$1",
+        [base.id],
+      );
+      const recovered = await store.claimDelivery(base.id);
+      expect(recovered?.attemptCount).toBe(1);
+      if (!recovered) throw new Error("Old lifetime counter still strands pending work");
+      await store.finishDelivery(recovered, { kind: "confirmed", messageId: 42 }, "send");
+      await store.enqueueDelivery({ ...base, desired: null, desiredHash: null });
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET attempt_count=10,last_error='telegram_429' WHERE delivery_id=$1",
+        [base.id],
+      );
+      expect(await store.claimDelivery(base.id)).toBeNull();
+      expect((await store.listDeliveries(base.communityId)).items[0]?.state).toBe("failed");
+      expect(
+        (await store.resolveDelivery(base.communityId, base.id, "not_sent", recoveryCommand)).state,
+      ).toBe("withdrawn");
+    }));
+
+  test("private delivery cancellation remains terminal for newer payloads", () =>
+    fixture(async (store) => {
+      for (const kind of ["reply", "voice", "setup"] as const) {
+        const base = { ...publication(), id: kind, kind, postId: null };
+        await store.enqueueDelivery(base);
+        const claimed = await store.claimDelivery(base.id);
+        if (!claimed) throw new Error("Missing private claim");
+        await store.finishDelivery(
+          claimed,
+          { kind: "rejected", code: "telegram_400", retryAfter: null },
+          "send",
+        );
+        await store.resolveDelivery(base.communityId, base.id, "cancel", {
+          ...recoveryCommand,
+          key: kind,
+        });
+        await store.enqueueDelivery({
+          ...base,
+          desired: { ...base.desired, text: "New private payload" },
+          desiredHash: "new",
+        });
+        expect(await store.claimDelivery(base.id)).toBeNull();
+      }
+      expect(
+        (await store.listDeliveries("telegram-community")).items.every(
+          (row) => row.state === "cancelled",
+        ),
+      ).toBe(true);
+    }));
+
+  test("new revisions do not bypass sending or uncertain publication fences", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const claimed = await store.claimDelivery(base.id);
+      if (!claimed) throw new Error("Missing fenced claim");
+      const changed = {
+        ...base,
+        desired: { ...base.desired, text: "New revision" },
+        desiredHash: "new",
+      };
+      await store.enqueueDelivery(changed);
+      expect(
+        (
+          await admin.query(
+            "SELECT state,desired_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0],
+      ).toEqual({ state: "sending", desired_hash: "original" });
+      await store.finishDelivery(claimed, { kind: "uncertain", code: "timeout" }, "send");
+      await store.enqueueDelivery(changed);
+      expect(
+        (
+          await admin.query(
+            "SELECT state,desired_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0],
+      ).toEqual({ state: "uncertain", desired_hash: "original" });
+      expect(await store.claimDelivery(base.id)).toBeNull();
+    }));
+
+  test("confirming absence clears an old copy before republishing the desired revision", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const sent = await store.claimDelivery(base.id);
+      if (!sent) throw new Error("Missing send");
+      await store.finishDelivery(sent, { kind: "confirmed", messageId: 42 }, "send");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Updated" },
+        desiredHash: "updated",
+      });
+      const edit = await store.claimDelivery(base.id);
+      if (!edit) throw new Error("Missing edit");
+      await store.finishDelivery(edit, { kind: "uncertain", code: "timeout" }, "edit");
+      await store.resolveDelivery(base.communityId, base.id, "not_sent", recoveryCommand);
+      const next = await store.claimDelivery(base.id);
+      expect(next?.messageId).toBeNull();
+      expect(next?.confirmedHash).toBeNull();
+      expect(next?.desiredHash).toBe("updated");
+      expect(
+        (
+          await admin.query(
+            "SELECT confirmed FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0]?.confirmed,
+      ).toBeNull();
     }));
 });

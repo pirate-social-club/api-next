@@ -101,3 +101,50 @@ test("redirects never forward a bot token and remain uncertain", async () => {
   expect(f.requests).toHaveLength(1);
   expect(f.requests[0]?.redirect).toBe("manual");
 });
+
+test("an unavailable deletion target requires review instead of claiming withdrawal", async () => {
+  const f = fixture(() =>
+    Response.json(
+      { ok: false, error_code: 400, description: "Bad Request: message to delete not found" },
+      { status: 400 },
+    ),
+  );
+  expect(
+    await f.api.dispatch(
+      token,
+      { ...delivery, messageId: 42, desired: null, desiredHash: null },
+      "delete",
+    ),
+  ).toEqual({ kind: "uncertain", code: "deletion_target_unavailable" });
+  expect(f.requests).toHaveLength(1);
+  expect(JSON.parse(String(f.requests[0]?.body))).toEqual({
+    chat_id: delivery.chatId,
+    message_id: 42,
+  });
+});
+
+test("delete permission rejection and transport uncertainty never confirm absence", async () => {
+  for (const [code, description] of [
+    [400, "Bad Request: message can't be deleted"],
+    [403, "Forbidden: bot was kicked"],
+  ] as const) {
+    const f = fixture(() =>
+      Response.json({ ok: false, error_code: code, description }, { status: code }),
+    );
+    expect(
+      await f.api.dispatch(
+        token,
+        { ...delivery, messageId: 42, desired: null, desiredHash: null },
+        "delete",
+      ),
+    ).toEqual({ kind: "rejected", code: `telegram_${code}`, retryAfter: null });
+  }
+  const lost = fixture(() => Promise.reject(new Error("lost acknowledgement")));
+  expect(
+    await lost.api.dispatch(
+      token,
+      { ...delivery, messageId: 42, desired: null, desiredHash: null },
+      "delete",
+    ),
+  ).toEqual({ kind: "uncertain", code: "acknowledgement_unavailable" });
+});

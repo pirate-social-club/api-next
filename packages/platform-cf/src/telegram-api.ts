@@ -110,6 +110,15 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
             response.description.includes("message is not modified")
           )
             return { kind: "confirmed", messageId: delivery.messageId };
+          if (
+            operation === "delete" &&
+            response.error_code === 400 &&
+            response.description === "Bad Request: message to delete not found"
+          ) {
+            // Telegram also uses this response when message access is missing.
+            // Retain the copy metadata until the operator confirms absence.
+            return { kind: "uncertain", code: "deletion_target_unavailable" };
+          }
           return { kind: "rejected", code: `telegram_${response.error_code}`, retryAfter };
         }
         if (response.ok !== true) throw new Error();

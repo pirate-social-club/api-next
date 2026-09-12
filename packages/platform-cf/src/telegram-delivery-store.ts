@@ -56,10 +56,12 @@ export function makeTelegramDeliveryStore(
         `INSERT INTO community_telegram_deliveries(delivery_id,community_id,bot_epoch,chat_id,kind,post_id,desired,desired_hash)
         VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
         ON CONFLICT(delivery_id) DO UPDATE SET desired=EXCLUDED.desired,desired_hash=EXCLUDED.desired_hash,
-          state=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain','cancelled') THEN community_telegram_deliveries.state
-            WHEN community_telegram_deliveries.confirmed_hash IS NOT DISTINCT FROM EXCLUDED.desired_hash THEN community_telegram_deliveries.state ELSE 'pending' END,
+          state=CASE WHEN community_telegram_deliveries.confirmed_hash IS NOT DISTINCT FROM EXCLUDED.desired_hash
+            THEN CASE WHEN community_telegram_deliveries.message_id IS NULL THEN 'withdrawn' ELSE 'delivered' END ELSE 'pending' END,
+          attempt_count=0,attempt=NULL,lease_expires_at=NULL,last_error=NULL,
           next_attempt_at=clock_timestamp(),updated_at=clock_timestamp()
-        WHERE community_telegram_deliveries.state NOT IN ('sending','uncertain','cancelled')
+        WHERE community_telegram_deliveries.state NOT IN ('sending','uncertain')
+          AND (community_telegram_deliveries.state<>'cancelled' OR community_telegram_deliveries.kind='publication')
           AND community_telegram_deliveries.desired_hash IS DISTINCT FROM EXCLUDED.desired_hash`,
         [
           record.id,
@@ -89,11 +91,23 @@ export function makeTelegramDeliveryStore(
           return null;
         }
         if (record.state !== "pending" && record.state !== "failed") return null;
+        if (record.attemptCount >= 10 && (record.state === "failed" || record.lastError !== null)) {
+          // Exhausted work must stay visible to operator recovery, including
+          // pending rows written before retry counts were scoped to revisions.
+          await query(
+            "UPDATE community_telegram_deliveries SET state='failed',next_attempt_at='infinity',last_error=COALESCE(last_error,'retry_limit_reached'),updated_at=clock_timestamp() WHERE delivery_id=$1",
+            [id],
+          );
+          return null;
+        }
         const attempt = crypto.randomUUID();
+        // A pending row without an error may carry the former lifetime count
+        // from successful revisions; its current operation starts at attempt one.
         const claimed = await query(
-          `UPDATE community_telegram_deliveries SET state='sending',attempt=$2,attempt_count=attempt_count+1,
+          `UPDATE community_telegram_deliveries SET state='sending',attempt=$2,
+          attempt_count=CASE WHEN state='pending' AND last_error IS NULL THEN 1 ELSE attempt_count+1 END,
           lease_expires_at=clock_timestamp()+interval '2 minutes',updated_at=clock_timestamp()
-          WHERE delivery_id=$1 AND next_attempt_at<=clock_timestamp() AND attempt_count<10 RETURNING attempt_count`,
+          WHERE delivery_id=$1 AND next_attempt_at<=clock_timestamp() AND (attempt_count<10 OR (state='pending' AND last_error IS NULL)) RETURNING attempt_count`,
           [id, attempt],
         );
         return claimed[0]
@@ -108,7 +122,7 @@ export function makeTelegramDeliveryStore(
         await db.query(
           `UPDATE community_telegram_deliveries SET confirmed=$3::jsonb,confirmed_hash=$4,message_id=$5,
           state=CASE WHEN desired_hash IS DISTINCT FROM $4::text THEN 'pending' WHEN $5::bigint IS NULL THEN 'withdrawn' ELSE 'delivered' END,
-          attempt=NULL,lease_expires_at=NULL,last_error=NULL,next_attempt_at=clock_timestamp(),updated_at=clock_timestamp()
+          attempt=NULL,attempt_count=0,lease_expires_at=NULL,last_error=NULL,next_attempt_at=clock_timestamp(),updated_at=clock_timestamp()
           WHERE delivery_id=$1 AND attempt=$2 AND state='sending'`,
           [
             record.id,
@@ -177,23 +191,25 @@ export function makeTelegramDeliveryStore(
         const record = delivery(rows[0]);
         if (record.state !== "uncertain" && record.state !== "failed")
           throw new TelegramFailure({ reason: "conflict" });
-        if (resolution === "confirmed" && (!messageId || !record.desired))
+        if (resolution === "confirmed" && record.desired !== null && !messageId)
           throw new TelegramFailure({ reason: "invalid" });
         const result = await query(
           `UPDATE community_telegram_deliveries SET state=$3,
-          message_id=CASE WHEN $3='delivered' THEN $4 ELSE message_id END,
-          confirmed=CASE WHEN $3='delivered' THEN desired ELSE confirmed END,
-          confirmed_hash=CASE WHEN $3='delivered' THEN desired_hash ELSE confirmed_hash END,
-          attempt=NULL,attempt_count=0,last_error=NULL,next_attempt_at=clock_timestamp(),updated_at=clock_timestamp()
+          message_id=CASE WHEN $3='cancelled' THEN message_id WHEN $3='delivered' THEN $4 ELSE NULL END,
+          confirmed=CASE WHEN $3='cancelled' THEN confirmed WHEN $3='delivered' THEN desired ELSE NULL END,
+          confirmed_hash=CASE WHEN $3='cancelled' THEN confirmed_hash WHEN $3='delivered' THEN desired_hash ELSE NULL END,
+          attempt=NULL,attempt_count=0,lease_expires_at=NULL,last_error=NULL,next_attempt_at=clock_timestamp(),updated_at=clock_timestamp()
           WHERE community_id=$1 AND delivery_id=$2 RETURNING *`,
           [
             communityId,
             id,
-            resolution === "confirmed"
-              ? "delivered"
-              : resolution === "cancel"
-                ? "cancelled"
-                : "pending",
+            resolution === "cancel"
+              ? "cancelled"
+              : record.desired === null
+                ? "withdrawn"
+                : resolution === "confirmed"
+                  ? "delivered"
+                  : "pending",
             messageId ?? null,
           ],
         );
