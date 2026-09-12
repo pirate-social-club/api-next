@@ -56,6 +56,9 @@ export type {
   EvidenceUnavailableReason,
   GatesV2EvaluationOutcome,
   HumanMembershipRequiredClaim,
+  NationalityEvaluation,
+  NationalityEvaluatorInput,
+  NationalityPolicy,
   RequiredClaim,
 } from "./gates-v2/index.ts";
 export {
@@ -63,8 +66,10 @@ export {
   CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
   CURATED_HUMAN_MEMBERSHIP_POLICY,
   CURATED_HUMAN_MEMBERSHIP_POLICY_CANONICAL_PREIMAGE,
+  compileNationalityPolicy,
   evaluateCuratedAge,
   evaluateCuratedHumanMembership,
+  evaluateNationality,
   humanMembershipPolicyCanonicalPreimage,
   policyCanonicalPreimage,
 } from "./gates-v2/index.ts";

@@ -31023,7 +31023,7 @@ ALTER TABLE ONLY community_policy_current
     ADD CONSTRAINT community_policy_current_pk PRIMARY KEY (community_id, policy_key);
 
 ALTER TABLE ONLY community_policy_provider_bindings
-    ADD CONSTRAINT community_policy_provider_bindings_pkey PRIMARY KEY (community_id, policy_key, policy_version_id);
+    ADD CONSTRAINT community_policy_provider_bindings_pkey PRIMARY KEY (community_id, policy_key, policy_version_id, provider_id);
 
 ALTER TABLE ONLY community_purchase_allocation_snapshots
     ADD CONSTRAINT community_purchase_allocation_snapshots_pkey PRIMARY KEY (snapshot_id);

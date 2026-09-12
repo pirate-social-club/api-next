@@ -9,7 +9,10 @@ import {
   communityJoinIntentBindingHash,
   evaluateCuratedAge,
   evaluateCuratedHumanMembership,
+  evaluateNationality,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+  type NationalityEvaluation,
+  type NationalityPolicy,
   VERY_WEB_CONFIGURATION_REFERENCE,
   VERY_WEB_CONFIGURATION_VERSION,
   VERY_WEB_ISSUER,
@@ -679,6 +682,392 @@ const loadDatabaseNow = (transaction: ControlPlaneTransaction) =>
     }
     return now;
   });
+
+const nonNegativeIntegerString = (value: unknown): string | null => {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) return null;
+  return value;
+};
+
+const nationalityRevalidation = (value: unknown): "accepted" | "revoked" | "indeterminate" => {
+  if (value === null || value === undefined || value === "accepted" || value === "stale") {
+    return value === "stale" ? "revoked" : "accepted";
+  }
+  if (value === "indeterminate") return "indeterminate";
+  return "revoked";
+};
+
+/**
+ * Builds the evaluator candidate from one joined row. The row is server-owned
+ * snapshot data; nothing here trusts client-supplied facts, and a structurally
+ * incomplete row is rejected rather than defaulted into a weaker shape.
+ */
+const nationalityCandidateFromRow = (row: Row) => {
+  const sessionId = stringField(row, "proof_session_id");
+  const sessionActorId = stringField(row, "session_actor_id");
+  const sessionIntentId = stringField(row, "session_intent_id");
+  const sessionRequestHash = stringField(row, "session_request_hash");
+  const sessionProviderId = stringField(row, "session_provider_id");
+  const sessionConfigurationKind = stringField(row, "session_provider_configuration_kind");
+  const sessionConfigurationRef = stringField(row, "session_provider_configuration_ref");
+  const sessionConfigurationVersion = stringField(row, "session_provider_configuration_version");
+  const sessionMethod = stringField(row, "session_method");
+  const sessionScope = scopeFromRow({
+    scope_kind: row.session_scope_kind,
+    issuer: row.session_issuer,
+    issuer_rp_scope: row.session_issuer_rp_scope,
+    issuer_rp_action_scope: row.session_issuer_rp_action_scope,
+  });
+  const sessionRequestMode = stringField(row, "session_request_mode");
+  const sessionRequestedRequirements = jsonValue(row.session_requested_requirements);
+  const sessionRequestedClaimIds = jsonValue(row.session_requested_claim_ids);
+  const sessionSubjectBindingIntent = stringField(row, "session_subject_binding_intent");
+  const sessionProtocolVersion = stringField(row, "session_protocol_version");
+  const sessionEnvironment = stringField(row, "session_environment");
+  const sessionStatus = stringField(row, "session_status");
+  const sessionStartedAt = canonicalInstant(row.session_started_at);
+  const sessionExpiresAt = canonicalInstant(row.session_expires_at);
+  const sessionCompletedAt = optionalInstant(row.session_completed_at);
+  const sessionUpstreamRef = stringField(row, "session_upstream_session_ref");
+
+  const receiptId = stringField(row, "evidence_receipt_id");
+  const receiptAccountId = stringField(row, "receipt_account_id");
+  const receiptProviderId = stringField(row, "receipt_provider_id");
+  const receiptIssuer = stringField(row, "receipt_issuer");
+  const receiptMethod = stringField(row, "receipt_method");
+  const receiptScope = scopeFromRow({
+    scope_kind: row.receipt_scope_kind,
+    issuer: row.receipt_issuer,
+    issuer_rp_scope: row.receipt_issuer_rp_scope,
+    issuer_rp_action_scope: row.receipt_issuer_rp_action_scope,
+  });
+  const receiptConfigurationKind = stringField(row, "receipt_provider_configuration_kind");
+  const receiptConfigurationRef = stringField(row, "receipt_provider_configuration_ref");
+  const receiptConfigurationVersion = stringField(row, "receipt_provider_configuration_version");
+  const receiptProtocolVersion = stringField(row, "receipt_protocol_version");
+  const receiptEnvironment = stringField(row, "receipt_environment");
+  const receiptEvidenceKind = stringField(row, "evidence_kind");
+  const receiptEvidenceHash = stringField(row, "evidence_hash");
+  const receiptObservedAt = canonicalInstant(row.receipt_observed_at);
+  const receiptExpiresAt = optionalInstant(row.receipt_expires_at);
+  const receiptSubjectKeyId = stringField(row, "receipt_subject_key_id");
+
+  const assertionId = stringField(row, "assertion_id");
+  const assertionAccountId = stringField(row, "assertion_account_id");
+  const assertionSubjectKeyId = stringField(row, "assertion_subject_key_id");
+  const assertionClaimId = stringField(row, "claim_id");
+  const assertionAssurance = stringField(row, "assurance");
+  const assertionObservedAt = canonicalInstant(row.assertion_observed_at);
+  const assertionExpiresAt = optionalInstant(row.assertion_expires_at);
+  const bindingGroupId = stringField(row, "binding_group_id");
+
+  const subjectIssuer = stringField(row, "subject_issuer");
+  const subjectMethod = stringField(row, "subject_method");
+  const subjectScope = scopeFromRow({
+    scope_kind: row.subject_scope_kind,
+    issuer: row.subject_issuer,
+    issuer_rp_scope: row.subject_issuer_rp_scope,
+    issuer_rp_action_scope: row.subject_issuer_rp_action_scope,
+  });
+  const subjectDigest = stringField(row, "subject_digest");
+
+  const recordedEpoch = nonNegativeIntegerString(row.recorded_binding_epoch);
+  const recordedEventId = stringField(row, "recorded_binding_event_id");
+  const activeAccountId = stringField(row, "active_binding_account_id");
+  const activeEpoch = nonNegativeIntegerString(row.active_binding_epoch);
+  const activeEventId = stringField(row, "active_binding_event_id");
+
+  if (
+    sessionId === null ||
+    sessionActorId === null ||
+    sessionIntentId === null ||
+    sessionRequestHash === null ||
+    sessionProviderId === null ||
+    sessionConfigurationKind === null ||
+    sessionConfigurationRef === null ||
+    sessionConfigurationVersion === null ||
+    sessionMethod === null ||
+    sessionScope === null ||
+    sessionRequestMode === null ||
+    !Array.isArray(sessionRequestedRequirements) ||
+    !Array.isArray(sessionRequestedClaimIds) ||
+    sessionSubjectBindingIntent === null ||
+    sessionProtocolVersion === null ||
+    sessionEnvironment === null ||
+    sessionStatus === null ||
+    sessionStartedAt === null ||
+    sessionExpiresAt === null ||
+    sessionCompletedAt === undefined ||
+    receiptId === null ||
+    receiptAccountId === null ||
+    receiptProviderId === null ||
+    receiptIssuer === null ||
+    receiptMethod === null ||
+    receiptScope === null ||
+    receiptConfigurationKind === null ||
+    receiptConfigurationRef === null ||
+    receiptConfigurationVersion === null ||
+    receiptProtocolVersion === null ||
+    receiptEnvironment === null ||
+    receiptEvidenceKind === null ||
+    receiptEvidenceHash === null ||
+    receiptObservedAt === null ||
+    assertionId === null ||
+    assertionAccountId === null ||
+    assertionSubjectKeyId === null ||
+    assertionClaimId === null ||
+    assertionAssurance === null ||
+    assertionObservedAt === null ||
+    bindingGroupId === null ||
+    subjectIssuer === null ||
+    subjectMethod === null ||
+    subjectScope?.kind !== "named" ||
+    subjectDigest === null ||
+    recordedEpoch === null ||
+    recordedEventId === null ||
+    activeAccountId === null ||
+    activeEpoch === null ||
+    activeEventId === null
+  ) {
+    return null;
+  }
+
+  return {
+    proof_session: {
+      id: sessionId,
+      actor_id: sessionActorId,
+      intent_id: sessionIntentId,
+      request_hash: sessionRequestHash,
+      provider_id: sessionProviderId,
+      ...(sessionUpstreamRef === null ? {} : { upstream_session_ref: sessionUpstreamRef }),
+      provider_configuration: {
+        kind: sessionConfigurationKind,
+        reference: sessionConfigurationRef,
+        version: sessionConfigurationVersion,
+      },
+      method: sessionMethod,
+      scope: sessionScope,
+      request_mode: sessionRequestMode,
+      requested_requirements: sessionRequestedRequirements,
+      requested_claim_ids: sessionRequestedClaimIds,
+      subject_binding_intent: sessionSubjectBindingIntent,
+      protocol_version: sessionProtocolVersion,
+      environment: sessionEnvironment,
+      status: sessionStatus,
+      started_at: sessionStartedAt,
+      expires_at: sessionExpiresAt,
+      completed_at: sessionCompletedAt,
+    },
+    receipt: {
+      id: receiptId,
+      proof_session_id: sessionId,
+      provider_id: receiptProviderId,
+      issuer: receiptIssuer,
+      method: receiptMethod,
+      scope: receiptScope,
+      provider_configuration: {
+        kind: receiptConfigurationKind,
+        reference: receiptConfigurationRef,
+        version: receiptConfigurationVersion,
+      },
+      protocol_version: receiptProtocolVersion,
+      environment: receiptEnvironment,
+      provenance_kind: "proof_session",
+      evidence_kind: receiptEvidenceKind,
+      evidence_hash: receiptEvidenceHash,
+      metadata: jsonObject(row.receipt_metadata),
+      observed_at: receiptObservedAt,
+      ...(receiptExpiresAt === undefined ? {} : { expires_at: receiptExpiresAt }),
+      subject_key_id: receiptSubjectKeyId ?? assertionSubjectKeyId,
+    },
+    assertion: {
+      id: assertionId,
+      subject_key_id: assertionSubjectKeyId,
+      evidence_receipt_id: receiptId,
+      assurance: assertionAssurance,
+      binding_group_id: bindingGroupId,
+      observed_at: assertionObservedAt,
+      ...(assertionExpiresAt === undefined ? {} : { expires_at: assertionExpiresAt }),
+      claim_id: assertionClaimId,
+      value: jsonValue(row.assertion_value),
+    },
+    subject_key: {
+      id: assertionSubjectKeyId,
+      issuer: subjectIssuer,
+      method: subjectMethod,
+      scope: subjectScope,
+      subject_digest: subjectDigest,
+    },
+    binding_group: {
+      id: bindingGroupId,
+      kind: "same_subject",
+      subject_key_id: assertionSubjectKeyId,
+    },
+    receipt_account_id: receiptAccountId,
+    assertion_account_id: assertionAccountId,
+    recorded_binding: {
+      account_id: assertionAccountId,
+      subject_key_id: assertionSubjectKeyId,
+      binding_epoch: recordedEpoch,
+      binding_event_id: recordedEventId,
+    },
+    active_binding: {
+      account_id: activeAccountId,
+      subject_key_id: assertionSubjectKeyId,
+      binding_epoch: activeEpoch,
+      binding_event_id: activeEventId,
+    },
+    revalidation: nationalityRevalidation(row.revalidation_outcome),
+  } as const;
+};
+
+const loadNationalityEvidence = (
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{ readonly userId: string; readonly policy: NationalityPolicy }>,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "community.gates.nationality-evidence.load",
+      text: `SELECT ps.proof_session_id,
+                    ps.actor_id AS session_actor_id,
+                    ps.intent_id AS session_intent_id,
+                    ps.request_hash AS session_request_hash,
+                    ps.provider_id AS session_provider_id,
+                    ps.upstream_session_ref AS session_upstream_session_ref,
+                    ps.provider_configuration_kind AS session_provider_configuration_kind,
+                    ps.provider_configuration_ref AS session_provider_configuration_ref,
+                    ps.provider_configuration_version AS session_provider_configuration_version,
+                    ps.method AS session_method,
+                    ps.scope_kind AS session_scope_kind,
+                    ps.issuer AS session_issuer,
+                    ps.issuer_rp_scope AS session_issuer_rp_scope,
+                    ps.issuer_rp_action_scope AS session_issuer_rp_action_scope,
+                    ps.request_mode AS session_request_mode,
+                    ps.requested_requirements AS session_requested_requirements,
+                    ps.requested_claim_ids AS session_requested_claim_ids,
+                    ps.subject_binding_intent AS session_subject_binding_intent,
+                    ps.protocol_version AS session_protocol_version,
+                    ps.environment AS session_environment,
+                    ps.status AS session_status,
+                    ps.started_at AS session_started_at,
+                    ps.expires_at AS session_expires_at,
+                    ps.completed_at AS session_completed_at,
+                    r.evidence_receipt_id,
+                    r.user_id AS receipt_account_id,
+                    r.provider_id AS receipt_provider_id,
+                    r.issuer AS receipt_issuer,
+                    r.method AS receipt_method,
+                    r.scope_kind AS receipt_scope_kind,
+                    r.issuer_rp_scope AS receipt_issuer_rp_scope,
+                    r.issuer_rp_action_scope AS receipt_issuer_rp_action_scope,
+                    r.provider_configuration_kind AS receipt_provider_configuration_kind,
+                    r.provider_configuration_ref AS receipt_provider_configuration_ref,
+                    r.provider_configuration_version AS receipt_provider_configuration_version,
+                    r.protocol_version AS receipt_protocol_version,
+                    r.environment AS receipt_environment,
+                    r.evidence_kind,
+                    r.evidence_hash,
+                    r.receipt_metadata,
+                    r.observed_at AS receipt_observed_at,
+                    r.expires_at AS receipt_expires_at,
+                    r.subject_key_id AS receipt_subject_key_id,
+                    a.assertion_id,
+                    a.user_id AS assertion_account_id,
+                    a.subject_key_id AS assertion_subject_key_id,
+                    a.claim_id,
+                    a.assertion_value,
+                    a.assurance,
+                    a.observed_at AS assertion_observed_at,
+                    a.expires_at AS assertion_expires_at,
+                    a.binding_group_id,
+                    b.subject_binding_event_id AS recorded_binding_event_id,
+                    b.subject_binding_epoch AS recorded_binding_epoch,
+                    sk.issuer AS subject_issuer,
+                    sk.method AS subject_method,
+                    sk.scope_kind AS subject_scope_kind,
+                    sk.issuer_rp_scope AS subject_issuer_rp_scope,
+                    sk.issuer_rp_action_scope AS subject_issuer_rp_action_scope,
+                    sk.subject_digest,
+                    act.user_id AS active_binding_account_id,
+                    act.binding_epoch AS active_binding_epoch,
+                    act.binding_event_id AS active_binding_event_id,
+                    reval.outcome AS revalidation_outcome
+               FROM proof_sessions AS ps
+               JOIN evidence_receipts AS r
+                 ON r.proof_session_id = ps.proof_session_id
+                AND r.user_id = ps.actor_id
+                AND r.provenance_kind = 'proof_session'
+                AND r.subject_key_id IS NOT NULL
+               JOIN assertions AS a
+                 ON a.evidence_receipt_id = r.evidence_receipt_id
+                AND a.user_id = ps.actor_id
+                AND a.claim_id = 'nationality.allowed'
+                AND a.subject_key_id = r.subject_key_id
+               JOIN assertion_bindings AS b
+                 ON b.binding_group_id = a.binding_group_id
+                AND b.user_id = a.user_id
+                AND b.binding_mode = 'same_subject'
+                AND b.subject_key_id = a.subject_key_id
+                AND b.subject_binding_event_id IS NOT NULL
+                AND b.subject_binding_epoch IS NOT NULL
+               JOIN subject_keys AS sk
+                 ON sk.subject_key_id = a.subject_key_id
+               JOIN active_subject_key_bindings AS act
+                 ON act.subject_key_id = sk.subject_key_id
+                AND act.user_id = ps.actor_id
+               LEFT JOIN LATERAL (
+                     SELECT event.outcome
+                       FROM assertion_revalidation_events AS event
+                      WHERE event.assertion_id = a.assertion_id
+                        AND event.user_id = a.user_id
+                      ORDER BY event.observed_at DESC, event.created_at DESC,
+                               event.assertion_revalidation_event_id DESC
+                      LIMIT 1
+                   ) AS reval ON TRUE
+              WHERE ps.actor_id = $1
+                AND ps.status = 'completed'
+                AND ps.completed_at = ps.terminal_at
+                AND ps.requested_requirements = $2::jsonb
+                AND ps.requested_claim_ids = $3::jsonb
+           ORDER BY ps.completed_at DESC, ps.proof_session_id, a.observed_at DESC, a.assertion_id`,
+      values: [
+        input.userId,
+        JSON.stringify([input.policy.requirement]),
+        JSON.stringify(["nationality.allowed"]),
+      ],
+      readonly: true,
+    });
+    if (result.rows.length === 0) {
+      return { kind: "available", candidate: null } as const;
+    }
+    for (const row of result.rows) {
+      const candidate = nationalityCandidateFromRow(row);
+      if (candidate !== null) {
+        return { kind: "available", candidate } as const;
+      }
+    }
+    return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "evidence" }));
+  });
+
+export const loadCuratedNationalityEvaluation = Effect.fn("loadCuratedNationalityEvaluation")(
+  function* (
+    transaction: ControlPlaneTransaction,
+    input: Readonly<{ readonly userId: string; readonly policy: NationalityPolicy }>,
+  ): Effect.fn.Return<NationalityEvaluation, ControlPlaneError | GatesV2CommunityDataInvalid> {
+    const [evidence, now] = yield* Effect.all([
+      loadNationalityEvidence(transaction, input),
+      loadDatabaseNow(transaction),
+    ]);
+    return evaluateNationality({
+      policy: input.policy,
+      account_id: input.userId,
+      now,
+      evidence,
+    });
+  },
+);
 
 export const loadCuratedAgeEvaluation = Effect.fn("loadCuratedAgeEvaluation")(function* (
   transaction: ControlPlaneTransaction,
