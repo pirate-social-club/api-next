@@ -42,3 +42,7 @@ export {
   evaluateCuratedHumanMembership,
   humanMembershipPolicyCanonicalPreimage,
 } from "./human-membership-evaluator.ts";
+export type { NationalityEvaluation, NationalityEvaluatorInput } from "./nationality-evaluator.ts";
+export { evaluateNationality } from "./nationality-evaluator.ts";
+export type { NationalityPolicyCompilation } from "./nationality-policy.ts";
+export { compileNationalityPolicy, NationalityPolicy } from "./nationality-policy.ts";

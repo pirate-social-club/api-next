@@ -324,6 +324,17 @@ const GATES_V2_EXPORTS = {
     "evaluateCuratedHumanMembership",
     "humanMembershipPolicyCanonicalPreimage",
   ],
+  // Spec 006 section 2.2 adds predicate-bound nationality without widening provider boundaries.
+  "./nationality-evaluator.ts": [
+    "NationalityEvaluation",
+    "NationalityEvaluatorInput",
+    "evaluateNationality",
+  ],
+  "./nationality-policy.ts": [
+    "NationalityPolicy",
+    "NationalityPolicyCompilation",
+    "compileNationalityPolicy",
+  ],
 };
 
 function isTestFile(file) {
