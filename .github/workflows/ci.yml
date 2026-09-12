@@ -27,6 +27,25 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - name: Install pinned FFmpeg 6.1.1
+        run: |
+          set -euo pipefail
+          . infra/cloudflare/song-video-render-host/pinned-ffmpeg.env
+          token="$(curl -fsSL "$FFMPEG_TOKEN_URL" | jq -r .token)"
+          curl -fsSL -H "Authorization: Bearer $token" "$FFMPEG_LAYER_URL" -o "$RUNNER_TEMP/ffmpeg-layer.tar.gz"
+          echo "$FFMPEG_LAYER_SHA256  $RUNNER_TEMP/ffmpeg-layer.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/pinned-ffmpeg"
+          tar -xzf "$RUNNER_TEMP/ffmpeg-layer.tar.gz" -C "$RUNNER_TEMP/pinned-ffmpeg" ffmpeg ffprobe
+          chmod 0755 "$RUNNER_TEMP/pinned-ffmpeg/ffmpeg" "$RUNNER_TEMP/pinned-ffmpeg/ffprobe"
+          echo "$RUNNER_TEMP/pinned-ffmpeg" >> "$GITHUB_PATH"
+          rm -f "$RUNNER_TEMP/ffmpeg-layer.tar.gz"
+      - name: Verify pinned FFmpeg 6.1.1
+        run: |
+          set -euo pipefail
+          ffmpeg_version="$(ffmpeg -version)"
+          ffprobe_version="$(ffprobe -version)"
+          [[ "$ffmpeg_version" == "ffmpeg version 6.1.1"* ]]
+          [[ "$ffprobe_version" == "ffprobe version 6.1.1"* ]]
       - name: Verify operator continuity DNSSEC replay
         run: |
           python3 -m venv "$RUNNER_TEMP/hns-continuity-python"
@@ -44,7 +63,23 @@ jobs:
       - name: Verify secondary DNS release refusal paths
         run: python3 scripts/hns-secondary-dns/verify-release.test.py
       - run: bun run check
+      - name: Remove stale media completion sentinels
+        run: >-
+          rm -f
+          /tmp/api-next-song-video-ffmpeg-suite-complete
+          /tmp/api-next-video-analysis-ffmpeg-suite-complete
       - run: bun run test
+        env:
+          SONG_VIDEO_FFMPEG_REQUIRED: "1"
+      - name: Require media completion sentinels
+        run: |
+          set -euo pipefail
+          for marker in \
+            api-next-song-video-ffmpeg-suite-complete \
+            api-next-video-analysis-ffmpeg-suite-complete; do
+            [[ -f "/tmp/$marker" ]]
+            [[ "$(cat "/tmp/$marker")" == "$marker" ]]
+          done
       - name: Resolve OpenAPI baseline
         id: openapi-baseline
         env:
@@ -246,6 +281,25 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - name: Install pinned FFmpeg 6.1.1
+        run: |
+          set -euo pipefail
+          . infra/cloudflare/song-video-render-host/pinned-ffmpeg.env
+          token="$(curl -fsSL "$FFMPEG_TOKEN_URL" | jq -r .token)"
+          curl -fsSL -H "Authorization: Bearer $token" "$FFMPEG_LAYER_URL" -o "$RUNNER_TEMP/ffmpeg-layer.tar.gz"
+          echo "$FFMPEG_LAYER_SHA256  $RUNNER_TEMP/ffmpeg-layer.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/pinned-ffmpeg"
+          tar -xzf "$RUNNER_TEMP/ffmpeg-layer.tar.gz" -C "$RUNNER_TEMP/pinned-ffmpeg" ffmpeg ffprobe
+          chmod 0755 "$RUNNER_TEMP/pinned-ffmpeg/ffmpeg" "$RUNNER_TEMP/pinned-ffmpeg/ffprobe"
+          echo "$RUNNER_TEMP/pinned-ffmpeg" >> "$GITHUB_PATH"
+          rm -f "$RUNNER_TEMP/ffmpeg-layer.tar.gz"
+      - name: Verify pinned FFmpeg 6.1.1
+        run: |
+          set -euo pipefail
+          ffmpeg_version="$(ffmpeg -version)"
+          ffprobe_version="$(ffprobe -version)"
+          [[ "$ffmpeg_version" == "ffmpeg version 6.1.1"* ]]
+          [[ "$ffprobe_version" == "ffprobe version 6.1.1"* ]]
       # Every matrix runner starts with the complete general-marker set clean.
       # The assigned shard then writes only the markers owned by its test files.
       - name: Remove stale general completion sentinels
@@ -281,6 +335,8 @@ jobs:
           /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
           /tmp/api-next-control-plane-postgres-public-post-slug-suite-complete
+          /tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete
+          /tmp/api-next-control-plane-postgres-song-video-render-host-suite-complete
       - name: Run required Postgres 17 general shard
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -318,6 +374,9 @@ jobs:
           CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_POST_SLUG_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-post-slug-suite-complete
+          SONG_VIDEO_FFMPEG_REQUIRED: "1"
+          CONTROL_PLANE_POSTGRES_SONG_VIDEO_COMPOSED_FLOW_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete
+          CONTROL_PLANE_POSTGRES_SONG_VIDEO_RENDER_HOST_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-song-video-render-host-suite-complete
         run: bun run test:postgres
       - name: Upload general completion sentinels
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -325,6 +384,24 @@ jobs:
           name: postgres17-sentinels-general-${{ matrix.shard }}
           path: /tmp/api-next-control-plane-postgres-*-suite-complete
           if-no-files-found: ignore
+          retention-days: 1
+      # The song-video media suites are owned by shard 0, computed from the
+      # manifest weights; run-postgres-tests.test.ts asserts this stays true.
+      - name: Upload song-video composed flow sentinel
+        if: matrix.shard == 0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres17-sentinels-song-video-composed-flow
+          path: /tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload song-video render host sentinel
+        if: matrix.shard == 0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres17-sentinels-song-video-render-host
+          path: /tmp/api-next-control-plane-postgres-song-video-render-host-suite-complete
+          if-no-files-found: error
           retention-days: 1
       - name: Show egress audit summary
         if: always()
