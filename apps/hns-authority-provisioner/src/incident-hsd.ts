@@ -1,5 +1,5 @@
 import type { HnsRetainedAuthorityReferenceV1 } from "@pirate/application/namespace-ownership";
-import { readBoundedResponse } from "@pirate/platform-cf/namespace-ownership-hsd-bounded-exchange";
+import { readBoundedResponse } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import type { HnsIncidentNameStateV1, HnsIncidentTransactionV1 } from "./incident-evidence.ts";
 import { redactedProbeCause } from "./schema-compatibility.ts";
 
