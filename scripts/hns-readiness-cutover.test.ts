@@ -11,6 +11,7 @@ const compatibleService = "pirate-hns-authority-provisioner-v2";
 const compatibleEnvelope = "hns-lifecycle-job-envelope-v1";
 const executorId = "cutover-executor";
 const bundleSha = "a".repeat(64);
+const attemptId = "attempt-00000001";
 
 function bundle(serviceVersion = compatibleService) {
   return {
@@ -19,6 +20,7 @@ function bundle(serviceVersion = compatibleService) {
     service_version: serviceVersion,
     job_envelope_version: compatibleEnvelope,
     executor_id: executorId,
+    attempt_id: attemptId,
   };
 }
 
@@ -65,15 +67,22 @@ function makePorts(overrides: Partial<HnsReadinessCutoverPorts> = {}): {
     verifyRunningIdentity: async () => {
       events.push("identity");
       return {
+        attempt_id: attemptId,
         bundle_sha256: bundleSha,
+        measured_bundle_sha256: bundleSha,
+        expected_bundle_sha256: bundleSha,
         service_version: compatibleService,
         executor_id: executorId,
-        heartbeat_fresh: true,
+        probe_job_id: 7,
+        lease_fence: 1,
+        probe_completed_at: new Date(),
+        probe_fresh: true,
+        probe_outcome: "ready",
       };
     },
     verifyExecutorProgress: async () => {
       events.push("progress");
-      return { probe_outcome: "ready", heartbeat_fresh: true };
+      return { probe_outcome: "ready", probe_fresh: true };
     },
     ...overrides,
   };
@@ -164,10 +173,17 @@ describe("HNS readiness cutover sequence", () => {
   test("refuses a wrong running artifact", async () => {
     const { ports } = makePorts({
       verifyRunningIdentity: async () => ({
+        attempt_id: attemptId,
         bundle_sha256: "b".repeat(64),
+        measured_bundle_sha256: "b".repeat(64),
+        expected_bundle_sha256: bundleSha,
         service_version: compatibleService,
         executor_id: executorId,
-        heartbeat_fresh: true,
+        probe_job_id: 7,
+        lease_fence: 1,
+        probe_completed_at: new Date(),
+        probe_fresh: true,
+        probe_outcome: "ready",
       }),
     });
     await expect(
@@ -177,9 +193,32 @@ describe("HNS readiness cutover sequence", () => {
     });
   });
 
+  test("refuses a previous attempt's result for a fresh attempt", async () => {
+    const { ports } = makePorts({
+      verifyRunningIdentity: async () => ({
+        attempt_id: "attempt-previous",
+        bundle_sha256: bundleSha,
+        measured_bundle_sha256: bundleSha,
+        expected_bundle_sha256: bundleSha,
+        service_version: compatibleService,
+        executor_id: executorId,
+        probe_job_id: 7,
+        lease_fence: 1,
+        probe_completed_at: new Date(),
+        probe_fresh: true,
+        probe_outcome: "ready",
+      }),
+    });
+    await expect(
+      runHnsReadinessCutover({ bundle: bundle(), stage_directory: "/stage/current", ports }),
+    ).rejects.toMatchObject({
+      refusal: { step: "service_identity", reason: "stale_attempt_result" },
+    });
+  });
+
   test("refuses compatible schema without executor progress", async () => {
     const { ports } = makePorts({
-      verifyExecutorProgress: async () => ({ probe_outcome: "failed", heartbeat_fresh: true }),
+      verifyExecutorProgress: async () => ({ probe_outcome: "failed", probe_fresh: true }),
     });
     await expect(
       runHnsReadinessCutover({ bundle: bundle(), stage_directory: "/stage/current", ports }),

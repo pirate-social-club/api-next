@@ -175,15 +175,25 @@ export async function hnsLifecycleSchemaCutoverCheck(input: {
 export async function runHnsLifecycleCutoverProbe(input: {
   readonly connection_string: string;
   readonly executor_id: string;
+  readonly attempt_id: string;
   readonly service_version: string;
-  readonly bundle_sha256: string;
+  readonly expected_bundle_sha256: string;
+  readonly measured_bundle_sha256: string;
+  readonly process_started_at: Date;
 }): Promise<string> {
   const client = new Client({ connectionString: input.connection_string });
   await client.connect();
   try {
     const result = await client.query<{ outcome: string }>(
-      "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
-      [input.executor_id, input.service_version, input.bundle_sha256],
+      "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,$6) AS outcome",
+      [
+        input.executor_id,
+        input.attempt_id,
+        input.service_version,
+        input.expected_bundle_sha256,
+        input.measured_bundle_sha256,
+        input.process_started_at,
+      ],
     );
     const outcome = result.rows[0]?.outcome;
     return typeof outcome === "string" ? outcome.slice(0, 64) : "probe_unavailable";

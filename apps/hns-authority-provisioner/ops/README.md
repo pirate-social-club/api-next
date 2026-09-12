@@ -31,33 +31,74 @@ five-second request deadlines.
 
 The cutover is one reviewed deployment sequence, not a bare migration run. The
 compatible release is `pirate-hns-authority-provisioner-v2` with job envelope
-`hns-lifecycle-job-envelope-v1`; the removal migration records that pair in
-`hns_lifecycle_schema_cutover`. Build the bundle from the cutover commit and
-run the sequence with the migration administrator URL:
+`hns-lifecycle-job-envelope-v1`; the cutover records that pair in
+`hns_lifecycle_schema_cutover`. The reviewed migration endpoint is
+`0172_hns_cutover_evidence_consistency.sql`; the sequence refuses any
+migration beyond it rather than applying an unreviewed change. Build the
+bundle from the cutover commit and run the sequence with the migration
+administrator URL and the service executor identity:
 
 ```bash
 bun run --cwd apps/hns-authority-provisioner build:vps-bundle
 CONTROL_PLANE_POSTGRES_ADMIN_URL=... bun scripts/hns-readiness-cutover.ts \
   --bundle apps/hns-authority-provisioner/dist/pirate-hns-authority-provisioner.mjs \
-  --stage-directory /srv/pirate-hns-authority-provisioner/current
+  --stage-directory /srv/pirate-hns-authority-provisioner/current \
+  --executor-id pirate-hns-provisioner-1
 ```
 
-The sequence refuses an unsupported bundle against the recorded schema pair,
-stages the bundle and its `deployment-manifest.json`, quiesces the unit,
-refuses while a live legacy readiness lease remains, applies the 0168
-preflight in its own transaction, applies the 0169 removal in a second
-transaction, starts the unit and verifies the compatible claim path. The two
-migration transactions are deliberate: the preflight's durable
+Each run generates a fresh attempt identifier and writes a
+`deployment-manifest.json` beside the staged bundle with `bundle_sha256`,
+`service_version`, `job_envelope_version`, `executor_id` and `attempt_id`. The
+installed unit points the service at that manifest
+(`HNS_AUTHORITY_DEPLOYMENT_MANIFEST`). The service measures its own running
+entry file, compares the measured digest with the manifest digest, and records
+both plus the attempt, probe job, lease fence, process start and probe
+completion timestamps through the controlled probe. The sequence verifies the
+identity row for the exact attempt; a previous attempt's result never
+satisfies a retry.
+
+The sequence order is fixed: refuse an incompatible bundle, stage, quiesce,
+account live legacy leases, apply the preflight batch through `0168` in its own
+transaction, apply the remaining reviewed migrations in a second transaction,
+seed the synthetic probe, start the unit, then record schema compatibility,
+running identity and executor progress separately. The two migration
+transactions are deliberate: the preflight's durable
 `readiness_single_owner_cutover_unresolved` dispositions must survive a
-refused removal. Do not apply the preflight and removal as one ordinary
-all-pending migration run.
+refused removal. The runner commits each `runPostgresMigrations` call as one
+transaction, so when a later migration fails every migration in that call
+rolls back and the ledger keeps only the previously committed versions; read
+`schema_migrations` before resuming and re-run the same sequence after fixing
+the fault rather than editing the ledger.
+
+Refusal recovery, by step:
+
+- `launch_guard` — the staged bundle's version is outside the recorded pair;
+  stage the compatible release.
+- `account_leases` — a live legacy readiness lease remains; wait for it to
+  complete or expire, then re-run.
+- `migrations` — a migration beyond the reviewed endpoint exists; rebase the
+  change onto the reviewed endpoint or review and extend it.
+- `schema_compatibility` — the recorded pair no longer admits this service;
+  verify the deployment manifest.
+- `service_identity` / `service_never_started` — the unit did not start; inspect
+  the unit logs and the environment file.
+- `service_identity` / `stale_attempt_result` — the identity row belongs to an
+  earlier attempt; re-run the sequence so a fresh attempt and probe job are
+  seeded.
+- `service_identity` / `wrong_running_artifact` — the measured digest, version
+  or executor does not match the manifest; reinstall the staged bundle.
+- `executor_progress` — the probe did not complete despite a compatible
+  schema; inspect the probe outcome and the service log.
 
 The installed unit runs the bundle once with `--verify-schema` before
 `ExecStart`, so an older bundle that predates the flag is rejected after the
 cutover even though the old binary cannot know about the compatibility
 record. The compatible binary also performs the same check at startup and
 refuses with a bounded, redacted `schema_incompatible` outcome before claiming
-any work.
+any work. The synthetic probe is retained as cutover evidence, excluded from
+normal claims and operational phase counts, and creates no session readiness
+or activation evidence. The runtime role has no direct write path to the
+identity table; the SECURITY DEFINER probe owns it.
 
 Use the maximum seven-day readiness lifetime in production. Activation records
 the initial DNS health lease from this observation; it does not replace the

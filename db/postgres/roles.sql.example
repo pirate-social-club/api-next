@@ -101,6 +101,9 @@ GRANT EXECUTE ON FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(TEXT, TEX
 -- by the migration and the operator recovery path, never by the runtime.
 REVOKE INSERT, UPDATE, DELETE ON hns_readiness_single_owner_cutover_unresolved
 FROM api_next_app;
+-- The service identity record is written only by the SECURITY DEFINER probe;
+-- no broad table grant may reach it, including the template's blanket grant.
+REVOKE ALL ON hns_lifecycle_service_identity FROM api_next_app;
 -- The lifecycle half of activation commits inside the existing activation
 -- transaction, revalidating phase, revision, generation, freshness and the
 -- pre-gathered current-view binding before the activation effects commit.

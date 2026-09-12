@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "pg";
@@ -25,7 +25,7 @@ import { loadPostgresMigrations, runPostgresMigrations } from "./postgres-migrat
  * added after this review is refused rather than silently applied.
  */
 
-export const HNS_READINESS_CUTOVER_ENDPOINT = "0171_hns_cutover_execution_probe.sql";
+export const HNS_READINESS_CUTOVER_ENDPOINT = "0172_hns_cutover_evidence_consistency.sql";
 
 export type HnsReadinessCutoverBundle = Readonly<{
   readonly bundle_path: string;
@@ -33,18 +33,26 @@ export type HnsReadinessCutoverBundle = Readonly<{
   readonly service_version: string;
   readonly job_envelope_version: string;
   readonly executor_id: string;
+  readonly attempt_id: string;
 }>;
 
 export type HnsRunningIdentity = Readonly<{
+  readonly attempt_id: string;
   readonly bundle_sha256: string;
+  readonly measured_bundle_sha256: string;
+  readonly expected_bundle_sha256: string;
   readonly service_version: string;
   readonly executor_id: string;
-  readonly heartbeat_fresh: boolean;
+  readonly probe_job_id: number | null;
+  readonly lease_fence: number | null;
+  readonly probe_completed_at: Date | null;
+  readonly probe_fresh: boolean;
+  readonly probe_outcome: string;
 }>;
 
 export type HnsExecutorProgress = Readonly<{
   readonly probe_outcome: string;
-  readonly heartbeat_fresh: boolean;
+  readonly probe_fresh: boolean;
 }>;
 
 export type HnsReadinessCutoverPorts = Readonly<{
@@ -187,15 +195,27 @@ export async function runHnsReadinessCutover(input: {
   if (identity === null) {
     throw refused("service_identity", "service_never_started");
   }
+  if (identity.attempt_id !== input.bundle.attempt_id) {
+    throw refused("service_identity", "stale_attempt_result", {
+      expected_attempt_id: input.bundle.attempt_id,
+      actual_attempt_id: identity.attempt_id.slice(0, 64),
+    });
+  }
   if (
     identity.bundle_sha256 !== input.bundle.bundle_sha256 ||
+    identity.measured_bundle_sha256 !== input.bundle.bundle_sha256 ||
+    identity.expected_bundle_sha256 !== input.bundle.bundle_sha256 ||
     identity.service_version !== input.bundle.service_version ||
     identity.executor_id !== input.bundle.executor_id ||
-    !identity.heartbeat_fresh
+    identity.probe_job_id === null ||
+    identity.lease_fence === null ||
+    identity.probe_completed_at === null ||
+    !identity.probe_fresh
   ) {
     throw refused("service_identity", "wrong_running_artifact", {
       expected_bundle_sha256: input.bundle.bundle_sha256,
       actual_bundle_sha256: identity.bundle_sha256.slice(0, 64),
+      measured_bundle_sha256: identity.measured_bundle_sha256.slice(0, 64),
       expected_service_version: input.bundle.service_version,
       actual_service_version: identity.service_version.slice(0, 64),
       expected_executor_id: input.bundle.executor_id,
@@ -207,7 +227,7 @@ export async function runHnsReadinessCutover(input: {
   const progress = await input.ports.verifyExecutorProgress();
   if (
     progress === null ||
-    !progress.heartbeat_fresh ||
+    !progress.probe_fresh ||
     (progress.probe_outcome !== "ready" && progress.probe_outcome !== "replayed")
   ) {
     throw refused("executor_progress", "executor_progress_missing", {
@@ -304,6 +324,7 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
     service_version: option("--service-version") ?? "pirate-hns-authority-provisioner-v2",
     job_envelope_version: option("--job-envelope-version") ?? "hns-lifecycle-job-envelope-v1",
     executor_id: executorId,
+    attempt_id: option("--attempt-id") ?? randomUUID(),
   };
   const quiesceCommand =
     option("--quiesce-command") ?? "systemctl stop pirate-hns-authority-provisioner";
@@ -328,6 +349,7 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
               service_version: staged.service_version,
               job_envelope_version: staged.job_envelope_version,
               executor_id: staged.executor_id,
+              attempt_id: staged.attempt_id,
               staged_at: new Date().toISOString(),
             },
             null,
@@ -366,49 +388,77 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
             return "incompatible";
           }
         }),
-      verifyRunningIdentity: () =>
-        withClient(async (client) => {
-          const result = await client.query<{
-            bundle_sha256: string;
-            service_version: string;
-            executor_id: string;
-            heartbeat_fresh: boolean;
-          }>(
-            `SELECT bundle_sha256, service_version, executor_id,
-                    heartbeat_at > clock_timestamp() - interval '120 seconds' AS heartbeat_fresh
-               FROM hns_lifecycle_service_identity
-              WHERE service_name = 'pirate-hns-authority-provisioner'`,
-          );
-          const row = result.rows[0];
-          if (row === undefined) return null;
-          return {
-            bundle_sha256: row.bundle_sha256,
-            service_version: row.service_version,
-            executor_id: row.executor_id,
-            heartbeat_fresh: row.heartbeat_fresh === true,
-          };
-        }),
-      verifyExecutorProgress: () =>
-        withClient(async (client) => {
-          const result = await client.query<{
-            probe_outcome: string;
-            heartbeat_fresh: boolean;
-          }>(
-            `SELECT probe_outcome,
-                    heartbeat_at > clock_timestamp() - interval '120 seconds' AS heartbeat_fresh
-               FROM hns_lifecycle_service_identity
-              WHERE service_name = 'pirate-hns-authority-provisioner'`,
-          );
-          const row = result.rows[0];
-          if (row === undefined) return null;
-          return {
-            probe_outcome: row.probe_outcome,
-            heartbeat_fresh: row.heartbeat_fresh === true,
-          };
-        }),
+      verifyRunningIdentity: () => pollCutoverIdentity(bundle.attempt_id),
+      verifyExecutorProgress: async () => {
+        const identity = await pollCutoverIdentity(bundle.attempt_id);
+        if (identity === null) return null;
+        return {
+          probe_outcome: identity.probe_outcome ?? "absent",
+          probe_fresh: identity.probe_fresh,
+        };
+      },
     },
   });
   console.log(JSON.stringify({ outcome: "cutover_applied", steps }));
+}
+
+type CutoverIdentityRow = Readonly<{
+  readonly attempt_id: string | null;
+  readonly bundle_sha256: string;
+  readonly measured_bundle_sha256: string | null;
+  readonly expected_bundle_sha256: string | null;
+  readonly service_version: string;
+  readonly executor_id: string;
+  readonly probe_job_id: string | null;
+  readonly lease_fence: string | null;
+  readonly probe_outcome: string;
+  readonly probe_completed_at: Date | null;
+  readonly probe_fresh: boolean;
+}>;
+
+/**
+ * Polls for the identity row of this exact attempt. A previous attempt's row
+ * never satisfies the poll because the attempt identifier must match; the
+ * bounded deadline reports absence rather than hanging.
+ */
+async function pollCutoverIdentity(
+  attemptId: string,
+  timeoutMs = 120_000,
+): Promise<HnsRunningIdentity | null> {
+  const deadline = Date.now() + timeoutMs;
+  let last: HnsRunningIdentity | null = null;
+  for (;;) {
+    const row = await withClient(async (client) => {
+      const result = await client.query<CutoverIdentityRow>(
+        `SELECT attempt_id, bundle_sha256, measured_bundle_sha256, expected_bundle_sha256,
+                service_version, executor_id, probe_job_id, lease_fence, probe_outcome,
+                probe_completed_at,
+                probe_completed_at > clock_timestamp() - interval '120 seconds' AS probe_fresh
+           FROM hns_lifecycle_service_identity
+          WHERE service_name = 'pirate-hns-authority-provisioner'`,
+      );
+      return result.rows[0];
+    });
+    if (row !== undefined) {
+      const identity: HnsRunningIdentity = {
+        attempt_id: row.attempt_id ?? "",
+        bundle_sha256: row.bundle_sha256,
+        measured_bundle_sha256: row.measured_bundle_sha256 ?? "",
+        expected_bundle_sha256: row.expected_bundle_sha256 ?? "",
+        service_version: row.service_version,
+        executor_id: row.executor_id,
+        probe_job_id: row.probe_job_id === null ? null : Number(row.probe_job_id),
+        lease_fence: row.lease_fence === null ? null : Number(row.lease_fence),
+        probe_completed_at: row.probe_completed_at,
+        probe_fresh: row.probe_fresh === true,
+        probe_outcome: row.probe_outcome,
+      };
+      last = identity;
+      if (identity.attempt_id === attemptId && identity.probe_job_id !== null) return identity;
+    }
+    if (Date.now() >= deadline) return last;
+    await Bun.sleep(1_000);
+  }
 }
 
 if (import.meta.main) {

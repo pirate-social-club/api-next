@@ -1900,22 +1900,32 @@ BEGIN
     OR provision.state IS DISTINCT FROM 'completed'
     OR provision.publish_plan_sha256 IS NULL
     OR provision.result_sha256 IS NULL
+    OR session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256
     OR session.readiness_result_sha256 IS NULL
+    OR session.readiness_result_bytes IS NULL
     OR session.ownership_result_sha256 IS NULL
     OR (
       lifecycle.root_import_session_id IS NOT NULL
       AND (
         lifecycle.phase IS DISTINCT FROM 'activated'
         OR lifecycle.readiness_observed_at IS NULL
+        OR lifecycle.readiness_accepted_at IS NULL
+        OR lifecycle.plan_encoded_resource_sha256 IS NULL
       )
     )
   THEN
     UPDATE hns_root_health_renewal_jobs SET state = 'terminal', next_attempt_at = NULL,
-      failure_code = CASE WHEN session.status IS DISTINCT FROM 'activated'
-        THEN 'session_not_activated'
+      failure_code = CASE
+        WHEN session.status IS DISTINCT FROM 'activated' THEN 'session_not_activated'
         WHEN current_generation IS DISTINCT FROM candidate.activation_generation
           OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-        THEN 'generation_superseded' ELSE 'evidence_mismatch' END,
+        THEN 'generation_superseded'
+        WHEN session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256
+        THEN 'plan_binding_mismatch'
+        WHEN lifecycle.root_import_session_id IS NOT NULL
+          AND lifecycle.plan_encoded_resource_sha256 IS NULL
+        THEN 'plan_binding_missing'
+        ELSE 'evidence_mismatch' END,
       completed_at = database_now, updated_at = database_now
     WHERE renewal_job_id = candidate.renewal_job_id;
     RETURN;
@@ -1924,22 +1934,12 @@ BEGIN
   -- The renewal envelope is derived from the retained session and provision
   -- evidence and bound to the claimed authority generation. It no longer
   -- depends on the retired observation job's request row.
-  renewal_request_bytes := convert_to(
-    '{"version":"pirate-hns-root-readiness-observation-request-v1"'
-      || ',"root_import_session_id":' || to_json(session.root_import_session_id)::text
-      || ',"namespace_session_id":' || to_json(session.namespace_session_id)::text
-      || ',"root_label":' || to_json(session.root_label)::text
-      || ',"challenge_txt_value":' || to_json(session.challenge_txt_value)::text
-      || ',"ownership_result_sha256":' || to_json(session.ownership_result_sha256)::text
-      || ',"publish_plan_sha256":' || to_json(provision.publish_plan_sha256)::text
-      || ',"provision_result_sha256":' || to_json(provision.result_sha256)::text
-      || ',"expires_at":' || to_json(to_char(
-           session.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
-         ))::text
-      || '}',
-    'UTF8'
-  );
-  renewal_request_sha256 := encode(sha256(renewal_request_bytes), 'hex');
+  SELECT encoded.request_bytes, encoded.request_sha256
+    INTO renewal_request_bytes, renewal_request_sha256
+    FROM encode_hns_root_readiness_observation_request_v1(session.root_import_session_id) AS encoded;
+  IF renewal_request_bytes IS NULL THEN
+    RAISE EXCEPTION 'HNS renewal request envelope is unavailable';
+  END IF;
 
   database_now := clock_timestamp();
   UPDATE hns_root_health_renewal_jobs AS job
@@ -1985,7 +1985,8 @@ BEGIN
        FROM hns_root_import_lifecycle_jobs AS job
        JOIN hns_root_import_lifecycle AS lifecycle
          ON lifecycle.root_import_session_id = job.root_import_session_id
-      WHERE job.generation < lifecycle.generation
+      WHERE NOT lifecycle.synthetic
+        AND job.generation < lifecycle.generation
         AND (
           job.state = 'queued'
           OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
@@ -2000,6 +2001,7 @@ BEGIN
    WHERE ((job.state = 'queued' AND job.due_at <= database_now)
       OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
      AND job.generation = lifecycle.generation
+     AND NOT lifecycle.synthetic
      AND NOT EXISTS (
        SELECT 1 FROM hns_root_import_observation_jobs AS legacy
         WHERE legacy.root_import_session_id = job.root_import_session_id
@@ -3310,6 +3312,53 @@ CREATE FUNCTION effective_route_authority_v2(expected_community_id text, databas
      AND binding.verified_evidence_ref IS NULL
 $$;
 
+CREATE FUNCTION encode_hns_root_readiness_observation_request_v1(input_session_id text) RETURNS TABLE(request_bytes bytea, request_sha256 text)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  session hns_root_import_sessions%ROWTYPE;
+  provision hns_authority_provision_jobs%ROWTYPE;
+  encoded TEXT;
+BEGIN
+  IF input_session_id IS NULL OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+  THEN RAISE EXCEPTION 'invalid HNS readiness request session'; END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+    WHERE root_import_session_id = input_session_id;
+  IF NOT FOUND THEN RETURN; END IF;
+  SELECT * INTO provision FROM hns_authority_provision_jobs
+    WHERE root_import_session_id = input_session_id AND state = 'completed';
+  IF provision.provision_job_id IS NULL THEN RETURN; END IF;
+  IF session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256 THEN RETURN; END IF;
+  IF session.namespace_session_id IS NULL
+    OR session.root_label IS NULL
+    OR session.challenge_txt_value IS NULL
+    OR session.ownership_result_sha256 IS NULL
+    OR provision.publish_plan_sha256 IS NULL
+    OR provision.result_sha256 IS NULL
+  THEN RETURN; END IF;
+  -- Alphabetical key order matches canonicalJson. Milliseconds are truncated,
+  -- not rounded, so the value matches a JavaScript Date's toISOString.
+  encoded := '{'
+    || '"challenge_txt_value":' || to_json(session.challenge_txt_value)::text
+    || ',"expires_at":' || to_json(to_char(
+         date_trunc('milliseconds', session.expires_at) AT TIME ZONE 'UTC',
+         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+       ))::text
+    || ',"namespace_session_id":' || to_json(session.namespace_session_id)::text
+    || ',"ownership_result_sha256":' || to_json(session.ownership_result_sha256)::text
+    || ',"provision_result_sha256":' || to_json(provision.result_sha256)::text
+    || ',"publish_plan_sha256":' || to_json(provision.publish_plan_sha256)::text
+    || ',"root_import_session_id":' || to_json(session.root_import_session_id)::text
+    || ',"root_label":' || to_json(session.root_label)::text
+    || ',"version":"pirate-hns-root-readiness-observation-request-v1"'
+    || '}';
+  request_bytes := convert_to(encoded, 'UTF8');
+  request_sha256 := encode(sha256(request_bytes), 'hex');
+  RETURN NEXT;
+END;
+$$;
+
 CREATE FUNCTION enforce_song_rating_projection_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3781,6 +3830,13 @@ BEGIN
 
   database_now := clock_timestamp();
   IF job.state IN ('completed', 'terminal') THEN
+    -- Pre-0170 completed renewals carry no derived request digest. Their
+    -- completion cannot be matched against a derived envelope, so a
+    -- re-delivery is deliberately a conflict rather than a replay.
+    IF job.state = 'completed' AND job.request_sha256 IS NULL THEN
+      RETURN QUERY SELECT 'conflict'::text, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
     IF job.state = 'completed' AND input_outcome = 'ready'
       AND job.request_sha256 = input_request_sha256
       AND job.result_bytes = input_result_bytes AND job.result_sha256 = input_result_sha256
@@ -3792,6 +3848,9 @@ BEGIN
   END IF;
   IF job.state <> 'leased' OR job.leased_by IS DISTINCT FROM input_executor_id
     OR job.lease_fence IS DISTINCT FROM input_lease_fence OR job.lease_expires_at <= database_now
+    OR (SELECT provision.publish_plan_sha256 FROM hns_authority_provision_jobs AS provision
+         WHERE provision.root_import_session_id = job.root_import_session_id
+           AND provision.state = 'completed') IS DISTINCT FROM session.publish_plan_sha256
     OR job.request_sha256 IS NULL
     OR job.request_sha256 IS DISTINCT FROM input_request_sha256
   THEN RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN; END IF;
@@ -12733,6 +12792,12 @@ BEGIN
 
   database_now := clock_timestamp();
   IF job.state IN ('completed', 'terminal') THEN
+    -- See the renewal finalizer: a pre-0170 completed job's missing request
+    -- digest is a deliberate conflict, never a replay.
+    IF job.state = 'completed' AND job.request_sha256 IS NULL THEN
+      RETURN QUERY SELECT 'conflict'::text, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
     IF job.state = 'completed' AND input_outcome = 'ready'
       AND job.request_sha256 = input_request_sha256
       AND job.result_bytes = input_result_bytes AND job.result_sha256 = input_result_sha256
@@ -12744,6 +12809,9 @@ BEGIN
   END IF;
   IF job.state <> 'leased' OR job.leased_by IS DISTINCT FROM input_executor_id
     OR job.lease_fence IS DISTINCT FROM input_lease_fence OR job.lease_expires_at <= database_now
+    OR (SELECT provision.publish_plan_sha256 FROM hns_authority_provision_jobs AS provision
+         WHERE provision.root_import_session_id = job.root_import_session_id
+           AND provision.state = 'completed') IS DISTINCT FROM session.publish_plan_sha256
     OR job.request_sha256 IS NULL
     OR job.request_sha256 IS DISTINCT FROM input_request_sha256
   THEN RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN; END IF;
@@ -15675,6 +15743,127 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(input_executor_id text, input_attempt_id text, input_service_version text, input_expected_bundle_sha256 text, input_measured_bundle_sha256 text, input_process_started_at timestamp with time zone) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  probe_session CONSTANT TEXT := 'cutover-readiness-probe';
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  existing hns_lifecycle_service_identity%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  probe_outcome TEXT;
+  probe_reason TEXT;
+  completed_at TIMESTAMPTZ;
+  bound_job_id BIGINT;
+  bound_fence BIGINT;
+  finalized RECORD;
+BEGIN
+  IF btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
+    OR input_executor_id ~ '[[:cntrl:]]'
+    OR btrim(input_attempt_id) IS DISTINCT FROM input_attempt_id
+    OR octet_length(input_attempt_id) NOT BETWEEN 8 AND 128
+    OR input_attempt_id !~ '^[A-Za-z0-9._:-]+$'
+    OR input_service_version !~ '^[A-Za-z0-9._:@/-]{1,128}$'
+    OR input_expected_bundle_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_measured_bundle_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_process_started_at IS NULL
+    OR input_process_started_at > database_now + interval '1 minute'
+  THEN
+    RAISE EXCEPTION 'invalid HNS cutover readiness probe request';
+  END IF;
+
+  SELECT * INTO existing FROM hns_lifecycle_service_identity
+    WHERE service_name = 'pirate-hns-authority-provisioner' FOR UPDATE;
+
+  IF input_measured_bundle_sha256 IS DISTINCT FROM input_expected_bundle_sha256 THEN
+    probe_outcome := 'failed';
+    probe_reason := 'artifact_mismatch';
+  ELSE
+    SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+      WHERE root_import_session_id = probe_session
+        AND job_kind = 'observe_readiness'
+      ORDER BY lifecycle_job_id DESC LIMIT 1 FOR UPDATE;
+    IF job.lifecycle_job_id IS NULL THEN
+      probe_outcome := 'probe_absent';
+      probe_reason := 'probe job missing';
+    ELSIF job.state = 'completed' THEN
+      -- A completed probe belongs to exactly one attempt. The same attempt
+      -- may refresh its process start; a different attempt must re-seed and
+      -- can never be satisfied by the previous attempt's completion.
+      IF existing.attempt_id = input_attempt_id THEN
+        probe_outcome := 'replayed';
+        probe_reason := NULL;
+        completed_at := existing.probe_completed_at;
+        bound_job_id := existing.probe_job_id;
+        bound_fence := existing.lease_fence;
+      ELSE
+        probe_outcome := 'failed';
+        probe_reason := 'attempt_mismatch';
+      END IF;
+    ELSIF job.state = 'queued'
+      OR (job.state = 'leased' AND job.lease_expires_at <= database_now) THEN
+      UPDATE hns_root_import_lifecycle_jobs
+         SET state = 'leased', attempt_count = LEAST(job.attempt_count + 1, 100),
+             lease_fence = job.lease_fence + 1, leased_by = input_executor_id,
+             lease_expires_at = database_now + interval '30 seconds',
+             failure_code = NULL, updated_at = database_now
+       WHERE lifecycle_job_id = job.lifecycle_job_id
+       RETURNING * INTO job;
+      SELECT * INTO finalized FROM finalize_hns_root_import_lifecycle_job_v1(
+        job.lifecycle_job_id, input_executor_id, job.lease_fence, 'completed', NULL
+      ) AS result;
+      IF finalized.outcome = 'completed' THEN
+        probe_outcome := 'ready';
+        probe_reason := NULL;
+        completed_at := database_now;
+        bound_job_id := job.lifecycle_job_id;
+        bound_fence := job.lease_fence;
+      ELSE
+        probe_outcome := 'failed';
+        probe_reason := finalized.outcome;
+        bound_job_id := job.lifecycle_job_id;
+        bound_fence := job.lease_fence;
+      END IF;
+    ELSE
+      probe_outcome := 'lease_conflict';
+      probe_reason := 'probe job is not claimable';
+      bound_job_id := job.lifecycle_job_id;
+      bound_fence := job.lease_fence;
+    END IF;
+  END IF;
+
+  INSERT INTO hns_lifecycle_service_identity (
+    service_name, service_version, bundle_sha256, executor_id,
+    process_started_at, probe_outcome, probe_reason,
+    attempt_id, probe_job_id, lease_fence,
+    expected_bundle_sha256, measured_bundle_sha256, probe_completed_at
+  ) VALUES (
+    'pirate-hns-authority-provisioner', input_service_version,
+    input_measured_bundle_sha256, input_executor_id,
+    input_process_started_at, probe_outcome, probe_reason,
+    input_attempt_id, bound_job_id, bound_fence,
+    input_expected_bundle_sha256, input_measured_bundle_sha256, completed_at
+  )
+  ON CONFLICT (service_name) DO UPDATE SET
+    service_version = EXCLUDED.service_version,
+    bundle_sha256 = EXCLUDED.bundle_sha256,
+    executor_id = EXCLUDED.executor_id,
+    process_started_at = EXCLUDED.process_started_at,
+    probe_outcome = EXCLUDED.probe_outcome,
+    probe_reason = EXCLUDED.probe_reason,
+    attempt_id = EXCLUDED.attempt_id,
+    probe_job_id = EXCLUDED.probe_job_id,
+    lease_fence = EXCLUDED.lease_fence,
+    expected_bundle_sha256 = EXCLUDED.expected_bundle_sha256,
+    measured_bundle_sha256 = EXCLUDED.measured_bundle_sha256,
+    probe_completed_at = EXCLUDED.probe_completed_at;
+
+  RETURN probe_outcome;
+END;
+$_$;
+
 CREATE FUNCTION schedule_hns_root_health_renewals_v1(input_limit integer, input_renew_when_remaining_seconds integer, input_heartbeat_freshness_seconds integer) RETURNS TABLE(eligible_roots integer, enqueued_roots integer, successful_tick_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -15782,14 +15971,15 @@ BEGIN
   INSERT INTO hns_root_import_lifecycle (
     root_import_session_id, root_label, phase, revision, generation,
     plan_exposed_at, publication_deadline_at, first_current_observation_at,
-    finality_deadline_at, policy_name, policy_digest, plan_encoded_resource_sha256
+    finality_deadline_at, policy_name, policy_digest, plan_encoded_resource_sha256,
+    synthetic
   ) VALUES (
     probe_session, 'cutover-probe', 'checking_authority', 1, 1,
     database_now - interval '1 hour', database_now + interval '13 days',
     database_now - interval '2 hours', database_now + interval '22 hours',
-    'hns_root_import_lifecycle_v1', 'cutover-probe', repeat('a', 64)
+    'hns_root_import_lifecycle_v1', 'cutover-probe', repeat('a', 64), TRUE
   )
-  ON CONFLICT (root_import_session_id) DO NOTHING;
+  ON CONFLICT (root_import_session_id) DO UPDATE SET synthetic = TRUE;
 
   DELETE FROM hns_root_import_lifecycle_jobs
    WHERE root_import_session_id = probe_session
@@ -25388,16 +25578,23 @@ CREATE TABLE hns_lifecycle_service_identity (
     service_version text NOT NULL,
     bundle_sha256 text NOT NULL,
     executor_id text NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    heartbeat_at timestamp with time zone NOT NULL,
+    process_started_at timestamp with time zone NOT NULL,
     probe_outcome text NOT NULL,
     probe_reason text,
+    attempt_id text,
+    probe_job_id bigint,
+    lease_fence bigint,
+    expected_bundle_sha256 text,
+    measured_bundle_sha256 text,
+    probe_completed_at timestamp with time zone,
+    CONSTRAINT hns_lifecycle_service_identity_attempt_shape CHECK (((attempt_id IS NULL) OR ((btrim(attempt_id) = attempt_id) AND ((octet_length(attempt_id) >= 8) AND (octet_length(attempt_id) <= 128)) AND (attempt_id ~ '^[A-Za-z0-9._:-]+$'::text)))),
     CONSTRAINT hns_lifecycle_service_identity_bundle_check CHECK ((bundle_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT hns_lifecycle_service_identity_executor_check CHECK (((btrim(executor_id) = executor_id) AND ((octet_length(executor_id) >= 1) AND (octet_length(executor_id) <= 256)) AND (executor_id !~ '[[:cntrl:]]'::text))),
+    CONSTRAINT hns_lifecycle_service_identity_expected_bundle_shape CHECK (((expected_bundle_sha256 IS NULL) OR (expected_bundle_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_lifecycle_service_identity_measured_bundle_shape CHECK (((measured_bundle_sha256 IS NULL) OR (measured_bundle_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT hns_lifecycle_service_identity_name_check CHECK ((service_name = 'pirate-hns-authority-provisioner'::text)),
     CONSTRAINT hns_lifecycle_service_identity_outcome_check CHECK ((probe_outcome = ANY (ARRAY['ready'::text, 'replayed'::text, 'failed'::text, 'probe_absent'::text, 'lease_conflict'::text]))),
     CONSTRAINT hns_lifecycle_service_identity_reason_shape CHECK (((probe_reason IS NULL) OR ((btrim(probe_reason) = probe_reason) AND ((octet_length(probe_reason) >= 1) AND (octet_length(probe_reason) <= 128)) AND (probe_reason !~ '[[:cntrl:]]'::text)))),
-    CONSTRAINT hns_lifecycle_service_identity_time_check CHECK ((heartbeat_at >= started_at)),
     CONSTRAINT hns_lifecycle_service_identity_version_check CHECK ((service_version ~ '^[A-Za-z0-9._:@/-]{1,128}$'::text))
 );
 
@@ -25577,6 +25774,7 @@ CREATE TABLE hns_root_import_lifecycle (
     last_observation_at timestamp with time zone,
     last_observation_recorded_at timestamp with time zone,
     readiness_accepted_at timestamp with time zone,
+    synthetic boolean DEFAULT false NOT NULL,
     CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
     CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
     CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
@@ -33008,6 +33206,8 @@ CREATE UNIQUE INDEX hns_root_import_lifecycle_history_identity_idx ON hns_root_i
 CREATE INDEX hns_root_import_lifecycle_history_order_idx ON hns_root_import_lifecycle_history USING btree (root_import_session_id, recorded_at, history_id);
 
 CREATE INDEX hns_root_import_lifecycle_jobs_due_idx ON hns_root_import_lifecycle_jobs USING btree (state, due_at, lifecycle_job_id);
+
+CREATE INDEX hns_root_import_lifecycle_operational_idx ON hns_root_import_lifecycle USING btree (phase) WHERE (NOT synthetic);
 
 CREATE INDEX hns_root_import_lifecycle_phase_next_check_idx ON hns_root_import_lifecycle USING btree (phase, next_check_at) WHERE (next_check_at IS NOT NULL);
 

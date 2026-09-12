@@ -192,26 +192,55 @@ function chainInteger(name: string, minimum: number, maximum: number): number {
   return value;
 }
 
+const PROCESS_STARTED_AT = new Date();
+
 /**
- * The staged bundle digest this process must prove it is running. The
- * deployment sequence writes the digest into the deployment manifest; the
- * environment override exists for operators who stage the bundle by hand.
- * Missing or malformed identity is reported as absence, never guessed.
+ * The staged bundle digest and cutover attempt this process must prove it is
+ * running. The deployment sequence writes both into the deployment manifest;
+ * the environment override exists for operators who stage by hand. Missing or
+ * malformed identity is reported as absence, never guessed.
  */
-async function cutoverBundleSha256(): Promise<string | null> {
-  const direct = process.env.HNS_AUTHORITY_BUNDLE_SHA256;
-  if (direct !== undefined && direct.trim() === direct && /^[0-9a-f]{64}$/u.test(direct)) {
-    return direct;
+async function cutoverDeploymentIdentity(): Promise<Readonly<{
+  bundle_sha256: string;
+  attempt_id: string;
+}> | null> {
+  const directSha = process.env.HNS_AUTHORITY_BUNDLE_SHA256;
+  const directAttempt = process.env.HNS_AUTHORITY_ATTEMPT_ID;
+  if (
+    directSha !== undefined &&
+    directSha.trim() === directSha &&
+    /^[0-9a-f]{64}$/u.test(directSha) &&
+    directAttempt !== undefined &&
+    /^[A-Za-z0-9._:-]{8,128}$/u.test(directAttempt)
+  ) {
+    return { bundle_sha256: directSha, attempt_id: directAttempt };
   }
   const manifestPath = process.env.HNS_AUTHORITY_DEPLOYMENT_MANIFEST;
   if (manifestPath === undefined || !isAbsolute(manifestPath)) return null;
   try {
     const parsed = JSON.parse(await Bun.file(manifestPath).text()) as {
       readonly bundle_sha256?: unknown;
+      readonly attempt_id?: unknown;
     };
-    return typeof parsed.bundle_sha256 === "string" && /^[0-9a-f]{64}$/u.test(parsed.bundle_sha256)
-      ? parsed.bundle_sha256
-      : null;
+    if (
+      typeof parsed.bundle_sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(parsed.bundle_sha256) ||
+      typeof parsed.attempt_id !== "string" ||
+      !/^[A-Za-z0-9._:-]{8,128}$/u.test(parsed.attempt_id)
+    ) {
+      return null;
+    }
+    return { bundle_sha256: parsed.bundle_sha256, attempt_id: parsed.attempt_id };
+  } catch {
+    return null;
+  }
+}
+
+/** The digest of the entry module actually executing in this process. */
+async function measureRunningArtifactSha256(): Promise<string | null> {
+  try {
+    const bytes = await Bun.file(Bun.main).arrayBuffer();
+    return createHash("sha256").update(Buffer.from(bytes)).digest("hex");
   } catch {
     return null;
   }
@@ -242,8 +271,9 @@ async function main(serve: boolean): Promise<void> {
   // running service and that its executor completed the controlled readiness
   // probe through the single-owner path. A schema check alone is not proof.
   if (cutover.post_cutover) {
-    const bundleSha256 = await cutoverBundleSha256();
-    if (bundleSha256 === null) {
+    const deployment = await cutoverDeploymentIdentity();
+    const measuredBundleSha256 = await measureRunningArtifactSha256();
+    if (deployment === null || measuredBundleSha256 === null) {
       console.error(
         JSON.stringify({
           command: serve ? "serve" : "run-once",
@@ -253,11 +283,26 @@ async function main(serve: boolean): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    if (deployment.bundle_sha256 !== measuredBundleSha256) {
+      console.error(
+        JSON.stringify({
+          command: serve ? "serve" : "run-once",
+          outcome: "bundle_digest_mismatch",
+          expected_bundle_sha256: deployment.bundle_sha256,
+          measured_bundle_sha256: measuredBundleSha256,
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
     const probeOutcome = await runHnsLifecycleCutoverProbe({
       connection_string: connectionString,
       executor_id: executorId,
+      attempt_id: deployment.attempt_id,
       service_version: HNS_AUTHORITY_SERVICE_VERSION,
-      bundle_sha256: bundleSha256,
+      expected_bundle_sha256: deployment.bundle_sha256,
+      measured_bundle_sha256: measuredBundleSha256,
+      process_started_at: PROCESS_STARTED_AT,
     });
     if (probeOutcome !== "ready" && probeOutcome !== "replayed") {
       console.error(

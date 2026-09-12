@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +83,9 @@ const entrypoint = fileURLToPath(
 );
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
+const entrypointSha256 = createHash("sha256")
+  .update(Buffer.from(await Bun.file(entrypoint).arrayBuffer()))
+  .digest("hex");
 const started: { process: Bun.Subprocess | null } = { process: null };
 afterAll(() => {
   started.process?.kill("SIGKILL");
@@ -118,7 +121,8 @@ suite("the HNS provisioner entrypoint drives the lifecycle composition", () => {
           ...process.env,
           CONTROL_PLANE_POSTGRES_URL: connectionString,
           HNS_AUTHORITY_EXECUTOR_ID: executorId,
-          HNS_AUTHORITY_BUNDLE_SHA256: "b".repeat(64),
+          HNS_AUTHORITY_BUNDLE_SHA256: entrypointSha256,
+          HNS_AUTHORITY_ATTEMPT_ID: "entrypoint-suite-attempt",
           HNS_AUTHORITY_ENVIRONMENT: "regtest",
           HNS_AUTHORITY_GATEWAY_IPV4: "127.0.0.1",
           HNS_AUTHORITY_GATEWAY_LOCAL_IPV4: "127.0.0.1",

@@ -2229,6 +2229,146 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 30_000);
 
+  test("the renewal request encoding matches the TypeScript canonical contract byte for byte", async () => {
+    await withSchema(async (_connection, admin) => {
+      const cases = [
+        { namespace: "namespace-plain", challenge: "pirate-verification=plain" },
+        { namespace: 'namespace-"quoted"', challenge: 'pirate-verification=quote"slash\\' },
+        { namespace: "namespace-über-日本", challenge: "pirate-verification=unicode-✓" },
+      ] as const;
+      for (const [index, sample] of cases.entries()) {
+        const session = `encode-probe-${index}`;
+        const planBytes = Buffer.from(`{"probe":${index}}`);
+        const planSha = sha256(planBytes);
+        const evidenceSha = "a".repeat(64);
+        await admin.query("BEGIN");
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query(
+          `INSERT INTO hns_root_import_sessions (
+             root_import_session_id, actor_id, namespace_session_id, ownership_generation,
+             ownership_expected_revision, root_label, challenge_txt_value, status, revision,
+             start_idempotency_key, start_request_sha256, provision_job_id,
+             provision_authorization_kind, provision_authorization_sha256,
+             provision_idempotency_key, provision_poll_request_sha256,
+             publish_plan_bytes, publish_plan_sha256, ownership_result_sha256,
+             observation_job_id, observation_idempotency_key, observation_request_sha256,
+             origin_kind, creation_intent_id, ceremony_intent_id, created_at, expires_at
+           ) VALUES ($1,'encode-actor',$2,1,1,$7,$3,'observing',3,
+             'start-'||$1,$4,'provision-'||$1,'namespace_ownership',$4,
+             'idem-'||$1,$4,$5,$6,$4,'observation-'||$1,'obs-idem-'||$1,$4,
+             'creation_intent','intent-'||$1,'ceremony-'||$1, clock_timestamp(),
+             date_trunc('microseconds', clock_timestamp() + interval '30 days'))`,
+          [
+            session,
+            sample.namespace,
+            sample.challenge,
+            evidenceSha,
+            planBytes,
+            planSha,
+            `encodeprobe${index}`,
+          ],
+        );
+        await admin.query(
+          `INSERT INTO hns_authority_provision_jobs (
+             provision_job_id, root_import_session_id, operation_kind,
+             request_bytes, request_sha256, state, attempt_count, lease_fence,
+             publish_plan_bytes, publish_plan_sha256, result_bytes, result_sha256, completed_at
+           ) VALUES ('provision-'||$1,$1,'provision_root_v1',$2,$3,'completed',0,0,
+             $4,$5,$2,$3,clock_timestamp())`,
+          [session, planBytes, planSha, planBytes, planSha],
+        );
+        await admin.query("COMMIT");
+        const encoded = await admin.query<{ request_bytes: Buffer; request_sha256: string }>(
+          "SELECT request_bytes, request_sha256 FROM encode_hns_root_readiness_observation_request_v1($1)",
+          [session],
+        );
+        const stored = await admin.query<{ expires_at: Date; publish_plan_sha256: string }>(
+          "SELECT expires_at, publish_plan_sha256 FROM hns_root_import_sessions WHERE root_import_session_id=$1",
+          [session],
+        );
+        const storedRow = stored.rows[0];
+        if (storedRow === undefined) throw new Error("encoded session row missing");
+        const expected = canonicalJson({
+          version: "pirate-hns-root-readiness-observation-request-v1",
+          root_import_session_id: session,
+          namespace_session_id: sample.namespace,
+          root_label: `encodeprobe${index}`,
+          challenge_txt_value: sample.challenge,
+          ownership_result_sha256: evidenceSha,
+          publish_plan_sha256: storedRow.publish_plan_sha256,
+          provision_result_sha256: planSha,
+          expires_at: storedRow.expires_at.toISOString(),
+        });
+        const bytes = encoded.rows[0]?.request_bytes;
+        if (!(bytes instanceof Uint8Array)) throw new Error("request bytes missing");
+        expect(Buffer.from(bytes).toString("utf8")).toBe(expected);
+        expect(encoded.rows[0]?.request_sha256).toBe(sha256(Buffer.from(expected)));
+      }
+    });
+  }, 30_000);
+
+  test("renewal refuses a broken plan binding by name and never replays a null digest", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+      const replacement = Buffer.from('{"replacement":true}');
+      const replacementSha = sha256(replacement);
+      await admin.query(
+        `UPDATE hns_authority_provision_jobs
+            SET publish_plan_bytes=$1, publish_plan_sha256=$2,
+                updated_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        [replacement, replacementSha],
+      );
+      await admin.query("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+      const claim = await admin.query(
+        "SELECT * FROM claim_hns_root_health_renewal_job_v1('authority-executor',60)",
+      );
+      expect(claim.rows).toHaveLength(0);
+      expect(
+        (
+          await admin.query<{ failure_code: string }>(
+            "SELECT failure_code FROM hns_root_health_renewal_jobs ORDER BY created_at DESC LIMIT 1",
+          )
+        ).rows[0]?.failure_code,
+      ).toBe("plan_binding_mismatch");
+
+      // Pre-0170 completed renewals carry no derived request digest; a
+      // re-delivery is a deliberate conflict, never a replay.
+      await admin.query(
+        `UPDATE hns_root_health_renewal_jobs
+            SET state='completed', leased_by=NULL, lease_expires_at=NULL,
+                result_bytes='legacy-result'::bytea,
+                result_sha256=encode(sha256('legacy-result'::bytea),'hex'),
+                request_bytes=NULL, request_sha256=NULL,
+                completed_at=clock_timestamp(), failure_code=NULL
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const legacy = await admin.query<{ renewal_job_id: string }>(
+        "SELECT renewal_job_id FROM hns_root_health_renewal_jobs ORDER BY created_at DESC LIMIT 1",
+      );
+      const replayed = await admin.query<{ outcome: string }>(
+        `SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,'authority-executor',1,'${"0".repeat(64)}','ready',$2,encode(sha256($2),'hex'),NULL)`,
+        [legacy.rows[0]?.renewal_job_id, Buffer.from("legacy-result")],
+      );
+      expect(replayed.rows[0]?.outcome).toBe("conflict");
+      expect(
+        (
+          await admin.query<{ state: string }>(
+            "SELECT state FROM hns_root_health_renewal_jobs WHERE renewal_job_id=$1",
+            [legacy.rows[0]?.renewal_job_id],
+          )
+        ).rows[0]?.state,
+      ).toBe("completed");
+    });
+  }, 30_000);
+
   test("renewal continues across an adopted lifecycle generation", async () => {
     await withSchema(async (connection, admin) => {
       const store = makeControlPlaneHnsRootImportStore(

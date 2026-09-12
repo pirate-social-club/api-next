@@ -1056,7 +1056,7 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
   );
 
   test(
-    "the controlled cutover probe completes through the single-owner path and replays",
+    "the controlled cutover probe binds attempt, artifact and lease, and refuses a fresh attempt",
     async () => {
       await withSchema(
         () => true,
@@ -1065,43 +1065,224 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
             "SELECT seed_hns_lifecycle_readiness_cutover_probe_v1() AS outcome",
           );
           expect(seeded.rows[0]?.outcome).toBe("seeded");
-          const serviceVersion = "pirate-hns-authority-provisioner-v2";
-          const bundleSha = "d".repeat(64);
+          const version = "pirate-hns-authority-provisioner-v2";
+          const digest = "d".repeat(64);
           const first = await admin.query<{ outcome: string }>(
-            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
-            ["cutover-probe-executor", serviceVersion, bundleSha],
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            ["probe-executor", "attempt-00000001", version, digest, digest],
           );
           expect(first.rows[0]?.outcome).toBe("ready");
           const identity = await admin.query<Record<string, unknown>>(
-            `SELECT service_version, bundle_sha256, executor_id, probe_outcome, probe_reason
+            `SELECT attempt_id, bundle_sha256, measured_bundle_sha256, expected_bundle_sha256,
+                    executor_id, probe_job_id, lease_fence, probe_outcome, probe_reason,
+                    probe_completed_at IS NOT NULL AS completed
                FROM hns_lifecycle_service_identity`,
           );
           expect(identity.rows[0]).toMatchObject({
-            service_version: serviceVersion,
-            bundle_sha256: bundleSha,
-            executor_id: "cutover-probe-executor",
+            attempt_id: "attempt-00000001",
+            bundle_sha256: digest,
+            measured_bundle_sha256: digest,
+            expected_bundle_sha256: digest,
+            executor_id: "probe-executor",
             probe_outcome: "ready",
             probe_reason: null,
+            completed: true,
           });
-          const job = await admin.query<{ state: string; leased_by: string | null }>(
-            `SELECT state, leased_by FROM hns_root_import_lifecycle_jobs
-              WHERE root_import_session_id='cutover-readiness-probe'
-              ORDER BY lifecycle_job_id DESC LIMIT 1`,
+          expect(Number(identity.rows[0]?.probe_job_id)).toBeGreaterThan(0);
+          expect(Number(identity.rows[0]?.lease_fence)).toBeGreaterThan(0);
+          const job = await admin.query<{ state: string; synthetic: boolean }>(
+            `SELECT job.state, lifecycle.synthetic
+               FROM hns_root_import_lifecycle_jobs AS job
+               JOIN hns_root_import_lifecycle AS lifecycle USING(root_import_session_id)
+              WHERE job.root_import_session_id='cutover-readiness-probe'
+              ORDER BY job.lifecycle_job_id DESC LIMIT 1`,
           );
-          expect(job.rows[0]).toMatchObject({ state: "completed", leased_by: null });
-          const replayed = await admin.query<{ outcome: string }>(
-            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
-            ["cutover-probe-executor", serviceVersion, bundleSha],
+          expect(job.rows[0]).toMatchObject({ state: "completed" });
+          expect(job.rows[0]?.synthetic).toBe(true);
+
+          // Same attempt refreshes; a fresh attempt can never be satisfied by
+          // the previous attempt's completion.
+          const replay = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            ["probe-executor", "attempt-00000001", version, digest, digest],
           );
-          expect(replayed.rows[0]?.outcome).toBe("replayed");
+          expect(replay.rows[0]?.outcome).toBe("replayed");
+          const stale = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            ["probe-executor", "attempt-00000002", version, digest, digest],
+          );
+          expect(stale.rows[0]?.outcome).toBe("failed");
+          expect(
+            (
+              await admin.query<{ probe_reason: string }>(
+                "SELECT probe_reason FROM hns_lifecycle_service_identity",
+              )
+            ).rows[0]?.probe_reason,
+          ).toBe("attempt_mismatch");
+
+          // The measured artifact must equal the expected deployment digest.
+          const measured = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            ["probe-executor", "attempt-00000001", version, "e".repeat(64), digest],
+          );
+          expect(measured.rows[0]?.outcome).toBe("failed");
+          expect(
+            (
+              await admin.query<{ probe_reason: string }>(
+                "SELECT probe_reason FROM hns_lifecycle_service_identity",
+              )
+            ).rows[0]?.probe_reason,
+          ).toBe("artifact_mismatch");
+
           await admin.query(
             "DELETE FROM hns_root_import_lifecycle_jobs WHERE root_import_session_id='cutover-readiness-probe'",
           );
           const absent = await admin.query<{ outcome: string }>(
-            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3) AS outcome",
-            ["cutover-probe-executor", serviceVersion, bundleSha],
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            ["probe-executor", "attempt-00000001", version, digest, digest],
           );
           expect(absent.rows[0]?.outcome).toBe("probe_absent");
+        },
+      );
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "probe work is isolated, creates no readiness or activation evidence, and survives lease conflicts",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          await seedOwners(admin);
+          await seedSession(admin, {
+            session: "cutover-probe-neighbour",
+            label: "neighbour",
+            withLifecycle: true,
+          });
+          await seedLifecycleReadinessJob(admin, {
+            session: "cutover-probe-neighbour",
+            state: "queued",
+          });
+          await admin.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
+          const digest = "f".repeat(64);
+          const probe = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            [
+              "probe-executor",
+              "attempt-00000003",
+              "pirate-hns-authority-provisioner-v2",
+              digest,
+              digest,
+            ],
+          );
+          expect(probe.rows[0]?.outcome).toBe("ready");
+          // No session, readiness or activation evidence is created.
+          const sessions = await admin.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM hns_root_import_sessions WHERE root_import_session_id='cutover-readiness-probe'",
+          );
+          expect(Number(sessions.rows[0]?.count)).toBe(0);
+          const operations = await admin.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM hns_root_import_activation_operations",
+          );
+          expect(Number(operations.rows[0]?.count)).toBe(0);
+          // The normal claim takes only the real operation, never the probe.
+          const claimed = await admin.query<{ root_import_session_id: string }>(
+            "SELECT * FROM claim_hns_root_import_lifecycle_job_v1('normal-executor',60)",
+          );
+          expect(claimed.rows[0]?.root_import_session_id).toBe("cutover-probe-neighbour");
+          const none = await admin.query(
+            "SELECT * FROM claim_hns_root_import_lifecycle_job_v1('normal-executor',60)",
+          );
+          expect(none.rows).toHaveLength(0);
+          // A live foreign lease on the probe is a named conflict; an expired
+          // lease is recovered by the next attempt.
+          await admin.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
+          await admin.query(
+            `UPDATE hns_root_import_lifecycle_jobs
+                SET state='leased', leased_by='other-executor', lease_fence=3,
+                    lease_expires_at=clock_timestamp() + interval '10 minutes',
+                    updated_at=clock_timestamp()
+              WHERE root_import_session_id='cutover-readiness-probe' AND state='queued'`,
+          );
+          const conflict = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            [
+              "probe-executor",
+              "attempt-00000004",
+              "pirate-hns-authority-provisioner-v2",
+              digest,
+              digest,
+            ],
+          );
+          expect(conflict.rows[0]?.outcome).toBe("lease_conflict");
+          await admin.query(
+            `UPDATE hns_root_import_lifecycle_jobs
+                SET lease_expires_at=clock_timestamp() - interval '1 second'
+              WHERE root_import_session_id='cutover-readiness-probe'`,
+          );
+          const recovered = await admin.query<{ outcome: string }>(
+            "SELECT run_hns_lifecycle_readiness_cutover_probe_v1($1,$2,$3,$4,$5,clock_timestamp()) AS outcome",
+            [
+              "probe-executor",
+              "attempt-00000004",
+              "pirate-hns-authority-provisioner-v2",
+              digest,
+              digest,
+            ],
+          );
+          expect(recovered.rows[0]?.outcome).toBe("ready");
+        },
+      );
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the service identity table is not writable by the runtime role after the full grant sequence",
+    async () => {
+      await withSchema(
+        () => true,
+        async (admin) => {
+          const suffix = randomUUID().replaceAll("-", "");
+          const role = `hns_identity_acl_${suffix}`;
+          const schemaRow = await admin.query<{ schema: string }>(
+            "SELECT current_schema() AS schema",
+          );
+          const schema = schemaRow.rows[0]?.schema;
+          if (schema === undefined) throw new Error("schema missing");
+          await admin.query("BEGIN");
+          try {
+            await admin.query(`CREATE ROLE ${role} NOLOGIN`);
+            await admin.query(`GRANT USAGE ON SCHEMA ${quote(schema)} TO ${role}`);
+            // The broad template grant first; the template revoke must then
+            // remove every direct path to the identity table.
+            await admin.query(
+              `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quote(schema)} TO ${role}`,
+            );
+            const before = await admin.query<{ allowed: boolean }>(
+              "SELECT has_table_privilege($1,'hns_lifecycle_service_identity','INSERT') AS allowed",
+              [role],
+            );
+            expect(before.rows[0]?.allowed).toBe(true);
+            await admin.query(`REVOKE ALL ON hns_lifecycle_service_identity FROM ${role}`);
+            const after = await admin.query<Record<string, boolean>>(
+              `SELECT has_table_privilege($1,'hns_lifecycle_service_identity','SELECT') AS s,
+                      has_table_privilege($1,'hns_lifecycle_service_identity','INSERT') AS i,
+                      has_table_privilege($1,'hns_lifecycle_service_identity','UPDATE') AS u,
+                      has_table_privilege($1,'hns_lifecycle_service_identity','DELETE') AS d`,
+              [role],
+            );
+            expect(after.rows[0]).toEqual({ s: false, i: false, u: false, d: false });
+            const template = await Bun.file(
+              new URL("../../../db/postgres/roles.sql.example", import.meta.url),
+            ).text();
+            expect(template).toContain(
+              "REVOKE ALL ON hns_lifecycle_service_identity FROM api_next_app",
+            );
+          } finally {
+            await admin.query("ROLLBACK");
+          }
         },
       );
     },
