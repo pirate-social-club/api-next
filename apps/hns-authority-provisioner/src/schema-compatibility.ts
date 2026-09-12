@@ -1,3 +1,4 @@
+import { redactedDiagnosticCause } from "@pirate/application/namespace-ownership";
 import { Client } from "pg";
 
 /**
@@ -183,14 +184,7 @@ const MAX_PROBE_CAUSE_LENGTH = 160;
  * connection strings never survive; control characters collapse to spaces.
  */
 export function redactedProbeCause(error: unknown): string | null {
-  const message = error instanceof Error ? error.message : "";
-  const redacted = message
-    .replaceAll(/\b(?:postgres(?:ql)?|https?):\/\/\S+/giu, "<redacted>")
-    .replaceAll(/[^\x20-\x7e]/gu, " ")
-    .replaceAll(/\s+/gu, " ")
-    .trim()
-    .slice(0, MAX_PROBE_CAUSE_LENGTH);
-  return redacted.length === 0 ? null : redacted;
+  return redactedDiagnosticCause(error)?.slice(0, MAX_PROBE_CAUSE_LENGTH) ?? null;
 }
 
 /**

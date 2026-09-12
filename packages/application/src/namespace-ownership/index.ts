@@ -367,6 +367,7 @@ export {
   mapHnsControlObservationToTargetV3,
   promoteHnsControlObservationResultV1ToV2,
 } from "./hns-control-observer-v2.ts";
+export * from "./hns-diagnostic-redaction.ts";
 export type {
   HnsNamespaceStartInput,
   HnsOwnerRawResponse,
