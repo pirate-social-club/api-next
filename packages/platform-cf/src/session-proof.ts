@@ -455,11 +455,12 @@ export function makeJwksSessionProofVerifier(
 
     const lastAttemptAt = jwksLastAttemptAt.get(url);
     if (lastAttemptAt !== undefined && nowMs() - lastAttemptAt < jwksRefreshCooldownMs) {
-      // Refresh is cooling down: serve the last good document when one exists
-      // and fail closed only when keys were never loaded. Forced refreshes are
+      // Refresh is cooling down: serve the last good document only while it is
+      // unexpired, and fail closed once the TTL has passed so repeated refresh
+      // failures cannot keep expired keys usable. Forced refreshes are
       // deliberately not distinguished so unknown key IDs, expiry, and failure
       // retries share one bound.
-      if (cached !== undefined) return cached.keys;
+      if (cached !== undefined && cached.expiresAt > nowMs()) return cached.keys;
       throw new Error("JWKS request failed");
     }
 

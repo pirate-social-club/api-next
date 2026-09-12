@@ -355,6 +355,46 @@ describe("JWKS refresh control", () => {
     expect(calls).toBe(2);
   });
 
+  test("stops serving cached keys once the TTL expires across repeated refresh failures", async () => {
+    const key = await makeRsaKey("key-a");
+    const token = await signToken(key);
+    let clock = 1_000_000;
+    let calls = 0;
+    let providerAvailable = true;
+    const verifier = makeTestVerifier(
+      async () => {
+        calls += 1;
+        if (!providerAvailable) throw new Error("provider unavailable");
+        return jwksResponse([key]);
+      },
+      () => clock,
+      { cacheTtlMs: 1_000, jwksRefreshCooldownMs: 30_000 },
+    );
+
+    expect(await verifyToken(verifier, token)).toBe(true);
+    expect(calls).toBe(1);
+
+    clock += 1_001;
+    providerAvailable = false;
+    expect(await verifyToken(verifier, token)).toBe(false);
+    expect(calls).toBe(1);
+    expect(await verifyToken(verifier, token)).toBe(false);
+    expect(calls).toBe(1);
+
+    clock += 30_001;
+    expect(await verifyToken(verifier, token)).toBe(false);
+    expect(calls).toBe(2);
+
+    clock += 30_001;
+    expect(await verifyToken(verifier, token)).toBe(false);
+    expect(calls).toBe(3);
+
+    providerAvailable = true;
+    clock += 30_001;
+    expect(await verifyToken(verifier, token)).toBe(true);
+    expect(calls).toBe(4);
+  });
+
   test("accepts a legitimate rotation and a new key after the cooldown", async () => {
     const keyA = await makeRsaKey("key-a");
     const keyB = await makeRsaKey("key-b");
