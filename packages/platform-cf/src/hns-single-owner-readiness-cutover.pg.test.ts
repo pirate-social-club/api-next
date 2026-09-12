@@ -453,6 +453,12 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
           "SELECT to_regclass('hns_root_import_execution_ownership') IS NOT NULL AS present",
         );
         expect(marker.rows[0]?.present).toBe(true);
+        // The removal transaction is atomic: no object created by 0169 or a
+        // later reviewed migration is visible after the refusal.
+        const cutoverTable = await admin.query<{ present: boolean }>(
+          "SELECT to_regclass('hns_lifecycle_schema_cutover') IS NOT NULL AS present",
+        );
+        expect(cutoverTable.rows[0]?.present).toBe(false);
         const sessions = await admin.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM hns_root_import_sessions
           WHERE root_import_session_id IN

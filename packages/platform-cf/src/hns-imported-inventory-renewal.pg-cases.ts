@@ -14,11 +14,26 @@ export async function verifyHnsImportedInventoryRenewal(
     validForSeconds?: number,
   ) => Promise<{ result_bytes: Uint8Array; result_sha256: string }>,
 ) {
+  // Capture the current renewal definitions from the live schema before the
+  // historical replay, then restore them afterwards. This uses the deployed
+  // schema itself as the restoration source rather than naming one migration.
+  const captured = await admin.query<{ def: string }>(
+    `SELECT pg_get_functiondef(procedure.oid) AS def
+       FROM pg_proc AS procedure
+       JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname = current_schema()
+        AND procedure.proname IN (
+          'claim_hns_root_health_renewal_job_v1',
+          'finalize_hns_root_health_renewal_job_v1',
+          'prepare_hns_root_inventory_renewal_v1'
+        )
+      ORDER BY procedure.proname`,
+  );
   await admin.query(
     "DROP FUNCTION IF EXISTS prepare_hns_root_inventory_renewal_v1(text,text,bigint,text,text,bytea,text,text)",
   );
   await admin.query(
-    "ALTER TABLE hns_root_health_renewal_jobs DROP COLUMN IF EXISTS expected_app_generation, DROP COLUMN IF EXISTS expected_sale_generation, DROP COLUMN IF EXISTS request_bytes, DROP COLUMN IF EXISTS request_sha256",
+    "ALTER TABLE hns_root_health_renewal_jobs DROP COLUMN IF EXISTS expected_app_generation, DROP COLUMN IF EXISTS expected_sale_generation",
   );
   // Execute the forward migration against a populated, already-serving root.
   await admin.query(
@@ -29,16 +44,7 @@ export async function verifyHnsImportedInventoryRenewal(
       ),
     ).text(),
   );
-  // The historical inventory migration carries the pre-cutover claim; restore
-  // the current authoritative-evidence renewal functions before exercising it.
-  await admin.query(
-    await Bun.file(
-      new URL(
-        "../../../db/postgres/migrations/0170_hns_renewal_authoritative_evidence.sql",
-        import.meta.url,
-      ),
-    ).text(),
-  );
+  for (const row of captured.rows) await admin.query(row.def);
   const pointers = async () =>
     (
       await admin.query(`SELECT dns.current_generation AS dns, app.current_generation AS app, sale.current_generation AS sale,
