@@ -101,9 +101,6 @@ suite("the HNS provisioner entrypoint drives the lifecycle composition", () => {
     const connectionString = url.toString();
     const client = new Client({ connectionString });
     await client.connect();
-    // The cutover contract requires the running service to prove its staged
-    // identity and complete one controlled readiness job before it serves.
-    await client.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
 
     let service: Bun.Subprocess | null = null;
     const output: string[] = [];
@@ -213,6 +210,9 @@ suite("the HNS provisioner entrypoint drives the lifecycle composition", () => {
 
     try {
       for (const migration of await loadPostgresMigrations()) await client.query(migration.sql);
+      // The cutover contract requires the running service to prove its staged
+      // identity and complete one controlled readiness job before it serves.
+      await client.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
 
       // Two names acquired and published in the same auction sequence: the
       // service must advance both, not one at a time.
