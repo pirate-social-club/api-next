@@ -1,0 +1,461 @@
+{
+  "name": "pirate-jobs-worker",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "main": "/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-song-local-e2e/.tmp/local-pair/jobs/entrypoint.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true
+    }
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_INGRESS",
+      "bucket_name": "pirate-media-ingress-development"
+    },
+    {
+      "binding": "LEARNER_AUDIO",
+      "bucket_name": "pirate-learner-audio-development"
+    }
+  ],
+  "workflows": [
+    {
+      "binding": "MEDIA_PROCESSING_WORKFLOW",
+      "name": "pirate-media-processing",
+      "class_name": "MediaProcessingWorkflow",
+      "script_name": "pirate-media-processor-worker"
+    },
+    {
+      "binding": "VIDEO_ANALYSIS_WORKFLOW",
+      "name": "pirate-video-analysis",
+      "class_name": "VideoAnalysisWorkflow",
+      "script_name": "pirate-media-processor-worker"
+    },
+    {
+      "binding": "DATA_REGISTRATION_WORKFLOW",
+      "name": "pirate-data-registration",
+      "class_name": "DataRegistrationWorkflow",
+      "script_name": "pirate-data-registration-worker"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "TELEGRAM_QUEUE",
+        "queue": "pirate-community-telegram-development"
+      },
+      {
+        "binding": "MEDIA_PROCESSING_QUEUE",
+        "queue": "pirate-media-processing-development"
+      },
+      {
+        "binding": "DATA_REGISTRATION_QUEUE",
+        "queue": "pirate-data-registration-development"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "pirate-community-telegram-development",
+        "max_batch_size": 1,
+        "max_retries": 3
+      },
+      {
+        "queue": "pirate-media-processing-development-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5
+      },
+      {
+        "queue": "pirate-data-registration-development-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5
+      }
+    ]
+  },
+  "vars": {
+    "TELEGRAM_ENABLED": "false",
+    "API_NEXT_ENV": "development",
+    "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
+    "COMMUNITY_MAINTENANCE_ENABLED": "true",
+    "MEDIA_PROCESSING_ENABLED": "true",
+    "VIDEO_ANALYSIS_ENABLED": "false",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "DATA_REGISTRATION_ENABLED": "false",
+    "SONG_SOURCE_RECORDING_ENABLED": "false",
+    "DATA_REGISTRATION_RPC_URL": "",
+    "DATA_REGISTRATION_SIGNER_ADDRESS": "",
+    "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
+    "HNS_OWNERSHIP_ENABLED": "false",
+    "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
+    "MEGAPOT_REWARDS_ENABLED": "false",
+    "MEGAPOT_CHAIN_ID": "84532",
+    "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+    "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+    "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+    "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+    "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+    "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "5",
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
+    "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
+    "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
+  },
+  "secrets": {
+    "required": [
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "MEGAPOT_V2_RPC_URL"
+    ]
+  },
+  "env": {
+    "staging": {
+      "name": "pirate-jobs-worker-staging",
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CRON_LOCK",
+            "class_name": "ScheduledCronLockDO"
+          },
+          {
+            "name": "KARAOKE_ATTEMPT",
+            "class_name": "KaraokeAttemptDO",
+            "script_name": "pirate-http-worker-staging"
+          }
+        ]
+      },
+      "triggers": {
+        "crons": [
+          "* * * * *"
+        ]
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-staging",
+          "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-staging"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-staging",
+          "class_name": "VideoAnalysisWorkflow",
+          "script_name": "pirate-media-processor-worker-staging"
+        },
+        {
+          "binding": "DATA_REGISTRATION_WORKFLOW",
+          "name": "pirate-data-registration-staging",
+          "class_name": "DataRegistrationWorkflow",
+          "script_name": "pirate-data-registration-worker-staging"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "TELEGRAM_QUEUE",
+            "queue": "pirate-community-telegram-staging"
+          },
+          {
+            "binding": "MEDIA_PROCESSING_QUEUE",
+            "queue": "pirate-media-processing-staging"
+          },
+          {
+            "binding": "DATA_REGISTRATION_QUEUE",
+            "queue": "pirate-data-registration-staging"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "pirate-community-telegram-staging",
+            "max_batch_size": 1,
+            "max_retries": 3
+          },
+          {
+            "queue": "pirate-media-processing-staging-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "pirate-data-registration-staging-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          }
+        ]
+      },
+      "vars": {
+        "TELEGRAM_ENABLED": "false",
+        "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
+        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
+        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
+        "API_NEXT_ENV": "staging",
+        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
+        "COMMUNITY_MAINTENANCE_ENABLED": "true",
+        "MEDIA_PROCESSING_ENABLED": "true",
+        "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
+        "DATA_REGISTRATION_ENABLED": "true",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
+        "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
+        "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
+        "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
+        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "MEGAPOT_REWARDS_ENABLED": "true",
+        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+        "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+        "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+        "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "5",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
+      },
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-staging"
+        },
+        {
+          "binding": "LEARNER_AUDIO",
+          "bucket_name": "pirate-learner-audio-staging"
+        },
+        {
+          "binding": "MEGAPOT_COMMITMENTS",
+          "bucket_name": "pirate-megapot-commitments-staging",
+          "preview_bucket_name": "pirate-megapot-commitments-staging"
+        }
+      ],
+      "secrets": {
+        "required": [
+          "VIDEO_WORKFLOW_READ_TOKEN",
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_V2_RPC_URL",
+          "MEGAPOT_CUSTODY_PRIVATE_KEY",
+          "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN"
+        ]
+      }
+    },
+    "production": {
+      "name": "pirate-jobs-worker-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CRON_LOCK",
+            "class_name": "ScheduledCronLockDO"
+          },
+          {
+            "name": "KARAOKE_ATTEMPT",
+            "class_name": "KaraokeAttemptDO",
+            "script_name": "pirate-http-worker-production"
+          }
+        ]
+      },
+      "triggers": {
+        "crons": [
+          "*/30 * * * *"
+        ]
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "884b68c5a7904982a86620ed90032b77",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-production",
+          "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-production"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-production",
+          "class_name": "VideoAnalysisWorkflow",
+          "script_name": "pirate-media-processor-worker-production"
+        },
+        {
+          "binding": "DATA_REGISTRATION_WORKFLOW",
+          "name": "pirate-data-registration-production",
+          "class_name": "DataRegistrationWorkflow",
+          "script_name": "pirate-data-registration-worker-production"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "TELEGRAM_QUEUE",
+            "queue": "pirate-community-telegram-production"
+          },
+          {
+            "binding": "MEDIA_PROCESSING_QUEUE",
+            "queue": "pirate-media-processing-production"
+          },
+          {
+            "binding": "DATA_REGISTRATION_QUEUE",
+            "queue": "pirate-data-registration-production"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "pirate-community-telegram-production",
+            "max_batch_size": 1,
+            "max_retries": 3
+          },
+          {
+            "queue": "pirate-media-processing-production-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "pirate-data-registration-production-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          }
+        ]
+      },
+      "vars": {
+        "TELEGRAM_ENABLED": "false",
+        "API_NEXT_ENV": "production",
+        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
+        "COMMUNITY_MAINTENANCE_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "false",
+        "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
+        "DATA_REGISTRATION_ENABLED": "false",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
+        "DATA_REGISTRATION_SIGNER_ADDRESS": "0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d",
+        "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
+        "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "true",
+        "MEGAPOT_REWARDS_ENABLED": "false",
+        "MEGAPOT_CHAIN_ID": "8453",
+        "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+        "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+        "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+        "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "5",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
+      },
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-production"
+        }
+      ],
+      "secrets": {
+        "required": [
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+        ]
+      }
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CRON_LOCK",
+        "class_name": "ScheduledCronLockDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
+        "class_name": "KaraokeAttemptDO",
+        "script_name": "pirate-http-worker"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ScheduledCronLockDO"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "purpose": "Cumulative provider request ledger for the local song onboarding exercise; survives processing-session restarts.",
+  "perRunGuard": {
+    "acrcloud.com": 2,
+    "api.openai.com": 3,
+    "openrouter.ai": 1,
+    "api.elevenlabs.io": 1
+  },
+  "exerciseCaps": {
+    "acrcloud.com": 4,
+    "api.openai.com": 6
+  },
+  "consumed": {
+    "acrcloud.com": 2,
+    "api.openai.com": 2
+  },
+  "consumption": [
+    {
+      "at": "2026-09-12T08:47:39+04:00",
+      "run": "melody fixture",
+      "calls": { "acrcloud.com": 1, "api.openai.com": 1 },
+      "evidence": "wrangler-2026-09-12_04-26-27_744.log provider-request count 1/2 and 1/3; ACR retained_reference_match score 31"
+    },
+    {
+      "at": "2026-09-12T09:12:00+04:00",
+      "run": "pink noise fixture",
+      "calls": { "acrcloud.com": 1, "api.openai.com": 1 },
+      "evidence": "wrangler-2026-09-12_04-26-27_744.log provider-request count 2/2 and 2/3; ACR no_match; submission published"
+    }
+  ],
+  "remaining": {
+    "acrcloud.com": 2,
+    "api.openai.com": 4
+  },
+  "note": "The reload, feed, playback and seeking verification requires no provider calls. Do not restart a processing session to avoid maintaining this ledger without updating it first."
+}
