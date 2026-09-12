@@ -147,7 +147,11 @@ export function makeTelegramInboxStore(
         "DELETE FROM community_telegram_setups WHERE expires_at<clock_timestamp()-interval '1 day'",
       );
       await db.query(
-        "DELETE FROM community_telegram_provider_stages WHERE issued_at<clock_timestamp()-interval '24 hours'",
+        `DELETE FROM community_telegram_provider_stages AS stage
+        USING community_telegram_inbox AS inbox
+        WHERE stage.inbox_id=inbox.inbox_id
+          AND stage.issued_at<clock_timestamp()-interval '24 hours'
+          AND inbox.state IN ('completed','failed','cancelled')`,
       );
       await db.query(
         "DELETE FROM community_telegram_usage WHERE usage_day<(clock_timestamp() AT TIME ZONE 'UTC')::date-7",

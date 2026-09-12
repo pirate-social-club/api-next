@@ -116,7 +116,8 @@ retried within the inbox attempt budget, and a stage left issued by an
 interrupted attempt is never repeated automatically because the provider may
 have processed the request. That uncertainty is resolved by a deterministic
 fallback reply asking the person to send the message again. Stage rows are
-deleted after twenty-four hours.
+deleted after twenty-four hours once their inbox item is terminal, so a
+still-replayable item keeps its suppression marker.
 
 OpenRouter, its selected model provider and ElevenLabs apply their own data
 retention policies. No zero-retention guarantee is implied. Provider response

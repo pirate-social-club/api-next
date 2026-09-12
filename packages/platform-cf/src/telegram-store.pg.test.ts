@@ -683,10 +683,10 @@ suite("community Telegram persistence", () => {
       });
     }));
 
-  test("cleanup removes provider stages after retention", () =>
+  test("cleanup retains a stale provider stage while its inbox item can still replay", () =>
     fixture(async (store, admin) => {
       await admin.query(
-        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id) VALUES('stage-inbox-c','telegram-community','epoch',13)",
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload) VALUES('stage-inbox-c','telegram-community','epoch',13,'{}'::jsonb)",
       );
       const input = {
         communityId: "telegram-community",
@@ -696,17 +696,81 @@ suite("community Telegram persistence", () => {
         requestHash: "request-c",
         attempt: "attempt-a",
       };
-      await store.beginProviderStage(input);
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
       await admin.query(
         "UPDATE community_telegram_provider_stages SET issued_at=clock_timestamp()-interval '25 hours' WHERE inbox_id='stage-inbox-c'",
+      );
+      await store.cleanup();
+      expect(await store.beginProviderStage({ ...input, attempt: "attempt-b" })).toEqual({
+        kind: "uncertain",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_inbox WHERE inbox_id='stage-inbox-c'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "pending" });
+    }));
+
+  test("cleanup removes a stale provider stage once its inbox item is terminal", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,state,payload) VALUES('stage-inbox-d','telegram-community','epoch',14,'completed',NULL)",
+      );
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "stage-inbox-d",
+        stage: "completion" as const,
+        requestHash: "request-d",
+        attempt: "attempt-a",
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await admin.query(
+        "UPDATE community_telegram_provider_stages SET issued_at=clock_timestamp()-interval '25 hours' WHERE inbox_id='stage-inbox-d'",
       );
       await store.cleanup();
       expect(
         (
           await admin.query(
-            "SELECT count(*)::int AS rows FROM community_telegram_provider_stages WHERE inbox_id='stage-inbox-c'",
+            "SELECT count(*)::int AS rows FROM community_telegram_provider_stages WHERE inbox_id='stage-inbox-d'",
           )
         ).rows[0],
       ).toEqual({ rows: 0 });
+    }));
+
+  test("cleanup releases a stale provider stage when it terminalizes the inbox item", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload,created_at) VALUES('stage-inbox-e','telegram-community','epoch',15,'{}'::jsonb,clock_timestamp()-interval '25 hours')",
+      );
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "stage-inbox-e",
+        stage: "transcription" as const,
+        requestHash: "request-e",
+        attempt: "attempt-a",
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await admin.query(
+        "UPDATE community_telegram_provider_stages SET issued_at=clock_timestamp()-interval '25 hours' WHERE inbox_id='stage-inbox-e'",
+      );
+      await store.cleanup();
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS rows FROM community_telegram_provider_stages WHERE inbox_id='stage-inbox-e'",
+          )
+        ).rows[0],
+      ).toEqual({ rows: 0 });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,payload FROM community_telegram_inbox WHERE inbox_id='stage-inbox-e'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "failed", payload: null });
     }));
 });
