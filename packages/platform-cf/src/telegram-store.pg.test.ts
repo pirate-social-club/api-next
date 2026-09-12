@@ -480,18 +480,113 @@ suite("community Telegram persistence", () => {
       ).toBe(true);
     }));
 
-  test("new revisions do not bypass sending or uncertain publication fences", () =>
+  test("a newer revision arriving during sending is preserved for the next operation", () =>
     publicationFixture(async (store, admin) => {
       const base = publication();
       await store.enqueueDelivery(base);
       const claimed = await store.claimDelivery(base.id);
-      if (!claimed) throw new Error("Missing fenced claim");
-      const changed = {
+      if (!claimed) throw new Error("Missing send");
+      await store.enqueueDelivery({
         ...base,
         desired: { ...base.desired, text: "New revision" },
         desiredHash: "new",
-      };
-      await store.enqueueDelivery(changed);
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,desired_hash,intended_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0],
+      ).toEqual({ state: "sending", desired_hash: "new", intended_hash: "original" });
+      await store.finishDelivery(claimed, { kind: "confirmed", messageId: 42 }, "send");
+      const next = await store.claimDelivery(base.id);
+      expect(next?.desiredHash).toBe("new");
+      expect(next?.messageId).toBe(42);
+    }));
+
+  test("a newer revision arriving during uncertain review follows the pinned outcome", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const sent = await store.claimDelivery(base.id);
+      if (!sent) throw new Error("Missing send");
+      await store.finishDelivery(sent, { kind: "confirmed", messageId: 42 }, "send");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Running" },
+        desiredHash: "running",
+      });
+      const edit = await store.claimDelivery(base.id);
+      if (!edit) throw new Error("Missing edit");
+      await store.finishDelivery(edit, { kind: "uncertain", code: "timeout" }, "edit");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Newest" },
+        desiredHash: "newest",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,desired_hash,intended_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0],
+      ).toEqual({ state: "uncertain", desired_hash: "newest", intended_hash: "running" });
+      const resolved = await store.resolveDelivery(
+        base.communityId,
+        base.id,
+        "confirmed",
+        { ...recoveryCommand, key: "confirm-pinned" },
+        42,
+      );
+      expect(resolved.state).toBe("pending");
+      const row = (
+        await admin.query(
+          "SELECT confirmed_hash,intended_hash,message_id FROM community_telegram_deliveries WHERE delivery_id=$1",
+          [base.id],
+        )
+      ).rows[0];
+      expect(row).toEqual({ confirmed_hash: "running", intended_hash: null, message_id: "42" });
+      const next = await store.claimDelivery(base.id);
+      expect(next?.desiredHash).toBe("newest");
+      expect(next?.confirmedHash).toBe("running");
+      expect(next?.messageId).toBe(42);
+    }));
+
+  test("confirmed absence during uncertain review releases the newest revision", () =>
+    publicationFixture(async (store) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const claimed = await store.claimDelivery(base.id);
+      if (!claimed) throw new Error("Missing send");
+      await store.finishDelivery(claimed, { kind: "uncertain", code: "timeout" }, "send");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Newest" },
+        desiredHash: "newest",
+      });
+      await store.resolveDelivery(base.communityId, base.id, "not_sent", {
+        ...recoveryCommand,
+        key: "absent-pinned",
+      });
+      const next = await store.claimDelivery(base.id);
+      expect(next?.desiredHash).toBe("newest");
+      expect(next?.confirmedHash).toBeNull();
+      expect(next?.messageId).toBeNull();
+    }));
+
+  test("private deliveries still refuse newer payloads while sending", () =>
+    fixture(async (store, admin) => {
+      const base = { ...publication(), id: "reply", kind: "reply" as const, postId: null };
+      await store.enqueueDelivery(base);
+      const claimed = await store.claimDelivery(base.id);
+      if (!claimed) throw new Error("Missing private claim");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Newer private payload" },
+        desiredHash: "newer",
+      });
       expect(
         (
           await admin.query(
@@ -500,17 +595,6 @@ suite("community Telegram persistence", () => {
           )
         ).rows[0],
       ).toEqual({ state: "sending", desired_hash: "original" });
-      await store.finishDelivery(claimed, { kind: "uncertain", code: "timeout" }, "send");
-      await store.enqueueDelivery(changed);
-      expect(
-        (
-          await admin.query(
-            "SELECT state,desired_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
-            [base.id],
-          )
-        ).rows[0],
-      ).toEqual({ state: "uncertain", desired_hash: "original" });
-      expect(await store.claimDelivery(base.id)).toBeNull();
     }));
 
   test("confirming absence clears an old copy before republishing the desired revision", () =>

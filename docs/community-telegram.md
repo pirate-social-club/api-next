@@ -76,7 +76,12 @@ exhausted rows carrying a failure become failed and available for owner recovery
 Cancelling a publication suppresses that revision, but a newer desired revision
 or withdrawal can proceed. Replaying the cancelled revision remains cancelled.
 Private reply, voice and setup cancellations remain terminal. Sending and
-uncertain operations retain their existing reconciliation fences.
+uncertain operations retain their existing reconciliation fences. A newer
+desired revision that arrives while an operation is sending or uncertain is
+stored without disturbing that operation: the operation stays pinned to the
+revision it started with, an owner confirms or discards that pinned revision,
+and a differing newer revision becomes pending. Private deliveries still refuse
+newer payloads while sending or uncertain.
 
 A content-kind change requires operator review. Existing publications are
 reconsidered for withdrawal when they cease to be eligible. Telegram's
