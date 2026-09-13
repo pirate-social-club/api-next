@@ -889,7 +889,14 @@ export function makeMediaProcessingStore(
             const page = (after: Row | undefined) =>
               tx.execute<Row>({
                 label: "media-processing.workflow-candidates",
-                text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ${
+                text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} AND EXISTS (
+                  SELECT 1 FROM media_submission_outbox launch
+                   WHERE launch.submission_id=s.submission_id
+                     AND launch.operation_id=s.operation_id
+                     AND launch.workflow_revision=s.workflow_revision
+                     AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
+                     AND launch.state IN ('delivered','exhausted')
+                ) ${
                   after === undefined
                     ? ""
                     : "AND (s.updated_at,s.submission_id)>($2::timestamptz,$3::text)"

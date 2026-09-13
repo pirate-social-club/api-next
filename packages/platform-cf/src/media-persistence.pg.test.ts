@@ -51,7 +51,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 50;
+const testCount = 51;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -453,6 +453,36 @@ async function createThroughDecision(
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
+}
+
+async function deliverAlignmentLaunch(
+  connection: string,
+  suffix: string,
+  prefix: "cursor" | "overlap",
+): Promise<void> {
+  const outboxEventId = `media_pg_${prefix}_alignment_outbox_${suffix}`;
+  const operation = `media_pg_${prefix}_op_${suffix}`;
+  const claim = await run(connection, (_store, outbox) =>
+    outbox.claim({
+      outboxEventId,
+      workflowRevision: 2,
+      workerId: `fixture-${suffix}`,
+      leaseSeconds: 30,
+    }),
+  );
+  if (claim === null || claim.state !== "running")
+    throw new Error(`alignment launch not claimed: ${outboxEventId}`);
+  expect(
+    await run(connection, (_store, outbox) =>
+      outbox.markDelivered({
+        outboxEventId,
+        workflowRevision: 2,
+        workflowInstanceId: `media-${operation}-r2`,
+        workerId: `fixture-${suffix}`,
+        claimFence: claim.claimFence,
+      }),
+    ),
+  ).toBe(true);
 }
 
 async function insertAnalysisSnapshotVariant(
@@ -4876,6 +4906,29 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const eligibleSql = `SELECT COUNT(*)::int AS count FROM media_post_submissions submission WHERE submission.workflow_revision>0 AND ${mediaRecoveryRequiredSql("submission")}`;
       expect((await admin.query(eligibleSql)).rows[0]).toEqual({ count: 1 });
       const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      // The launch is still pending: eligible in SQL, not yet inspectable.
+      expect(await store.listWorkflowCandidates()).toHaveLength(0);
+      const claim = await run(connection, (_store, outbox) =>
+        outbox.claim({
+          outboxEventId: "media_pg_eligibility_alignment_outbox",
+          workflowRevision: 2,
+          workerId: "eligibility-worker",
+          leaseSeconds: 30,
+        }),
+      );
+      if (claim === null || claim.state !== "running")
+        throw new Error("eligibility alignment not claimed");
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.markDelivered({
+            outboxEventId: "media_pg_eligibility_alignment_outbox",
+            workflowRevision: 2,
+            workflowInstanceId: `media-${operation}-r2`,
+            workerId: "eligibility-worker",
+            claimFence: claim.claimFence,
+          }),
+        ),
+      ).toBe(true);
       expect((await store.listWorkflowCandidates()).map((entry) => entry.submissionId)).toContain(
         submission,
       );
@@ -4967,6 +5020,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
         workflowCandidateLimit: 1,
       });
+      expect(await store.listWorkflowCandidates()).toHaveLength(0);
+      await deliverAlignmentLaunch(connection, "a", "cursor");
+      await deliverAlignmentLaunch(connection, "b", "cursor");
       const seen: string[] = [];
       for (let tick = 0; tick < 3; tick += 1) {
         const page = await store.listWorkflowCandidates();
@@ -5065,6 +5121,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const storeB = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
         workflowCandidateLimit: 1,
       });
+      expect(await storeA.listWorkflowCandidates()).toHaveLength(0);
+      await deliverAlignmentLaunch(connection, "a", "overlap");
+      await deliverAlignmentLaunch(connection, "b", "overlap");
       const [pageA, pageB] = await Promise.all([
         storeA.listWorkflowCandidates(),
         storeB.listWorkflowCandidates(),
@@ -5163,6 +5222,73 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         [submission],
       );
       expect(attemptsAfterRepeat.rows[0]?.count).toBe(attemptsBefore.rows[0]?.count);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
+  test("keeps pending and historical-revision launches out of the recovery sweep", async () => {
+    await withCurrentSchema(async (_admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, false, undefined, true);
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      // Pending: the launch exists but the Workflow create has not returned.
+      expect(await store.listWorkflowCandidates()).toHaveLength(0);
+
+      const claim = await run(connection, (_store, outbox) =>
+        outbox.claim({
+          outboxEventId: "media_pg_analysis_outbox",
+          workflowRevision: 1,
+          workerId: "probe-worker",
+          leaseSeconds: 30,
+        }),
+      );
+      if (claim === null || claim.state !== "running") throw new Error("launch was not claimed");
+      // Running after create: the instance may exist while the delivered write
+      // has not landed; after lease expiry the dispatcher redelivers it
+      // idempotently and it converges to delivered.
+      expect(await store.listWorkflowCandidates()).toHaveLength(0);
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.markDelivered({
+            outboxEventId: "media_pg_analysis_outbox",
+            workflowRevision: 1,
+            workflowInstanceId: `media-${operation}-r1`,
+            workerId: "probe-worker",
+            claimFence: claim.claimFence,
+          }),
+        ),
+      ).toBe(true);
+      // Delivery makes the row eligible.
+      expect(await store.listWorkflowCandidates()).toHaveLength(1);
+
+      const authority = await store.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing launch authority");
+      expect(await store.replaceMissingWorkflow(authority)).toBe("committed");
+      // The revision-1 launch is still delivered, but it is historical: the
+      // current revision-2 launch is pending, so the row is not inspectable.
+      expect(await store.listWorkflowCandidates()).toHaveLength(0);
+
+      const replacement = await run(connection, (_store, outbox) =>
+        outbox.claim({
+          outboxEventId: `media-workflow-replacement-outbox-${operation}-r2`,
+          workflowRevision: 2,
+          workerId: "probe-worker",
+          leaseSeconds: 30,
+        }),
+      );
+      if (replacement === null || replacement.state !== "running")
+        throw new Error("replacement launch not claimed");
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.markDelivered({
+            outboxEventId: `media-workflow-replacement-outbox-${operation}-r2`,
+            workflowRevision: 2,
+            workflowInstanceId: `media-${operation}-r2`,
+            workerId: "probe-worker",
+            claimFence: replacement.claimFence,
+          }),
+        ),
+      ).toBe(true);
+      expect(await store.listWorkflowCandidates()).toHaveLength(1);
     });
     completedTestCount += 1;
   }, 40_000);
