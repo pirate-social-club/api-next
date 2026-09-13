@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { ControlPlaneResult, ControlPlaneStatement } from "@pirate/application";
+import type {
+  ControlPlaneError,
+  ControlPlaneStatement,
+  ControlPlaneTransaction,
+} from "@pirate/application";
 import { VerificationStartStorageFailed } from "@pirate/application/verification";
 import { communityJoinActionPayloadHash, communityJoinIntentBindingHash } from "@pirate/domain";
 import { Effect } from "effect";
-import { makeCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";
+import {
+  type CommunityJoinIntentResolverRuntime,
+  makeCommunityJoinIntentResolver,
+} from "./community-join-intent-resolver.ts";
 
 const INTENT_ID = "community-join_550e8400-e29b-41d4-a716-446655440000";
 
@@ -27,10 +34,20 @@ function exactRow(overrides: Record<string, unknown> = {}) {
 
 function resolverWith(rows: readonly Record<string, unknown>[]) {
   const statements: ControlPlaneStatement[] = [];
-  const resolver = makeCommunityJoinIntentResolver(<Row>(statement: ControlPlaneStatement) => {
-    statements.push(statement);
-    return Effect.succeed({ rows: rows as readonly Row[], rowCount: rows.length });
-  }, "test");
+  const runtime: CommunityJoinIntentResolverRuntime = {
+    withTransaction: <A>(
+      use: (
+        transaction: ControlPlaneTransaction,
+      ) => Effect.Effect<A, ControlPlaneError | VerificationStartStorageFailed>,
+    ) =>
+      use({
+        execute: <Row>(statement: ControlPlaneStatement) => {
+          statements.push(statement);
+          return Effect.succeed({ rows: rows as readonly Row[], rowCount: rows.length });
+        },
+      }).pipe(Effect.mapError(() => new VerificationStartStorageFailed())),
+  };
+  const resolver = makeCommunityJoinIntentResolver(runtime, "test");
   return { resolver, statements };
 }
 
@@ -123,8 +140,9 @@ describe("community join verification intent resolver", () => {
     await expect(
       Effect.runPromise(
         makeCommunityJoinIntentResolver(
-          <Row>(): Effect.Effect<ControlPlaneResult<Row>, VerificationStartStorageFailed> =>
-            Effect.succeed({ rows: [], rowCount: 0 }),
+          {
+            withTransaction: () => Effect.fail(new VerificationStartStorageFailed()),
+          },
           " test ",
         ).resolve({ actor_id: "user-a", intent_id: INTENT_ID, provider_id: "very.web" }),
       ),
