@@ -41,7 +41,16 @@ The container and its socket directory were removed on completion.
 
 Not run: the workerd configurations, the four-shard PostgreSQL partitions,
 the trusted remote secret-boundary gate, and staging acceptance. The evidence
-lifetime decision remains an acceptance blocker, and production still
-constructs the creation store and resolver without `nationality_authoring`, so
-a nationality-gated creation fails closed until that server-resolved wiring
-lands.
+lifetime decision remains an acceptance blocker.
+
+Production wiring validation is recorded separately. The wiring landed at
+`f7d4ef34` (`cef5abfa` for the configuration group and resolver). `bun run
+check` is green there, and the four focused authoring resolution, composition,
+provider-registry, and binding-contract suites pass 45 tests. The full unit
+suite was not rerun after the wiring, so the 4,066-test run above remains the
+latest full-suite evidence and is not green; the two load-timing failures pass
+when rerun focused, but focused reruns do not supersede the full run.
+Nationality authoring stays disabled unless explicit configuration supplies a
+policy revision and evidence lifetime, so a nationality-gated creation still
+fails closed until the owner decides the lifetime and the Solid consumer
+moves to the compatible api-client artifact.
