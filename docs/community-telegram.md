@@ -77,6 +77,20 @@ its item to pending without spending a retry attempt and re-wakes it after the
 interval. Delivery rejections carrying a Telegram retry-after delay the next
 attempt instead of retrying immediately.
 
+Admission is also bounded per minute for the user, chat and community scopes,
+five, twenty and sixty events per sixty seconds, derived from the legacy group
+limits. Minute events are durable and serialize on the integration row, so
+concurrent consumers cannot exceed a scope, and replaying one inbox item does
+not charge the window twice. Refusals of every kind, including command-budget
+and model-budget denials, send at most one notice per user, chat and community
+per fifteen-minute cooldown; later refusals inside the cooldown are recorded
+but not answered. Private replies are delivered in creation order per chat: a
+pending, sending, retry-scheduled or recently uncertain earlier reply keeps
+later text and voice replies back, an uncertain reply holds the queue for five
+minutes before later replies proceed, and an exhausted delivery no longer
+blocks. Channel publications keep their revision semantics and are not part of
+this ordering.
+
 Cleanup and bot rotation fence running handlers. Before starting a provider
 call, committing a stage result, publishing a reply or saving a conversation,
 a handler verifies that its attempt still owns a processing inbox item with a
@@ -178,7 +192,9 @@ more than ten successful revisions, exhausted legacy rows, completed-deletion
 and confirmed-absence recovery, cancelled-publication revival, same-revision
 cancellation, private-delivery fences and the provider-stage lifecycle.
 Membership and setup errors, pacing, cleanup fencing, owner recovery filtering
-and voice presentation are implemented and covered by the native suite; live
+and voice presentation are implemented and covered by the native suite;
+per-minute admission, denial-notice cooldown and private reply ordering are
+covered by the native suite with application-level cooldown tests. Live
 provider, staging and browser acceptance remain open.
 
 Repeated synthesis on a Telegram delivery retry is accepted for the current

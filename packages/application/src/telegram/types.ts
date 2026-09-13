@@ -275,6 +275,22 @@ export interface TelegramStore {
     key: string,
     limits: { user: number; community: number },
   ): Promise<boolean>;
+  admitMinute(
+    communityId: string,
+    epoch: string,
+    chatId: string,
+    userId: string,
+    key: string,
+    limits: { user: number; chat: number; community: number; windowSeconds: number },
+  ): Promise<boolean>;
+  reserveNotice(
+    communityId: string,
+    epoch: string,
+    chatId: string,
+    userId: string,
+    reason: string,
+    windowSeconds: number,
+  ): Promise<boolean>;
   claimChat(
     communityId: string,
     epoch: string,

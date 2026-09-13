@@ -86,6 +86,8 @@ test("an unusable completion body issues once and yields the uncertain fallback"
       }),
       claimInbox: async () => item,
       inboxLive: async () => true,
+      admitMinute: async () => true,
+      reserveNotice: async () => true,
       claimChat: async () => "lease",
       releaseChat: async () => {},
       privateChatStarted: async () => true,

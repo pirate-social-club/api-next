@@ -131,6 +131,25 @@ export function makeTelegramDeliveryStore(
           return null;
         }
         if (record.state !== "pending" && record.state !== "failed") return null;
+        // Ordering: private deliveries for one chat are claimable only in
+        // creation order. An earlier pending or sending delivery, a failed
+        // delivery still inside its retry budget, or a recent uncertain
+        // delivery (bounded hold) keeps later replies back, so retries, text
+        // and voice cannot overtake each other. Publications keep their
+        // revision semantics and are not ordered here.
+        if (record.kind !== "publication") {
+          const blocking = await query(
+            `SELECT 1 FROM community_telegram_deliveries
+            WHERE community_id=$1 AND bot_epoch=$2 AND chat_id=$3 AND kind<>'publication'
+              AND delivery_id<>$4 AND (created_at, delivery_id) < ($5::timestamptz, $4)
+              AND (state IN ('pending','sending')
+                OR (state='failed' AND next_attempt_at < 'infinity'::timestamptz AND attempt_count < 10)
+                OR (state='uncertain' AND created_at > clock_timestamp() - interval '5 minutes'))
+            LIMIT 1`,
+            [record.communityId, record.botEpoch, record.chatId, record.id, rows[0]?.created_at],
+          );
+          if (blocking.length > 0) return null;
+        }
         if (record.attemptCount >= 10 && (record.state === "failed" || record.lastError !== null)) {
           // Exhausted work must stay visible to operator recovery, including
           // pending rows written before retry counts were scoped to revisions.

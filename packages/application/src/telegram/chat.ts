@@ -144,16 +144,41 @@ const channelSetupReply: Record<TelegramChannelRejection, string> = {
 // Command replies carry their own durable daily budget; the model message
 // budget is not a substitute for command admission. The per-chat pacing lease
 // serializes private-chat processing across concurrent consumers and spaces
-// consecutive replies.
+// consecutive replies. Minute windows are durable and derived from the legacy
+// group limits: five per user, twenty per chat and sixty per community each
+// minute. Denial notices are limited by one durable cooldown shared by every
+// refusal reason, so a burst of refused messages produces one notice.
 const commandUserDailyLimit = 40;
 const commandCommunityDailyLimit = 400;
 const chatPacingSeconds = 1;
+const burstWindowSeconds = 60;
+const burstUserLimit = 5;
+const burstChatLimit = 20;
+const burstCommunityLimit = 60;
+const noticeCooldownSeconds = 15 * 60;
 
 async function admitCommand(
   services: TelegramServices,
   item: InboxRecord,
+  chatId: string,
   userId: string,
 ): Promise<boolean> {
+  if (
+    !(await services.store.admitMinute(
+      item.communityId,
+      item.botEpoch,
+      chatId,
+      userId,
+      `command:${item.id}`,
+      {
+        user: burstUserLimit,
+        chat: burstChatLimit,
+        community: burstCommunityLimit,
+        windowSeconds: burstWindowSeconds,
+      },
+    ))
+  )
+    return false;
   return services.store.admitCommand(
     item.communityId,
     item.botEpoch,
@@ -166,17 +191,24 @@ async function admitCommand(
   );
 }
 
-async function commandBudgetReply(
+async function denialNotice(
   services: TelegramServices,
   item: InboxRecord,
   chatId: string,
+  userId: string,
+  text: string,
 ): Promise<void> {
-  await reply(
-    services,
-    item,
-    chatId,
-    textMessage("Too many requests. Please try again in a few minutes."),
-  );
+  if (
+    await services.store.reserveNotice(
+      item.communityId,
+      item.botEpoch,
+      chatId,
+      userId,
+      "throttle",
+      noticeCooldownSeconds,
+    )
+  )
+    await reply(services, item, chatId, textMessage(text));
 }
 
 async function handleMembership(
@@ -228,8 +260,14 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   const input = typeof message.text === "string" ? message.text.slice(0, 4000) : "";
   const start = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+([A-Za-z0-9_-]{43}))?\s*$/u.exec(input);
   if (start) {
-    if (!(await admitCommand(services, item, userId))) {
-      await commandBudgetReply(services, item, chatId);
+    if (!(await admitCommand(services, item, chatId, userId))) {
+      await denialNotice(
+        services,
+        item,
+        chatId,
+        userId,
+        "Too many requests. Please try again in a few minutes.",
+      );
       return;
     }
     await services.store.startPrivateChat(item.communityId, item.botEpoch, userId);
@@ -319,8 +357,14 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       !Number.isSafeInteger(shared.request_id)
     )
       return;
-    if (!(await admitCommand(services, item, userId))) {
-      await commandBudgetReply(services, item, chatId);
+    if (!(await admitCommand(services, item, chatId, userId))) {
+      await denialNotice(
+        services,
+        item,
+        chatId,
+        userId,
+        "Too many requests. Please try again in a few minutes.",
+      );
       return;
     }
     const verified = await verifyTelegramChannel(services, item.communityId, channelId, userId);
@@ -355,8 +399,14 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     return;
   }
   if (/^\/songs(?:@[A-Za-z0-9_]+)?\s*$/u.test(input)) {
-    if (!(await admitCommand(services, item, userId))) {
-      await commandBudgetReply(services, item, chatId);
+    if (!(await admitCommand(services, item, chatId, userId))) {
+      await denialNotice(
+        services,
+        item,
+        chatId,
+        userId,
+        "Too many requests. Please try again in a few minutes.",
+      );
       return;
     }
     const songs = (await services.store.publicPosts(item.communityId, undefined, "song"))
@@ -385,6 +435,30 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   )
     return;
   if (
+    !(await services.store.admitMinute(
+      item.communityId,
+      item.botEpoch,
+      chatId,
+      userId,
+      `message:${item.id}`,
+      {
+        user: burstUserLimit,
+        chat: burstChatLimit,
+        community: burstCommunityLimit,
+        windowSeconds: burstWindowSeconds,
+      },
+    ))
+  ) {
+    await denialNotice(
+      services,
+      item,
+      chatId,
+      userId,
+      "Too many requests. Please try again in a few minutes.",
+    );
+    return;
+  }
+  if (
     !(await services.store.reserveUsage(
       item.communityId,
       item.botEpoch,
@@ -394,11 +468,12 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       0,
     ))
   ) {
-    await reply(
+    await denialNotice(
       services,
       item,
       chatId,
-      textMessage("The daily message limit has been reached. Please try again tomorrow."),
+      userId,
+      "The daily message limit has been reached. Please try again tomorrow.",
     );
     return;
   }

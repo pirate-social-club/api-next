@@ -1857,4 +1857,159 @@ suite("community Telegram persistence", () => {
         ).rows[0],
       ).toEqual({ rows: 1 });
     }));
+
+  function privateDelivery(id: string, chatId: string, kind: "reply" | "voice" = "reply") {
+    const desiredKind = kind === "voice" ? ("voice" as const) : ("text" as const);
+    return {
+      id,
+      communityId: "telegram-community",
+      botEpoch: "epoch",
+      chatId,
+      kind,
+      postId: null,
+      state: "pending" as const,
+      desired: {
+        kind: desiredKind,
+        text: kind === "voice" ? "" : `reply ${id}`,
+        media: null,
+        buttons: [] as const,
+        ...(kind === "voice" ? { speech: `spoken ${id}` } : {}),
+      },
+      desiredHash: `${id}-hash`,
+    };
+  }
+
+  test("per-minute admission is durable, replay-safe and serialized", () =>
+    fixture(async (store, admin) => {
+      const limits = { user: 5, chat: 20, community: 60, windowSeconds: 60 };
+      const results = await Promise.all(
+        Array.from({ length: 6 }, (_unused, index) =>
+          store.admitMinute(
+            "telegram-community",
+            "epoch",
+            "chat-1",
+            "user-1",
+            `message:burst-${index}`,
+            limits,
+          ),
+        ),
+      );
+      expect(results.filter(Boolean)).toHaveLength(5);
+      // Replaying an admitted event neither consumes a slot nor fails.
+      expect(
+        await store.admitMinute(
+          "telegram-community",
+          "epoch",
+          "chat-1",
+          "user-1",
+          "message:burst-0",
+          limits,
+        ),
+      ).toBe(true);
+      // Another user in the same community is still admitted by its own scope.
+      expect(
+        await store.admitMinute(
+          "telegram-community",
+          "epoch",
+          "chat-2",
+          "user-2",
+          "message:burst-6",
+          limits,
+        ),
+      ).toBe(true);
+      await admin.query(
+        "UPDATE community_telegram_usage_reservations SET created_at=clock_timestamp()-interval '61 seconds' WHERE reservation_key LIKE 'minute:%'",
+      );
+      expect(
+        await store.admitMinute(
+          "telegram-community",
+          "epoch",
+          "chat-1",
+          "user-1",
+          "message:burst-7",
+          limits,
+        ),
+      ).toBe(true);
+    }));
+
+  test("notice cooldown is durable and expires with its window", () =>
+    fixture(async (store) => {
+      expect(
+        await store.reserveNotice("telegram-community", "epoch", "7", "7", "throttle", 1),
+      ).toBe(true);
+      expect(
+        await store.reserveNotice("telegram-community", "epoch", "7", "7", "throttle", 1),
+      ).toBe(false);
+      await Bun.sleep(1100);
+      expect(
+        await store.reserveNotice("telegram-community", "epoch", "7", "7", "throttle", 1),
+      ).toBe(true);
+    }));
+
+  test("a retryable earlier reply keeps a later voice behind it", () =>
+    fixture(async (store) => {
+      await store.enqueueDelivery(privateDelivery("order-reply", "7", "reply"));
+      await store.enqueueDelivery(privateDelivery("order-voice", "7", "voice"));
+      const first = await store.claimDelivery("order-reply");
+      if (!first) throw new Error("Missing reply claim");
+      await store.finishDelivery(
+        first,
+        { kind: "rejected", code: "telegram_429", retryAfter: 60 },
+        "send",
+      );
+      expect(await store.claimDelivery("order-voice")).toBeNull();
+      await store.enqueueDelivery(privateDelivery("order-other", "8", "reply"));
+      expect(await store.claimDelivery("order-other")).not.toBeNull();
+    }));
+
+  test("an uncertain reply holds later replies for a bounded period", () =>
+    fixture(async (store, admin) => {
+      await store.enqueueDelivery(privateDelivery("hold-a", "9", "reply"));
+      await store.enqueueDelivery(privateDelivery("hold-b", "9", "voice"));
+      const first = await store.claimDelivery("hold-a");
+      if (!first) throw new Error("Missing first claim");
+      await store.finishDelivery(
+        first,
+        { kind: "uncertain", code: "acknowledgement_unavailable" },
+        "send",
+      );
+      expect(await store.claimDelivery("hold-b")).toBeNull();
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET created_at=clock_timestamp()-interval '6 minutes' WHERE delivery_id='hold-a'",
+      );
+      expect(await store.claimDelivery("hold-b")).not.toBeNull();
+    }));
+
+  test("a stalled earlier delivery releases through the uncertain hold", () =>
+    fixture(async (store, admin) => {
+      await store.enqueueDelivery(privateDelivery("stall-a", "10", "reply"));
+      await store.enqueueDelivery(privateDelivery("stall-b", "10", "reply"));
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET state='sending',attempt='stalled',attempt_count=1,lease_expires_at=clock_timestamp()-interval '1 second' WHERE delivery_id='stall-a'",
+      );
+      expect(await store.claimDelivery("stall-b")).toBeNull();
+      expect(await store.claimDelivery("stall-a")).toBeNull();
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_deliveries WHERE delivery_id='stall-a'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "uncertain" });
+      expect(await store.claimDelivery("stall-b")).toBeNull();
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET created_at=clock_timestamp()-interval '6 minutes' WHERE delivery_id='stall-a'",
+      );
+      expect(await store.claimDelivery("stall-b")).not.toBeNull();
+    }));
+
+  test("an exhausted earlier delivery no longer blocks later replies", () =>
+    fixture(async (store, admin) => {
+      await store.enqueueDelivery(privateDelivery("exhaust-a", "11", "reply"));
+      await store.enqueueDelivery(privateDelivery("exhaust-b", "11", "reply"));
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET state='failed',attempt_count=10,next_attempt_at=clock_timestamp(),last_error='retry_limit_reached' WHERE delivery_id='exhaust-a'",
+      );
+      expect(await store.claimDelivery("exhaust-b")).not.toBeNull();
+    }));
 });

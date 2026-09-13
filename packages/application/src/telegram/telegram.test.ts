@@ -51,6 +51,8 @@ function services(methods: Partial<TelegramStore>): TelegramServices {
     store: new Proxy(
       {
         inboxLive: async () => true,
+        admitMinute: async () => true,
+        reserveNotice: async () => true,
         enqueueInboxReply: async (record: DeliveryIntent) => {
           if (!methods.enqueueDelivery) throw new Error("Unexpected operation: enqueueInboxReply");
           await methods.enqueueDelivery(record);
@@ -915,4 +917,89 @@ test("a refused reply leaves the inbox item unfinished", async () => {
   });
   await processTelegramInbox(service, "inbox");
   expect(finished).toEqual([]);
+});
+
+test("a burst refusal sends one denial notice until the cooldown expires", async () => {
+  const notices: DeliveryIntent[] = [];
+  let noticeAllowed = true;
+  const service = services({
+    claimInbox: async () => ({
+      id: "inbox",
+      communityId: "community",
+      botEpoch: "epoch",
+      attempt: "attempt",
+      update: {
+        update_id: 3,
+        message: {
+          chat: { id: 7, type: "private" },
+          from: { id: 7, is_bot: false },
+          text: "/songs",
+        },
+      },
+    }),
+    integration: async () => integration,
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    admitMinute: async () => false,
+    reserveNotice: async () => {
+      const allowed = noticeAllowed;
+      noticeAllowed = false;
+      return allowed;
+    },
+    enqueueDelivery: async (delivery) => {
+      notices.push(delivery);
+    },
+    finishInbox: async () => {},
+  });
+  await processTelegramInbox(service, "inbox");
+  await processTelegramInbox(service, "inbox");
+  expect(notices).toHaveLength(1);
+  noticeAllowed = true;
+  await processTelegramInbox(service, "inbox");
+  expect(notices).toHaveLength(2);
+});
+
+test("an exhausted model budget is denied once per cooldown", async () => {
+  const notices: DeliveryIntent[] = [];
+  let noticeAllowed = true;
+  const service = services({
+    claimInbox: async () => ({
+      id: "inbox",
+      communityId: "community",
+      botEpoch: "epoch",
+      attempt: "attempt",
+      update: {
+        update_id: 4,
+        message: {
+          chat: { id: 7, type: "private" },
+          from: { id: 7, is_bot: false },
+          text: "Tell me about the community",
+        },
+      },
+    }),
+    integration: async () => ({
+      ...integration,
+      policy: { ...integration.policy, enabled: true, model: "fixture-model" },
+    }),
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    reserveUsage: async () => false,
+    reserveNotice: async () => {
+      const allowed = noticeAllowed;
+      noticeAllowed = false;
+      return allowed;
+    },
+    enqueueDelivery: async (delivery) => {
+      notices.push(delivery);
+    },
+    finishInbox: async () => {},
+  });
+  await processTelegramInbox(service, "inbox");
+  await processTelegramInbox(service, "inbox");
+  expect(notices).toHaveLength(1);
+  noticeAllowed = true;
+  await processTelegramInbox(service, "inbox");
+  expect(notices).toHaveLength(2);
 });

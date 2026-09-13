@@ -13,6 +13,8 @@ export function makeTelegramInboxStore(
   | "pendingWork"
   | "reserveUsage"
   | "admitCommand"
+  | "admitMinute"
+  | "reserveNotice"
   | "claimChat"
   | "releaseChat"
   | "deferInbox"
@@ -188,6 +190,78 @@ export function makeTelegramInboxStore(
         return true;
       });
     },
+    admitMinute(communityId, epoch, chatId, userId, key, limits) {
+      return db.transaction(async (query) => {
+        // The integration row serializes concurrent admission, so two
+        // simultaneous messages cannot both observe a below-limit count.
+        const integration = await query(
+          "SELECT community_id FROM community_telegram_integrations WHERE community_id=$1 AND bot_epoch=$2 FOR UPDATE",
+          [communityId, epoch],
+        );
+        if (integration.length === 0) return false;
+        const eventKey = `minute:${key}`;
+        const previous = await query(
+          "SELECT 1 FROM community_telegram_usage_reservations WHERE community_id=$1 AND bot_epoch=$2 AND reservation_key=$3",
+          [communityId, epoch, eventKey],
+        );
+        if (previous.length > 0) return true;
+        const scopes = [
+          { prefix: `minute:user:${userId}`, limit: limits.user },
+          { prefix: `minute:chat:${chatId}`, limit: limits.chat },
+          { prefix: "minute:community", limit: limits.community },
+        ];
+        for (const scope of scopes) {
+          const rows = await query(
+            `SELECT count(*)::int AS used FROM community_telegram_usage_reservations
+            WHERE community_id=$1 AND bot_epoch=$2 AND starts_with(reservation_key, $3 || ':')
+              AND created_at > clock_timestamp() - make_interval(secs=>$4)`,
+            [communityId, epoch, scope.prefix, limits.windowSeconds],
+          );
+          if (Number(rows[0]?.used ?? 0) >= scope.limit) return false;
+        }
+        await query(
+          "INSERT INTO community_telegram_usage_reservations(community_id,bot_epoch,reservation_key) VALUES($1,$2,$3)",
+          [communityId, epoch, eventKey],
+        );
+        for (const scope of scopes) {
+          await query(
+            "INSERT INTO community_telegram_usage_reservations(community_id,bot_epoch,reservation_key) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+            [communityId, epoch, `${scope.prefix}:${eventKey}`],
+          );
+        }
+        return true;
+      });
+    },
+    reserveNotice(communityId, epoch, chatId, userId, reason, windowSeconds) {
+      return db.transaction(async (query) => {
+        const integration = await query(
+          "SELECT community_id FROM community_telegram_integrations WHERE community_id=$1 AND bot_epoch=$2 FOR UPDATE",
+          [communityId, epoch],
+        );
+        if (integration.length === 0) return false;
+        const bucket = await query(
+          "SELECT floor(extract(epoch FROM clock_timestamp())/$1)::bigint AS bucket",
+          [windowSeconds],
+        );
+        const prefix = `notice:${reason}:${String(bucket[0]?.bucket ?? "0")}`;
+        const keys = [
+          `${prefix}:user:${userId}`,
+          `${prefix}:chat:${chatId}`,
+          `${prefix}:community`,
+        ];
+        const existing = await query(
+          "SELECT 1 FROM community_telegram_usage_reservations WHERE community_id=$1 AND bot_epoch=$2 AND reservation_key=ANY($3::text[])",
+          [communityId, epoch, keys],
+        );
+        if (existing.length > 0) return false;
+        for (const key of keys)
+          await query(
+            "INSERT INTO community_telegram_usage_reservations(community_id,bot_epoch,reservation_key) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+            [communityId, epoch, key],
+          );
+        return true;
+      });
+    },
     claimChat(communityId, epoch, chatId, minIntervalSeconds) {
       return db.transaction(async (query) => {
         const token = crypto.randomUUID();
@@ -265,6 +339,14 @@ export function makeTelegramInboxStore(
       );
       await db.query(
         "DELETE FROM community_telegram_usage WHERE usage_day<(clock_timestamp() AT TIME ZONE 'UTC')::date-7",
+      );
+      // Minute admission events age out with the retention window that bounds
+      // replay; notice cooldowns are kept long enough to audit refusals.
+      await db.query(
+        "DELETE FROM community_telegram_usage_reservations WHERE reservation_key LIKE 'minute:%' AND created_at<clock_timestamp()-interval '24 hours'",
+      );
+      await db.query(
+        "DELETE FROM community_telegram_usage_reservations WHERE reservation_key LIKE 'notice:%' AND created_at<clock_timestamp()-interval '7 days'",
       );
       await db.query(
         `DELETE FROM community_telegram_chat_leases
