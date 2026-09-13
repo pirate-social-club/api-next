@@ -173,6 +173,7 @@
     "0170_hns_renewal_authoritative_evidence.sql": "ede05876beff2f135cfafaad77c26f445659d4c5c940e529668f9abd7f57d8c2",
     "0171_hns_cutover_execution_probe.sql": "1e35f43dc2bb1107224b0f3e109b386a36b2ef66de38556de17c388ea31f9355",
     "0172_hns_cutover_evidence_consistency.sql": "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
-    "0175_media_workflow_terminal_escalation.sql": "980f6619a7e9b9f199311ac2dcbace699e6045926ec1c5757ee0b3f2626aeb6f"
+    "0175_media_workflow_terminal_escalation.sql": "980f6619a7e9b9f199311ac2dcbace699e6045926ec1c5757ee0b3f2626aeb6f",
+    "0176_media_operator_reprocess_actions.sql": "3f9d5091c7a8fdf358847ddc5de67dbe8a5f7c497d3e3b396a8156ec6c568f69"
   }
 }
