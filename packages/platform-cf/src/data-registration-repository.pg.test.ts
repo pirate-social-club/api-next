@@ -1525,7 +1525,7 @@ suite("DATA registration persistence", () => {
         await rm(requestPath, { force: true });
         await admin.query(`DROP ROLE ${role}`);
       }
-    }, 40_000);
+    });
   }, 40_000);
 
   test("resolves a song-reference video's parent only from the parent's confirmed row", async () => {
