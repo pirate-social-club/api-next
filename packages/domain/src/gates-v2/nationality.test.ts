@@ -419,6 +419,50 @@ describe("predicate-bound nationality evidence", () => {
     },
   );
 
+  test.each(["self.pass", "zkpassport"] as const)(
+    "reuses %s evidence for 365 days without replay renewing the observation",
+    (provider) => {
+      const input = fixture(provider);
+      input.policy = policy({
+        evidence_lifetime: { kind: "max_age_seconds", seconds: 31_536_000 },
+      });
+      // The fixture observation is in a leap year: 365 days is December 31,
+      // not the following calendar anniversary. Ceremony expiry is earlier.
+      const observation = input.evidence.candidate.receipt.observed_at;
+      input.now = "2020-12-31T00:00:59.999Z";
+      expect(evaluateNationality(input).outcome).toBe("pass");
+      expect(evaluateNationality(input).outcome).toBe("pass");
+      expect(input.evidence.candidate.receipt.observed_at).toBe(observation);
+      input.now = "2020-12-31T00:01:00.000Z";
+      expect(evaluateNationality(input)).toMatchObject({
+        outcome: "needs_evidence",
+        reason: "expired",
+      });
+    },
+  );
+
+  test.each(["receipt", "assertion"] as const)(
+    "the one-year policy honors an earlier %s expiry",
+    (kind) => {
+      const input = fixture();
+      input.policy = policy({
+        evidence_lifetime: { kind: "max_age_seconds", seconds: 31_536_000 },
+      });
+      input.now = "2020-06-01T00:00:00.000Z";
+      const candidate = input.evidence.candidate;
+      expect(evaluateNationality(input).outcome).toBe("pass");
+      expect(
+        evaluateNationality({
+          ...input,
+          evidence: {
+            ...input.evidence,
+            candidate: { ...candidate, [kind]: { ...candidate[kind], expires_at: input.now } },
+          },
+        }),
+      ).toMatchObject({ outcome: "needs_evidence", reason: "expired" });
+    },
+  );
+
   test("enforces maximum age at the exact boundary and rechecks stricter consuming lifetime", () => {
     const input = fixture();
     input.policy = policy({ evidence_lifetime: { kind: "max_age_seconds", seconds: 3600 } });

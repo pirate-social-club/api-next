@@ -54,3 +54,17 @@ Nationality authoring stays disabled unless explicit configuration supplies a
 policy revision and evidence lifetime, so a nationality-gated creation still
 fails closed until the owner decides the lifetime and the Solid consumer
 moves to the compatible api-client artifact.
+
+## 2026-09-14 lifetime decision
+
+workspace_owner selected 365 days (31,536,000 seconds) of nationality evidence
+reuse for joining and handle claims, measured from accepted observation. The
+required explicit rollout input is
+`NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS=31536000`. This documents the
+approved value; it is not a default or an enablement change. An enabled group
+still requires its explicit revision and both genuine provider bindings.
+Earlier receipt/assertion expiry, revocation, and account/requirement/binding
+checks still apply. Replay and quote issuance do not restart the clock.
+The lifetime blocker stated in the historical checkpoints above is resolved.
+The separate adult-viewing age capability, compatible Solid rollout, and
+remaining implementation and acceptance gates are unchanged.

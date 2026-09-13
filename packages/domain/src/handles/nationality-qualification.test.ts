@@ -120,6 +120,52 @@ describe("handle nationality qualification authoring and snapshots", () => {
     );
   });
 
+  test("pins the approved one-year lifetime independently of quote evaluation time", () => {
+    const compilation = compileNationalityPolicy({
+      policy_revision: 2,
+      allowed_countries: ["US"],
+      evidence_lifetime: { kind: "max_age_seconds", seconds: 31_536_000 },
+      provider_bindings: providerFixtures,
+    });
+    if (compilation.kind !== "compiled") throw new Error(compilation.reason);
+    const ref = handleNationalityQualificationRefFromPolicy(
+      "curated-nationality-v1",
+      compilation.policy,
+    );
+    const pinned = snapshot({
+      policy_revision: ref.policy_revision,
+      policy_hash: ref.policy_hash,
+      lifetime: ref.lifetime,
+    });
+    const input = {
+      pin: {
+        offering_revision: 3,
+        offering_hash: "a".repeat(64),
+        qualification: ref,
+        eligibility: pinned,
+      },
+      current: {
+        offering_revision: 3,
+        offering_hash: "a".repeat(64),
+        qualification: ref,
+      },
+      evaluation: {
+        outcome: "needs_evidence",
+        reason: "expired",
+        policy_hash: ref.policy_hash,
+        requirement_hash: ref.requirement_hash,
+      } as const,
+      winning_provider_binding_hash: null,
+    };
+    expect(ref.lifetime).toEqual({ kind: "max_age_seconds", seconds: 31_536_000 });
+    const before = handleNationalityEligibilitySnapshotHash(pinned);
+    expect(recheckHandleNationalityQualification(input)).toEqual({
+      kind: "rejected",
+      reason: "evidence_expired",
+    });
+    expect(handleNationalityEligibilitySnapshotHash(pinned)).toEqual(before);
+  });
+
   test("refuses an indefinite lifetime because none was adopted", () => {
     const indefinite = policy(["US"]);
     expect(() =>

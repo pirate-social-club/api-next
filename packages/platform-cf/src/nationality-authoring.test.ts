@@ -75,6 +75,23 @@ describe("nationality authoring resolution", () => {
     ).toThrow("Nationality authoring configuration is incomplete or invalid");
   });
 
+  test("the approved one-year lifetime is explicit and missing input remains closed", () => {
+    const authoring = resolveNationalityAuthoring({
+      ...complete,
+      evidenceLifetimeSeconds: 31_536_000,
+    });
+    const compiled = compileOptionalRouteDraft(composedPolicy, authoring);
+    expect(authoring?.evidence_lifetime).toEqual({
+      kind: "max_age_seconds",
+      seconds: 31_536_000,
+    });
+    expect(compiled?.status).toBe("verification_required");
+    expect(compiled?.nationality).not.toBeNull();
+    expect(() =>
+      resolveNationalityAuthoring({ ...complete, evidenceLifetimeSeconds: null }),
+    ).toThrow("Nationality authoring configuration is incomplete or invalid");
+  });
+
   test("a complete group compiles the draft with both provider alternatives", () => {
     const authoring = resolveNationalityAuthoring(complete);
     expect(authoring).toMatchObject({
