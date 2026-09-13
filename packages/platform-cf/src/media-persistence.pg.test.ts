@@ -6,6 +6,7 @@ import { MODERATION_POLICY_CATEGORIES_V1, NotFound } from "@pirate/contracts";
 import { canonicalTextModerationInput } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { sweepMissingMediaWorkflows } from "../../../apps/jobs-worker/src/media-workflow-sweep.ts";
 import { runOperatorReprocess } from "../../../scripts/media-operator-reprocess.ts";
 import {
   applyPostgresTestBaselineConnection,
@@ -54,7 +55,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 57;
+const testCount = 59;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4325,9 +4326,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         creation_revision: "3",
         workflow_revision: "2",
         retry_count: before.rows[0].retry_count,
-        workflow_replacement_sequence: String(
-          Number(before.rows[0].workflow_replacement_sequence) + 1,
-        ),
+        workflow_replacement_sequence: "0",
       });
       const actions = await admin.query(
         "SELECT * FROM media_operator_reprocess_actions WHERE submission_id=$1",
@@ -4336,6 +4335,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(actions.rows).toHaveLength(1);
       expect(actions.rows[0]).toMatchObject({
         operator_principal_id: input.operatorPrincipalId,
+        replacement_budget_before: before.rows[0].workflow_replacement_sequence,
+        replacement_budget_after: "0",
         resulting_creation_revision: "3",
         resulting_workflow_revision: "2",
       });
@@ -4572,6 +4573,157 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 60_000);
 
+  test("operator reprocess resets a spent budget and the real sweep repairs a subsequent loss", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, true);
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      const deliver = async () => {
+        const current = await processing.loadAuthority(submission, operation);
+        if (current === null) throw new Error("missing budget fixture authority");
+        const row = (
+          await admin.query(
+            "SELECT outbox_event_id FROM media_submission_outbox WHERE operation_id=$1 AND workflow_revision=$2 AND event_type IN ('analysis_launch','workflow_replacement')",
+            [operation, current.workflowRevision],
+          )
+        ).rows[0];
+        if (row === undefined) throw new Error("missing budget fixture launch");
+        const claim = await run(connection, (_store, outbox) =>
+          outbox.claim({
+            outboxEventId: row.outbox_event_id,
+            workflowRevision: current.workflowRevision,
+            workerId: "budget-fixture",
+            leaseSeconds: 30,
+          }),
+        );
+        if (claim === null) throw new Error("missing budget launch claim");
+        expect(
+          await run(connection, (_store, outbox) =>
+            outbox.markDelivered({
+              outboxEventId: row.outbox_event_id,
+              workflowRevision: current.workflowRevision,
+              workflowInstanceId: `media-${operation}-r${current.workflowRevision}`,
+              workerId: "budget-fixture",
+              claimFence: claim.claimFence,
+            }),
+          ),
+        ).toBe(true);
+      };
+      const missing = { store: processing, workflow: { get: async () => "missing" as const } };
+      for (let sequence = 0; sequence < 3; sequence += 1) {
+        await deliver();
+        expect(await sweepMissingMediaWorkflows(missing)).toMatchObject({
+          replaced: 1,
+          limitReached: 0,
+        });
+      }
+      await deliver();
+      expect(await sweepMissingMediaWorkflows(missing)).toMatchObject({
+        replaced: 0,
+        limitReached: 1,
+      });
+      expect(
+        await sweepMissingMediaWorkflows({
+          store: processing,
+          workflow: { get: async () => "finished" },
+        }),
+      ).toMatchObject({ escalated: 1, limitReached: 0 });
+      const historical = (
+        await admin.query("SELECT * FROM media_submission_outbox ORDER BY outbox_event_id")
+      ).rows;
+      const attempts = (
+        await admin.query("SELECT * FROM media_processing_attempts ORDER BY attempt_id")
+      ).rows;
+      const input = {
+        communityId: community,
+        submissionId: submission,
+        actorUserId: actor,
+        operatorPrincipalId: "fixture-operator",
+        idempotencyKey: "spent-budget-reprocess",
+        expectedCreationRevision: 2,
+        expectedWorkflowRevision: 4,
+        evidenceRef: "fixture://spent-budget",
+      };
+      const results = await Promise.all([
+        run(connection, () => reprocessMediaSubmission(input)),
+        run(connection, () => reprocessMediaSubmission(input)),
+      ]);
+      expect(results.map((result) => result.kind).sort()).toEqual(["replay", "reprocessed"]);
+      expect(
+        (
+          await admin.query(
+            "SELECT replacement_budget_before,replacement_budget_after FROM media_operator_reprocess_actions",
+          )
+        ).rows,
+      ).toEqual([{ replacement_budget_before: "3", replacement_budget_after: "0" }]);
+      expect(await processing.loadAuthority(submission, operation)).toMatchObject({
+        workflowRevision: 5,
+        replacementSequence: 0,
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT * FROM media_submission_outbox WHERE workflow_revision<=4 ORDER BY outbox_event_id",
+          )
+        ).rows,
+      ).toEqual(historical);
+      expect(
+        (await admin.query("SELECT * FROM media_processing_attempts ORDER BY attempt_id")).rows,
+      ).toEqual(attempts);
+      // The new zero-sequence launch must be readable and deliverable, then a
+      // real lost-instance sweep must regain the full three-replacement budget.
+      for (let sequence = 0; sequence < 3; sequence += 1) {
+        await deliver();
+        expect(await sweepMissingMediaWorkflows(missing)).toMatchObject({
+          replaced: 1,
+          limitReached: 0,
+        });
+      }
+      await deliver();
+      expect(await sweepMissingMediaWorkflows(missing)).toMatchObject({
+        replaced: 0,
+        limitReached: 1,
+      });
+      expect(await processing.loadAuthority(submission, operation)).toMatchObject({
+        workflowRevision: 8,
+        replacementSequence: 3,
+      });
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM media_operator_reprocess_actions"))
+          .rows,
+      ).toEqual([{ count: 1 }]);
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
+  test("a zero-sequence replacement launch requires its exact operator audit", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, true);
+      await expect(
+        admin.query(
+          `INSERT INTO media_submission_outbox
+        (outbox_event_id,submission_id,community_id,actor_user_id,author_persona_id,operation_id,
+         creation_revision,audio_revision,analysis_revision,lyrics_revision,workflow_revision,
+         workflow_instance_id,event_type,effect_identity,payload)
+        SELECT 'unaudited-zero',submission_id,community_id,actor_user_id,author_persona_id,operation_id,
+          creation_revision,audio_revision,analysis_revision,current_lyrics_revision,workflow_revision,
+          'media-' || operation_id || '-r' || workflow_revision,'workflow_replacement','unaudited-zero',
+          jsonb_build_object('kind','workflow_replacement','submission_id',submission_id,'operation_id',operation_id,
+            'replacement_sequence',0,'workflow_revision',workflow_revision,'workflow_instance_id','media-' || operation_id || '-r' || workflow_revision)
+        FROM media_post_submissions WHERE submission_id=$1`,
+          [submission],
+        ),
+      ).rejects.toThrow("zero replacement sequence requires its operator audit");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM media_submission_outbox WHERE outbox_event_id='unaudited-zero'",
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
   test("operator reprocess rejects an orphan audit and a revision-only authorization forgery", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const input = await terminalOperatorFixture(connection);
@@ -4580,8 +4732,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           `INSERT INTO media_operator_reprocess_actions
         (operation_id,submission_id,community_id,actor_user_id,operator_principal_id,idempotency_key,request_hash,
          expected_creation_revision,resulting_creation_revision,expected_workflow_revision,resulting_workflow_revision,
-         outbox_event_id,reason_code,evidence_ref)
-        VALUES ($1,$2,$3,$4,'fixture-operator','forged-request',$5,2,3,1,2,'forged-outbox','workflow_terminal_unconverged','fixture://forged')`,
+         outbox_event_id,reason_code,evidence_ref,replacement_budget_before)
+        VALUES ($1,$2,$3,$4,'fixture-operator','forged-request',$5,2,3,1,2,'forged-outbox','workflow_terminal_unconverged','fixture://forged',0)`,
           [operation, submission, community, actor, "b".repeat(64)],
         );
       await admin.query("BEGIN");

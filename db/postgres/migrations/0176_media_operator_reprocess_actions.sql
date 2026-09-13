@@ -22,6 +22,8 @@ CREATE TABLE media_operator_reprocess_actions (
     resulting_creation_revision BIGINT NOT NULL,
     expected_workflow_revision BIGINT NOT NULL CHECK (expected_workflow_revision > 0),
     resulting_workflow_revision BIGINT NOT NULL,
+    replacement_budget_before BIGINT NOT NULL CHECK (replacement_budget_before >= 0),
+    replacement_budget_after BIGINT NOT NULL DEFAULT 0 CHECK (replacement_budget_after = 0),
     outbox_event_id TEXT NOT NULL UNIQUE,
     reason_code TEXT NOT NULL CHECK (reason_code IN ('workflow_terminal_unconverged')),
     evidence_ref TEXT NOT NULL,

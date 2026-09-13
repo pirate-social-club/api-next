@@ -60,7 +60,7 @@ export const reprocessMediaSubmission = Effect.fn("media.operatorReprocess")(fun
   const requestHash = createHash("sha256")
     .update(
       JSON.stringify([
-        "media-operator-reprocess-v1",
+        "media-operator-reprocess-reset-budget-v1",
         input.communityId,
         input.submissionId,
         input.actorUserId,
@@ -126,6 +126,9 @@ export const reprocessMediaSubmission = Effect.fn("media.operatorReprocess")(fun
         readonly: true,
       });
       if (publication.rows.length !== 0) return yield* Effect.fail(reject("transition-rejected"));
+      const replacementBudgetBefore = Number(current.workflow_replacement_sequence);
+      if (!Number.isSafeInteger(replacementBudgetBefore) || replacementBudgetBefore < 0)
+        return yield* Effect.fail(reject("invalid-row"));
       const creationRevision = input.expectedCreationRevision + 1;
       const workflowRevision = input.expectedWorkflowRevision + 1;
       const outboxEventId = `media-operator-reprocess-${randomUUID()}`;
@@ -135,8 +138,8 @@ export const reprocessMediaSubmission = Effect.fn("media.operatorReprocess")(fun
         text: `INSERT INTO media_operator_reprocess_actions
           (operation_id,submission_id,community_id,actor_user_id,operator_principal_id,idempotency_key,request_hash,
            expected_creation_revision,resulting_creation_revision,expected_workflow_revision,resulting_workflow_revision,
-           outbox_event_id,reason_code,evidence_ref)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'workflow_terminal_unconverged',$13)`,
+           outbox_event_id,reason_code,evidence_ref,replacement_budget_before,replacement_budget_after)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'workflow_terminal_unconverged',$13,$14,0)`,
         values: [
           operationId,
           input.submissionId,
@@ -151,6 +154,7 @@ export const reprocessMediaSubmission = Effect.fn("media.operatorReprocess")(fun
           workflowRevision,
           outboxEventId,
           input.evidenceRef,
+          replacementBudgetBefore,
         ],
         readonly: false,
       });
@@ -175,7 +179,7 @@ export const reprocessMediaSubmission = Effect.fn("media.operatorReprocess")(fun
       }
       const changed = yield* tx.execute<Row>({
         label: "media-operator-reprocess.update",
-        text: `UPDATE media_post_submissions SET creation_revision=creation_revision+1,workflow_revision=workflow_revision+1,workflow_replacement_sequence=workflow_replacement_sequence+1,
+        text: `UPDATE media_post_submissions SET creation_revision=creation_revision+1,workflow_revision=workflow_revision+1,workflow_replacement_sequence=0,
           current_terms_revision=CASE WHEN current_terms_revision IS NULL THEN NULL ELSE creation_revision+1 END,
           status='processing',phase=CASE WHEN last_safe_phase='publish' THEN 'decision' ELSE last_safe_phase END,
           decision_revision=(SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=media_post_submissions.operation_id),current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,
@@ -215,6 +219,8 @@ export const reprocessMediaSubmission = Effect.fn("media.operatorReprocess")(fun
           JSON.stringify({
             event_kind: "workflow_replaced",
             action: "operator_reprocess",
+            replacement_budget_before: replacementBudgetBefore,
+            replacement_budget_after: 0,
             idempotency_key: input.idempotencyKey,
             operator_principal_id: input.operatorPrincipalId,
             request_hash: requestHash,

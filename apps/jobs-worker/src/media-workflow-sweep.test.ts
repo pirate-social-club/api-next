@@ -322,8 +322,8 @@ describe("media Workflow missing-instance sweep", () => {
     expect(observed).toContain("workflow_lookup_failed");
   });
 
-  test("reports a finished instance without replacing the persisted operation", async () => {
-    const active = candidate();
+  test("escalates a finished instance even when its replacement budget is spent", async () => {
+    const active = candidate({ replacementSequence: 3 });
     let replacementWrites = 0;
     const observed: string[] = [];
     expect(

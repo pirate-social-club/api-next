@@ -12,7 +12,15 @@ Use this only for processing_failed with workflow_terminal_unconverged after
 reviewing the persisted operation, provider effects, and the terminal Workflow.
 For already-published authority, reconcile the existing publication/alignment;
 this command refuses to reopen a publication. Do not use it to bypass moderation,
-change ownership, reset provider attempts, or increase automatic retry budgets.
+change ownership or reset provider attempts and automatic retry counters.
+
+The reviewed operator action explicitly resets workflow_replacement_sequence to
+zero. Its immutable audit and event record the previous value and the reset value.
+This restores up to three automatic replacements if the fresh instance is lost,
+including when the previous allowance was exhausted. It does not change retry_count,
+provider attempt identities, historical outbox delivery counts, or paid-call
+authorization. An ordinary sweep cannot reset the allowance. A zero-sequence
+replacement launch requires its exact operator audit in the same transaction.
 
 Prepare a JSON request containing exactly these fields:
 

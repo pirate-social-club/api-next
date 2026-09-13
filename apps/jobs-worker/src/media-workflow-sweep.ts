@@ -60,10 +60,6 @@ export async function sweepMissingMediaWorkflows(
     if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
       continue;
     result.inspected += 1;
-    if (songWorkflowReplacementLimitReached(candidate.replacementSequence)) {
-      result.limitReached += 1;
-      continue;
-    }
     let workflowStatus: "present" | "finished" | "indeterminate" | "missing";
     try {
       workflowStatus = await dependencies.workflow.get(workflowInstanceId(candidate));
@@ -128,6 +124,12 @@ export async function sweepMissingMediaWorkflows(
       isMediaTerminalSubmissionStatus(authority.status)
     ) {
       result.stale += 1;
+      continue;
+    }
+    // The ceiling limits replacement writes, not terminal reconciliation or
+    // escalation. A spent budget must still reach its operator resolution.
+    if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
+      result.limitReached += 1;
       continue;
     }
     const committed = await dependencies.store.replaceMissingWorkflow(authority);
