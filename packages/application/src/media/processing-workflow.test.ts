@@ -325,6 +325,8 @@ class FakeStore implements MediaProcessingStore {
     return "committed" as const;
   };
 
+  reconcileTerminalWorkflow = async (_expected: MediaProcessingAuthority) => "unresolved" as const;
+
   listWorkflowCandidates = async () => [this.current];
 
   readModerationPolicy = async () => ({

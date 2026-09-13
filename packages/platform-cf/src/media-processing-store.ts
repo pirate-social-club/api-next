@@ -847,6 +847,25 @@ export function makeMediaProcessingStore(
     );
   };
 
+  const reconcileTerminalWorkflow: MediaProcessingStore["reconcileTerminalWorkflow"] = async (
+    authority,
+  ) => {
+    // A finished Workflow cannot advance, but durable results may already
+    // establish the remaining business work. A publish-phase row with a
+    // committed decision completes through the existing publication fence with
+    // no provider calls; every other unfinished case has no automatic path yet
+    // and is reported unresolved for explicit escalation.
+    if (
+      authority.phase === "publish" &&
+      authority.decisionRevision > 0 &&
+      authority.postId === null
+    ) {
+      const commit = await commitPublication(authority);
+      return commit === "stale" ? "stale" : "reconciled";
+    }
+    return "unresolved";
+  };
+
   const listWorkflowCandidates: MediaProcessingStore["listWorkflowCandidates"] = async () => {
     if (
       !Number.isSafeInteger(workflowCandidateLimit) ||
@@ -1083,6 +1102,7 @@ export function makeMediaProcessingStore(
     commitProcessingFailure,
     commitProviderUnavailableReview,
     replaceMissingWorkflow,
+    reconcileTerminalWorkflow,
     listWorkflowCandidates,
     readModerationPolicy,
   };

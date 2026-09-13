@@ -397,6 +397,9 @@ export interface MediaProcessingStore {
   readonly replaceMissingWorkflow: (
     authority: MediaProcessingAuthority,
   ) => Promise<MediaProcessingCommit>;
+  readonly reconcileTerminalWorkflow: (
+    authority: MediaProcessingAuthority,
+  ) => Promise<"reconciled" | "unresolved" | "stale">;
   readonly listWorkflowCandidates: () => Promise<readonly MediaProcessingAuthority[]>;
   readonly readModerationPolicy: (communityId: string) => Promise<TextModerationPolicySnapshotV2>;
 }
