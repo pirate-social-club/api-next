@@ -127,6 +127,25 @@ function deferredGate() {
   return { promise, resolve };
 }
 
+async function waitForBlocked(
+  observer: Client,
+  queryText: string,
+  blockerPid: number,
+  attempts = 40,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const rows = (
+      await observer.query(
+        "SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE query=$1 AND pg_blocking_pids(pid) @> ARRAY[$2::int]",
+        [queryText, blockerPid],
+      )
+    ).rows;
+    if (Number(rows[0]?.blocked) > 0) return true;
+    await Bun.sleep(50);
+  }
+  return false;
+}
+
 function clientDatabase(
   client: Client,
   gate: { fragment: string; release: Promise<void>; entered: () => void },
@@ -1077,7 +1096,11 @@ suite("community Telegram persistence", () => {
       };
       expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
       const second = await schemaClient(admin);
+      const observer = await schemaClient(admin);
       try {
+        const secondPid = Number(
+          (await second.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+        );
         const gate = deferredGate();
         let entered!: () => void;
         const enteredPromise = new Promise<void>((resolve) => {
@@ -1092,16 +1115,15 @@ suite("community Telegram persistence", () => {
         );
         const persistence = gated.completeProviderStage({ ...input, result: "Answer" });
         await enteredPromise;
-        const cleanup = admin.query(
-          "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='race-inbox-a'",
-        );
-        expect(
-          await Promise.race([cleanup.then(() => "cleanup"), Bun.sleep(200).then(() => "timer")]),
-        ).toBe("timer");
+        const cleanupText =
+          "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='race-inbox-a'";
+        const cleanup = admin.query(cleanupText);
+        expect(await waitForBlocked(observer, cleanupText, secondPid)).toBe(true);
         gate.resolve();
         await persistence;
         await cleanup;
       } finally {
+        await observer.end();
         await second.end();
       }
       expect(
@@ -1172,7 +1194,11 @@ suite("community Telegram persistence", () => {
       };
       expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
       const second = await schemaClient(admin);
+      const observer = await schemaClient(admin);
       try {
+        const secondPid = Number(
+          (await second.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+        );
         const gate = deferredGate();
         let entered!: () => void;
         const enteredPromise = new Promise<void>((resolve) => {
@@ -1187,16 +1213,15 @@ suite("community Telegram persistence", () => {
         );
         const persistence = gated.completeProviderStage({ ...input, result: "Answer" });
         await enteredPromise;
-        const rotation = admin.query(
-          "UPDATE community_telegram_integrations SET bot_epoch='replacement' WHERE community_id='telegram-community'",
-        );
-        expect(
-          await Promise.race([rotation.then(() => "rotation"), Bun.sleep(200).then(() => "timer")]),
-        ).toBe("timer");
+        const rotationText =
+          "UPDATE community_telegram_integrations SET bot_epoch='replacement' WHERE community_id='telegram-community'";
+        const rotation = admin.query(rotationText);
+        expect(await waitForBlocked(observer, rotationText, secondPid)).toBe(true);
         gate.resolve();
         await persistence;
         await rotation;
       } finally {
+        await observer.end();
         await second.end();
       }
       expect(
