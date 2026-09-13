@@ -51,6 +51,17 @@ function databaseUrl(name: string): URL {
   return url;
 }
 
+/** The fixture roles authenticate over the same connection string as the
+ * administrator; in an environment whose loopback rule is scram rather than
+ * trust, a passwordless role would be refused, so carry the URL password. */
+function fixtureRolePassword(): string {
+  try {
+    return decodeURIComponent(new URL(raw ?? "postgres://").password);
+  } catch {
+    return "";
+  }
+}
+
 async function withRoot<A>(use: (root: Client) => Promise<A>): Promise<A> {
   const root = new Client({ connectionString: raw ?? "" });
   await root.connect();
@@ -63,8 +74,15 @@ async function withRoot<A>(use: (root: Client) => Promise<A>): Promise<A> {
 
 async function createRole(prefix: string): Promise<string> {
   const role = `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const password = fixtureRolePassword();
   await withRoot(async (root) => {
-    await root.query(`CREATE ROLE "${role}" LOGIN`);
+    const statement = await root.query<{ statement: string }>(
+      password === ""
+        ? "SELECT format('CREATE ROLE %I LOGIN', $1::text) AS statement"
+        : "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', $1::text, $2::text) AS statement",
+      password === "" ? [role] : [role, password],
+    );
+    await root.query(statement.rows[0]?.statement ?? "SELECT 1");
   });
   createdRoles.add(role);
   return role;
