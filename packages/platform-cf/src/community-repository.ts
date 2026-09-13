@@ -18,6 +18,7 @@ import { decodeCommunityCanonicalRouteV2 } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
 import {
   CommunityJoinIntentDataInvalid,
+  fulfillCommunityJoinIntents,
   resolveOrIssueCommunityJoinIntent,
 } from "./community-join-intent-store.ts";
 import {
@@ -1281,6 +1282,14 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               values: [generatedId("follow"), input.communityId, input.actor.userId],
               readonly: false,
             });
+            yield* fulfillCommunityJoinIntents(transaction, {
+              communityId: input.communityId,
+              userId: input.actor.userId,
+            }).pipe(
+              Effect.mapError((error) =>
+                error instanceof CommunityJoinIntentDataInvalid ? invalid("join") : error,
+              ),
+            );
           }
           return joined({
             community: communityId,
