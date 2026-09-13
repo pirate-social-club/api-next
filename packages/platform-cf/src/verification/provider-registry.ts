@@ -2,8 +2,14 @@ import {
   makeVerificationProviderRegistry,
   type VerificationProviderAdapter,
 } from "@pirate/application/verification";
+import type { ProviderConfigurationRef } from "@pirate/domain/verification";
 import { Effect } from "effect";
-import { makeSelfPassProvider } from "./providers/self-pass.ts";
+import {
+  makeSelfPassProvider,
+  SELF_PASS_PROTOCOL_VERSION,
+  SELF_PASS_RP_SCOPE,
+  selfPassConfigurationFor,
+} from "./providers/self-pass.ts";
 import {
   makeVeryOauthFetchTransport,
   makeVeryOauthProvider,
@@ -21,10 +27,84 @@ import {
 import {
   makeZkPassportProvider,
   makeZkPassportVerifierTransport,
+  ZKPASSPORT_PROTOCOL_VERSION,
+  ZKPASSPORT_RP_SCOPE,
   type ZkPassportVerifierTransport,
+  zkPassportConfiguration,
 } from "./providers/zkpassport.ts";
 
 const SELF_PASS_SESSION_TTL_MS = 15 * 60 * 1_000;
+
+export type NationalityAuthoringProviderBinding = Readonly<{
+  readonly provider_id: "self.pass" | "zkpassport";
+  readonly provider_configuration: ProviderConfigurationRef;
+  readonly method: "document";
+  readonly protocol_version: string;
+  readonly scope: Readonly<{
+    readonly kind: "named";
+    readonly scope_semantics: "issuer_rp_scope";
+    readonly issuer: string;
+    readonly rp_scope: string;
+  }>;
+  readonly environment: string;
+}>;
+
+export type NationalityProviderBindingInput = Readonly<{
+  readonly environment: string;
+  readonly self_pass: Readonly<{
+    readonly callback_origin: string;
+    readonly mock_passport: boolean;
+  }>;
+  readonly zkpassport: Readonly<{
+    readonly domain: string;
+    readonly dev_mode: boolean;
+  }>;
+}>;
+
+/**
+ * The document-provider bindings for a compiled nationality policy. The
+ * configuration references are derived from the same options the runtime
+ * adapters use, so a recorded proof session matches the compiled binding
+ * instead of a second, invented identity.
+ */
+export function nationalityAuthoringProviderBindings(
+  input: NationalityProviderBindingInput,
+): readonly [NationalityAuthoringProviderBinding, NationalityAuthoringProviderBinding] {
+  return [
+    {
+      provider_id: "self.pass",
+      provider_configuration: selfPassConfigurationFor(
+        input.self_pass.callback_origin,
+        input.self_pass.mock_passport,
+      ),
+      method: "document",
+      protocol_version: SELF_PASS_PROTOCOL_VERSION,
+      scope: {
+        kind: "named",
+        scope_semantics: "issuer_rp_scope",
+        issuer: "self.pass",
+        rp_scope: SELF_PASS_RP_SCOPE,
+      },
+      environment: input.environment,
+    },
+    {
+      provider_id: "zkpassport",
+      provider_configuration: zkPassportConfiguration({
+        domain: input.zkpassport.domain,
+        dev_mode: input.zkpassport.dev_mode,
+      }),
+      method: "document",
+      protocol_version: ZKPASSPORT_PROTOCOL_VERSION,
+      scope: {
+        kind: "named",
+        scope_semantics: "issuer_rp_scope",
+        issuer: "zkpassport",
+        rp_scope: ZKPASSPORT_RP_SCOPE,
+      },
+      environment: input.environment,
+    },
+  ];
+}
 
 export interface PlatformVerificationProviderOptions {
   readonly self_pass?: Readonly<{

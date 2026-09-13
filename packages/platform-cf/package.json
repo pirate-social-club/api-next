@@ -33,6 +33,7 @@
     "./community-join-intent-resolver": "./src/community-join-intent-resolver.ts",
     "./community-creation-intent-resolver": "./src/community-creation-intent-resolver.ts",
     "./community-creation-repository": "./src/community-creation-repository.ts",
+    "./nationality-authoring": "./src/nationality-authoring.ts",
     "./community-purchase-funding-repository": "./src/community-purchase-funding-repository.ts",
     "./community-purchase-funding-chain-reader": "./src/community-purchase-funding-chain-reader.ts",
     "./custody-solvency-coordinator": "./src/custody-solvency-coordinator.ts",
