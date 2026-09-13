@@ -20,5 +20,25 @@
     "focused": "14 tests, 0 failures, 63 assertions, exit 0 across DATA adapter, queue and scheduled recovery suites; 1.52 seconds. Biome clean on six touched files.",
     "scope": "Finished and indeterminate statuses never cause replacement, including the second presence read and exhausted budget. This is prevention only; submitted transaction and receipt reconciliation remains unimplemented.",
     "resources": "512 MiB memory, zero swap and one CPU scope. No database or provider call. Other-lane test PIDs 710711 and 711623 remained live; no broad gates launched."
+  },
+  "finalIntegratedRecovery": {
+    "codeHead": "2c174aa06a8197c6c2b00c22bcc0de596fb27f8c",
+    "implementationCommit": "bf6e226d",
+    "dataReconciliation": "Store and sweep resolve a finished Workflow from its exact transaction identity and receipt observations. Reverted fails receipt_reverted; confirmed escalates to reconciliation_required because receipt rows do not carry a song's attached terms and video projection completion is not receipt-only admissible; pending and unavailable leave the row untouched and never authorize a replacement; a moved workflow revision is stale. Replay and concurrent recovery commit exactly one transition.",
+    "migrationAllocation": "0176 media_workflow_terminal_escalation, 0177 media_operator_reprocess_actions, 0178 media_operator_reprocess_transition, after the recheck found origin/main and the HNS entry lane at 0172 and the nationality and telegram lanes at 0175. The manifest suite passes 5/5.",
+    "migrationsApplied": "0001-0178 applied to a fresh PostgreSQL 17.11 database with exit 0; current version 0178_media_operator_reprocess_transition.sql.",
+    "postgres": {
+      "mediaPersistence": "60 tests, 0 failures, 1001 expect calls, exit 0 in 107.71 s",
+      "dataRegistration": "6 tests, 0 failures, 104 expect calls, exit 0 in 19.87 s"
+    },
+    "failureProvenance": "The first database contact failed all seven operator tests because the 0178 guard required the replacement sequence to advance while the same function required the budget reset to zero. The corrected guard was verified by the clean 60-test run. The published pending-alignment fixture also moved to a non-zero replacement sequence because zero-sequence launches now require an operator audit.",
+    "ciPins": "Both song-video sentinel uploads recomputed to shard 3; a hosted CI run remains the only verification and no publication occurred.",
+    "gatesOnFinalHead": "bun run check exit 0 and bun run test:unit 4,043 tests, 0 failures, 25,122 expect calls; final post-docs gate receipts are recorded in the workspace task record.",
+    "logSha256": {
+      "/tmp/opencode/final-media-pg.log": "0a59aff4a7d9d92dad725dd3fefa77e8e95fb95eef1f1686bc7d19fb86e8ec36",
+      "/tmp/opencode/final-data-pg.log": "a45da3ba401e9e97414e1424d0ffc5b49468bc2b71a2d1c4dd7e4486c83096a6",
+      "/tmp/opencode/final-migrations.log": "ad8b4897ded0927d2c3b6f53b88036fd0d83396f88eafcd10a33e211aa917bb1"
+    },
+    "authority": "Local implementation, database and gate work only. No publication, deployment, live migration, key rotation or paid provider call."
   }
 }

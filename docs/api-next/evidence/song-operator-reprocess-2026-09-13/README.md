@@ -54,3 +54,64 @@ sweep assertions failed before the change; the three focused suites now pass
 14 tests with 63 assertions and exit 0. Biome passes on the six touched files.
 This is prevention only. Receipt reconciliation and full integrated gates remain
 open, and no database or provider was called for this checkpoint.
+
+Final integrated recovery receipt — 2026-09-13. The recovery repair is complete
+on this branch at 2c174aa0. DATA terminal reconciliation is implemented at the
+store and sweep seams. A finished Workflow is never replaced: the sweep calls
+reconcileTerminalWorkflow with the candidate's exact operation and workflow
+revision, and the store resolves the durable row from its persisted transaction
+identity and receipt observations. A reverted receipt records the
+receipt_reverted failure. A confirmed receipt escalates to
+reconciliation_required through the existing failure commit, because the
+observation does not carry the completion evidence the fence needs: a song's
+attached terms are written with the registration itself, and the
+media_publication_projections update guard compares canonical_audio_sha256
+against the DATA operation while the video projection shape requires NULL, so
+receipt-only completion is inadmissible for both media kinds today. Pending and
+unavailable evidence leave the durable row untouched and never authorize a
+replacement; a moved workflow revision is stale; repeats and concurrent calls
+return the same disposition with exactly one committed transition. The
+maintenance counts report reconciled, reverted, escalated, pending and
+unavailable separately.
+
+Migration allocation was rechecked at integration time. origin/main and the HNS
+entry lane reach 0172; the nationality lane holds 0173-0175 and the telegram
+lane holds up to 0175. The lane migrations are 0176
+(media_workflow_terminal_escalation), 0177 (media_operator_reprocess_actions)
+and 0178 (media_operator_reprocess_transition); the checksum manifest carries
+exactly those three digests and the manifest suite passes 5/5. The 0178 guard
+carried a stale check requiring the operator transition to advance the
+replacement sequence while the same function required the budget reset to zero,
+so every operator update was rejected on first database contact. The corrected
+guard requires the zero reset and binds it to the audit, event and launch, with
+the automatic retry branch unchanged. The schema and test-reset baselines were
+regenerated from the full sequence, and check:baseline:fresh exits 0 after the
+foundation table catalog was brought up to date.
+
+PostgreSQL receipts at 2c174aa0 against disposable PostgreSQL 17.11:
+scripts/postgres-migrations.ts applied 0001-0178 to a fresh database with exit
+0 and current version 0178_media_operator_reprocess_transition.sql;
+media-persistence.pg.test.ts ran 60 tests with 0 failures, 1001 expect calls
+and exit 0 in 107.71 s, covering operator reprocess concurrency and replay,
+atomic audit/terms/event/launch rollback, command admin authorization, the
+spent-budget reset with unchanged historical outboxes and attempts, the
+database-level concurrent replacement fence, terminal reconciliation, launch
+eligibility and egress; data-registration-repository.pg.test.ts ran 6 tests
+with 0 failures, 104 expect calls and exit 0 in 19.87 s, covering the DATA
+unavailable, pending, reverted and confirmed dispositions, stale authority,
+replay, concurrent recovery and the existing pin, attempt, receipt and parent
+fences.
+
+Repository gates at the same head: bun run test:unit ran 4,043 tests across 588
+files with 0 failures and 25,122 expect calls; bun run check exits 0 through
+knip, the effect diagnostics, Biome, both TypeScript programs, the binding and
+persona programs, the dependency and boundary lints, the migration worktree
+check, contract freshness and api-client verification. The CI sentinel shard
+pins were recomputed to shard 3 for both song-video suites; only a hosted run
+can verify them on CI, and no publication, deployment or paid provider call
+occurred.
+
+Still open outside this lane: the operator resolution surface for DATA
+reconciliation_required rows (no command or endpoint yet), the confirmed-video
+projection fence gap recorded above, and the broader song acceptance evidence
+on one song lineage for lyrics/alignment/karaoke, Study and DATA.
