@@ -113,6 +113,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-nationality-ceremony-suite-complete\n",
   },
   {
+    name: "community creation nationality completion",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_CREATION_NATIONALITY_COMPLETION_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-creation-nationality-completion-suite-complete",
+    contents: "api-next-control-plane-postgres-creation-nationality-completion-suite-complete\n",
+  },
+  {
     name: "community join intent fulfillment",
     path:
       process.env.CONTROL_PLANE_POSTGRES_JOIN_FULFILLMENT_TEST_SENTINEL ??

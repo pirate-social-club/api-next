@@ -1262,6 +1262,115 @@ function loadCommitEvidence(
  * Replays may call it again to repair a completion produced before the intent
  * revision was appended.
  */
+/**
+ * Satisfies the creator's nationality requirement when a generic verification
+ * session for a `community_creation` nationality attempt completes. The write
+ * matches the exact actor, creation intent, requirement, and current attempt:
+ * a superseded generation, a foreign actor, a different action kind, or a
+ * non-pending state grants nothing and leaves the requirement untouched.
+ */
+function advanceNationalityCreationVerificationInTransaction(
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{
+    readonly actor_id: string;
+    readonly result_hash: string;
+    readonly session: Row;
+  }>,
+): Effect.Effect<
+  CommunityCreationVerificationAdvanceOutcome | null,
+  VerificationCompletionStorageFailed | ControlPlaneError
+> {
+  return Effect.gen(function* () {
+    const sessionIntentId = asString(input.session.intent_id);
+    const creationCeremonyId = asString(input.session.creation_ceremony_intent_id);
+    if (sessionIntentId === null || creationCeremonyId !== null) return null;
+
+    const attemptResult = yield* transaction.execute<Row>({
+      label: "community.creation.verification.lock-nationality-attempt",
+      text: `SELECT attempt.ceremony_intent_id,
+                    attempt.actor_id,
+                    attempt.intent_id,
+                    attempt.generation,
+                    attempt.provider_id,
+                    attempt.expires_at,
+                    state.status AS requirement_status,
+                    state.generation AS requirement_generation,
+                    state.current_ceremony_intent_id
+               FROM nationality_ceremony_attempts AS attempt
+               JOIN nationality_requirement_states AS state
+                 ON state.action_kind = attempt.action_kind
+                AND state.intent_id = attempt.intent_id
+                AND state.requirement_kind = attempt.requirement_kind
+              WHERE attempt.ceremony_intent_id = $1
+                AND attempt.actor_id = $2
+                AND attempt.action_kind = 'community_creation'
+                AND attempt.requirement_kind = 'nationality'
+              FOR UPDATE OF attempt, state`,
+      values: [sessionIntentId, input.actor_id],
+      readonly: false,
+    });
+    const attempt = oneRow(attemptResult.rows);
+    if (attempt === null) return null;
+    if (attempt === undefined) return yield* Effect.fail(verificationStorageFailure());
+
+    const attemptGeneration = asPositiveInteger(attempt.generation);
+    const stateGeneration = asNonNegativeInteger(attempt.requirement_generation);
+    const completedAt = asTimestamp(input.session.completed_at);
+    const terminalAt = asTimestamp(input.session.terminal_at);
+    const sessionExpiresAt = asTimestamp(input.session.expires_at);
+    if (
+      attemptGeneration === null ||
+      stateGeneration === null ||
+      completedAt === null ||
+      terminalAt === null ||
+      sessionExpiresAt === null ||
+      input.session.status !== "completed" ||
+      asString(input.session.completion_result_hash) !== input.result_hash ||
+      asString(input.session.completion_idempotency_key) === null ||
+      completedAt !== terminalAt ||
+      Date.parse(completedAt) >= Date.parse(sessionExpiresAt) ||
+      attemptGeneration !== stateGeneration ||
+      asString(attempt.current_ceremony_intent_id) !== sessionIntentId ||
+      attempt.requirement_status !== "pending"
+    ) {
+      return { kind: "stale", reason: "session_binding_drift" } as const;
+    }
+
+    const intentId = asString(attempt.intent_id);
+    if (intentId === null) return yield* Effect.fail(verificationStorageFailure());
+    const bumped = yield* transaction.execute<Row>({
+      label: "community.creation.verification.advance-nationality-intent",
+      text: `UPDATE community_creation_intents
+                SET revision = revision + 1, status = 'commit_ready', updated_at = clock_timestamp()
+              WHERE intent_id = $1 AND actor_id = $2 AND status = 'verification_required'
+            RETURNING revision`,
+      values: [intentId, input.actor_id],
+      readonly: false,
+    });
+    if (bumped.rowCount !== 1) {
+      return { kind: "stale", reason: "session_binding_drift" } as const;
+    }
+    const revision = asPositiveInteger(bumped.rows[0]?.revision);
+    if (revision === null) return yield* Effect.fail(verificationStorageFailure());
+
+    const satisfied = yield* transaction.execute({
+      label: "community.creation.verification.satisfy-nationality-requirement",
+      text: `UPDATE nationality_requirement_states
+                SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
+              WHERE action_kind = 'community_creation' AND intent_id = $2
+                AND requirement_kind = 'nationality' AND actor_id = $3
+                AND status = 'pending' AND generation = $4
+                AND current_ceremony_intent_id = $5`,
+      values: [completedAt, intentId, input.actor_id, attemptGeneration, sessionIntentId],
+      readonly: false,
+    });
+    if (satisfied.rowCount !== 1) {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    return { kind: "advanced", intent_id: intentId, revision } as const;
+  });
+}
+
 export function advanceCommunityCreationVerificationInTransaction(
   transaction: ControlPlaneTransaction,
   input: Readonly<{
@@ -1302,6 +1411,16 @@ export function advanceCommunityCreationVerificationInTransaction(
     const session = oneRow(sessionResult.rows);
     if (session === undefined) return yield* Effect.fail(verificationStorageFailure());
     if (session === null) return { kind: "not_applicable" } as const;
+
+    const nationalityOutcome = yield* advanceNationalityCreationVerificationInTransaction(
+      transaction,
+      {
+        actor_id: input.actor_id,
+        result_hash: input.result_hash,
+        session,
+      },
+    );
+    if (nationalityOutcome !== null) return nationalityOutcome;
 
     const ceremonyIntentId = asString(session.creation_ceremony_intent_id);
     const completedAt = asTimestamp(session.completed_at);
