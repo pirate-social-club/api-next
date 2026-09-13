@@ -10,6 +10,7 @@ import {
   handleNationalityQualificationRefPreimage,
   recheckHandleNationalityQualification,
 } from "./nationality-qualification.ts";
+import { handleQuoteV3Hash } from "./sales-v2.ts";
 
 const providerFixtures = ["self.pass", "zkpassport"].map((provider_id) => ({
   provider_id,
@@ -144,6 +145,104 @@ describe("handle nationality qualification authoring and snapshots", () => {
     expect(snapshotHash.sha256).toBe(
       "7d9d4b2f6ad39fa851fb7f54b9ef9133a85431c0d7edd827c4dc7dcafbe4dc42",
     );
+  });
+
+  test("invalidates a stale pinned quote instead of substituting the newest policy", () => {
+    const revisedCompilation = compileNationalityPolicy({
+      policy_revision: 2,
+      allowed_countries: ["US"],
+      evidence_lifetime: { kind: "max_age_seconds", seconds: 3_600 },
+      provider_bindings: providerFixtures,
+    });
+    if (revisedCompilation.kind !== "compiled") throw new Error(revisedCompilation.reason);
+    const revised = handleNationalityQualificationRefFromPolicy(
+      "curated-nationality-v1",
+      revisedCompilation.policy,
+    );
+    expect(revised.policy_hash).not.toBe(qualification.policy_hash);
+    const input = recheckInput({
+      current: {
+        policy_revision: revised.policy_revision,
+        policy_hash: revised.policy_hash,
+        requirement_hash: revised.requirement_hash,
+      },
+      evaluation: {
+        outcome: "pass",
+        policy_hash: revised.policy_hash,
+        requirement_hash: revised.requirement_hash,
+        winning_witness: [
+          {
+            assertion_ids: ["assertion-2"],
+            evidence_receipt_ids: ["receipt-2"],
+            subject_key_id: "subject-2",
+            binding_group_id: "binding-group-2",
+          },
+        ],
+      },
+      winning_provider_binding_hash: revised.provider_binding_hashes[0],
+    });
+    expect(recheckHandleNationalityQualification(input)).toEqual({
+      kind: "rejected",
+      reason: "qualification_changed",
+    });
+    expect(input.pin.eligibility.policy_hash).toBe(qualification.policy_hash);
+  });
+
+  test("freezes the nationality quote hash and keeps the eligibility arms disjoint", () => {
+    const quoteInput = {
+      quote_id: "quote_01",
+      offering_id: "offering_free_02",
+      offering_revision: 1,
+      offering_hash: "a".repeat(64),
+      sale_namespace_activation_id: "sale_namespace_activation_01",
+      sale_namespace_activation_generation: 3,
+      fulfillment_kind: "hosted_persona_v1" as const,
+      owner_persona_id: "persona_public_01",
+      family: "hns" as const,
+      namespace_root: "charizard",
+      handle_label: "longname",
+      pricing: {
+        kind: "free_v1" as const,
+        pricing_id: "platform_free_handles_v1",
+        pricing_revision: 1,
+        pricing_hash: "b".repeat(64),
+        atomic_amount: "0" as const,
+      },
+      quoted_at: "2026-09-13T12:00:00.000Z",
+      expires_at: "2026-09-13T12:02:00.000Z",
+    };
+    const nationalityQuote = handleQuoteV3Hash({
+      ...quoteInput,
+      eligibility: {
+        kind: "curated_nationality_v1",
+        snapshot: snapshot({ evidence_use_ids: ["evidence_use_01"] }),
+      },
+    });
+    expect(nationalityQuote.sha256).toBe(
+      "a5ae039e90b5ed098220d773a375e62cd9304a602cb03f2093ff3f9fc34aecdd",
+    );
+    expect(nationalityQuote.bytes).toBe(801);
+    expect(nationalityQuote.preimage).toStartWith('["pirate-handle-quote-v3",');
+    expect(nationalityQuote.preimage).toContain('"curated_nationality_v1"');
+    expect(nationalityQuote.preimage).toContain(qualification.provider_binding_hashes[0]);
+    expect(nationalityQuote.preimage).not.toContain("US");
+    const allowlistQuote = handleQuoteV3Hash({
+      ...quoteInput,
+      eligibility: {
+        kind: "curated_policy_v1",
+        snapshot: {
+          decision: "passed",
+          policy_revision: 7,
+          policy_hash: "c".repeat(64),
+          evidence_use_ids: ["evidence_use_01"],
+          evaluated_at: "2026-09-13T12:00:00.000Z",
+        },
+      },
+    });
+    expect(allowlistQuote.sha256).toBe(
+      "e7c6241af757b3416c6a8e5d512c02af9e4213533210e6f06f6df20409c14e86",
+    );
+    expect(allowlistQuote.sha256).not.toBe(nationalityQuote.sha256);
   });
 
   test("qualifies a fresh pass from the pinned selected provider", () => {

@@ -259,8 +259,14 @@ function sameQualification(
  * Claim-time recheck against the pinned quote snapshot. The caller supplies
  * the current effective offering identity and a fresh evaluation at claim
  * time, so an unexpired quote can never extend an expired or revoked proof.
- * A pass is accepted only from the pinned selected provider; qualifying with
- * the other alternative requires a new quote.
+ *
+ * The snapshot is authoritative (spec 012 sections 5.1.3 and 5.3.3): the
+ * current offering and qualification must still equal the pin, and a changed
+ * policy or offering invalidates the outstanding quote so the buyer obtains a
+ * new one. The newest policy is never substituted into a stale quote, and the
+ * fresh evaluation is compared against the pinned snapshot identity. A pass
+ * is accepted only from the pinned selected provider; qualifying with the
+ * other alternative requires a new quote.
  */
 export function recheckHandleNationalityQualification(
   input: HandleNationalityQualificationRecheckInputV1,
@@ -279,19 +285,19 @@ export function recheckHandleNationalityQualification(
     return { kind: "rejected", reason: "qualification_changed" };
   }
   if (
-    pin.eligibility.policy_revision !== current.qualification.policy_revision ||
-    pin.eligibility.policy_hash !== current.qualification.policy_hash ||
-    pin.eligibility.requirement_hash !== current.qualification.requirement_hash
+    pin.eligibility.policy_revision !== pin.qualification.policy_revision ||
+    pin.eligibility.policy_hash !== pin.qualification.policy_hash ||
+    pin.eligibility.requirement_hash !== pin.qualification.requirement_hash
   ) {
     return { kind: "rejected", reason: "qualification_changed" };
   }
   if (evaluation.outcome === "fail") {
     return { kind: "rejected", reason: "evidence_invalid" };
   }
-  if (evaluation.policy_hash !== current.qualification.policy_hash) {
+  if (evaluation.policy_hash !== pin.qualification.policy_hash) {
     return { kind: "rejected", reason: "qualification_changed" };
   }
-  if (evaluation.requirement_hash !== current.qualification.requirement_hash) {
+  if (evaluation.requirement_hash !== pin.qualification.requirement_hash) {
     return { kind: "rejected", reason: "requirement_changed" };
   }
   if (evaluation.outcome === "pass") {
