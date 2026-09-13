@@ -29,7 +29,10 @@ import {
   gateEvaluationDetails,
   loadCuratedAgeEvaluation,
   loadCuratedHumanMembershipEvaluation,
+  loadCuratedNationalityEvaluation,
+  loadCuratedNationalityPolicy,
   persistEnforceDecision,
+  persistNationalityEnforceDecision,
 } from "./gates-v2-community.ts";
 import { PLATFORM_AGE_18_VERIFICATION_INTENT_ID } from "./verification-intent-resolver.ts";
 
@@ -1206,6 +1209,39 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               requestId: `join-${globalThis.crypto.randomUUID()}`,
               evaluation,
             });
+            if (verification === "very") {
+              const nationalityPolicy = yield* loadCuratedNationalityPolicy(
+                transaction,
+                input.communityId,
+              ).pipe(
+                Effect.mapError((error) =>
+                  error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+                ),
+              );
+              if (nationalityPolicy !== null) {
+                const nationality = yield* loadCuratedNationalityEvaluation(transaction, {
+                  userId: input.actor.userId,
+                  policy: nationalityPolicy,
+                }).pipe(
+                  Effect.mapError((error) =>
+                    error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+                  ),
+                );
+                yield* persistNationalityEnforceDecision(transaction, {
+                  communityId: input.communityId,
+                  userId: input.actor.userId,
+                  requestId: `join-${globalThis.crypto.randomUUID()}`,
+                  policy: nationalityPolicy,
+                  evaluation: nationality,
+                });
+                if (nationality.outcome !== "pass" && evaluation.outcome === "pass") {
+                  return {
+                    kind: "gated-rejected" as const,
+                    reason: "membership-required" as const,
+                  };
+                }
+              }
+            }
             if (evaluation.outcome !== "pass") {
               return {
                 kind: "gated-rejected" as const,

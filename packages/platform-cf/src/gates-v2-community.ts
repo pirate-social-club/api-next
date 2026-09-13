@@ -13,6 +13,7 @@ import {
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
   type NationalityEvaluation,
   type NationalityPolicy,
+  NationalityPolicy as NationalityPolicySchema,
   VERY_WEB_CONFIGURATION_REFERENCE,
   VERY_WEB_CONFIGURATION_VERSION,
   VERY_WEB_ISSUER,
@@ -1051,6 +1052,73 @@ const loadNationalityEvidence = (
     return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "evidence" }));
   });
 
+/**
+ * Loads the community's current nationality policy with both provider
+ * binding rows pinned against the decoded policy. Returns null when the
+ * community has no current nationality policy; anything structurally wrong
+ * fails closed as invalid policy data.
+ */
+export const loadCuratedNationalityPolicy = (
+  transaction: ControlPlaneTransaction,
+  communityId: string,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row & Record<string, unknown>>({
+      label: "community.gates.nationality-policy.load",
+      text: `SELECT p.policy, b.provider_id, b.provider_configuration_kind,
+                    b.provider_configuration_ref, b.provider_configuration_version,
+                    b.method, b.protocol_version, b.issuer, b.scope_kind,
+                    b.issuer_rp_scope, b.issuer_rp_action_scope, b.request_mode
+               FROM community_policy_current AS current_policy
+               JOIN policy_versions AS p
+                 ON p.community_id = current_policy.community_id
+                AND p.policy_key = current_policy.policy_key
+                AND p.policy_version_id = current_policy.policy_version_id
+               JOIN community_policy_provider_bindings AS b
+                 ON b.community_id = p.community_id
+                AND b.policy_key = p.policy_key
+                AND b.policy_version_id = p.policy_version_id
+              WHERE current_policy.community_id = $1
+                AND current_policy.policy_key = 'curated-nationality'`,
+      values: [communityId],
+      readonly: true,
+    });
+    if (result.rows.length === 0) return null;
+    const policyRow = result.rows[0];
+    if (policyRow === undefined) {
+      return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "policy" }));
+    }
+    const decoded = Schema.decodeUnknownOption(NationalityPolicySchema)(
+      jsonValue(policyRow.policy),
+    );
+    if (Option.isNone(decoded)) {
+      return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "policy" }));
+    }
+    const policy = decoded.value;
+    if (result.rows.length !== 2) {
+      return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "policy" }));
+    }
+    for (const binding of policy.provider_bindings) {
+      const row = result.rows.find((candidate) => candidate.provider_id === binding.provider_id);
+      if (
+        row === undefined ||
+        row.provider_configuration_kind !== binding.provider_configuration.kind ||
+        row.provider_configuration_ref !== binding.provider_configuration.reference ||
+        row.provider_configuration_version !== binding.provider_configuration.version ||
+        row.method !== binding.method ||
+        row.protocol_version !== binding.protocol_version ||
+        row.issuer !== binding.scope.issuer ||
+        row.scope_kind !== "issuer_rp_scope" ||
+        row.issuer_rp_scope !== binding.scope.rp_scope ||
+        row.issuer_rp_action_scope !== null ||
+        row.request_mode !== "dynamic"
+      ) {
+        return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "policy" }));
+      }
+    }
+    return policy;
+  });
+
 export const loadCuratedNationalityEvaluation = Effect.fn("loadCuratedNationalityEvaluation")(
   function* (
     transaction: ControlPlaneTransaction,
@@ -1180,6 +1248,46 @@ export const persistEnforceDecision = Effect.fn("persistEnforceDecision")(functi
     readonly: false,
   });
 });
+
+export const persistNationalityEnforceDecision = Effect.fn("persistNationalityEnforceDecision")(
+  function* (
+    transaction: ControlPlaneTransaction,
+    input: Readonly<{
+      readonly communityId: string;
+      readonly userId: string;
+      readonly requestId: string;
+      readonly policy: NationalityPolicy;
+      readonly evaluation: NationalityEvaluation;
+    }>,
+  ): Effect.fn.Return<void, ControlPlaneError> {
+    yield* transaction.execute({
+      label: "community.gates.nationality-decision-records.insert",
+      text: `INSERT INTO decision_records (
+               decision_record_id, community_id, user_id, policy_version_id, policy_hash,
+               evaluation_mode, outcome, winning_witness, trace, indeterminate_reason, request_id
+             ) VALUES ($1, $2, $3, $4, $5, 'enforce', $6, $7::jsonb, $8::jsonb, $9, $10)`,
+      values: [
+        `decision-${globalThis.crypto.randomUUID()}`,
+        input.communityId,
+        input.userId,
+        input.policy.policy_version_id,
+        input.policy.policy_hash,
+        input.evaluation.outcome,
+        JSON.stringify(input.evaluation.outcome === "pass" ? input.evaluation.winning_witness : []),
+        JSON.stringify(
+          input.evaluation.outcome === "pass"
+            ? []
+            : "reason" in input.evaluation
+              ? [input.evaluation.reason]
+              : [],
+        ),
+        input.evaluation.outcome === "indeterminate" ? input.evaluation.reason : null,
+        input.requestId,
+      ],
+      readonly: false,
+    });
+  },
+);
 
 export const CURATED_AGE_GATE_SUMMARY = {
   gate_id: CURATED_AGE_18_POLICY.policy_version_id,

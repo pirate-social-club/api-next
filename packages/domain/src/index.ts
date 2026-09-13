@@ -58,7 +58,6 @@ export type {
   HumanMembershipRequiredClaim,
   NationalityEvaluation,
   NationalityEvaluatorInput,
-  NationalityPolicy,
   RequiredClaim,
 } from "./gates-v2/index.ts";
 export {
@@ -71,6 +70,7 @@ export {
   evaluateCuratedHumanMembership,
   evaluateNationality,
   humanMembershipPolicyCanonicalPreimage,
+  NationalityPolicy,
   nationalityCeremonyReservationHash,
   policyCanonicalPreimage,
 } from "./gates-v2/index.ts";
