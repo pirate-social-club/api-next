@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import type { CommunityStore } from "@pirate/application";
+import type { CommunityStore, JoinEligibilityDocument } from "@pirate/application";
 import {
   COMMUNITY_GATE_COMPILER_VERSION,
   CURATED_HUMAN_MEMBERSHIP_POLICY,
@@ -481,6 +481,17 @@ async function seedPalmEvidence(admin: Client, suffix: string, communityId: stri
 
 const JOIN_NATIONALITY_RESULT_HASH = "b".repeat(64);
 
+function assertProviderChoiceEligibility(
+  document: JoinEligibilityDocument | null,
+): asserts document is Extract<
+  JoinEligibilityDocument,
+  { readonly join_eligibility_version: "provider_choice_v2" }
+> {
+  if (document === null || !("join_eligibility_version" in document)) {
+    throw new Error("expected the provider-choice eligibility projection");
+  }
+}
+
 async function seedCompletedJoinNationalitySession(
   admin: Client,
   input: Readonly<{
@@ -870,11 +881,27 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
       const first = await runStore(connection, (store) =>
         store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
       );
-      expect(first).toMatchObject({
+      const firstProjection = first;
+      assertProviderChoiceEligibility(firstProjection);
+      expect(firstProjection).toMatchObject({
+        join_eligibility_version: "provider_choice_v2",
         status: "verification_required",
         missing_capabilities: ["nationality"],
         suggested_verification_provider: "self.pass",
-        next_action: { kind: "start_verification", provider_id: "self.pass" },
+        next_action: {
+          kind: "start_verification",
+          requirement: "nationality",
+          provider_id: "self.pass",
+        },
+      });
+      expect(firstProjection.requirements.nationality).toMatchObject({
+        status: "pending",
+        provider_id: "self.pass",
+        accepted_provider_ids: ["self.pass", "zkpassport"],
+      });
+      expect(firstProjection.requirements.human_identity).toMatchObject({
+        status: "satisfied",
+        provider_id: "very.web",
       });
       expect(first?.membership_gate_summaries.map((summary) => summary.gate_type)).toEqual([
         "human_verification",
@@ -970,10 +997,16 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
       const joined = await runStore(connection, (store) =>
         store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
       );
-      expect(joined).toMatchObject({
+      const joinedProjection = joined;
+      assertProviderChoiceEligibility(joinedProjection);
+      expect(joinedProjection).toMatchObject({
+        join_eligibility_version: "provider_choice_v2",
         status: "joinable",
         joinable_now: true,
         next_action: { kind: "join" },
+        requirements: {
+          human_identity: { requirement: "human_identity", status: "satisfied" },
+        },
       });
       await expect(
         runStore(connection, (store) =>

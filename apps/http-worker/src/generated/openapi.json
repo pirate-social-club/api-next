@@ -60450,42 +60450,55 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "community": {
-                      "type": "string"
-                    },
-                    "membership_mode": {
-                      "type": "string",
-                      "enum": [
-                        "open",
-                        "request",
-                        "gated"
-                      ]
-                    },
-                    "human_verification_lane": {
-                      "anyOf": [
-                        {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "join_eligibility_version": {
                           "type": "string",
                           "enum": [
-                            "very",
-                            "self"
+                            "provider_choice_v2"
                           ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "preferred_verification_provider": {
-                      "anyOf": [
-                        {
+                        "community": {
+                          "type": "string"
+                        },
+                        "membership_mode": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "request",
+                            "gated"
+                          ]
+                        },
+                        "human_verification_lane": {
                           "anyOf": [
                             {
                               "type": "string",
-                              "allOf": [
+                              "enum": [
+                                "very",
+                                "self"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "preferred_verification_provider": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
                                 {
-                                  "minLength": 1
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
                                 }
                               ]
                             },
@@ -60494,381 +60507,142 @@
                             }
                           ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "joinable_now": {
-                      "type": "boolean"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "joinable",
-                        "requestable",
-                        "pending_request",
-                        "verification_required",
-                        "gate_failed",
-                        "already_joined",
-                        "banned"
-                      ]
-                    },
-                    "membership_gate_summaries": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/$defs/Objects_"
-                      }
-                    },
-                    "membership_gate_expression": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
+                        "joinable_now": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "joinable",
+                            "requestable",
+                            "pending_request",
+                            "verification_required",
+                            "gate_failed",
+                            "already_joined",
+                            "banned"
+                          ]
+                        },
+                        "requirements": {
+                          "type": "object",
+                          "properties": {
+                            "human_identity": {
                               "anyOf": [
                                 {
                                   "type": "object",
                                   "properties": {
-                                    "op": {
+                                    "requirement": {
                                       "type": "string",
                                       "enum": [
-                                        "gate"
+                                        "human_identity"
                                       ]
                                     },
-                                    "gate": {
-                                      "$ref": "#/$defs/Objects_"
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "pending",
+                                        "satisfied"
+                                      ]
+                                    },
+                                    "provider_id": {
+                                      "type": "string",
+                                      "enum": [
+                                        "very.web"
+                                      ]
                                     }
                                   },
                                   "required": [
-                                    "op",
-                                    "gate"
+                                    "requirement",
+                                    "status",
+                                    "provider_id"
                                   ],
                                   "additionalProperties": false
                                 },
                                 {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "nationality": {
+                              "anyOf": [
+                                {
                                   "type": "object",
                                   "properties": {
-                                    "op": {
+                                    "requirement": {
                                       "type": "string",
                                       "enum": [
-                                        "and",
-                                        "or"
+                                        "nationality"
                                       ]
                                     },
-                                    "children": {
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "pending",
+                                        "satisfied"
+                                      ]
+                                    },
+                                    "requirement_hash": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "pattern": "^[0-9a-f]{64}$"
+                                        }
+                                      ]
+                                    },
+                                    "provider_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "accepted_provider_ids": {
                                       "type": "array",
-                                      "items": {
-                                        "$ref": "#/$defs/Objects_1"
-                                      }
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "self.pass"
+                                          ]
+                                        },
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "zkpassport"
+                                          ]
+                                        }
+                                      ],
+                                      "maxItems": 2,
+                                      "minItems": 2
+                                    },
+                                    "ceremony_intent_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "generation": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
-                                    "op",
-                                    "children"
+                                    "requirement",
+                                    "status",
+                                    "requirement_hash",
+                                    "provider_id",
+                                    "accepted_provider_ids",
+                                    "ceremony_intent_id",
+                                    "generation"
                                   ],
                                   "additionalProperties": false
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "missing_capabilities": {
-                      "anyOf": [
-                        {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "enum": [
-                              "unique_human",
-                              "human_verification",
-                              "age_over_18",
-                              "minimum_age",
-                              "nationality",
-                              "gender",
-                              "wallet_score"
-                            ]
-                          }
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "suggested_verification_provider": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "suggested_verification_intent": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "community_join",
-                                "post_create",
-                                "comment_create"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "failure_reason": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "missing_verification",
-                                "provider_not_accepted",
-                                "nationality_mismatch",
-                                "gender_mismatch",
-                                "minimum_age_mismatch",
-                                "erc721_holding_required",
-                                "erc721_inventory_match_required",
-                                "token_inventory_unavailable",
-                                "wallet_score_too_low",
-                                "asset_balance_too_low",
-                                "unsupported",
-                                "banned"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "wallet_score_status": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "current_score_decimal": {
-                                  "anyOf": [
-                                    {
-                                      "anyOf": [
-                                        {
-                                          "type": "string"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "required_score_decimal": {
-                                  "anyOf": [
-                                    {
-                                      "anyOf": [
-                                        {
-                                          "type": "string"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "passing_score": {
-                                  "anyOf": [
-                                    {
-                                      "anyOf": [
-                                        {
-                                          "type": "boolean"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "last_scored_at": {
-                                  "anyOf": [
-                                    {
-                                      "anyOf": [
-                                        {
-                                          "$ref": "#/$defs/Union_"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                }
-                              },
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "gate_evaluation": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "next_action": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "start_verification"
-                              ]
-                            },
-                            "provider_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            },
-                            "intent_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "provider_id",
-                            "intent_id"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "join"
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "request_membership"
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "wait"
-                              ]
-                            },
-                            "reason_code": {
-                              "type": "string",
-                              "enum": [
-                                "verification_pending",
-                                "membership_pending",
-                                "operation_pending",
-                                "reconciliation_pending"
-                              ]
-                            },
-                            "retry_after_seconds": {
-                              "anyOf": [
-                                {
-                                  "$ref": "#/$defs/Union_"
                                 },
                                 {
                                   "type": "null"
@@ -60876,71 +60650,766 @@
                               ]
                             }
                           },
-                          "required": [
-                            "kind",
-                            "reason_code"
-                          ],
                           "additionalProperties": false
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "blocked"
-                              ]
-                            },
-                            "reason": {
-                              "type": "string",
-                              "enum": [
-                                "banned",
-                                "gate_failed",
-                                "unsupported"
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "reason"
-                          ],
-                          "additionalProperties": false
+                        "membership_gate_summaries": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_"
+                          }
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "none"
+                        "membership_gate_expression": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_1"
+                                },
+                                {
+                                  "type": "null"
+                                }
                               ]
                             },
-                            "reason": {
-                              "type": "string",
-                              "enum": [
-                                "already_joined"
-                              ]
+                            {
+                              "type": "null"
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "reason"
-                          ],
-                          "additionalProperties": false
+                          ]
+                        },
+                        "missing_capabilities": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "human_identity",
+                                  "nationality"
+                                ]
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "suggested_verification_provider": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "suggested_verification_intent": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "community_join"
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "failure_reason": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "missing_verification",
+                                    "provider_not_accepted",
+                                    "nationality_mismatch",
+                                    "gender_mismatch",
+                                    "minimum_age_mismatch",
+                                    "erc721_holding_required",
+                                    "erc721_inventory_match_required",
+                                    "token_inventory_unavailable",
+                                    "wallet_score_too_low",
+                                    "asset_balance_too_low",
+                                    "unsupported",
+                                    "banned"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "gate_evaluation": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_1"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "next_action": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "start_verification"
+                                  ]
+                                },
+                                "requirement": {
+                                  "type": "string",
+                                  "enum": [
+                                    "human_identity",
+                                    "nationality"
+                                  ]
+                                },
+                                "provider_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "intent_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "requirement",
+                                "provider_id",
+                                "intent_id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "join"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "request_membership"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "wait"
+                                  ]
+                                },
+                                "requirement": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "human_identity",
+                                        "nationality"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "reason_code": {
+                                  "$ref": "#/$defs/Union_2"
+                                },
+                                "retry_after_seconds": {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/$defs/Union_"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "requirement",
+                                "reason_code"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "blocked"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "banned",
+                                    "gate_failed",
+                                    "unsupported"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "reason"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "already_joined"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "reason"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
-                      ]
+                      },
+                      "required": [
+                        "join_eligibility_version",
+                        "community",
+                        "membership_mode",
+                        "human_verification_lane",
+                        "joinable_now",
+                        "status",
+                        "requirements",
+                        "membership_gate_summaries",
+                        "next_action"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community": {
+                          "type": "string"
+                        },
+                        "membership_mode": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "request",
+                            "gated"
+                          ]
+                        },
+                        "human_verification_lane": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "very",
+                                "self"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "preferred_verification_provider": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "joinable_now": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "joinable",
+                            "requestable",
+                            "pending_request",
+                            "verification_required",
+                            "gate_failed",
+                            "already_joined",
+                            "banned"
+                          ]
+                        },
+                        "membership_gate_summaries": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_"
+                          }
+                        },
+                        "membership_gate_expression": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_1"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "missing_capabilities": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "unique_human",
+                                  "human_verification",
+                                  "age_over_18",
+                                  "minimum_age",
+                                  "nationality",
+                                  "gender",
+                                  "wallet_score"
+                                ]
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "suggested_verification_provider": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "suggested_verification_intent": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "community_join",
+                                    "post_create",
+                                    "comment_create"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "failure_reason": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "missing_verification",
+                                    "provider_not_accepted",
+                                    "nationality_mismatch",
+                                    "gender_mismatch",
+                                    "minimum_age_mismatch",
+                                    "erc721_holding_required",
+                                    "erc721_inventory_match_required",
+                                    "token_inventory_unavailable",
+                                    "wallet_score_too_low",
+                                    "asset_balance_too_low",
+                                    "unsupported",
+                                    "banned"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "wallet_score_status": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "current_score_decimal": {
+                                      "anyOf": [
+                                        {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "required_score_decimal": {
+                                      "anyOf": [
+                                        {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "passing_score": {
+                                      "anyOf": [
+                                        {
+                                          "anyOf": [
+                                            {
+                                              "type": "boolean"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "last_scored_at": {
+                                      "anyOf": [
+                                        {
+                                          "anyOf": [
+                                            {
+                                              "$ref": "#/$defs/Union_"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "gate_evaluation": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_1"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "next_action": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "start_verification"
+                                  ]
+                                },
+                                "provider_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "intent_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "provider_id",
+                                "intent_id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "join"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "request_membership"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "wait"
+                                  ]
+                                },
+                                "reason_code": {
+                                  "$ref": "#/$defs/Union_2"
+                                },
+                                "retry_after_seconds": {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/$defs/Union_"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "reason_code"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "blocked"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "banned",
+                                    "gate_failed",
+                                    "unsupported"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "reason"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "already_joined"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "reason"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "community",
+                        "membership_mode",
+                        "human_verification_lane",
+                        "joinable_now",
+                        "status",
+                        "membership_gate_summaries",
+                        "next_action"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "community",
-                    "membership_mode",
-                    "human_verification_lane",
-                    "joinable_now",
-                    "status",
-                    "membership_gate_summaries",
-                    "next_action"
                   ],
-                  "additionalProperties": false,
                   "$defs": {
                     "Union_": {
                       "anyOf": [
@@ -61289,6 +61758,61 @@
                     },
                     "Objects_1": {
                       "type": "object"
+                    },
+                    "Union_1": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "op": {
+                              "type": "string",
+                              "enum": [
+                                "gate"
+                              ]
+                            },
+                            "gate": {
+                              "$ref": "#/$defs/Objects_"
+                            }
+                          },
+                          "required": [
+                            "op",
+                            "gate"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "op": {
+                              "type": "string",
+                              "enum": [
+                                "and",
+                                "or"
+                              ]
+                            },
+                            "children": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/$defs/Objects_1"
+                              }
+                            }
+                          },
+                          "required": [
+                            "op",
+                            "children"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "Union_2": {
+                      "type": "string",
+                      "enum": [
+                        "verification_pending",
+                        "membership_pending",
+                        "operation_pending",
+                        "reconciliation_pending"
+                      ]
                     }
                   }
                 }

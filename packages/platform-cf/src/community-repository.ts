@@ -972,12 +972,20 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                   const summaries = [CURATED_HUMAN_GATE_SUMMARY, nationalitySummary];
                   if (nationality.outcome === "pass") {
                     return {
+                      join_eligibility_version: "provider_choice_v2" as const,
                       community: id,
                       membership_mode: mode,
                       human_verification_lane: verification,
                       preferred_verification_provider: "very.web" as const,
                       joinable_now: true,
                       status: "joinable" as const,
+                      requirements: {
+                        human_identity: {
+                          requirement: "human_identity" as const,
+                          status: "satisfied" as const,
+                          provider_id: "very.web" as const,
+                        },
+                      },
                       membership_gate_summaries: summaries,
                       gate_evaluation: gateEvaluation,
                       next_action: { kind: "join" as const },
@@ -1021,12 +1029,29 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                     ),
                   );
                   return {
+                    join_eligibility_version: "provider_choice_v2" as const,
                     community: id,
                     membership_mode: mode,
                     human_verification_lane: verification,
                     preferred_verification_provider: "very.web" as const,
                     joinable_now: false,
                     status: "verification_required" as const,
+                    requirements: {
+                      human_identity: {
+                        requirement: "human_identity" as const,
+                        status: "satisfied" as const,
+                        provider_id: "very.web" as const,
+                      },
+                      nationality: {
+                        requirement: "nationality" as const,
+                        status: "pending" as const,
+                        requirement_hash: nationalityPolicy.requirement_hash,
+                        provider_id: selected.provider_id,
+                        accepted_provider_ids: ["self.pass", "zkpassport"] as const,
+                        ceremony_intent_id: action.ceremonyIntentId,
+                        generation: action.generation,
+                      },
+                    },
                     membership_gate_summaries: summaries,
                     missing_capabilities: ["nationality" as const],
                     suggested_verification_provider: selected.provider_id,
@@ -1035,6 +1060,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                     gate_evaluation: gateEvaluation,
                     next_action: {
                       kind: "start_verification" as const,
+                      requirement: "nationality" as const,
                       provider_id: selected.provider_id,
                       intent_id: action.ceremonyIntentId,
                     },
