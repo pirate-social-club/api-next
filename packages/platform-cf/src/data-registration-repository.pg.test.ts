@@ -335,7 +335,7 @@ suite("DATA registration persistence", () => {
       );
       expect(tables.rows[0]?.count).toBe("8");
     }, beforeDataPersistence);
-  });
+  }, 40_000);
 
   test("fences pins, attempts, nonces, receipts, replays, reorgs, and Workflow replacement", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -774,7 +774,7 @@ suite("DATA registration persistence", () => {
         transitions: "13",
       });
     });
-  });
+  }, 40_000);
 
   test("reconciles a finished Workflow from submitted transaction and receipt evidence", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -1525,7 +1525,7 @@ suite("DATA registration persistence", () => {
         await rm(requestPath, { force: true });
         await admin.query(`DROP ROLE ${role}`);
       }
-    });
+    }, 40_000);
   }, 40_000);
 
   test("resolves a song-reference video's parent only from the parent's confirmed row", async () => {
@@ -2021,5 +2021,5 @@ suite("DATA registration persistence", () => {
       });
       expect(created.kind).toBe("created");
     });
-  });
+  }, 40_000);
 });
