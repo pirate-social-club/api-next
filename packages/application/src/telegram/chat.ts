@@ -483,7 +483,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       services,
       item,
       chatId,
-      { kind: "voice", text: answer, media: null, buttons: [] },
+      { kind: "voice", text: "", media: null, buttons: [] },
       "voice",
     );
   }

@@ -62,6 +62,11 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
           if (message.kind === "text") {
             method = "editMessageText";
             payload.text = message.text;
+          } else if (message.kind === "voice") {
+            // editMessageMedia does not support voice messages; their caption
+            // is edited through editMessageCaption instead.
+            method = "editMessageCaption";
+            if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
           } else {
             method = "editMessageMedia";
             payload.media = { type: message.kind, media: message.media, caption: message.text };
@@ -78,7 +83,9 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
           method = methods[message.kind];
           if (message.kind === "text") payload.text = message.text;
           else {
-            payload.caption = boundedTelegramText(message.text, true);
+            // A voice reply carries audio only; the written answer is already
+            // a separate text reply and is not repeated as a caption.
+            if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
             payload[message.kind] = message.media;
           }
         }

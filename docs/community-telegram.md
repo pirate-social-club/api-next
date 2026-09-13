@@ -159,6 +159,10 @@ fallback reply asking the person to send the message again. Stage rows are
 deleted after twenty-four hours once their inbox item is terminal, so a
 still-replayable item keeps its suppression marker.
 
+Voice replies carry the audio without repeating the written answer, which
+appears once in the text reply. Voice caption edits use Telegram's caption
+method because voice messages cannot go through the generic media edit path.
+
 OpenRouter, its selected model provider and ElevenLabs apply their own data
 retention policies. No zero-retention guarantee is implied. Provider response
 bodies and request URLs must not be logged: Telegram URLs include bot tokens.

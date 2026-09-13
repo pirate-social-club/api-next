@@ -23,11 +23,13 @@ const delivery: DeliveryRecord = {
 const token = "123:fixture_token";
 function fixture(response: () => Response | Promise<Response>) {
   const requests: RequestInit[] = [];
-  const api = makeTelegramApi((async (_url, init) => {
+  const urls: string[] = [];
+  const api = makeTelegramApi((async (url, init) => {
     requests.push(init ?? {});
+    urls.push(String(url));
     return response();
   }) as typeof fetch);
-  return { api, requests };
+  return { api, requests, urls };
 }
 
 test("missing and malformed acknowledgements remain uncertain without a transport retry", async () => {
@@ -87,6 +89,39 @@ test("media edits replace the media and caption together", async () => {
     media: { type: "photo", media: "https://media.example.invalid/new.jpg", caption: "Updated" },
   });
   expect(f.requests[0]?.redirect).toBe("manual");
+});
+
+test("a voice reply sends audio without repeating the written answer as a caption", async () => {
+  const f = fixture(() => Response.json({ ok: true, result: { message_id: 12 } }));
+  expect(
+    await f.api.dispatch(
+      token,
+      { ...delivery, desired: { kind: "voice", text: "", media: null, buttons: [] } },
+      "send",
+    ),
+  ).toEqual({ kind: "confirmed", messageId: 12 });
+  const body = JSON.parse(String(f.requests[0]?.body));
+  expect(body).not.toHaveProperty("caption");
+  expect(body.voice).toBeNull();
+});
+
+test("voice edits use the caption method rather than editMessageMedia", async () => {
+  const f = fixture(() => Response.json({ ok: true, result: { message_id: 11 } }));
+  expect(
+    await f.api.dispatch(
+      token,
+      {
+        ...delivery,
+        messageId: 11,
+        desired: { kind: "voice", text: "Caption", media: null, buttons: [] },
+      },
+      "edit",
+    ),
+  ).toEqual({ kind: "confirmed", messageId: 11 });
+  expect(String(f.urls[0])).toContain("/editMessageCaption");
+  const body = JSON.parse(String(f.requests[0]?.body));
+  expect(body.caption).toBe("Caption");
+  expect(body).not.toHaveProperty("media");
 });
 
 test("redirects never forward a bot token and remain uncertain", async () => {
