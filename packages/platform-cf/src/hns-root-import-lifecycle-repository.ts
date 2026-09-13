@@ -1,13 +1,10 @@
 import {
+  type ControlPlaneError,
   type ControlPlaneTransaction,
-  hnsRootImportLifecycleDeadlinePatchV1,
   hnsRootImportLifecycleStateFromRowV1,
+  planHnsRootImportLifecycleCommitV1,
 } from "@pirate/application";
-import {
-  decideHnsRootImportLifecycleV1,
-  HNS_ROOT_IMPORT_POLICY_V1,
-  type HnsRootImportLifecycleEventV1,
-} from "@pirate/domain";
+import type { HnsRootImportLifecycleEventV1 } from "@pirate/domain";
 import { Effect } from "effect";
 
 /**
@@ -33,7 +30,7 @@ export function commitHnsRootImportLifecycleEventV1(
   rootImportSessionId: string,
   event: HnsRootImportLifecycleEventV1,
   nowEpochMs: number = event.occurred_at_epoch_ms,
-): Effect.Effect<HnsRootImportLifecycleTransitionResultV1, never, never> {
+): Effect.Effect<HnsRootImportLifecycleTransitionResultV1, ControlPlaneError, never> {
   return Effect.gen(function* () {
     const loaded = yield* transaction.execute<Row>({
       label: "hns.root-import-lifecycle.load-for-update",
@@ -65,34 +62,23 @@ export function commitHnsRootImportLifecycleEventV1(
       row,
       applied.rows.map((entry) => String(entry.event_id)),
     );
-    const decision = decideHnsRootImportLifecycleV1(
-      state,
-      event,
-      HNS_ROOT_IMPORT_POLICY_V1,
-      nowEpochMs,
-    );
-    const next = decision.next_state;
+    const plan = planHnsRootImportLifecycleCommitV1(state, event, nowEpochMs);
     yield* transaction.execute({
       label: "hns.root-import-lifecycle.commit-decision",
       text: "SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
       values: [
         rootImportSessionId,
-        state.revision,
+        plan.expected_revision,
         event.event_id,
         event.event,
-        decision.outcome.kind,
-        decision.outcome.reason,
-        next === null ? null : next.phase,
-        next === null ? "{}" : hnsRootImportLifecycleDeadlinePatchV1(next, state),
-        JSON.stringify(
-          decision.requested_work.map((work) => ({
-            kind: work.kind,
-            due_at: new Date(work.due_at_epoch_ms).toISOString(),
-          })),
-        ),
+        plan.outcome_kind,
+        plan.outcome_reason,
+        plan.next_phase,
+        plan.deadline_patch,
+        plan.requested_work_json,
       ],
       readonly: false,
     });
-    return { outcome: decision.outcome.kind, reason: decision.outcome.reason } as const;
-  }) as Effect.Effect<HnsRootImportLifecycleTransitionResultV1, never, never>;
+    return { outcome: plan.outcome_kind, reason: plan.outcome_reason } as const;
+  });
 }

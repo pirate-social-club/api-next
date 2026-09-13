@@ -19,6 +19,7 @@
     "./hns-forwarder-replay-store-do": "./src/hns-forwarder-replay-store-do.ts",
     "./hns-authority-successor-postgres": "./src/hns-authority-successor-postgres.ts",
     "./hns-host-persistence-repository": "./src/hns-host-persistence-repository.ts",
+    "./hns-root-import-lifecycle-observability": "./src/hns-root-import-lifecycle-observability.ts",
     "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
     "./hns-community-publication-queue": "./src/hns-community-publication-queue.ts",
     "./hns-community-root-import-repository": "./src/hns-community-root-import-repository.ts",

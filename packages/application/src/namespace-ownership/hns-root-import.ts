@@ -9,6 +9,7 @@ import {
   type CommunityCreationServices,
   getCommunityCreationIntent,
 } from "../use-cases/community/creation-intents.ts";
+import { encodeHnsRootReadinessObservationRequestV1 } from "./hns-readiness-observation-request.ts";
 import {
   decodeHnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
@@ -626,8 +627,10 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
     return yield* new HnsRootImportRejected({ reason: "conflict" });
   }
   const observationJobId = generatedId(services.ids, "observationJob");
-  const observationIdentity = {
-    version: "pirate-hns-root-readiness-observation-request-v1",
+  if (current.publish_plan_sha256 === null) {
+    return yield* new HnsRootImportRejected({ reason: "conflict" });
+  }
+  const observationBytes = encodeHnsRootReadinessObservationRequestV1({
     root_import_session_id: current.root_import_session_id,
     namespace_session_id: current.namespace_session_id,
     root_label: current.root_label,
@@ -636,11 +639,7 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
     publish_plan_sha256: current.publish_plan_sha256,
     provision_result_sha256: authority.provision_result_sha256,
     expires_at: current.expires_at,
-  } as const;
-  if (observationIdentity.publish_plan_sha256 === null) {
-    return yield* new HnsRootImportRejected({ reason: "conflict" });
-  }
-  const observationBytes = encoder.encode(canonicalJson(observationIdentity));
+  });
   const outcome = yield* services.store.beginObservation({
     poll: input,
     poll_request_sha256: yield* Effect.promise(() => sha256(pollIdentity)),

@@ -385,10 +385,10 @@ jobs:
           path: /tmp/api-next-control-plane-postgres-*-suite-complete
           if-no-files-found: ignore
           retention-days: 1
-      # The song-video media suites are owned by shard 0, computed from the
-      # manifest weights; run-postgres-tests.test.ts asserts this stays true.
+      # The song-video media suites' owning shards are computed from the
+      # manifest weights; run-postgres-tests.test.ts asserts these pins match.
       - name: Upload song-video composed flow sentinel
-        if: matrix.shard == 0
+        if: matrix.shard == 2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: postgres17-sentinels-song-video-composed-flow
@@ -396,7 +396,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Upload song-video render host sentinel
-        if: matrix.shard == 0
+        if: matrix.shard == 3
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: postgres17-sentinels-song-video-render-host
