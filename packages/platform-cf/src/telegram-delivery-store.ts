@@ -1,10 +1,13 @@
 import {
+  type DeliveryIntent,
   type DeliveryRecord,
+  type InboxFence,
   TelegramFailure,
   type TelegramStore,
 } from "@pirate/application/telegram";
 import type { TelegramDelivery } from "@pirate/contracts";
-import type { TelegramDatabase, TelegramRow } from "./telegram-database.ts";
+import type { TelegramDatabase, TelegramQuery, TelegramRow } from "./telegram-database.ts";
+import { lockLiveInbox } from "./telegram-liveness.ts";
 import { lockTelegramIntegration } from "./telegram-settings-store.ts";
 
 function delivery(row: TelegramRow): DeliveryRecord {
@@ -39,11 +42,49 @@ function view(record: DeliveryRecord): TelegramDelivery {
   };
 }
 
+async function insertDelivery(query: TelegramQuery, record: DeliveryIntent) {
+  await query(
+    `INSERT INTO community_telegram_deliveries(delivery_id,community_id,bot_epoch,chat_id,kind,post_id,desired,desired_hash)
+    VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+    ON CONFLICT(delivery_id) DO UPDATE SET desired=EXCLUDED.desired,desired_hash=EXCLUDED.desired_hash,
+      state=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
+          THEN community_telegram_deliveries.state
+        WHEN community_telegram_deliveries.confirmed_hash IS NOT DISTINCT FROM EXCLUDED.desired_hash
+          THEN CASE WHEN community_telegram_deliveries.message_id IS NULL THEN 'withdrawn' ELSE 'delivered' END
+        ELSE 'pending' END,
+      attempt_count=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
+        THEN community_telegram_deliveries.attempt_count ELSE 0 END,
+      attempt=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
+        THEN community_telegram_deliveries.attempt ELSE NULL END,
+      lease_expires_at=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
+        THEN community_telegram_deliveries.lease_expires_at ELSE NULL END,
+      last_error=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
+        THEN community_telegram_deliveries.last_error ELSE NULL END,
+      next_attempt_at=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
+        THEN community_telegram_deliveries.next_attempt_at ELSE clock_timestamp() END,
+      updated_at=clock_timestamp()
+    WHERE community_telegram_deliveries.desired_hash IS DISTINCT FROM EXCLUDED.desired_hash
+      AND (community_telegram_deliveries.state NOT IN ('sending','uncertain','cancelled')
+        OR community_telegram_deliveries.kind='publication')`,
+    [
+      record.id,
+      record.communityId,
+      record.botEpoch,
+      record.chatId,
+      record.kind,
+      record.postId,
+      record.desired === null ? null : JSON.stringify(record.desired),
+      record.desiredHash,
+    ],
+  );
+}
+
 export function makeTelegramDeliveryStore(
   db: TelegramDatabase,
 ): Pick<
   TelegramStore,
   | "enqueueDelivery"
+  | "enqueueInboxReply"
   | "claimDelivery"
   | "finishDelivery"
   | "holdDelivery"
@@ -52,40 +93,16 @@ export function makeTelegramDeliveryStore(
 > {
   return {
     async enqueueDelivery(record) {
-      await db.query(
-        `INSERT INTO community_telegram_deliveries(delivery_id,community_id,bot_epoch,chat_id,kind,post_id,desired,desired_hash)
-        VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
-        ON CONFLICT(delivery_id) DO UPDATE SET desired=EXCLUDED.desired,desired_hash=EXCLUDED.desired_hash,
-          state=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
-              THEN community_telegram_deliveries.state
-            WHEN community_telegram_deliveries.confirmed_hash IS NOT DISTINCT FROM EXCLUDED.desired_hash
-              THEN CASE WHEN community_telegram_deliveries.message_id IS NULL THEN 'withdrawn' ELSE 'delivered' END
-            ELSE 'pending' END,
-          attempt_count=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
-            THEN community_telegram_deliveries.attempt_count ELSE 0 END,
-          attempt=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
-            THEN community_telegram_deliveries.attempt ELSE NULL END,
-          lease_expires_at=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
-            THEN community_telegram_deliveries.lease_expires_at ELSE NULL END,
-          last_error=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
-            THEN community_telegram_deliveries.last_error ELSE NULL END,
-          next_attempt_at=CASE WHEN community_telegram_deliveries.state IN ('sending','uncertain')
-            THEN community_telegram_deliveries.next_attempt_at ELSE clock_timestamp() END,
-          updated_at=clock_timestamp()
-        WHERE community_telegram_deliveries.desired_hash IS DISTINCT FROM EXCLUDED.desired_hash
-          AND (community_telegram_deliveries.state NOT IN ('sending','uncertain','cancelled')
-            OR community_telegram_deliveries.kind='publication')`,
-        [
-          record.id,
-          record.communityId,
-          record.botEpoch,
-          record.chatId,
-          record.kind,
-          record.postId,
-          record.desired === null ? null : JSON.stringify(record.desired),
-          record.desiredHash,
-        ],
-      );
+      await insertDelivery(db.query.bind(db), record);
+    },
+    async enqueueInboxReply(record, fence) {
+      await db.transaction(async (query) => {
+        // The gate locks the epoch and claim rows before the insert, so the
+        // reply is either durable before cleanup or rotation invalidates the
+        // item, or it is refused after observing the invalidation.
+        if (!(await lockLiveInbox(query, fence))) return;
+        await insertDelivery(query, record);
+      });
     },
     claimDelivery(id) {
       return db.transaction(async (query) => {

@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import type { TelegramDatabase } from "./telegram-database.ts";
+import { makeTelegramDeliveryStore } from "./telegram-delivery-store.ts";
+import { makeTelegramInboxStore } from "./telegram-inbox-store.ts";
 import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
+import { makeTelegramStageStore } from "./telegram-stage-store.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -81,6 +85,77 @@ const recoveryCommand = {
   key: "recover-publication",
   hash: "recovery",
 };
+
+async function claimInboxRow(
+  store: ReturnType<typeof makeControlPlaneTelegramStore>,
+  admin: Client,
+  inboxId: string,
+  updateId: number,
+) {
+  await admin.query(
+    "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload) VALUES($1,'telegram-community','epoch',$2,'{}'::jsonb)",
+    [inboxId, updateId],
+  );
+  const item = await store.claimInbox(inboxId);
+  if (!item) throw new Error("Missing inbox claim");
+  return item;
+}
+
+async function reattempt(admin: Client, inboxId: string, attempt: string) {
+  await admin.query(
+    "UPDATE community_telegram_inbox SET state='processing',attempt=$2,lease_expires_at=clock_timestamp()+interval '2 minutes' WHERE inbox_id=$1",
+    [inboxId, attempt],
+  );
+}
+
+async function schemaClient(admin: Client): Promise<Client> {
+  const base = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
+  if (!base) throw new Error("Postgres configuration missing");
+  const schema = String((await admin.query("SELECT current_schema() AS name")).rows[0]?.name);
+  const url = new URL(base);
+  url.searchParams.set("options", `-c search_path=${schema}`);
+  const client = new Client({ connectionString: url.toString() });
+  await client.connect();
+  return client;
+}
+
+function deferredGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function clientDatabase(
+  client: Client,
+  gate: { fragment: string; release: Promise<void>; entered: () => void },
+): TelegramDatabase {
+  const run = async (sql: string, parameters: readonly unknown[] = []) =>
+    (await client.query(sql, [...parameters])).rows;
+  return {
+    query: run,
+    transaction: async <T>(operation: (query: typeof run) => Promise<T>): Promise<T> => {
+      await client.query("BEGIN");
+      const query = async (sql: string, parameters: readonly unknown[] = []) => {
+        const rows = await run(sql, parameters);
+        if (sql.includes(gate.fragment)) {
+          gate.entered();
+          await gate.release;
+        }
+        return rows;
+      };
+      try {
+        const result = await operation(query);
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    },
+  } as unknown as TelegramDatabase;
+}
 
 suite("community Telegram persistence", () => {
   test("channel selection is bound to the initiating Telegram user and owner confirmation", () =>
@@ -629,54 +704,55 @@ suite("community Telegram persistence", () => {
 
   test("a provider stage reuses a confirmed result and never re-issues an unresolved attempt", () =>
     fixture(async (store, admin) => {
-      await admin.query(
-        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id) VALUES('stage-inbox-a','telegram-community','epoch',11)",
-      );
+      const item = await claimInboxRow(store, admin, "stage-inbox-a", 11);
       const transcription = {
         communityId: "telegram-community",
         epoch: "epoch",
         inboxId: "stage-inbox-a",
         stage: "transcription" as const,
         requestHash: "request-a",
-        attempt: "attempt-a",
+        attempt: item.attempt,
       };
       expect(await store.beginProviderStage(transcription)).toEqual({ kind: "issued" });
       await store.completeProviderStage({ ...transcription, result: "Transcript" });
+      await reattempt(admin, "stage-inbox-a", "attempt-b");
       expect(await store.beginProviderStage({ ...transcription, attempt: "attempt-b" })).toEqual({
         kind: "completed",
         result: "Transcript",
       });
       const completion = { ...transcription, stage: "completion" as const };
-      expect(await store.beginProviderStage(completion)).toEqual({ kind: "issued" });
       expect(await store.beginProviderStage({ ...completion, attempt: "attempt-b" })).toEqual({
+        kind: "issued",
+      });
+      await reattempt(admin, "stage-inbox-a", "attempt-c");
+      expect(await store.beginProviderStage({ ...completion, attempt: "attempt-c" })).toEqual({
         kind: "uncertain",
       });
-      await store.completeProviderStage({ ...completion, result: "Answer" });
-      expect(await store.beginProviderStage({ ...completion, attempt: "attempt-b" })).toEqual({
-        kind: "completed",
-        result: "Answer",
+      await store.completeProviderStage({ ...completion, attempt: "attempt-b", result: "Answer" });
+      expect(await store.beginProviderStage({ ...completion, attempt: "attempt-c" })).toEqual({
+        kind: "uncertain",
       });
     }));
 
   test("a definite provider stage failure is re-issued for a later attempt", () =>
     fixture(async (store, admin) => {
-      await admin.query(
-        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id) VALUES('stage-inbox-b','telegram-community','epoch',12)",
-      );
+      const item = await claimInboxRow(store, admin, "stage-inbox-b", 12);
       const input = {
         communityId: "telegram-community",
         epoch: "epoch",
         inboxId: "stage-inbox-b",
         stage: "completion" as const,
         requestHash: "request-b",
-        attempt: "attempt-a",
+        attempt: item.attempt,
       };
       expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
       await store.failProviderStage({ ...input, error: "rate_limited" });
+      await reattempt(admin, "stage-inbox-b", "attempt-b");
       expect(await store.beginProviderStage({ ...input, attempt: "attempt-b" })).toEqual({
         kind: "issued",
       });
       await store.completeProviderStage({ ...input, attempt: "attempt-b", result: "Answer" });
+      await reattempt(admin, "stage-inbox-b", "attempt-c");
       expect(await store.beginProviderStage({ ...input, attempt: "attempt-c" })).toEqual({
         kind: "completed",
         result: "Answer",
@@ -685,48 +761,45 @@ suite("community Telegram persistence", () => {
 
   test("cleanup retains a stale provider stage while its inbox item can still replay", () =>
     fixture(async (store, admin) => {
-      await admin.query(
-        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload) VALUES('stage-inbox-c','telegram-community','epoch',13,'{}'::jsonb)",
-      );
+      const item = await claimInboxRow(store, admin, "stage-inbox-c", 13);
       const input = {
         communityId: "telegram-community",
         epoch: "epoch",
         inboxId: "stage-inbox-c",
         stage: "transcription" as const,
         requestHash: "request-c",
-        attempt: "attempt-a",
+        attempt: item.attempt,
       };
       expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
       await admin.query(
         "UPDATE community_telegram_provider_stages SET issued_at=clock_timestamp()-interval '25 hours' WHERE inbox_id='stage-inbox-c'",
       );
       await store.cleanup();
-      expect(await store.beginProviderStage({ ...input, attempt: "attempt-b" })).toEqual({
-        kind: "uncertain",
-      });
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "uncertain" });
       expect(
         (
           await admin.query(
             "SELECT state FROM community_telegram_inbox WHERE inbox_id='stage-inbox-c'",
           )
         ).rows[0],
-      ).toEqual({ state: "pending" });
+      ).toEqual({ state: "processing" });
     }));
 
   test("cleanup removes a stale provider stage once its inbox item is terminal", () =>
     fixture(async (store, admin) => {
-      await admin.query(
-        "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,state,payload) VALUES('stage-inbox-d','telegram-community','epoch',14,'completed',NULL)",
-      );
+      const item = await claimInboxRow(store, admin, "stage-inbox-d", 14);
       const input = {
         communityId: "telegram-community",
         epoch: "epoch",
         inboxId: "stage-inbox-d",
         stage: "completion" as const,
         requestHash: "request-d",
-        attempt: "attempt-a",
+        attempt: item.attempt,
       };
       expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await admin.query(
+        "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='stage-inbox-d'",
+      );
       await admin.query(
         "UPDATE community_telegram_provider_stages SET issued_at=clock_timestamp()-interval '25 hours' WHERE inbox_id='stage-inbox-d'",
       );
@@ -745,13 +818,15 @@ suite("community Telegram persistence", () => {
       await admin.query(
         "INSERT INTO community_telegram_inbox(inbox_id,community_id,bot_epoch,update_id,payload,created_at) VALUES('stage-inbox-e','telegram-community','epoch',15,'{}'::jsonb,clock_timestamp()-interval '25 hours')",
       );
+      const claimed = await store.claimInbox("stage-inbox-e");
+      if (!claimed) throw new Error("Missing claim");
       const input = {
         communityId: "telegram-community",
         epoch: "epoch",
         inboxId: "stage-inbox-e",
         stage: "transcription" as const,
         requestHash: "request-e",
-        attempt: "attempt-a",
+        attempt: claimed.attempt,
       };
       expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
       await admin.query(
@@ -987,5 +1062,281 @@ suite("community Telegram persistence", () => {
           )
         ).rows[0],
       ).toEqual({ lease_token: null });
+    }));
+
+  test("persistence commits before cleanup invalidates and cleanup waits on its locks", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "race-inbox-a", 41);
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "race-inbox-a",
+        stage: "completion" as const,
+        requestHash: "race-a",
+        attempt: item.attempt,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      const second = await schemaClient(admin);
+      try {
+        const gate = deferredGate();
+        let entered!: () => void;
+        const enteredPromise = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const gated = makeTelegramStageStore(
+          clientDatabase(second, {
+            fragment: "state='processing'",
+            release: gate.promise,
+            entered,
+          }),
+        );
+        const persistence = gated.completeProviderStage({ ...input, result: "Answer" });
+        await enteredPromise;
+        const cleanup = admin.query(
+          "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='race-inbox-a'",
+        );
+        expect(
+          await Promise.race([cleanup.then(() => "cleanup"), Bun.sleep(200).then(() => "timer")]),
+        ).toBe("timer");
+        gate.resolve();
+        await persistence;
+        await cleanup;
+      } finally {
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result FROM community_telegram_provider_stages WHERE inbox_id='race-inbox-a'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "completed", result: "Answer" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,payload FROM community_telegram_inbox WHERE inbox_id='race-inbox-a'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "failed", payload: null });
+    }));
+
+  test("cleanup that commits first is observed and refuses the persistence", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "race-inbox-b", 42);
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "race-inbox-b",
+        stage: "completion" as const,
+        requestHash: "race-b",
+        attempt: item.attempt,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      const second = await schemaClient(admin);
+      try {
+        await second.query("BEGIN");
+        await second.query(
+          "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='race-inbox-b'",
+        );
+        const persistence = store.completeProviderStage({ ...input, result: "Answer" });
+        expect(
+          await Promise.race([
+            persistence.then(() => "persisted"),
+            Bun.sleep(200).then(() => "timer"),
+          ]),
+        ).toBe("timer");
+        await second.query("COMMIT");
+        await persistence;
+      } finally {
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_provider_stages WHERE inbox_id='race-inbox-b'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "issued" });
+    }));
+
+  test("persistence commits before rotation and rotation waits on the epoch lock", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "race-inbox-c", 43);
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "race-inbox-c",
+        stage: "completion" as const,
+        requestHash: "race-c",
+        attempt: item.attempt,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      const second = await schemaClient(admin);
+      try {
+        const gate = deferredGate();
+        let entered!: () => void;
+        const enteredPromise = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const gated = makeTelegramStageStore(
+          clientDatabase(second, {
+            fragment: "state='processing'",
+            release: gate.promise,
+            entered,
+          }),
+        );
+        const persistence = gated.completeProviderStage({ ...input, result: "Answer" });
+        await enteredPromise;
+        const rotation = admin.query(
+          "UPDATE community_telegram_integrations SET bot_epoch='replacement' WHERE community_id='telegram-community'",
+        );
+        expect(
+          await Promise.race([rotation.then(() => "rotation"), Bun.sleep(200).then(() => "timer")]),
+        ).toBe("timer");
+        gate.resolve();
+        await persistence;
+        await rotation;
+      } finally {
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result FROM community_telegram_provider_stages WHERE inbox_id='race-inbox-c'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "completed", result: "Answer" });
+      expect(
+        (
+          await admin.query(
+            "SELECT bot_epoch FROM community_telegram_integrations WHERE community_id='telegram-community'",
+          )
+        ).rows[0],
+      ).toEqual({ bot_epoch: "replacement" });
+    }));
+
+  test("rotation that commits first is observed and refuses the persistence", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "race-inbox-d", 44);
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "race-inbox-d",
+        stage: "completion" as const,
+        requestHash: "race-d",
+        attempt: item.attempt,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      const second = await schemaClient(admin);
+      try {
+        await second.query("BEGIN");
+        await second.query(
+          "UPDATE community_telegram_integrations SET bot_epoch='replacement' WHERE community_id='telegram-community'",
+        );
+        const persistence = store.completeProviderStage({ ...input, result: "Answer" });
+        expect(
+          await Promise.race([
+            persistence.then(() => "persisted"),
+            Bun.sleep(200).then(() => "timer"),
+          ]),
+        ).toBe("timer");
+        await second.query("COMMIT");
+        await persistence;
+      } finally {
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_provider_stages WHERE inbox_id='race-inbox-d'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "issued" });
+    }));
+
+  test("a reply is refused when the inbox claim was invalidated", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "race-reply", 45);
+      await admin.query(
+        "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='race-reply'",
+      );
+      const second = await schemaClient(admin);
+      try {
+        const deliveries = makeTelegramDeliveryStore(
+          clientDatabase(second, {
+            fragment: "unused-fragment",
+            release: Promise.resolve(),
+            entered: () => {},
+          }),
+        );
+        await deliveries.enqueueInboxReply(
+          {
+            id: "race-reply-delivery",
+            communityId: "telegram-community",
+            botEpoch: "epoch",
+            chatId: "7",
+            kind: "reply",
+            postId: null,
+            state: "pending",
+            desired: { kind: "text", text: "Hello", media: null, buttons: [] },
+            desiredHash: "hello",
+          },
+          {
+            communityId: "telegram-community",
+            epoch: "epoch",
+            inboxId: "race-reply",
+            attempt: item.attempt,
+          },
+        );
+      } finally {
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS rows FROM community_telegram_deliveries WHERE delivery_id='race-reply-delivery'",
+          )
+        ).rows[0],
+      ).toEqual({ rows: 0 });
+    }));
+
+  test("a conversation write is refused when the inbox claim was invalidated", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "race-conversation", 46);
+      await admin.query(
+        "UPDATE community_telegram_inbox SET state='failed',payload=NULL WHERE inbox_id='race-conversation'",
+      );
+      const second = await schemaClient(admin);
+      try {
+        const inbox = makeTelegramInboxStore(
+          clientDatabase(second, {
+            fragment: "unused-fragment",
+            release: Promise.resolve(),
+            entered: () => {},
+          }),
+        );
+        await inbox.saveConversation(
+          "telegram-community",
+          "7",
+          "race-conversation",
+          "Prompt",
+          "Answer",
+          {
+            communityId: "telegram-community",
+            epoch: "epoch",
+            inboxId: "race-conversation",
+            attempt: item.attempt,
+          },
+        );
+      } finally {
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS rows FROM community_telegram_conversations WHERE input_id='race-conversation'",
+          )
+        ).rows[0],
+      ).toEqual({ rows: 0 });
     }));
 });

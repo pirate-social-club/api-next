@@ -96,10 +96,17 @@ export type ProviderStageInput = {
   requestHash: string;
   attempt: string;
 };
+export type InboxFence = {
+  communityId: string;
+  epoch: string;
+  inboxId: string;
+  attempt: string;
+};
 export type BeginProviderStageResult =
   | { kind: "issued" }
   | { kind: "completed"; result: string }
-  | { kind: "uncertain" };
+  | { kind: "uncertain" }
+  | { kind: "stale" };
 export type DeliveryRecord = {
   id: string;
   communityId: string;
@@ -130,6 +137,16 @@ export type PublicTelegramPost = {
   media: { kind: "photo" | "video" | "audio"; url: string } | null;
   rewardText: string | null;
 };
+export type DeliveryIntent = Omit<
+  DeliveryRecord,
+  | "attempt"
+  | "attemptCount"
+  | "createdAt"
+  | "lastError"
+  | "confirmed"
+  | "confirmedHash"
+  | "messageId"
+>;
 export type TelegramDispatchOutcome =
   | { kind: "confirmed"; messageId: number | null }
   | { kind: "rejected"; retryAfter: number | null; code: string }
@@ -214,18 +231,8 @@ export interface TelegramStore {
   completeProviderStage(input: ProviderStageInput & { result: string }): Promise<void>;
   failProviderStage(input: ProviderStageInput & { error: string }): Promise<void>;
   pendingWork(): Promise<readonly { kind: "inbox" | "delivery"; id: string }[]>;
-  enqueueDelivery(
-    record: Omit<
-      DeliveryRecord,
-      | "attempt"
-      | "attemptCount"
-      | "createdAt"
-      | "lastError"
-      | "confirmed"
-      | "confirmedHash"
-      | "messageId"
-    >,
-  ): Promise<void>;
+  enqueueDelivery(record: DeliveryIntent): Promise<void>;
+  enqueueInboxReply(record: DeliveryIntent, fence: InboxFence): Promise<void>;
   claimDelivery(id: string): Promise<DeliveryRecord | null>;
   finishDelivery(
     record: DeliveryRecord,
@@ -283,6 +290,7 @@ export interface TelegramStore {
     inputId: string,
     prompt: string,
     answer: string,
+    fence: InboxFence,
   ): Promise<void>;
   cleanup(): Promise<void>;
 }

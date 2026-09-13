@@ -29,17 +29,25 @@ async function reply(
   kind: "reply" | "voice" | "setup" = "reply",
 ) {
   const id = await services.vault.hash(`${item.id}:${kind}`);
-  await services.store.enqueueDelivery({
-    id,
-    communityId: item.communityId,
-    botEpoch: item.botEpoch,
-    chatId,
-    kind,
-    postId: null,
-    state: "pending",
-    desired: message,
-    desiredHash: await services.vault.hash(JSON.stringify(message)),
-  });
+  await services.store.enqueueInboxReply(
+    {
+      id,
+      communityId: item.communityId,
+      botEpoch: item.botEpoch,
+      chatId,
+      kind,
+      postId: null,
+      state: "pending",
+      desired: message,
+      desiredHash: await services.vault.hash(JSON.stringify(message)),
+    },
+    {
+      communityId: item.communityId,
+      epoch: item.botEpoch,
+      inboxId: item.id,
+      attempt: item.attempt,
+    },
+  );
   try {
     await services.wake({ kind: "delivery", id });
   } catch {
@@ -86,6 +94,7 @@ async function stagedProvider(
     if (!(await services.store.inboxLive(item))) return { kind: "stale" };
     return { kind: "completed", result: begun.result };
   }
+  if (begun.kind === "stale") return { kind: "stale" };
   if (begun.kind === "uncertain") return { kind: "uncertain" };
   if (!(await services.store.inboxLive(item))) return { kind: "stale" };
   try {
@@ -458,7 +467,12 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   await reply(services, item, chatId, textMessage(answer));
   if (record.policy.remember_conversations) {
     if (await services.store.inboxLive(item))
-      await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer);
+      await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer, {
+        communityId: item.communityId,
+        epoch: item.botEpoch,
+        inboxId: item.id,
+        attempt: item.attempt,
+      });
   }
   if (
     telegramReplyUsesVoice(record.policy, voice !== null, /^\/voice\b/u.test(input)) &&

@@ -5,6 +5,7 @@ import {
   type TelegramStore,
 } from "@pirate/application/telegram";
 import type { TelegramDatabase } from "./telegram-database.ts";
+import { lockLiveInbox } from "./telegram-liveness.ts";
 
 type StageRow = {
   state: string;
@@ -18,6 +19,8 @@ export function makeTelegramStageStore(
   return {
     beginProviderStage(input) {
       return db.transaction(async (query): Promise<BeginProviderStageResult> => {
+        // A stale claim never creates or re-issues a paid stage.
+        if (!(await lockLiveInbox(query, input))) return { kind: "stale" };
         const inserted = await query(
           `INSERT INTO community_telegram_provider_stages(community_id,bot_epoch,inbox_id,stage,request_hash,attempt,state)
           VALUES($1,$2,$3,$4,$5,$6,'issued') ON CONFLICT DO NOTHING RETURNING state`,
@@ -58,21 +61,27 @@ export function makeTelegramStageStore(
         return { kind: "issued" };
       });
     },
-    async completeProviderStage(input) {
-      await db.query(
-        `UPDATE community_telegram_provider_stages
-        SET state='completed',result=$6,error=NULL,updated_at=clock_timestamp()
-        WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'`,
-        [input.communityId, input.epoch, input.inboxId, input.stage, input.attempt, input.result],
-      );
+    completeProviderStage(input) {
+      return db.transaction(async (query) => {
+        if (!(await lockLiveInbox(query, input))) return;
+        await query(
+          `UPDATE community_telegram_provider_stages
+          SET state='completed',result=$6,error=NULL,updated_at=clock_timestamp()
+          WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'`,
+          [input.communityId, input.epoch, input.inboxId, input.stage, input.attempt, input.result],
+        );
+      });
     },
-    async failProviderStage(input) {
-      await db.query(
-        `UPDATE community_telegram_provider_stages
-        SET state='failed',error=$6,updated_at=clock_timestamp()
-        WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'`,
-        [input.communityId, input.epoch, input.inboxId, input.stage, input.attempt, input.error],
-      );
+    failProviderStage(input) {
+      return db.transaction(async (query) => {
+        if (!(await lockLiveInbox(query, input))) return;
+        await query(
+          `UPDATE community_telegram_provider_stages
+          SET state='failed',error=$6,updated_at=clock_timestamp()
+          WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'`,
+          [input.communityId, input.epoch, input.inboxId, input.stage, input.attempt, input.error],
+        );
+      });
     },
   };
 }

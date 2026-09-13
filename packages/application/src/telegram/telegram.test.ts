@@ -4,6 +4,7 @@ import { acceptTelegramUpdate, processTelegramDelivery } from "./delivery.ts";
 import { getTelegramSettings, setAssistantCredential } from "./settings.ts";
 import {
   DEFAULT_ASSISTANT_POLICY,
+  type DeliveryIntent,
   type DeliveryRecord,
   type IntegrationRecord,
   TelegramFailure,
@@ -48,7 +49,14 @@ function services(methods: Partial<TelegramStore>): TelegramServices {
   );
   return {
     store: new Proxy(
-      { inboxLive: async () => true, ...methods },
+      {
+        inboxLive: async () => true,
+        enqueueInboxReply: async (record: DeliveryIntent) => {
+          if (!methods.enqueueDelivery) throw new Error("Unexpected operation: enqueueInboxReply");
+          await methods.enqueueDelivery(record);
+        },
+        ...methods,
+      },
       {
         get: (target, property) => Reflect.get(target, property) ?? Reflect.get(missing, property),
       },

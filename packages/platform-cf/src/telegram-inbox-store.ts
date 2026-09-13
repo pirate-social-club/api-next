@@ -1,5 +1,6 @@
 import type { IncomingUpdate, TelegramStore } from "@pirate/application/telegram";
 import type { TelegramDatabase } from "./telegram-database.ts";
+import { lockLiveInbox } from "./telegram-liveness.ts";
 
 export function makeTelegramInboxStore(
   db: TelegramDatabase,
@@ -211,13 +212,16 @@ export function makeTelegramInboxStore(
         { role: "assistant" as const, content: String(row.answer) },
       ]);
     },
-    async saveConversation(communityId, userId, inputId, prompt, answer) {
-      await db.query(
-        `INSERT INTO community_telegram_conversations(community_id,telegram_user_id,input_id,prompt,answer)
-        SELECT $1,$2,$3,$4,$5 FROM community_telegram_integrations WHERE community_id=$1 AND record->'policy'->>'remember_conversations'='true'
-        ON CONFLICT(community_id,input_id) DO NOTHING`,
-        [communityId, userId, inputId, prompt, answer],
-      );
+    async saveConversation(communityId, userId, inputId, prompt, answer, fence) {
+      await db.transaction(async (query) => {
+        if (!(await lockLiveInbox(query, fence))) return;
+        await query(
+          `INSERT INTO community_telegram_conversations(community_id,telegram_user_id,input_id,prompt,answer)
+          SELECT $1,$2,$3,$4,$5 FROM community_telegram_integrations WHERE community_id=$1 AND record->'policy'->>'remember_conversations'='true'
+          ON CONFLICT(community_id,input_id) DO NOTHING`,
+          [communityId, userId, inputId, prompt, answer],
+        );
+      });
     },
     async cleanup() {
       await db.query(
