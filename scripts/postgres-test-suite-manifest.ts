@@ -45,6 +45,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/gates-v2-community.pg.test.ts",
   "packages/platform-cf/src/community-join-intent-fulfillment.pg.test.ts",
   "packages/platform-cf/src/community-creation-nationality-completion.pg.test.ts",
+  "packages/platform-cf/src/community-creation-nationality-flow.pg.test.ts",
   "packages/platform-cf/src/gates-v2-community-nationality.pg.test.ts",
   "packages/platform-cf/src/nationality-ceremony-store.pg.test.ts",
   "packages/platform-cf/src/handle-sales-repository.pg.test.ts",
