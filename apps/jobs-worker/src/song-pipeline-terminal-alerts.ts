@@ -187,7 +187,8 @@ const mediaTerminalUnconvergedAlert = (row: ReconciliationRow) => ({
   outcome: "terminal" as const,
 });
 
-const mediaProviderFailureAlert = (row: ProviderFailureRow) => ({  key: "song-pipeline:media-provider-terminal-failure",
+const mediaProviderFailureAlert = (row: ProviderFailureRow) => ({
+  key: "song-pipeline:media-provider-terminal-failure",
   severity: "high" as const,
   body: "A current media-provider attempt exhausted and requires observation.",
   entity: `media:${row.operation_id}:r${row.workflow_revision}:${row.attempt_id}`,

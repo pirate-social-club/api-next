@@ -1,0 +1,17 @@
+{
+  "baseHead": "67cbc57c3f6e6c480acdf18c970ae923f1bdfd19",
+  "state": "uncommitted implementation; not publication-ready",
+  "logSha256": {
+    "/tmp/song-recovery-check-final.log": "65c2a9d61386a57d3e8772004ec1ea7da00f21d1f6470518e6a2fa413fb424ba",
+    "/tmp/song-recovery-full-pg.log": "7a58d00fe7d0d6564e50f0401ebfeb1712e5964844d2dc25c51661b9f37fa930",
+    "/tmp/song-recovery-test-final.log": "3e05f15314c6775c9689eef58cd8410f0393199a4bf701c58bd021f62d43aa77",
+    "/tmp/song-recovery-timeout-verification.log": "099b83cd80eb30787cf8fb8ec442c54a728e129f6670f62ba669195fa80b6c46"
+  },
+  "check": "Passed before the final CI shard-pin correction; test began through the guarded && chain.",
+  "postgres": "56 tests, 0 failures, 935 expects, 110.17 seconds; completion sentinel written. The subsequently added CLI test passed separately: 1 test, 14 expects. Final file contains 57 tests and still requires a combined run.",
+  "focusedTimeoutRecheck": "2 tests passed, 11 filtered, 205 expects; 65.06 seconds. No unrelated test source changed.",
+  "fullTest": "Incomplete. Two 15-second simulation timeouts and one stale CI sentinel shard assertion occurred. The owned scope was stopped (exit 143) after timeout cleanup caused an asynchronous error. Node/workerd phases did not run.",
+  "ciPin": "Render-host sentinel moved from shard 3 to computed shard 1. Focused discovery rerun reached a 5-second timeout under host memory pressure; clean verification remains owed.",
+  "resources": "No RTK. One heavy job at a time, scoped memory/CPU. Host reached about 630 MiB available with swap full. Owned test scope finished or stopped, and song-recovery-operator-pg was stopped. No other lane process was stopped.",
+  "authority": "User selected the operator-only CLI using existing database-admin access. No browser endpoint, live execution, deployment, or paid provider calls were authorized or performed."
+}
