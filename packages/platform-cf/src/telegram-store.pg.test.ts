@@ -1601,4 +1601,153 @@ suite("community Telegram persistence", () => {
         ).rows[0],
       ).toEqual({ state: "completed", result: "Answer" });
     }));
+
+  test("a superseded chat-lease holder cannot finish the inbox item", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "refusal-inbox", 61);
+      const first = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!first) throw new Error("Missing chat lease");
+      await admin.query(
+        "UPDATE community_telegram_chat_leases SET lease_expires_at=clock_timestamp()-interval '1 second',next_allowed_at=clock_timestamp()-interval '1 second' WHERE chat_id='7'",
+      );
+      const second = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!second) throw new Error("Missing replacement lease");
+      expect(
+        await store.enqueueInboxReply(
+          {
+            id: "refusal-reply",
+            communityId: "telegram-community",
+            botEpoch: "epoch",
+            chatId: "7",
+            kind: "reply",
+            postId: null,
+            state: "pending",
+            desired: { kind: "text", text: "answer", media: null, buttons: [] },
+            desiredHash: "refusal",
+          },
+          {
+            communityId: "telegram-community",
+            epoch: "epoch",
+            inboxId: "refusal-inbox",
+            attempt: item.attempt,
+            chatToken: first,
+          },
+        ),
+      ).toBe(false);
+      expect(
+        (await admin.query("SELECT count(*)::int AS rows FROM community_telegram_deliveries"))
+          .rows[0],
+      ).toEqual({ rows: 0 });
+      await store.finishInbox({ ...item, chatToken: first }, null);
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_inbox WHERE inbox_id='refusal-inbox'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "processing" });
+      await admin.query(
+        "UPDATE community_telegram_inbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE inbox_id='refusal-inbox'",
+      );
+      expect(await store.claimInbox("refusal-inbox")).not.toBeNull();
+    }));
+
+  test("the reclaimed attempt reuses completed stages and writes once", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "reclaim-inbox", 62);
+      const first = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!first) throw new Error("Missing first lease");
+      const stage = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "reclaim-inbox",
+        stage: "transcription" as const,
+        requestHash: "reclaim",
+        attempt: item.attempt,
+        chatToken: first,
+      };
+      expect(await store.beginProviderStage(stage)).toEqual({ kind: "issued" });
+      expect(await store.completeProviderStage({ ...stage, result: "Transcript" })).toBe(true);
+      await admin.query(
+        "UPDATE community_telegram_chat_leases SET lease_expires_at=clock_timestamp()-interval '1 second',next_allowed_at=clock_timestamp()-interval '1 second' WHERE chat_id='7'",
+      );
+      const second = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!second) throw new Error("Missing replacement lease");
+      const reply = {
+        id: "reclaim-reply",
+        communityId: "telegram-community",
+        botEpoch: "epoch",
+        chatId: "7",
+        kind: "reply" as const,
+        postId: null,
+        state: "pending" as const,
+        desired: { kind: "text" as const, text: "answer", media: null, buttons: [] },
+        desiredHash: "reclaim",
+      };
+      expect(
+        await store.enqueueInboxReply(reply, {
+          communityId: "telegram-community",
+          epoch: "epoch",
+          inboxId: "reclaim-inbox",
+          attempt: item.attempt,
+          chatToken: first,
+        }),
+      ).toBe(false);
+      await store.finishInbox({ ...item, chatToken: first }, null);
+      await admin.query(
+        "UPDATE community_telegram_inbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE inbox_id='reclaim-inbox'",
+      );
+      const reclaimed = await store.claimInbox("reclaim-inbox");
+      if (!reclaimed) throw new Error("Missing reclaim");
+      expect(
+        await store.beginProviderStage({
+          ...stage,
+          attempt: reclaimed.attempt,
+          chatToken: second,
+        }),
+      ).toEqual({ kind: "completed", result: "Transcript" });
+      const fence = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "reclaim-inbox",
+        attempt: reclaimed.attempt,
+        chatToken: second,
+      };
+      expect(await store.enqueueInboxReply(reply, fence)).toBe(true);
+      expect(await store.enqueueInboxReply(reply, fence)).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS rows FROM community_telegram_deliveries WHERE delivery_id='reclaim-reply'",
+          )
+        ).rows[0],
+      ).toEqual({ rows: 1 });
+      expect(
+        await store.saveConversation(
+          "telegram-community",
+          "7",
+          "reclaim-inbox",
+          "prompt",
+          "answer",
+          fence,
+        ),
+      ).toBe(true);
+      expect(
+        await store.saveConversation(
+          "telegram-community",
+          "7",
+          "reclaim-inbox",
+          "prompt",
+          "answer",
+          fence,
+        ),
+      ).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS rows FROM community_telegram_conversations WHERE input_id='reclaim-inbox'",
+          )
+        ).rows[0],
+      ).toEqual({ rows: 1 });
+    }));
 });

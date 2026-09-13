@@ -29,7 +29,7 @@ async function reply(
   kind: "reply" | "voice" | "setup" = "reply",
 ) {
   const id = await services.vault.hash(`${item.id}:${kind}`);
-  await services.store.enqueueInboxReply(
+  const written = await services.store.enqueueInboxReply(
     {
       id,
       communityId: item.communityId,
@@ -49,6 +49,9 @@ async function reply(
       chatToken: item.chatToken ?? null,
     },
   );
+  // A refused enqueue must stop the handler; finishing afterwards would
+  // consume the message with no reply.
+  if (!written) throw new StaleClaim();
   try {
     await services.wake({ kind: "delivery", id });
   } catch {
@@ -109,16 +112,20 @@ async function stagedProvider(
   try {
     const result = await run();
     if (!(await services.store.inboxLive(item))) return { kind: "stale" };
-    await services.store.completeProviderStage({ ...identity, result });
+    if (!(await services.store.completeProviderStage({ ...identity, result })))
+      return { kind: "stale" };
     return { kind: "completed", result };
   } catch (error) {
     if (error instanceof TelegramFailure && error.reason === "uncertain")
       return { kind: "uncertain" };
-    if (await services.store.inboxLive(item))
-      await services.store.failProviderStage({
+    if (!(await services.store.inboxLive(item))) return { kind: "stale" };
+    if (
+      !(await services.store.failProviderStage({
         ...identity,
         error: error instanceof TelegramFailure ? error.reason : "provider_failed",
-      });
+      }))
+    )
+      return { kind: "stale" };
     return { kind: "failed", error };
   }
 }
@@ -478,13 +485,21 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   await reply(services, item, chatId, textMessage(answer));
   if (record.policy.remember_conversations) {
     if (!(await services.store.inboxLive(item))) throw new StaleClaim();
-    await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer, {
-      communityId: item.communityId,
-      epoch: item.botEpoch,
-      inboxId: item.id,
-      attempt: item.attempt,
-      chatToken: item.chatToken ?? null,
-    });
+    const saved = await services.store.saveConversation(
+      item.communityId,
+      userId,
+      item.id,
+      prompt,
+      answer,
+      {
+        communityId: item.communityId,
+        epoch: item.botEpoch,
+        inboxId: item.id,
+        attempt: item.attempt,
+        chatToken: item.chatToken ?? null,
+      },
+    );
+    if (!saved) throw new StaleClaim();
   }
   if (
     telegramReplyUsesVoice(record.policy, voice !== null, /^\/voice\b/u.test(input)) &&

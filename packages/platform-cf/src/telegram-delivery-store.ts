@@ -106,12 +106,13 @@ export function makeTelegramDeliveryStore(
       await insertDelivery(db.query.bind(db), record);
     },
     async enqueueInboxReply(record, fence) {
-      await db.transaction(async (query) => {
+      return db.transaction(async (query) => {
         // The gate locks the epoch and claim rows before the insert, so the
         // reply is either durable before cleanup or rotation invalidates the
         // item, or it is refused after observing the invalidation.
-        if (!(await lockLiveInbox(query, fence))) return;
+        if (!(await lockLiveInbox(query, fence))) return false;
         await insertDelivery(query, record);
+        return true;
       });
     },
     claimDelivery(id) {

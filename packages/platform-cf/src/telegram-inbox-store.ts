@@ -70,12 +70,26 @@ export function makeTelegramInboxStore(
       return rows.length > 0;
     },
     async finishInbox(item, error) {
-      await db.query(
-        `UPDATE community_telegram_inbox SET state=CASE WHEN $3::text IS NULL THEN 'completed' WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,
-        payload=CASE WHEN $3::text IS NULL OR attempts>=5 THEN NULL ELSE payload END,attempt=NULL,lease_expires_at=NULL,last_error=$3,
-        next_attempt_at=clock_timestamp()+interval '1 minute' WHERE inbox_id=$1 AND attempt=$2 AND state='processing'`,
-        [item.id, item.attempt, error],
-      );
+      await db.transaction(async (query) => {
+        // The completion itself is fenced: a refused reply or an expired claim
+        // must never be finished as completed with no user-visible result.
+        if (
+          !(await lockLiveInbox(query, {
+            communityId: item.communityId,
+            epoch: item.botEpoch,
+            inboxId: item.id,
+            attempt: item.attempt,
+            chatToken: item.chatToken ?? null,
+          }))
+        )
+          return;
+        await query(
+          `UPDATE community_telegram_inbox SET state=CASE WHEN $3::text IS NULL THEN 'completed' WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,
+          payload=CASE WHEN $3::text IS NULL OR attempts>=5 THEN NULL ELSE payload END,attempt=NULL,lease_expires_at=NULL,last_error=$3,
+          next_attempt_at=clock_timestamp()+interval '1 minute' WHERE inbox_id=$1 AND attempt=$2 AND state='processing'`,
+          [item.id, item.attempt, error],
+        );
+      });
     },
     async pendingWork() {
       const rows =
@@ -215,14 +229,15 @@ export function makeTelegramInboxStore(
       ]);
     },
     async saveConversation(communityId, userId, inputId, prompt, answer, fence) {
-      await db.transaction(async (query) => {
-        if (!(await lockLiveInbox(query, fence))) return;
+      return db.transaction(async (query) => {
+        if (!(await lockLiveInbox(query, fence))) return false;
         await query(
           `INSERT INTO community_telegram_conversations(community_id,telegram_user_id,input_id,prompt,answer)
           SELECT $1,$2,$3,$4,$5 FROM community_telegram_integrations WHERE community_id=$1 AND record->'policy'->>'remember_conversations'='true'
           ON CONFLICT(community_id,input_id) DO NOTHING`,
           [communityId, userId, inputId, prompt, answer],
         );
+        return true;
       });
     },
     async cleanup() {

@@ -63,24 +63,28 @@ export function makeTelegramStageStore(
     },
     completeProviderStage(input) {
       return db.transaction(async (query) => {
-        if (!(await lockLiveInbox(query, input))) return;
-        await query(
+        if (!(await lockLiveInbox(query, input))) return false;
+        const rows = await query(
           `UPDATE community_telegram_provider_stages
           SET state='completed',result=$6,error=NULL,updated_at=clock_timestamp()
-          WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'`,
+          WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'
+          RETURNING state`,
           [input.communityId, input.epoch, input.inboxId, input.stage, input.attempt, input.result],
         );
+        return rows.length > 0;
       });
     },
     failProviderStage(input) {
       return db.transaction(async (query) => {
-        if (!(await lockLiveInbox(query, input))) return;
-        await query(
+        if (!(await lockLiveInbox(query, input))) return false;
+        const rows = await query(
           `UPDATE community_telegram_provider_stages
           SET state='failed',error=$6,updated_at=clock_timestamp()
-          WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'`,
+          WHERE community_id=$1 AND bot_epoch=$2 AND inbox_id=$3 AND stage=$4 AND attempt=$5 AND state='issued'
+          RETURNING state`,
           [input.communityId, input.epoch, input.inboxId, input.stage, input.attempt, input.error],
         );
+        return rows.length > 0;
       });
     },
   };

@@ -231,11 +231,11 @@ export interface TelegramStore {
   inboxLive(item: InboxRecord): Promise<boolean>;
   finishInbox(item: InboxRecord, error: string | null): Promise<void>;
   beginProviderStage(input: ProviderStageInput): Promise<BeginProviderStageResult>;
-  completeProviderStage(input: ProviderStageInput & { result: string }): Promise<void>;
-  failProviderStage(input: ProviderStageInput & { error: string }): Promise<void>;
+  completeProviderStage(input: ProviderStageInput & { result: string }): Promise<boolean>;
+  failProviderStage(input: ProviderStageInput & { error: string }): Promise<boolean>;
   pendingWork(): Promise<readonly { kind: "inbox" | "delivery"; id: string }[]>;
   enqueueDelivery(record: DeliveryIntent): Promise<void>;
-  enqueueInboxReply(record: DeliveryIntent, fence: InboxFence): Promise<void>;
+  enqueueInboxReply(record: DeliveryIntent, fence: InboxFence): Promise<boolean>;
   claimDelivery(id: string): Promise<DeliveryRecord | null>;
   finishDelivery(
     record: DeliveryRecord,
@@ -294,7 +294,7 @@ export interface TelegramStore {
     prompt: string,
     answer: string,
     fence: InboxFence,
-  ): Promise<void>;
+  ): Promise<boolean>;
   cleanup(): Promise<void>;
 }
 

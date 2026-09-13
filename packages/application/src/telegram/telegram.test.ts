@@ -54,6 +54,7 @@ function services(methods: Partial<TelegramStore>): TelegramServices {
         enqueueInboxReply: async (record: DeliveryIntent) => {
           if (!methods.enqueueDelivery) throw new Error("Unexpected operation: enqueueInboxReply");
           await methods.enqueueDelivery(record);
+          return true;
         },
         ...methods,
       },
@@ -558,6 +559,7 @@ test("inbox replay reuses durable provider stages instead of repeating billable 
     saveConversation: async () => {
       saveAttempts += 1;
       if (saveAttempts === 1) throw new Error("Fixture interruption after reply enqueue");
+      return true;
     },
     beginProviderStage: async (input) => {
       const existing = stages.get(input.stage);
@@ -579,9 +581,11 @@ test("inbox replay reuses durable provider stages instead of repeating billable 
         result: input.result,
         attempt: input.attempt,
       });
+      return true;
     },
     failProviderStage: async (input) => {
       stages.set(input.stage, { state: "failed", attempt: input.attempt });
+      return true;
     },
   });
   service.vault.open = async (ciphertext) => {
@@ -683,13 +687,15 @@ function voiceServices(
     },
     saveConversation: async () => {
       saved.push(1);
+      return true;
     },
     beginProviderStage: async () => ({ kind: "issued" }) as const,
     completeProviderStage: async (input) => {
       stages.push(input.stage);
       await completeProviderStage(input);
+      return true;
     },
-    failProviderStage: async () => {},
+    failProviderStage: async () => true,
     finishInbox: async () => {},
   });
   service.vault.open = async (ciphertext) => {
@@ -769,11 +775,12 @@ test("a lease expiring during a provider call leaves the inbox for reclaim", asy
     enqueueInboxReply: async (delivery) => {
       if (delivery.desired !== null && "text" in delivery.desired)
         replies.push(delivery.desired.text as string);
+      return true;
     },
-    saveConversation: async () => {},
+    saveConversation: async () => true,
     beginProviderStage: async () => ({ kind: "issued" }) as const,
-    completeProviderStage: async () => {},
-    failProviderStage: async () => {},
+    completeProviderStage: async () => true,
+    failProviderStage: async () => true,
     finishInbox: async (_item, error) => {
       finished.push(error);
     },
@@ -799,5 +806,37 @@ test("a lease expiring during a provider call leaves the inbox for reclaim", asy
   await processTelegramInbox(service, "inbox");
   expect(completions).toBe(1);
   expect(replies).toEqual([]);
+  expect(finished).toEqual([]);
+});
+
+test("a refused reply leaves the inbox item unfinished", async () => {
+  const finished: (string | null)[] = [];
+  const service = services({
+    claimInbox: async () => ({
+      id: "inbox",
+      communityId: "community",
+      botEpoch: "epoch",
+      attempt: "attempt",
+      update: {
+        update_id: 1,
+        message: {
+          chat: { id: 7, type: "private" },
+          from: { id: 7, is_bot: false },
+          text: "/songs",
+        },
+      },
+    }),
+    integration: async () => integration,
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    admitCommand: async () => true,
+    publicPosts: async () => [],
+    enqueueInboxReply: async () => false,
+    finishInbox: async (_item, error) => {
+      finished.push(error);
+    },
+  });
+  await processTelegramInbox(service, "inbox");
   expect(finished).toEqual([]);
 });
