@@ -815,3 +815,41 @@ BEGIN
     candidate.generation;
 END;
 $$;
+
+-- The intended security configuration for the cutover batch's SECURITY
+-- DEFINER functions is the owning schema followed by pg_temp, matching the
+-- baseline replay preamble and the 0149/0167 pinning pattern. A session that
+-- creates these without pg_temp in its search path captures a different
+-- configuration, so the batch pins each function explicitly rather than
+-- relying on the creating session's search path.
+DO $hns_cutover_search_paths$
+DECLARE
+  target CONSTANT TEXT[] := ARRAY[
+    'claim_hns_root_health_renewal_job_v1(text,integer)',
+    'claim_hns_root_import_lifecycle_job_v1(text,integer)',
+    'claim_hns_root_import_observation_job_v1(text,integer)',
+    'commit_hns_root_import_readiness_v1(text,bigint,text,bigint,bigint,bytea,text)',
+    'encode_hns_root_readiness_observation_request_v1(text)',
+    'finalize_hns_root_health_renewal_job_v1(text,text,bigint,text,text,bytea,text,text)',
+    'finalize_hns_root_import_observation_job_v1(text,text,bigint,text,text,bytea,text,text)',
+    'hns_lifecycle_schema_compatibility_v1(text,text)',
+    'hns_root_import_lifecycle_readiness_acceptance_v1()',
+    'prepare_hns_root_inventory_renewal_v1(text,text,bigint,text,text,bytea,text,text)',
+    'run_hns_lifecycle_readiness_cutover_probe_v1(text,text,text,text,text,timestamptz)',
+    'seed_hns_lifecycle_readiness_cutover_probe_v1()'
+  ];
+  signature TEXT;
+BEGIN
+  FOREACH signature IN ARRAY target LOOP
+    -- Partial application is a supported test pattern: the endpoint must be
+    -- applicable without the removal migration that creates some of these.
+    IF to_regprocedure(signature) IS NOT NULL THEN
+      EXECUTE format(
+        'ALTER FUNCTION %s SET search_path TO %I, pg_temp',
+        signature,
+        current_schema()
+      );
+    END IF;
+  END LOOP;
+END;
+$hns_cutover_search_paths$;

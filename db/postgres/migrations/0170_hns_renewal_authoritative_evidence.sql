@@ -26,7 +26,8 @@ ALTER TABLE hns_root_health_renewal_jobs
     AND (
       request_sha256 IS NULL
       OR (
-        octet_length(request_bytes) BETWEEN 1 AND 65536
+        octet_length(request_bytes) >= 1
+        AND octet_length(request_bytes) <= 65536
         AND request_sha256 ~ '^[0-9a-f]{64}$'
         AND encode(sha256(request_bytes), 'hex') = request_sha256
       )
