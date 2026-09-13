@@ -97,10 +97,17 @@ export function makeTelegramAssistantProviders(fetcher: typeof fetch): Assistant
       });
       if (!Array.isArray(result.choices) || result.choices.length === 0)
         throw new TelegramFailure({ reason: "uncertain" });
-      const message = telegramObject(telegramObject(result.choices[0]).message);
-      if (typeof message.content !== "string" || !message.content.trim())
+      let content: unknown;
+      try {
+        content = telegramObject(telegramObject(result.choices[0]).message).content;
+      } catch {
+        // A successful HTTP response with an unusable structure proves the
+        // request was processed, so it must never be retried silently.
         throw new TelegramFailure({ reason: "uncertain" });
-      return message.content.slice(0, 4000);
+      }
+      if (typeof content !== "string" || !content.trim())
+        throw new TelegramFailure({ reason: "uncertain" });
+      return content.slice(0, 4000);
     },
     async transcribe(key, bytes) {
       if (bytes.byteLength > 5_242_880) throw new TelegramFailure({ reason: "invalid" });

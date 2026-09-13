@@ -510,7 +510,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       services,
       item,
       chatId,
-      { kind: "voice", text: "", media: null, buttons: [] },
+      { kind: "voice", text: "", media: null, buttons: [], speech: answer.slice(0, 4000) },
       "voice",
     );
   }

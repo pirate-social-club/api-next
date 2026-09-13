@@ -184,7 +184,10 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
     credentials = await telegramBotCredentials(services, record);
     if (delivery.kind === "voice") {
       const credential = record.credentials.elevenlabs;
-      if (!record.policy.voice_enabled || credential?.status !== "valid" || !delivery.desired)
+      // The spoken text is retained on the delivery separately from the
+      // caption, so an empty Telegram caption never erases the synthesis input.
+      const speech = delivery.desired?.speech ?? "";
+      if (!record.policy.voice_enabled || credential?.status !== "valid" || !speech)
         throw new Error();
       if (
         !(await services.store.reserveUsage(
@@ -193,7 +196,7 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
           delivery.chatId,
           `speech:${delivery.id}:${delivery.attempt}`,
           record.policy,
-          delivery.desired.text.length,
+          speech.length,
         ))
       ) {
         await services.store.finishDelivery(
@@ -207,7 +210,7 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
         credential.ciphertext,
         `${record.communityId}:elevenlabs`,
       );
-      audio = await services.providers.synthesize(key, record.policy, delivery.desired.text);
+      audio = await services.providers.synthesize(key, record.policy, speech);
     }
   } catch {
     await services.store.finishDelivery(

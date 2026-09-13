@@ -152,7 +152,7 @@ const voiceDelivery: DeliveryRecord = {
   kind: "voice",
   postId: null,
   state: "pending",
-  desired: { kind: "voice", text: "The answer", media: null, buttons: [] },
+  desired: { kind: "voice", text: "", speech: "The answer", media: null, buttons: [] },
   desiredHash: "answer",
   confirmed: null,
   confirmedHash: null,
@@ -204,6 +204,82 @@ test("speech failure reserves usage first and fails only the separate voice deli
   };
   await processTelegramDelivery(service, "voice-delivery");
   expect(finished).toBe(true);
+});
+
+test("a voice reply keeps the answer as synthesis input with an empty caption", async () => {
+  const harness = voiceServices(
+    async () => true,
+    async () => {},
+  );
+  const queued: DeliveryRecord[] = [];
+  harness.service.store.enqueueInboxReply = async (record) => {
+    queued.push(record as unknown as DeliveryRecord);
+    return true;
+  };
+  await processTelegramInbox(harness.service, "inbox");
+  const voice = queued.find((entry) => entry.kind === "voice");
+  const text = queued.find((entry) => entry.kind === "reply");
+  expect(text?.desired?.text).toBe("Fixture answer");
+  expect(voice?.desired?.text).toBe("");
+  expect(voice?.desired?.speech).toBe("Fixture answer");
+  if (!voice?.desired) throw new Error("Missing voice delivery");
+
+  const spoken: string[] = [];
+  let reservedCharacters = -1;
+  harness.service.store.claimDelivery = async () => ({
+    ...(voice as DeliveryRecord),
+    confirmed: null,
+    confirmedHash: null,
+    messageId: null,
+    attempt: "delivery-attempt",
+    attemptCount: 1,
+    lastError: null,
+  });
+  harness.service.store.reserveUsage = async (
+    _community,
+    _epoch,
+    _user,
+    _key,
+    _policy,
+    characters,
+  ) => {
+    reservedCharacters = characters;
+    return true;
+  };
+  harness.service.providers = {
+    ...harness.service.providers,
+    synthesize: async (_key, _policy, input) => {
+      spoken.push(input);
+      return new Uint8Array([1]);
+    },
+  };
+  harness.service.api = {
+    dispatch: async () => ({ kind: "confirmed", messageId: 42 }),
+  } as unknown as TelegramServices["api"];
+  harness.service.store.finishDelivery = async () => {};
+  await processTelegramDelivery(harness.service, voice.id);
+  expect(spoken).toEqual(["Fixture answer"]);
+  expect(reservedCharacters).toBe("Fixture answer".length);
+});
+
+test("a long spoken answer is bounded before synthesis", async () => {
+  const harness = voiceServices(
+    async () => true,
+    async () => {},
+  );
+  const queued: DeliveryRecord[] = [];
+  harness.service.store.enqueueInboxReply = async (record) => {
+    queued.push(record as unknown as DeliveryRecord);
+    return true;
+  };
+  harness.service.providers = {
+    ...harness.service.providers,
+    complete: async () => "x".repeat(4500),
+  };
+  await processTelegramInbox(harness.service, "inbox");
+  const voice = queued.find((entry) => entry.kind === "voice");
+  expect(voice?.desired?.text).toBe("");
+  expect(voice?.desired?.speech).toHaveLength(4000);
 });
 
 test("rotated bot epochs fence already claimed work before provider access", async () => {

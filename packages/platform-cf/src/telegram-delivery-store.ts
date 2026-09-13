@@ -254,13 +254,16 @@ export function makeTelegramDeliveryStore(
           throw new TelegramFailure({ reason: "conflict" });
         // Resolution confirms or discards the operation's pinned revision,
         // not a newer desired payload that arrived while it was in flight.
+        // Cancellation is likewise scoped to the pinned revision: when the
+        // live desired state differs, the row returns to pending so the newer
+        // edit or withdrawal can be claimed instead of being stranded.
         const intended = rows[0].intended ?? null;
         if (resolution === "confirmed" && intended !== null && !messageId)
           throw new TelegramFailure({ reason: "invalid" });
         const result = await query(
           `UPDATE community_telegram_deliveries SET
-          state=CASE WHEN $3='cancelled' THEN 'cancelled'
-            WHEN desired_hash IS DISTINCT FROM intended_hash THEN 'pending'
+          state=CASE WHEN desired_hash IS DISTINCT FROM intended_hash THEN 'pending'
+            WHEN $3='cancelled' THEN 'cancelled'
             ELSE $3 END,
           message_id=CASE WHEN $3='cancelled' THEN message_id WHEN $3='delivered' THEN $4 ELSE NULL END,
           confirmed=CASE WHEN $3='cancelled' THEN confirmed WHEN $3='delivered' THEN intended ELSE NULL END,

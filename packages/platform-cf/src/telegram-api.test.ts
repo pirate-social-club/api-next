@@ -96,12 +96,16 @@ test("a voice reply sends audio without repeating the written answer as a captio
   expect(
     await f.api.dispatch(
       token,
-      { ...delivery, desired: { kind: "voice", text: "", media: null, buttons: [] } },
+      {
+        ...delivery,
+        desired: { kind: "voice", text: "", speech: "The answer", media: null, buttons: [] },
+      },
       "send",
     ),
   ).toEqual({ kind: "confirmed", messageId: 12 });
   const body = JSON.parse(String(f.requests[0]?.body));
   expect(body).not.toHaveProperty("caption");
+  expect(body).not.toHaveProperty("speech");
   expect(body.voice).toBeNull();
 });
 

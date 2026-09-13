@@ -6,6 +6,12 @@ export type TelegramMessage = Readonly<{
   buttons: readonly Readonly<{ text: string; url: string }>[];
   replyTo?: number;
   keyboard?: unknown;
+  /**
+   * Spoken content for voice deliveries. Kept separate from `text` so the
+   * synthesis input survives while Telegram's caption stays empty; the adapter
+   * never sends this field.
+   */
+  speech?: string;
 }>;
 
 export type TelegramDeliveryState =

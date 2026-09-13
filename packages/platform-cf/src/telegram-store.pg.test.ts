@@ -709,6 +709,113 @@ suite("community Telegram persistence", () => {
       expect(next?.messageId).toBeNull();
     }));
 
+  test("cancelling a pinned send releases a buffered newer edit", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const claimed = await store.claimDelivery(base.id);
+      if (!claimed) throw new Error("Missing send");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Buffered" },
+        desiredHash: "buffered",
+      });
+      await store.finishDelivery(claimed, { kind: "uncertain", code: "timeout" }, "send");
+      const resolved = await store.resolveDelivery(base.communityId, base.id, "cancel", {
+        ...recoveryCommand,
+        key: "cancel-buffered-edit",
+      });
+      expect(resolved.state).toBe("pending");
+      // Re-enqueueing the same buffered revision stays a no-op, and the row is
+      // still claimable because the pinned revision was the only one cancelled.
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Buffered" },
+        desiredHash: "buffered",
+      });
+      const next = await store.claimDelivery(base.id);
+      expect(next?.desiredHash).toBe("buffered");
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0],
+      ).toEqual({ state: "sending" });
+    }));
+
+  test("cancelling a pinned edit releases a buffered withdrawal", () =>
+    publicationFixture(async (store) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const sent = await store.claimDelivery(base.id);
+      if (!sent) throw new Error("Missing send");
+      await store.finishDelivery(sent, { kind: "confirmed", messageId: 42 }, "send");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Running edit" },
+        desiredHash: "running",
+      });
+      const edit = await store.claimDelivery(base.id);
+      if (!edit) throw new Error("Missing edit");
+      await store.enqueueDelivery({ ...base, desired: null, desiredHash: null });
+      await store.finishDelivery(edit, { kind: "uncertain", code: "timeout" }, "edit");
+      const resolved = await store.resolveDelivery(base.communityId, base.id, "cancel", {
+        ...recoveryCommand,
+        key: "cancel-buffered-withdrawal",
+      });
+      expect(resolved.state).toBe("pending");
+      const next = await store.claimDelivery(base.id);
+      expect(next).not.toBeNull();
+      expect(next?.desiredHash).toBeNull();
+      expect(next?.messageId).toBe(42);
+    }));
+
+  test("cancelling a pinned operation retains the confirmed copy for the released revision", () =>
+    publicationFixture(async (store, admin) => {
+      const base = publication();
+      await store.enqueueDelivery(base);
+      const sent = await store.claimDelivery(base.id);
+      if (!sent) throw new Error("Missing send");
+      await store.finishDelivery(sent, { kind: "confirmed", messageId: 42 }, "send");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Running" },
+        desiredHash: "running",
+      });
+      const edit = await store.claimDelivery(base.id);
+      if (!edit) throw new Error("Missing edit");
+      await store.enqueueDelivery({
+        ...base,
+        desired: { ...base.desired, text: "Newest" },
+        desiredHash: "newest",
+      });
+      await store.finishDelivery(edit, { kind: "uncertain", code: "timeout" }, "edit");
+      await store.resolveDelivery(base.communityId, base.id, "cancel", {
+        ...recoveryCommand,
+        key: "cancel-keep-copy",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,desired_hash,intended_hash,message_id,confirmed_hash FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [base.id],
+          )
+        ).rows[0],
+      ).toEqual({
+        state: "pending",
+        desired_hash: "newest",
+        intended_hash: null,
+        message_id: "42",
+        confirmed_hash: "original",
+      });
+      const next = await store.claimDelivery(base.id);
+      expect(next?.desiredHash).toBe("newest");
+      expect(next?.confirmedHash).toBe("original");
+      expect(next?.messageId).toBe(42);
+    }));
+
   test("private deliveries still refuse newer payloads while sending", () =>
     fixture(async (store, admin) => {
       const base = { ...publication(), id: "reply", kind: "reply" as const, postId: null };
