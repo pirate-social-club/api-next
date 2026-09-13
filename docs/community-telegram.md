@@ -71,8 +71,8 @@ Command replies such as `/start`, `/songs` and channel-selection
 acknowledgements draw on a separate durable daily command budget rather than the
 model message budget. Each command reservation is keyed to its inbox item, so a
 replay does not charge twice. A per-chat lease serializes private-chat
-processing across concurrent consumers and spaces consecutive replies by a
-one-second interval. A chat that is busy or still inside the interval returns
+processing across concurrent consumers and spaces consecutive processing runs
+by a one-second interval. A chat that is busy or still inside the interval returns
 its item to pending without spending a retry attempt and re-wakes it after the
 interval. Delivery rejections carrying a Telegram retry-after delay the next
 attempt instead of retrying immediately.
@@ -177,8 +177,15 @@ provider-stage reuse and uncertainty. The native PostgreSQL suite also covers
 more than ten successful revisions, exhausted legacy rows, completed-deletion
 and confirmed-absence recovery, cancelled-publication revival, same-revision
 cancellation, private-delivery fences and the provider-stage lifecycle.
-Membership/setup errors, pacing, cleanup races, owner delivery filtering and
-voice presentation remain tracked hardening work.
+Membership and setup errors, pacing, cleanup fencing, owner recovery filtering
+and voice presentation are implemented and covered by the native suite; live
+provider, staging and browser acceptance remain open.
+
+Repeated synthesis on a Telegram delivery retry is accepted for the current
+scope: the speech reservation is per attempt, so a retry sends a new paid
+synthesis request. A synthesis cache keyed to the delivery id and desired hash,
+with bounded audio retention, is future work rather than part of this
+hardening. The owner may direct otherwise.
 Before live activation, perform an authorized private/channel test covering
 channel selection and confirmation, content publication/edit/withdrawal,
 reward depletion, text/voice replies, credential replacement and disconnect.

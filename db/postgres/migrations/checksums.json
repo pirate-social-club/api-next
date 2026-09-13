@@ -175,6 +175,6 @@
     "0172_hns_cutover_evidence_consistency.sql": "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
     "0173_community_telegram_delivery_intent.sql": "9da011d270658de19d9afcc7d21c788923a69fc6ca3906e60a4f786c5d8a498d",
     "0174_community_telegram_provider_stages.sql": "81681c7f3abc39bbd123150d6ad868a49202e5dd76381f6cd3f05fac79140c4f",
-    "0175_community_telegram_pacing.sql": "5d21493f51b28a7efdb7e8c657152d299e9a0ca9855d750857d934879909f965"
+    "0175_community_telegram_pacing.sql": "028b3f0ff8fd5ed08da36f27ed84f72e3d5d19cab13d2762d5f68a7647596f27"
   }
 }

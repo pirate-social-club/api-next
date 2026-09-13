@@ -6,8 +6,8 @@
 -- Queue batch size one does not serialize consumers, so two updates from one
 -- chat could be processed concurrently and their replies delivered out of
 -- order. This lease table serializes private-chat processing and spaces
--- consecutive replies by a minimum interval. A deferred item returns to
--- pending without spending an inbox attempt.
+-- consecutive processing runs by a minimum interval. A deferred item returns
+-- to pending without spending an inbox attempt.
 
 ALTER TABLE community_telegram_usage
   ADD COLUMN commands INTEGER NOT NULL DEFAULT 0 CHECK (commands >= 0);
