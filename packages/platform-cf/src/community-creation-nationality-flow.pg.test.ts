@@ -3,14 +3,13 @@ import type { CommunityCreationIntentDocument } from "@pirate/application";
 import type { CommunityCreationDraftV2 } from "@pirate/contracts";
 import { Effect } from "effect";
 import { Client } from "pg";
-
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityCreationIntentResolver } from "./community-creation-intent-resolver.ts";
 import {
-  advanceCommunityCreationVerificationInTransaction,
   compileOptionalRouteDraft,
   makeControlPlaneCommunityCreationStore,
 } from "./community-creation-repository.ts";
+import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 

@@ -1,0 +1,76 @@
+{
+  "lane_parent": "284267298bc43c44d71b84aebbf52dea43c40350",
+  "merged_origin_main": "3e34a9c0bb798748aa13dce711db0f8a36480128",
+  "migration_count": 175,
+  "check_exit_code": 0,
+  "test_chain_exit_code": 0,
+  "unit": {
+    "passed": 4130,
+    "failed": 0,
+    "files": 591
+  },
+  "node": {
+    "passed": 20,
+    "files": 1
+  },
+  "workerd": [
+    {
+      "configuration": "workerd",
+      "passed": 82,
+      "files": 14
+    },
+    {
+      "configuration": "workerd-http",
+      "passed": 74,
+      "files": 22
+    },
+    {
+      "configuration": "workerd-self",
+      "passed": 2,
+      "files": 1
+    },
+    {
+      "configuration": "workerd-hns-verifier",
+      "passed": 10,
+      "files": 7
+    },
+    {
+      "configuration": "workerd-video-source",
+      "passed": 15,
+      "files": 4
+    }
+  ],
+  "postgres": {
+    "passed": 50,
+    "failed": 0,
+    "suite_count": 7,
+    "fresh_completion_sentinels": 7,
+    "wrapper_exit_code": 1,
+    "wrapper_failure": "Final rmdir encountered a stale task-owned socket and lock; inspected and removed afterward. Tests and sentinels passed; container and socket directory removed."
+  },
+  "focused_pacing": {
+    "passed": 16,
+    "failed": 0
+  },
+  "limits": {
+    "memory_max": "3G",
+    "memory_swap_max": 0,
+    "cpu_quota": "100%",
+    "serial_workerd_files": true
+  },
+  "temporary_log_sha256": {
+    "merge-pacing-check.log": "3eb76bba1209daa0dee27faec6ca2e40a6001ec9eb335fed261c14ab3d100754",
+    "merge-pacing-test.log": "2be47cba6f2723b23d6f4f684b2a9c2742b3afd4ea73cc97b0f78f14cac82661",
+    "merge-pg.log": "530e76799a626c640e56711ac9bc1207aef72bcedfa96ab1d2e4aa73ba448fcd",
+    "pacing-before.log": "d384abfc539fb67e4945b87eae2c2cbc159ebe5eaf2b09d3dad075e458496721",
+    "pacing-after.log": "d2e68716155f5df786521b7d601c8aad37ba02053cd103bfebf06b0083b78358",
+    "merge-test.log": "b66f7a31adc75456862de202662b90f82b8b9cf3865c5f13f3fe92cb513d8065"
+  },
+  "not_run": [
+    "full PostgreSQL partitions",
+    "trusted pull-request secret-boundary gate",
+    "Solid browser acceptance",
+    "real-document provider acceptance",
+    "staging enablement"
+  ]
+}

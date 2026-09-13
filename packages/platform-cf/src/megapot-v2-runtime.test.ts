@@ -347,27 +347,76 @@ describe("Megapot v2 Worker runtime adapters", () => {
     expect(requestCount).toBe(12);
   });
 
-  test("paces request starts only when the bounded client opts in", async () => {
-    const requestStarts: number[] = [];
+  test.each([undefined, 0, 20])(
+    "paces actual transport starts with interval %s despite synchronous setup delay",
+    async (interval) => {
+      let now = 0;
+      const requestStarts: number[] = [];
+      const fetchAttestation = attestationFetcher();
+      const client = makeMegapotV2RpcClient({
+        rpcUrl: "https://base-sepolia.example.invalid",
+        attestation: attestation(),
+        reuseSuccessfulAttestation: true,
+        ...(interval === undefined ? {} : { minimumRequestIntervalMs: interval }),
+        requestStartTiming: {
+          now: () => now,
+          wait: async (milliseconds) => {
+            now += milliseconds;
+          },
+        },
+        fetcher: async (input, init) => {
+          // Model work between the scheduling permit and the transport start.
+          if (requestStarts.length === 0) now += 7;
+          requestStarts.push(now);
+          return fetchAttestation(input, init);
+        },
+      });
+
+      await client.attestDeployment();
+      expect(requestStarts).toHaveLength(6);
+      for (let index = 1; index < requestStarts.length; index += 1) {
+        expect(
+          (requestStarts[index] as number) - (requestStarts[index - 1] as number),
+        ).toBeGreaterThanOrEqual(interval ?? 0);
+      }
+      if (!interval) expect(requestStarts).toEqual([7, 7, 7, 7, 7, 7]);
+    },
+  );
+
+  test("paces starts without waiting for earlier RPC responses", async () => {
+    let now = 0;
+    let chainReadsStarted = 0;
+    const bothStarted = Promise.withResolvers<void>();
+    const releaseResponses = Promise.withResolvers<void>();
     const fetchAttestation = attestationFetcher();
     const client = makeMegapotV2RpcClient({
       rpcUrl: "https://base-sepolia.example.invalid",
       attestation: attestation(),
-      reuseSuccessfulAttestation: true,
       minimumRequestIntervalMs: 20,
+      requestStartTiming: {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds;
+        },
+      },
       fetcher: async (input, init) => {
-        requestStarts.push(performance.now());
+        const request = JSON.parse(String(init?.body)) as { method: string };
+        if (request.method === "eth_chainId") {
+          chainReadsStarted += 1;
+          if (chainReadsStarted === 2) bothStarted.resolve();
+          await releaseResponses.promise;
+        }
         return fetchAttestation(input, init);
       },
     });
 
-    await client.attestDeployment();
-    expect(requestStarts).toHaveLength(6);
-    for (let index = 1; index < requestStarts.length; index += 1) {
-      expect(
-        (requestStarts[index] as number) - (requestStarts[index - 1] as number),
-      ).toBeGreaterThan(15);
-    }
+    const first = client.attestDeployment();
+    const second = client.attestDeployment();
+    await bothStarted.promise;
+    expect(chainReadsStarted).toBe(2);
+    expect(now).toBeGreaterThanOrEqual(20);
+    releaseResponses.resolve();
+    await Promise.all([first, second]);
   });
 
   test("classifies the exact solvency RPC stage without exposing provider details", async () => {

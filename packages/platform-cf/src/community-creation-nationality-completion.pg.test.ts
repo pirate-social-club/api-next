@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
-import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-repository.ts";
+import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 import { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;

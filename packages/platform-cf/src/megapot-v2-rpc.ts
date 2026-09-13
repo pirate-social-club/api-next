@@ -92,6 +92,11 @@ export type MegapotV2RpcClientOptions = Readonly<{
   reuseSuccessfulAttestation?: boolean;
   /** Optional provider-throttle guard; zero or absent preserves immediate request starts. */
   minimumRequestIntervalMs?: number;
+  /** Monotonic pacing clock; injectable without replacing global timers. */
+  requestStartTiming?: Readonly<{
+    now: () => number;
+    wait: (milliseconds: number) => Promise<void>;
+  }>;
 }>;
 
 export type MegapotV2FeeQuote = Readonly<{
@@ -280,39 +285,57 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     throw new MegapotV2RpcFailed("invalid-config");
   }
   const fetcher = options.fetcher ?? fetch;
+  const requestStartTiming = options.requestStartTiming ?? {
+    now: () => performance.now(),
+    wait: (milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
+  };
   let requestSequence = 0;
   let previousRequestStart = Promise.resolve();
   let lastRequestStartedAt = Number.NEGATIVE_INFINITY;
 
-  const waitForRequestStart = (): Promise<void> => {
-    if (minimumRequestIntervalMs === 0) return Promise.resolve();
+  const startRequest = (start: () => Promise<Response>): Promise<Response> => {
+    if (minimumRequestIntervalMs === 0) return Promise.resolve().then(start);
     const scheduled = previousRequestStart.then(async () => {
       const targetStart = lastRequestStartedAt + minimumRequestIntervalMs;
-      let remaining = targetStart - performance.now();
+      let remaining = targetStart - requestStartTiming.now();
       while (remaining > 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, Math.ceil(remaining)));
-        remaining = targetStart - performance.now();
+        await requestStartTiming.wait(Math.ceil(remaining));
+        remaining = targetStart - requestStartTiming.now();
       }
-      lastRequestStartedAt = performance.now();
+      try {
+        // Keep the actual transport invocation inside the start queue. Wrapping
+        // its promise releases the queue without waiting for the response.
+        return { response: start() };
+      } finally {
+        // Account for synchronous setup before transport dispatch; a permit
+        // timestamp recorded earlier can shorten the next actual start gap.
+        lastRequestStartedAt = requestStartTiming.now();
+      }
     });
-    previousRequestStart = scheduled.catch(() => undefined);
-    return scheduled;
+    previousRequestStart = scheduled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return scheduled.then(({ response }) => response);
   };
 
   const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
-    await waitForRequestStart();
     requestSequence += 1;
     const id = `megapot:${requestSequence}:${method}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       let response: Response;
       try {
-        response = await fetcher(options.rpcUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-          signal: controller.signal,
+        response = await startRequest(() => {
+          timer = setTimeout(() => controller.abort(), timeoutMs);
+          return fetcher(options.rpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+            signal: controller.signal,
+          });
         });
       } catch {
         throw new MegapotV2RpcFailed(controller.signal.aborted ? "timeout" : "unavailable");
@@ -337,7 +360,7 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       if (!("result" in envelope)) throw new MegapotV2RpcFailed("invalid-response");
       return envelope.result;
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
 

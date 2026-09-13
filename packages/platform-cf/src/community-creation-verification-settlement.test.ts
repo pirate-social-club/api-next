@@ -18,7 +18,7 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect } from "effect";
-import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-repository.ts";
+import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Response = ControlPlaneResult<Row> | readonly ControlPlaneResult<Row>[];

@@ -18,12 +18,9 @@ import {
 } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
-
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
-import {
-  advanceCommunityCreationVerificationInTransaction,
-  enforceCreatorNationalityPolicy,
-} from "./community-creation-repository.ts";
+import { enforceCreatorNationalityPolicy } from "./community-creation-repository.ts";
+import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 import { makeControlPlaneCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
 import { loadCuratedNationalityEvaluation } from "./gates-v2-community.ts";
