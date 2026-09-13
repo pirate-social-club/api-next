@@ -46,6 +46,7 @@ async function reply(
       epoch: item.botEpoch,
       inboxId: item.id,
       attempt: item.attempt,
+      chatToken: item.chatToken ?? null,
     },
   );
   try {
@@ -84,6 +85,7 @@ async function stagedProvider(
     stage,
     requestHash,
     attempt: item.attempt,
+    chatToken: item.chatToken ?? null,
   };
   // Cleanup and rotation fence every durable continuation. A stale claim must
   // not start paid work, and an already-issued call is left classified
@@ -472,6 +474,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         epoch: item.botEpoch,
         inboxId: item.id,
         attempt: item.attempt,
+        chatToken: item.chatToken ?? null,
       });
   }
   if (
@@ -536,7 +539,7 @@ export async function processTelegramInbox(services: TelegramServices, id: strin
     return;
   }
   try {
-    await runInbox(services, item);
+    await runInbox(services, { ...item, chatToken: token });
   } finally {
     await services.store.releaseChat(item.communityId, item.botEpoch, chatId, token);
   }

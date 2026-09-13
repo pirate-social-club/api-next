@@ -86,6 +86,7 @@ export type InboxRecord = {
   botEpoch: string;
   update: IncomingUpdate;
   attempt: string;
+  chatToken?: string | null;
 };
 export type ProviderStage = "transcription" | "completion";
 export type ProviderStageInput = {
@@ -95,12 +96,14 @@ export type ProviderStageInput = {
   stage: ProviderStage;
   requestHash: string;
   attempt: string;
+  chatToken?: string | null;
 };
 export type InboxFence = {
   communityId: string;
   epoch: string;
   inboxId: string;
   attempt: string;
+  chatToken?: string | null;
 };
 export type BeginProviderStageResult =
   | { kind: "issued" }

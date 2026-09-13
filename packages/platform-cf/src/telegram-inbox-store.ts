@@ -41,7 +41,7 @@ export function makeTelegramInboxStore(
       const attempt = crypto.randomUUID();
       const rows = await db.query(
         `UPDATE community_telegram_inbox SET state='processing',attempt=$2,attempts=attempts+1,
-        lease_expires_at=clock_timestamp()+interval '2 minutes' WHERE inbox_id=$1 AND attempts<5 AND next_attempt_at<=clock_timestamp()
+        lease_expires_at=clock_timestamp()+interval '5 minutes' WHERE inbox_id=$1 AND attempts<5 AND next_attempt_at<=clock_timestamp()
         AND (state='pending' OR (state='processing' AND lease_expires_at<clock_timestamp()))
         RETURNING community_id,bot_epoch,payload`,
         [id, attempt],
@@ -54,6 +54,7 @@ export function makeTelegramInboxStore(
             botEpoch: String(row.bot_epoch),
             update: row.payload as IncomingUpdate,
             attempt,
+            chatToken: null,
           }
         : null;
     },
@@ -177,7 +178,7 @@ export function makeTelegramInboxStore(
         const token = crypto.randomUUID();
         const rows = await query(
           `INSERT INTO community_telegram_chat_leases(community_id,bot_epoch,chat_id,lease_token,lease_expires_at,next_allowed_at)
-          VALUES($1,$2,$3,$4,clock_timestamp()+interval '2 minutes',clock_timestamp()+make_interval(secs=>$5))
+          VALUES($1,$2,$3,$4,clock_timestamp()+interval '5 minutes',clock_timestamp()+make_interval(secs=>$5))
           ON CONFLICT(community_id,bot_epoch,chat_id) DO UPDATE
           SET lease_token=EXCLUDED.lease_token,lease_expires_at=EXCLUDED.lease_expires_at,next_allowed_at=EXCLUDED.next_allowed_at
           WHERE community_telegram_chat_leases.next_allowed_at<=clock_timestamp()
@@ -236,6 +237,9 @@ export function makeTelegramInboxStore(
       await db.query(
         "DELETE FROM community_telegram_setups WHERE expires_at<clock_timestamp()-interval '1 day'",
       );
+      // Stage deletion is guarded by the terminal inbox state: a handler
+      // committing a stage holds the inbox share lock, so an in-flight stage
+      // cannot match, and concurrent cleanup runs are safe by the condition.
       await db.query(
         `DELETE FROM community_telegram_provider_stages AS stage
         USING community_telegram_inbox AS inbox

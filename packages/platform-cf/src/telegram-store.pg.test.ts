@@ -1451,4 +1451,70 @@ suite("community Telegram persistence", () => {
         ).rows[0],
       ).toEqual({ state: "failed" });
     }));
+
+  test("persistence refuses an expired inbox claim", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "expired-inbox", 51);
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "expired-inbox",
+        stage: "completion" as const,
+        requestHash: "expired",
+        attempt: item.attempt,
+        chatToken: null,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await admin.query(
+        "UPDATE community_telegram_inbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE inbox_id='expired-inbox'",
+      );
+      await store.completeProviderStage({ ...input, result: "Answer" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_provider_stages WHERE inbox_id='expired-inbox'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "issued" });
+      expect(await store.claimInbox("expired-inbox")).not.toBeNull();
+    }));
+
+  test("persistence refuses a superseded chat-lease holder", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "superseded-lease", 52);
+      const first = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!first) throw new Error("Missing chat lease");
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "superseded-lease",
+        stage: "completion" as const,
+        requestHash: "superseded",
+        attempt: item.attempt,
+        chatToken: first,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await admin.query(
+        "UPDATE community_telegram_chat_leases SET lease_expires_at=clock_timestamp()-interval '1 second',next_allowed_at=clock_timestamp()-interval '1 second' WHERE chat_id='7'",
+      );
+      const second = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!second) throw new Error("Missing replacement lease");
+      expect(second).not.toBe(first);
+      await store.completeProviderStage({ ...input, result: "Answer" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_provider_stages WHERE inbox_id='superseded-lease'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "issued" });
+      await store.completeProviderStage({ ...input, chatToken: second, result: "Answer" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result FROM community_telegram_provider_stages WHERE inbox_id='superseded-lease'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "completed", result: "Answer" });
+    }));
 });

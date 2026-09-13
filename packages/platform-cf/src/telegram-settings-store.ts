@@ -128,6 +128,11 @@ export function makeTelegramSettingsStore(
           [next.communityId, key, hash, JSON.stringify(integrationView(next))],
         );
         if (current.botEpoch !== next.botEpoch) {
+          // Old-epoch invalidation lives inside this transaction on purpose:
+          // the integration row lock taken above is what serializes this
+          // cancellation with handler persistence, which revalidates the epoch
+          // under its own share lock. A future writer must take the integration
+          // row before touching old-epoch inbox rows.
           await query(
             "UPDATE community_telegram_inbox SET state='cancelled',payload=NULL WHERE community_id=$1 AND bot_epoch<>$2 AND state IN ('pending','processing')",
             [next.communityId, next.botEpoch],

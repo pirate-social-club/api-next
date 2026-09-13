@@ -82,7 +82,9 @@ call, committing a stage result, publishing a reply or saving a conversation,
 a handler verifies that its attempt still owns a processing inbox item with a
 payload and that the bot epoch still matches the integration. Durable writes
 take share locks on the integration epoch row and the claiming inbox row,
-revalidate under those locks, and only then write. Cleanup and rotation take
+revalidate under those locks, and only then write. The claim must still be
+inside its lease, and a write carrying a chat-lease token must still own that
+lease, so an expired or superseded holder is refused. Cleanup and rotation take
 conflicting locks, so persistence either commits before invalidation or
 observes it and is refused. A provider call already issued when the fence trips
 is left classified uncertain rather than repeated; external calls stay outside
