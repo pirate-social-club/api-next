@@ -106,6 +106,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-gates-v2-nationality-suite-complete\n",
   },
   {
+    name: "nationality ceremony store",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_NATIONALITY_CEREMONY_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-nationality-ceremony-suite-complete",
+    contents: "api-next-control-plane-postgres-nationality-ceremony-suite-complete\n",
+  },
+  {
     name: "postgres feed repository",
     path:
       process.env.CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL ??

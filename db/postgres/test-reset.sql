@@ -295,6 +295,8 @@ TRUNCATE TABLE
   "namespace_ownership_evidence_snapshots",
   "namespace_ownership_sessions",
   "namespace_ownership_start_reservations",
+  "nationality_ceremony_attempts",
+  "nationality_requirement_states",
   "observations",
   "operator_managed_root_registry_current",
   "operator_managed_root_registry_versions",

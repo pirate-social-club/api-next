@@ -71,6 +71,7 @@ export {
   evaluateCuratedHumanMembership,
   evaluateNationality,
   humanMembershipPolicyCanonicalPreimage,
+  nationalityCeremonyReservationHash,
   policyCanonicalPreimage,
 } from "./gates-v2/index.ts";
 export * from "./handles/label-claim-rules.ts";

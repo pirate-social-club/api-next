@@ -143,3 +143,7 @@ export function compileNationalityPolicy(input: unknown): NationalityPolicyCompi
   };
   return { kind: "compiled", policy: { ...policy, policy_hash: policyHash(policy) } };
 }
+
+export function nationalityCeremonyReservationHash(reservation: unknown): string {
+  return sha256Hex(canonicalJson({ reservation, version: "nationality-ceremony-reservation-v1" }));
+}

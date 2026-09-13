@@ -334,6 +334,7 @@ const GATES_V2_EXPORTS = {
     "NationalityPolicy",
     "NationalityPolicyCompilation",
     "compileNationalityPolicy",
+    "nationalityCeremonyReservationHash",
   ],
 };
 

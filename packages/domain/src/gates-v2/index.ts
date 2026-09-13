@@ -45,4 +45,8 @@ export {
 export type { NationalityEvaluation, NationalityEvaluatorInput } from "./nationality-evaluator.ts";
 export { evaluateNationality } from "./nationality-evaluator.ts";
 export type { NationalityPolicyCompilation } from "./nationality-policy.ts";
-export { compileNationalityPolicy, NationalityPolicy } from "./nationality-policy.ts";
+export {
+  compileNationalityPolicy,
+  NationalityPolicy,
+  nationalityCeremonyReservationHash,
+} from "./nationality-policy.ts";
