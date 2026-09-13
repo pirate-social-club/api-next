@@ -128,6 +128,7 @@ import {
   makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "@pirate/platform-cf/namespace-ownership-start-repository";
+import { resolveNationalityAuthoring } from "@pirate/platform-cf/nationality-authoring";
 import {
   makeOpenAiTextModerationProvider,
   OPENAI_MODERATION_BASE_URL,
@@ -299,6 +300,9 @@ export interface HttpWorkerBindings
   readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID?: string;
   readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL?: string;
   readonly ZKPASSPORT_DEV_MODE?: string;
+  readonly NATIONALITY_AUTHORING_ENABLED?: string;
+  readonly NATIONALITY_AUTHORING_POLICY_REVISION?: string;
+  readonly NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS?: string;
   readonly VERY_OAUTH_ENABLED?: string;
   readonly VERY_OAUTH_AUTHORIZATION_ENDPOINT?: string;
   readonly VERY_OAUTH_TOKEN_ENDPOINT?: string;
@@ -490,6 +494,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL:
       bindings.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
     ZKPASSPORT_DEV_MODE: bindings.ZKPASSPORT_DEV_MODE,
+    NATIONALITY_AUTHORING_ENABLED: bindings.NATIONALITY_AUTHORING_ENABLED,
+    NATIONALITY_AUTHORING_POLICY_REVISION: bindings.NATIONALITY_AUTHORING_POLICY_REVISION,
+    NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS:
+      bindings.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS,
     VERY_OAUTH_ENABLED: bindings.VERY_OAUTH_ENABLED,
     VERY_OAUTH_AUTHORIZATION_ENDPOINT: bindings.VERY_OAUTH_AUTHORIZATION_ENDPOINT,
     VERY_OAUTH_TOKEN_ENDPOINT: bindings.VERY_OAUTH_TOKEN_ENDPOINT,
@@ -803,7 +811,30 @@ export async function createProductionHttpWorker(
   });
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
-  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane);
+  const selfPassOrigin = publicHttpsOrigin(config.PIRATE_API_PUBLIC_ORIGIN);
+  const nationalityAuthoring = resolveNationalityAuthoring({
+    enabled: config.NATIONALITY_AUTHORING_ENABLED,
+    policyRevision:
+      config.NATIONALITY_AUTHORING_POLICY_REVISION > 0
+        ? config.NATIONALITY_AUTHORING_POLICY_REVISION
+        : null,
+    evidenceLifetimeSeconds:
+      config.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS > 0
+        ? config.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS
+        : null,
+    environment: config.API_NEXT_ENV,
+    selfPass:
+      config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
+        ? { callbackOrigin: selfPassOrigin, mockPassport: config.SELF_PASS_MOCK_PASSPORT }
+        : null,
+    zkPassport: config.ZKPASSPORT_ENABLED
+      ? { domain: config.ZKPASSPORT_DOMAIN, devMode: config.ZKPASSPORT_DEV_MODE }
+      : null,
+  });
+  const communityCreationStore = makeControlPlaneCommunityCreationStore(
+    controlPlane,
+    nationalityAuthoring === null ? {} : { nationality_authoring: nationalityAuthoring },
+  );
   const personaStore = makeControlPlanePersonaStore(controlPlane);
   const mediaServices =
     dependencies.media_services ??
@@ -905,7 +936,6 @@ export async function createProductionHttpWorker(
   const callbackCredentialHeaderNames = callbackCredentialHeaders(
     config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
   );
-  const selfPassOrigin = publicHttpsOrigin(config.PIRATE_API_PUBLIC_ORIGIN);
   if (
     config.SELF_PASS_ENABLED &&
     (selfPassOrigin === undefined ||
@@ -994,7 +1024,11 @@ export async function createProductionHttpWorker(
   );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
-    makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneCommunityCreationIntentResolver(
+      controlPlane,
+      config.API_NEXT_ENV,
+      nationalityAuthoring === null ? {} : { nationality_authoring: nationalityAuthoring },
+    ),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
   ]);
