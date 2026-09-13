@@ -21,7 +21,7 @@ export type NationalityCeremonyAction =
     }>;
 
 export type NationalityCeremonyRequirement = Readonly<{
-  readonly actionKind: "community_join" | "handle_claim";
+  readonly actionKind: "community_join" | "handle_claim" | "community_creation";
   readonly intentId: string;
   readonly actorId: string;
   readonly requirementHash: string;
