@@ -65,6 +65,13 @@ const textMessage = (text: string): TelegramMessage => ({
 const providerUncertainReply =
   "That request could not be completed. Please send it again in a moment.";
 
+/**
+ * Thrown when a durable continuation finds its claim expired, superseded or
+ * invalidated. The inbox item is left in place so an expired-but-valid claim
+ * can be reclaimed; it is never finished as completed from a stale context.
+ */
+class StaleClaim extends Error {}
+
 type ProviderStageOutcome =
   | { kind: "completed"; result: string }
   | { kind: "uncertain" }
@@ -420,10 +427,11 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         services.providers.transcribe(key, await services.api.downloadVoice(bot.token, fileId)),
     );
     if (transcription.kind === "uncertain") {
-      if (await services.store.inboxLive(item)) await uncertainReply(services, item, chatId);
+      if (!(await services.store.inboxLive(item))) throw new StaleClaim();
+      await uncertainReply(services, item, chatId);
       return;
     }
-    if (transcription.kind === "stale") return;
+    if (transcription.kind === "stale") throw new StaleClaim();
     if (transcription.kind === "failed") throw transcription.error;
     prompt = transcription.result;
   }
@@ -459,29 +467,30 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       ]),
   );
   if (completion.kind === "uncertain") {
-    if (await services.store.inboxLive(item)) await uncertainReply(services, item, chatId);
+    if (!(await services.store.inboxLive(item))) throw new StaleClaim();
+    await uncertainReply(services, item, chatId);
     return;
   }
-  if (completion.kind === "stale") return;
+  if (completion.kind === "stale") throw new StaleClaim();
   if (completion.kind === "failed") throw completion.error;
-  if (!(await services.store.inboxLive(item))) return;
+  if (!(await services.store.inboxLive(item))) throw new StaleClaim();
   const answer = boundedTelegramText(completion.result);
   await reply(services, item, chatId, textMessage(answer));
   if (record.policy.remember_conversations) {
-    if (await services.store.inboxLive(item))
-      await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer, {
-        communityId: item.communityId,
-        epoch: item.botEpoch,
-        inboxId: item.id,
-        attempt: item.attempt,
-        chatToken: item.chatToken ?? null,
-      });
+    if (!(await services.store.inboxLive(item))) throw new StaleClaim();
+    await services.store.saveConversation(item.communityId, userId, item.id, prompt, answer, {
+      communityId: item.communityId,
+      epoch: item.botEpoch,
+      inboxId: item.id,
+      attempt: item.attempt,
+      chatToken: item.chatToken ?? null,
+    });
   }
   if (
     telegramReplyUsesVoice(record.policy, voice !== null, /^\/voice\b/u.test(input)) &&
-    speech?.status === "valid" &&
-    (await services.store.inboxLive(item))
+    speech?.status === "valid"
   ) {
+    if (!(await services.store.inboxLive(item))) throw new StaleClaim();
     await reply(
       services,
       item,
@@ -500,14 +509,17 @@ function privateChatId(item: InboxRecord): string | null {
 async function runInbox(services: TelegramServices, item: InboxRecord) {
   try {
     const record = await services.store.integration(item.communityId);
-    if (
-      record.botEpoch === item.botEpoch &&
-      record.status === "ready" &&
-      (await services.store.inboxLive(item))
-    )
-      await handle(services, item, record);
+    if (record.botEpoch !== item.botEpoch || record.status !== "ready") {
+      await services.store.finishInbox(item, null);
+      return;
+    }
+    // An expired or invalidated claim is left in place: an expired-but-valid
+    // item is re-claimed and retried, while an invalidated one cannot match.
+    if (!(await services.store.inboxLive(item))) return;
+    await handle(services, item, record);
     await services.store.finishInbox(item, null);
-  } catch {
+  } catch (error) {
+    if (error instanceof StaleClaim) return;
     await services.store.finishInbox(item, "processing_failed");
   }
 }

@@ -63,7 +63,8 @@ export function makeTelegramInboxStore(
         `SELECT 1 FROM community_telegram_inbox i
         JOIN community_telegram_integrations g USING (community_id)
         WHERE i.inbox_id=$1 AND i.attempt=$2 AND i.state='processing' AND i.payload IS NOT NULL
-          AND i.bot_epoch=$3 AND g.bot_epoch=$3`,
+          AND i.bot_epoch=$3 AND g.bot_epoch=$3
+          AND i.lease_expires_at > clock_timestamp()`,
         [item.id, item.attempt, item.botEpoch],
       );
       return rows.length > 0;

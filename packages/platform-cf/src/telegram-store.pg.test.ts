@@ -127,6 +127,25 @@ function deferredGate() {
   return { promise, resolve };
 }
 
+async function waitForBlockedPrefix(
+  observer: Client,
+  queryPrefix: string,
+  blockerPid: number,
+  attempts = 40,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const rows = (
+      await observer.query(
+        "SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE query LIKE $1 || '%' AND pg_blocking_pids(pid) @> ARRAY[$2::int]",
+        [queryPrefix, blockerPid],
+      )
+    ).rows;
+    if (Number(rows[0]?.blocked) > 0) return true;
+    await Bun.sleep(50);
+  }
+  return false;
+}
+
 async function waitForBlocked(
   observer: Client,
   queryText: string,
@@ -1513,6 +1532,71 @@ suite("community Telegram persistence", () => {
         (
           await admin.query(
             "SELECT state,result FROM community_telegram_provider_stages WHERE inbox_id='superseded-lease'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "completed", result: "Answer" });
+    }));
+
+  test("a chat-lease replacement waits for an in-flight fenced write", () =>
+    fixture(async (store, admin) => {
+      const item = await claimInboxRow(store, admin, "lease-race", 53);
+      const token = await store.claimChat("telegram-community", "epoch", "7", 1);
+      if (!token) throw new Error("Missing chat lease");
+      const input = {
+        communityId: "telegram-community",
+        epoch: "epoch",
+        inboxId: "lease-race",
+        stage: "completion" as const,
+        requestHash: "lease-race",
+        attempt: item.attempt,
+        chatToken: token,
+      };
+      expect(await store.beginProviderStage(input)).toEqual({ kind: "issued" });
+      await admin.query(
+        "UPDATE community_telegram_chat_leases SET lease_expires_at=clock_timestamp()+interval '1 second',next_allowed_at=clock_timestamp()-interval '1 second' WHERE chat_id='7'",
+      );
+      const second = await schemaClient(admin);
+      const observer = await schemaClient(admin);
+      try {
+        const secondPid = Number(
+          (await second.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+        );
+        const gate = deferredGate();
+        let entered!: () => void;
+        const enteredPromise = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const gated = makeTelegramStageStore(
+          clientDatabase(second, {
+            fragment: "community_telegram_chat_leases",
+            release: gate.promise,
+            entered,
+          }),
+        );
+        const persistence = gated.completeProviderStage({ ...input, result: "Answer" });
+        await enteredPromise;
+        await Bun.sleep(1200);
+        const replacement = store.claimChat("telegram-community", "epoch", "7", 1);
+        expect(
+          await waitForBlockedPrefix(
+            observer,
+            "INSERT INTO community_telegram_chat_leases",
+            secondPid,
+          ),
+        ).toBe(true);
+        gate.resolve();
+        await persistence;
+        const next = await replacement;
+        expect(next).not.toBeNull();
+        expect(next).not.toBe(token);
+      } finally {
+        await observer.end();
+        await second.end();
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result FROM community_telegram_provider_stages WHERE inbox_id='lease-race'",
           )
         ).rows[0],
       ).toEqual({ state: "completed", result: "Answer" });

@@ -750,3 +750,54 @@ test("rotation before reply persistence fences the published reply and conversat
   expect(harness.replies).toEqual([]);
   expect(harness.saved).toEqual([]);
 });
+
+test("a lease expiring during a provider call leaves the inbox for reclaim", async () => {
+  let live = true;
+  let completions = 0;
+  const finished: (string | null)[] = [];
+  const replies: string[] = [];
+  const service = services({
+    claimInbox: async () => voiceInboxItem(),
+    integration: async () => assistantVoiceIntegration(),
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    inboxLive: async () => live,
+    publicPosts: async () => [],
+    history: async () => [],
+    reserveUsage: async () => true,
+    enqueueInboxReply: async (delivery) => {
+      if (delivery.desired !== null && "text" in delivery.desired)
+        replies.push(delivery.desired.text as string);
+    },
+    saveConversation: async () => {},
+    beginProviderStage: async () => ({ kind: "issued" }) as const,
+    completeProviderStage: async () => {},
+    failProviderStage: async () => {},
+    finishInbox: async (_item, error) => {
+      finished.push(error);
+    },
+  });
+  service.vault.open = async (ciphertext) => {
+    if (ciphertext === "encrypted-token")
+      return JSON.stringify({ token: "123:fixture", secret: "fixture-secret" });
+    return ciphertext === "encrypted-openrouter" ? "openrouter-key" : "elevenlabs-key";
+  };
+  service.api = {
+    downloadVoice: async () => new Uint8Array([1, 2, 3]),
+  } as unknown as TelegramServices["api"];
+  service.providers = {
+    ...service.providers,
+    transcribe: async () => "Fixture transcript",
+    complete: async () => {
+      completions += 1;
+      // The claim lease expires while the completion request is in flight.
+      live = false;
+      return "Fixture answer";
+    },
+  };
+  await processTelegramInbox(service, "inbox");
+  expect(completions).toBe(1);
+  expect(replies).toEqual([]);
+  expect(finished).toEqual([]);
+});
