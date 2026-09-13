@@ -79,6 +79,16 @@ async function insertDelivery(query: TelegramQuery, record: DeliveryIntent) {
   );
 }
 
+const deliveryCursorPattern =
+  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}(?::?\d{2})?)?\|[^|]+$/;
+
+function parseDeliveryCursor(value: string | undefined): { createdAt: string; id: string } | null {
+  if (value === undefined) return null;
+  if (!deliveryCursorPattern.test(value)) throw new TelegramFailure({ reason: "invalid" });
+  const separator = value.indexOf("|");
+  return { createdAt: value.slice(0, separator), id: value.slice(separator + 1) };
+}
+
 export function makeTelegramDeliveryStore(
   db: TelegramDatabase,
 ): Pick<
@@ -187,13 +197,28 @@ export function makeTelegramDeliveryStore(
       );
     },
     async listDeliveries(communityId, before) {
+      // Operator recovery is publication-only, ordered by creation time with
+      // the delivery id as a stable tiebreak. The cursor carries the raw
+      // database timestamp so pagination cannot skip rows that share a
+      // millisecond, unlike the former hashed-id ordering.
+      const cursor = parseDeliveryCursor(before);
       const rows = await db.query(
-        `SELECT * FROM community_telegram_deliveries WHERE community_id=$1 AND ($2::text IS NULL OR delivery_id<$2)
-        ORDER BY delivery_id DESC LIMIT 51`,
-        [communityId, before ?? null],
+        `SELECT *,created_at::text AS created_at_cursor FROM community_telegram_deliveries
+        WHERE community_id=$1 AND kind='publication'
+          AND ($2::timestamptz IS NULL OR (created_at, delivery_id) < ($2::timestamptz, $3::text))
+        ORDER BY created_at DESC, delivery_id DESC LIMIT 51`,
+        [communityId, cursor?.createdAt ?? null, cursor?.id ?? ""],
       );
-      const items = rows.slice(0, 50).map((row) => view(delivery(row)));
-      return { items, next_cursor: rows.length > 50 ? (items.at(-1)?.id ?? null) : null };
+      const page = rows.slice(0, 50);
+      const items = page.map((row) => view(delivery(row)));
+      const last = page.at(-1);
+      return {
+        items,
+        next_cursor:
+          rows.length > 50 && last !== undefined
+            ? `${String(last.created_at_cursor)}|${String(last.delivery_id)}`
+            : null,
+      };
     },
     resolveDelivery(communityId, id, resolution, command, messageId) {
       return db.transaction(async (query) => {

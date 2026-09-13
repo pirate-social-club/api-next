@@ -99,7 +99,11 @@ the stored message ID and confirmed payload. A remaining desired publication
 then becomes pending for a new send; a withdrawal becomes withdrawn without
 another delete attempt. The API also accepts confirmed resolution without a
 message ID when the desired payload is null, to acknowledge a completed deletion.
-Confirming a delivered publication still requires its Telegram message ID.
+Confirming a delivered publication still requires its Telegram message ID. The
+operator recovery list returns publication deliveries only, newest first, with
+a keyset cursor over creation time and delivery id so pages do not skip rows
+that share a timestamp; private reply, voice and setup deliveries are not
+exposed to the owner panel.
 
 Attempts are bounded per desired revision. Successful finalization or a changed
 desired payload resets the retry counter; replaying the same failed revision

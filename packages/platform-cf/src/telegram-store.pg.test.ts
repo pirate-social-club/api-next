@@ -225,7 +225,7 @@ suite("community Telegram persistence", () => {
     }));
 
   test("operator resolution replays without scheduling another send", () =>
-    fixture(async (store) => {
+    fixture(async (store, admin) => {
       await store.enqueueDelivery({
         id: "uncertain",
         communityId: "telegram-community",
@@ -252,7 +252,13 @@ suite("community Telegram persistence", () => {
       await store.finishDelivery(retry, { kind: "confirmed", messageId: 8 }, "send");
       await store.resolveDelivery("telegram-community", "uncertain", "not_sent", command);
       expect(await store.claimDelivery("uncertain")).toBeNull();
-      expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("delivered");
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_deliveries WHERE delivery_id='uncertain'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "delivered" });
     }));
   test("duplicate webhook IDs are accepted once and completed payloads are erased", () =>
     fixture(async (store, admin) => {
@@ -316,7 +322,13 @@ suite("community Telegram persistence", () => {
       );
       expect(await store.claimDelivery("delivery")).toBeNull();
       await store.finishDelivery(claimed, { kind: "confirmed", messageId: 55 }, "send");
-      expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("uncertain");
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_deliveries WHERE delivery_id='delivery'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "uncertain" });
     }));
 
   test("failed edits retain confirmed content and can be claimed again after retry_after", () =>
@@ -362,7 +374,13 @@ suite("community Telegram persistence", () => {
       const withdrawn = await store.claimDelivery("delivery");
       if (!withdrawn) throw new Error("Missing withdrawal");
       await store.finishDelivery(withdrawn, { kind: "confirmed", messageId: 9 }, "delete");
-      expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("withdrawn");
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_deliveries WHERE delivery_id='delivery'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "withdrawn" });
     }));
 
   for (const withdrawal of [false, true]) {
@@ -545,7 +563,7 @@ suite("community Telegram persistence", () => {
     }));
 
   test("private delivery cancellation remains terminal for newer payloads", () =>
-    fixture(async (store) => {
+    fixture(async (store, admin) => {
       for (const kind of ["reply", "voice", "setup"] as const) {
         const base = { ...publication(), id: kind, kind, postId: null };
         await store.enqueueDelivery(base);
@@ -568,10 +586,12 @@ suite("community Telegram persistence", () => {
         expect(await store.claimDelivery(base.id)).toBeNull();
       }
       expect(
-        (await store.listDeliveries("telegram-community")).items.every(
-          (row) => row.state === "cancelled",
-        ),
-      ).toBe(true);
+        (
+          await admin.query(
+            "SELECT state,count(*)::int AS count FROM community_telegram_deliveries WHERE kind<>'publication' GROUP BY state",
+          )
+        ).rows,
+      ).toEqual([{ state: "cancelled", count: 3 }]);
     }));
 
   test("a newer revision arriving during sending is preserved for the next operation", () =>
@@ -1363,5 +1383,46 @@ suite("community Telegram persistence", () => {
           )
         ).rows[0],
       ).toEqual({ rows: 0 });
+    }));
+
+  test("operator recovery lists only publications newest first", () =>
+    fixture(async (store, admin) => {
+      await admin.query(
+        `INSERT INTO community_telegram_deliveries(delivery_id,community_id,bot_epoch,chat_id,kind,post_id,desired,desired_hash,created_at) VALUES
+        ('rec-old','telegram-community','epoch','-100','publication',NULL,'{"kind":"text","text":"old","media":null,"buttons":[]}'::jsonb,'old',clock_timestamp()-interval '3 hours'),
+        ('rec-new','telegram-community','epoch','-100','publication',NULL,'{"kind":"text","text":"new","media":null,"buttons":[]}'::jsonb,'new',clock_timestamp()-interval '1 hour'),
+        ('rec-private','telegram-community','epoch','7','reply',NULL,'{"kind":"text","text":"private","media":null,"buttons":[]}'::jsonb,'private',clock_timestamp())`,
+      );
+      const page = await store.listDeliveries("telegram-community");
+      expect(page.items.map((item) => item.id)).toEqual(["rec-new", "rec-old"]);
+      expect(page.next_cursor).toBeNull();
+    }));
+
+  test("operator recovery paginates stably when timestamps tie", () =>
+    fixture(async (store, admin) => {
+      const values: string[] = [];
+      for (let index = 0; index < 55; index += 1) {
+        values.push(
+          `('tied-${String(index).padStart(2, "0")}','telegram-community','epoch','-100','publication',NULL,'{"kind":"text","text":"tied","media":null,"buttons":[]}'::jsonb,'tied','2026-09-12 00:00:00+00'::timestamptz)`,
+        );
+      }
+      await admin.query(
+        `INSERT INTO community_telegram_deliveries(delivery_id,community_id,bot_epoch,chat_id,kind,post_id,desired,desired_hash,created_at) VALUES ${values.join(",")}`,
+      );
+      const first = await store.listDeliveries("telegram-community");
+      expect(first.items).toHaveLength(50);
+      if (first.next_cursor === null) throw new Error("Missing recovery cursor");
+      const second = await store.listDeliveries("telegram-community", first.next_cursor);
+      expect(second.items).toHaveLength(5);
+      const ids = [...first.items, ...second.items].map((item) => item.id);
+      expect(new Set(ids).size).toBe(55);
+      expect(first.items[0]?.id).toBe("tied-54");
+    }));
+
+  test("an invalid recovery cursor is refused", () =>
+    fixture(async (store) => {
+      await expect(
+        store.listDeliveries("telegram-community", "not-a-cursor"),
+      ).rejects.toMatchObject({ reason: "invalid" });
     }));
 });
