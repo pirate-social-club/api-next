@@ -51,7 +51,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 49;
+const testCount = 50;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -5081,6 +5081,88 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const third = await storeA.listWorkflowCandidates();
       expect(third).toHaveLength(1);
       expect(third[0]?.submissionId).toBe(inspected.find((entry) => entry !== cursor));
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
+  test("reconciles a publish-phase terminal Workflow through the durable fence exactly once", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const ready: TrustedSongAnalysis = {
+        ...analysis,
+        lyricsAnalysis: {
+          status: "ready",
+          lyricsRevision: 1,
+          explicitness: "not_explicit",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "fixture-lyrics",
+          policyRevision: "fixture-v1",
+          adapterRevision: "fixture-v1",
+        },
+        lyricsSafety: "allow",
+      };
+      await createThroughDecision(
+        connection,
+        { ...decision, creationRevision: 3, lyricsRevision: 1 },
+        ready,
+        false,
+        "accepted fixture lyrics",
+      );
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      const authority = await store.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing reconciliation fixture");
+      expect(authority.phase).toBe("publish");
+      expect(authority.postId).toBeNull();
+
+      const attemptsBefore = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM media_processing_attempts WHERE submission_id=$1",
+        [submission],
+      );
+
+      const outcomes = await Promise.all([
+        store.reconcileTerminalWorkflow(authority),
+        store.reconcileTerminalWorkflow(authority),
+      ]);
+      expect(outcomes).toEqual(["reconciled", "reconciled"]);
+
+      const publication = await admin.query<{ post_id: string }>(
+        "SELECT post_id FROM media_publication_projections WHERE submission_id=$1",
+        [submission],
+      );
+      expect(publication.rows[0]?.post_id).toBe(`media-post-${operation}`);
+      const nextRevision = authority.workflowRevision + 1;
+      const submissionRow = await admin.query<{ workflow_revision: string }>(
+        "SELECT workflow_revision::text AS workflow_revision FROM media_post_submissions WHERE submission_id=$1",
+        [submission],
+      );
+      expect(submissionRow.rows[0]?.workflow_revision).toBe(String(nextRevision));
+      const alignmentOutbox = await admin.query<{ outbox_event_id: string }>(
+        "SELECT outbox_event_id FROM media_submission_outbox WHERE outbox_event_id=$1",
+        [`media-alignment-outbox-${operation}-r${nextRevision}`],
+      );
+      expect(alignmentOutbox.rows).toHaveLength(1);
+      const attemptsAfter = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM media_processing_attempts WHERE submission_id=$1",
+        [submission],
+      );
+      expect(attemptsAfter.rows[0]?.count).toBe(attemptsBefore.rows[0]?.count);
+
+      expect(await store.reconcileTerminalWorkflow(authority)).toBe("reconciled");
+      const publicationCount = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM media_publication_projections WHERE submission_id=$1",
+        [submission],
+      );
+      expect(publicationCount.rows[0]?.count).toBe("1");
+      const outboxCount = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM media_submission_outbox WHERE outbox_event_id=$1",
+        [`media-alignment-outbox-${operation}-r${nextRevision}`],
+      );
+      expect(outboxCount.rows[0]?.count).toBe("1");
+      const attemptsAfterRepeat = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM media_processing_attempts WHERE submission_id=$1",
+        [submission],
+      );
+      expect(attemptsAfterRepeat.rows[0]?.count).toBe(attemptsBefore.rows[0]?.count);
     });
     completedTestCount += 1;
   }, 40_000);

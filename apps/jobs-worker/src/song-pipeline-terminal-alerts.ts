@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { mediaRecoveryRequiredSql } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import type { AlertSink } from "../../../packages/platform-cf/src/alerts.ts";
 import { alertTick } from "../../../packages/platform-cf/src/alerts.ts";
+import { isWorkflowInstanceMissingError } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import {
   type CloudflareDataRegistrationWorkflowBinding,
   makeCloudflareDataRegistrationWorkflowLauncher,
@@ -233,11 +234,17 @@ async function workflowIsMissing(
   try {
     if (subsystem === "media") {
       if (bindings.media === undefined) return null;
-      const workflow = makeCloudflareMediaProcessingWorkflowLauncher(bindings.media, () => false);
+      const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
+        bindings.media,
+        isWorkflowInstanceMissingError,
+      );
       return (await workflow.get(row.workflow_instance_id)) === "missing";
     }
     if (bindings.data === undefined) return null;
-    const workflow = makeCloudflareDataRegistrationWorkflowLauncher(bindings.data, () => false);
+    const workflow = makeCloudflareDataRegistrationWorkflowLauncher(
+      bindings.data,
+      isWorkflowInstanceMissingError,
+    );
     return (await workflow.get(row.workflow_instance_id)) === "missing";
   } catch {
     report(`song-pipeline ${subsystem} Workflow observation unavailable`);
