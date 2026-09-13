@@ -1,9 +1,27 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { compileNationalityPolicy, type NationalityPolicy } from "@pirate/domain";
+import type { CommunityStore } from "@pirate/application";
+import {
+  COMMUNITY_GATE_COMPILER_VERSION,
+  CURATED_HUMAN_MEMBERSHIP_POLICY,
+  communityJoinActionPayloadHash,
+  communityJoinIntentBindingHash,
+  compileNationalityPolicy,
+  HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+  type NationalityPolicy,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
+} from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { enforceCreatorNationalityPolicy } from "./community-creation-repository.ts";
+import { makeControlPlaneCommunityStore } from "./community-repository.ts";
 import { loadCuratedNationalityEvaluation } from "./gates-v2-community.ts";
 import { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -30,6 +48,14 @@ function quoteIdentifier(value: string): string {
 function connectionForSchema(raw: string, schema: string): string {
   const separator = raw.includes("?") ? "&" : "?";
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
+}
+
+function runStore<A, E>(
+  connection: string,
+  use: (store: CommunityStore["Service"]) => Effect.Effect<A, E>,
+): Promise<A> {
+  const store = makeControlPlaneCommunityStore(makeDirectPostgresControlPlaneLayer(connection));
+  return Effect.runPromise(Effect.scoped(use(store)));
 }
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
@@ -150,7 +176,8 @@ async function insertCompletedNationalityEvidence(
              provenance_kind, subject_key_id, subject_binding_event_id, subject_binding_epoch,
              provider_configuration_kind, provider_configuration_ref, provider_configuration_version
            ) VALUES ($1, $2, 'user-a', $3, $3, 'document', 'issuer_rp_scope', 'test', NULL, $4,
-                     'test', 'document', repeat('c', 64), '{}'::jsonb, ${receiptObservedAt}, ${expiry},
+                     'test', 'document', repeat('c', 60) || substr(md5($1), 1, 4), '{}'::jsonb,
+                     ${receiptObservedAt}, ${expiry},
                      'proof_session', $5, $6, 1, 'dynamic', $7, '1')`,
       values: [
         receiptId,
@@ -240,6 +267,213 @@ const bindingRow = (communityId: string, policy: NationalityPolicy, providerId: 
     providerId === "self.pass" ? "self-pass-v1" : "zkpassport-v2",
   ],
 });
+
+async function seedHumanCommunity(admin: Client, communityId: string): Promise<void> {
+  await admin.query({
+    text: `INSERT INTO communities (
+             community_id, display_name, status, membership_mode, human_verification_lane,
+             created_by_user_id, created_at, updated_at
+           ) VALUES ($1, 'Composed', 'active', 'gated', 'very', 'user-a', now(), now())`,
+    values: [communityId],
+  });
+  await admin.query({
+    text: `INSERT INTO policy_versions (
+             policy_version_id, community_id, policy_key, revision, policy_hash,
+             policy, compiled_plan, compiler_version, uniqueness_model,
+             created_by_user_id, published_at, policy_purpose
+           ) VALUES ('curated-human-membership-v1', $1, 'curated-human-membership', 1,
+                     $2, $3::jsonb, $4::jsonb, 'community-gate-compiler-v1',
+                     '{"kind":"none"}'::jsonb, 'user-a', clock_timestamp(), 'access')`,
+    values: [
+      communityId,
+      CURATED_HUMAN_MEMBERSHIP_POLICY.policy_hash,
+      JSON.stringify(CURATED_HUMAN_MEMBERSHIP_POLICY),
+      JSON.stringify({
+        compiler_version: COMMUNITY_GATE_COMPILER_VERSION,
+        evaluator: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
+        provider_binding: {
+          provider_id: VERY_WEB_PROVIDER_ID,
+          provider_configuration: {
+            kind: "dynamic",
+            reference: VERY_WEB_CONFIGURATION_REFERENCE,
+            version: VERY_WEB_CONFIGURATION_VERSION,
+          },
+          method: VERY_WEB_METHOD,
+          protocol_version: VERY_WEB_PROTOCOL_VERSION,
+          scope: {
+            kind: "named",
+            scope_semantics: "issuer_rp_scope",
+            issuer: VERY_WEB_ISSUER,
+            rp_scope: VERY_WEB_RP_SCOPE,
+          },
+        },
+      }),
+    ],
+  });
+  await admin.query({
+    text: `INSERT INTO community_policy_provider_bindings (
+             policy_version_id, community_id, policy_key, verification_requirement_hash,
+             provider_id, provider_configuration_kind, provider_configuration_ref,
+             provider_configuration_version, method, protocol_version, issuer, scope_kind,
+             issuer_rp_scope, issuer_rp_action_scope, request_mode, evaluator_id
+           ) VALUES ('curated-human-membership-v1', $1, 'curated-human-membership',
+                     '${HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH}',
+                     'very.web', 'dynamic', 'very-web', '1', 'palm_web', 'very-web-v1',
+                     'https://verify.very.org', 'issuer_rp_scope', 'pirate-social', NULL,
+                     'dynamic', 'curated-human-membership-v1')`,
+    values: [communityId],
+  });
+  await admin.query({
+    text: `INSERT INTO community_policy_current (community_id, policy_key, policy_version_id, activated_at)
+           VALUES ($1, 'curated-human-membership', 'curated-human-membership-v1', clock_timestamp())`,
+    values: [communityId],
+  });
+}
+
+async function seedNationalityPolicy(
+  admin: Client,
+  communityId: string,
+  policy: NationalityPolicy,
+): Promise<void> {
+  await admin.query({
+    text: `INSERT INTO policy_versions (
+             policy_version_id, community_id, policy_key, revision, policy_hash,
+             policy, compiled_plan, compiler_version, uniqueness_model,
+             created_by_user_id, published_at, policy_purpose
+           ) VALUES ('curated-nationality-v1', $1, 'curated-nationality', 1, $2, $3::jsonb,
+                     '{"kind":"nationality"}'::jsonb, 'community-gate-compiler-v2',
+                     '{"kind":"none"}'::jsonb, 'user-a', clock_timestamp(), 'access')`,
+    values: [communityId, policy.policy_hash, JSON.stringify(policy)],
+  });
+  for (const provider of policy.provider_bindings) {
+    await admin.query({
+      text: `INSERT INTO community_policy_provider_bindings (
+               policy_version_id, community_id, policy_key, verification_requirement_hash,
+               provider_id, provider_configuration_kind, provider_configuration_ref,
+               provider_configuration_version, method, protocol_version, issuer, scope_kind,
+               issuer_rp_scope, issuer_rp_action_scope, request_mode, evaluator_id
+             ) VALUES ('curated-nationality-v1', $1, 'curated-nationality', $2, $3,
+                       'dynamic', $4, '1', 'document', $5, $3, 'issuer_rp_scope', 'test', NULL,
+                       'dynamic', 'curated-nationality-v1')`,
+      values: [
+        communityId,
+        policy.requirement_hash,
+        provider.provider_id,
+        provider.provider_configuration.reference,
+        provider.protocol_version,
+      ],
+    });
+  }
+  await admin.query({
+    text: `INSERT INTO community_policy_current (community_id, policy_key, policy_version_id, activated_at)
+           VALUES ($1, 'curated-nationality', 'curated-nationality-v1', clock_timestamp())`,
+    values: [communityId],
+  });
+}
+
+async function seedPalmEvidence(admin: Client, suffix: string, communityId: string): Promise<void> {
+  const subjectId = `subject-palm-${suffix}`;
+  const bindingEventId = `binding-event-palm-${suffix}`;
+  const receiptId = `receipt-palm-${suffix}`;
+  await admin.query("BEGIN");
+  try {
+    await admin.query({
+      text: `INSERT INTO subject_keys (subject_key_id, issuer, method, scope_kind, issuer_rp_scope, issuer_rp_action_scope, subject_digest)
+             VALUES ($1, 'https://verify.very.org', 'palm_web', 'issuer_rp_scope', 'pirate-social', NULL,
+                     repeat('1', 60) || substr(md5($2), 1, 4))`,
+      values: [subjectId, suffix],
+    });
+    await admin.query({
+      text: `INSERT INTO proof_sessions (
+             proof_session_id, actor_id, intent_id, request_hash, provider_id,
+             provider_configuration_kind, provider_configuration_ref, provider_configuration_version,
+             method, issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope, request_mode,
+             protocol_version, environment, status, requested_requirements, requested_claim_ids,
+             subject_binding_intent, started_at, expires_at, upstream_session_ref
+           ) VALUES ($1, 'user-a', $2, repeat('a', 64), 'very.web', 'dynamic', 'very-web', '1',
+                     'palm_web', 'https://verify.very.org', 'issuer_rp_scope', 'pirate-social', NULL,
+                     'dynamic', 'very-web-v1', 'test', 'pending', $3::jsonb, $4::jsonb, 'establish',
+                     clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day', $5)`,
+      values: [
+        `proof-palm-${suffix}`,
+        `intent-palm-${suffix}`,
+        JSON.stringify([
+          { claim_id: "credential.subject_unique" },
+          { claim_id: "human.personhood" },
+        ]),
+        JSON.stringify(["credential.subject_unique", "human.personhood"]),
+        `upstream-palm-${suffix}`,
+      ],
+    });
+    await admin.query({
+      text: `INSERT INTO subject_key_binding_events (binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id, binding_kind, idempotency_key, bound_at)
+             VALUES ($1, $2, 1, 'user-a', $4, 'initial', $3, clock_timestamp())`,
+      values: [bindingEventId, subjectId, `bind-palm-${suffix}`, `proof-palm-${suffix}`],
+    });
+    await admin.query({
+      text: `INSERT INTO evidence_receipts (
+             evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method, scope_kind,
+             issuer_rp_scope, issuer_rp_action_scope, protocol_version, environment, evidence_kind,
+             evidence_hash, receipt_metadata, observed_at, expires_at, provenance_kind, subject_key_id,
+             subject_binding_event_id, subject_binding_epoch, provider_configuration_kind,
+             provider_configuration_ref, provider_configuration_version
+           ) VALUES ($1, $2, 'user-a', 'very.web', 'https://verify.very.org', 'palm_web',
+                     'issuer_rp_scope', 'pirate-social', NULL, 'very-web-v1', 'test',
+                     'very.web.server-verified.v1',
+                     repeat('c', 60) || substr(md5($5), 1, 4), '{}'::jsonb, clock_timestamp(),
+                     clock_timestamp() + interval '1 day', 'proof_session', $3, $4, 1, 'dynamic',
+                     'very-web', '1')`,
+      values: [`receipt-palm-${suffix}`, `proof-palm-${suffix}`, subjectId, bindingEventId, suffix],
+    });
+    await admin.query({
+      text: `INSERT INTO assertion_bindings (binding_group_id, user_id, binding_mode, subject_key_id, subject_binding_event_id, subject_binding_epoch)
+             VALUES ($1, 'user-a', 'same_subject', $2, $3, 1)`,
+      values: [`binding-palm-${suffix}`, subjectId, bindingEventId],
+    });
+    await admin.query({
+      text: `INSERT INTO assertions (assertion_id, binding_group_id, evidence_receipt_id, subject_key_id, user_id, claim_id, assertion_value, assurance, observed_at, expires_at)
+             VALUES ($1, $2, $3, $4, 'user-a', 'human.personhood', '{"personhood":true}'::jsonb,
+                     'provider_attested', clock_timestamp(), clock_timestamp() + interval '1 day'),
+                    ($5, $2, $3, $4, 'user-a', 'credential.subject_unique', '{"subject_unique":true}'::jsonb,
+                     'provider_attested', clock_timestamp(), clock_timestamp() + interval '1 day')`,
+      values: [
+        `assertion-person-${suffix}`,
+        `binding-palm-${suffix}`,
+        `receipt-palm-${suffix}`,
+        subjectId,
+        `assertion-unique-${suffix}`,
+      ],
+    });
+    await admin.query({
+      text: `WITH terminal(value) AS (SELECT clock_timestamp())
+             UPDATE proof_sessions SET status = 'completed', completed_at = terminal.value,
+                    completion_idempotency_key = $2, completion_result_hash = repeat('b', 64),
+                    terminal_at = terminal.value
+               FROM terminal WHERE proof_session_id = $1`,
+      values: [`proof-palm-${suffix}`, `complete-palm-${suffix}`],
+    });
+    await admin.query({
+      text: `INSERT INTO proof_session_completion_events (completion_event_id, proof_session_id, actor_id, idempotency_key, terminal_status, result_hash, terminal_at)
+             SELECT $2, proof_session_id, actor_id, completion_idempotency_key, status, completion_result_hash, terminal_at
+               FROM proof_sessions WHERE proof_session_id = $1`,
+      values: [`proof-palm-${suffix}`, `completion-palm-${suffix}`],
+    });
+    await admin.query({
+      text: `INSERT INTO action_intents (action_intent_id, user_id, community_id, action_kind, action_scope, action_payload_hash, intent_binding_hash, idempotency_key, status, expires_at)
+             VALUES ($1, 'user-a', $2, 'community_join', $2, $3, $4, $1, 'open', clock_timestamp() + interval '1 hour')`,
+      values: [
+        `intent-palm-${suffix}`,
+        communityId,
+        communityJoinActionPayloadHash(communityId),
+        communityJoinIntentBindingHash({ actorId: "user-a", communityId }),
+      ],
+    });
+    await admin.query("COMMIT");
+  } catch (error) {
+    await admin.query("ROLLBACK");
+    throw error;
+  }
+}
 
 suite("Gates v2 nationality provider alternatives and evidence loader", () => {
   test("widened provider key stores both alternatives and rejects a duplicate provider row", async () => {
@@ -413,8 +647,156 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("palm alone cannot admit to a nationality-gated community", async () => {
+    await withSchema(async (connection, admin) => {
+      const policy = nationalityPolicy(["US"]);
+      await seedHumanCommunity(admin, "community-composed-palm-only");
+      await seedNationalityPolicy(admin, "community-composed-palm-only", policy);
+      await seedPalmEvidence(admin, "palm-only", "community-composed-palm-only");
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-composed-palm-only",
+            actor: { userId: "user-a", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "membership-required" });
+      const state = await admin.query({
+        text: `SELECT
+                 (SELECT COUNT(*)::int FROM community_memberships WHERE community_id = $1) AS memberships,
+                 (SELECT COUNT(*)::int FROM decision_records WHERE community_id = $1 AND outcome = 'needs_evidence') AS nationality_missing`,
+        values: ["community-composed-palm-only"],
+      });
+      expect(state.rows[0]).toEqual({ memberships: 0, nationality_missing: 1 });
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("either document provider satisfies nationality alongside palm", async () => {
+    await withSchema(async (connection, admin) => {
+      for (const provider of ["self.pass", "zkpassport"] as const) {
+        const communityId = `community-composed-${provider.replaceAll(".", "-")}`;
+        const policy = nationalityPolicy(["US"]);
+        await seedHumanCommunity(admin, communityId);
+        await seedNationalityPolicy(admin, communityId, policy);
+        await seedPalmEvidence(admin, provider.replaceAll(".", "-"), communityId);
+        await insertCompletedNationalityEvidence(admin, {
+          suffix: `composed-${provider.replaceAll(".", "-")}`,
+          provider,
+          requirement: policy.requirement,
+        });
+        await expect(
+          runStore(connection, (store) =>
+            store.join({
+              communityId,
+              actor: { userId: "user-a", kind: "user" },
+              body: { persona: { kind: "create_new" } },
+            }),
+          ),
+        ).resolves.toMatchObject({ community: communityId, status: "joined" });
+        const decisions = await admin.query({
+          text: `SELECT policy_version_id, outcome FROM decision_records WHERE community_id = $1 ORDER BY policy_version_id`,
+          values: [communityId],
+        });
+        expect(decisions.rows).toEqual([
+          { policy_version_id: "curated-human-membership-v1", outcome: "pass" },
+          { policy_version_id: "curated-nationality-v1", outcome: "pass" },
+        ]);
+      }
+    });
+    completedTestCount += 1;
+  }, 45_000);
+
+  test("creator activation rejects without nationality evidence and passes with it", async () => {
+    await withSchema(async (connection, admin) => {
+      const policy = nationalityPolicy(["US"]);
+      await seedHumanCommunity(admin, "community-creator-guard");
+      await seedNationalityPolicy(admin, "community-creator-guard", policy);
+
+      const rejected = Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((transaction) =>
+            enforceCreatorNationalityPolicy(transaction, {
+              communityId: "community-creator-guard",
+              userId: "user-a",
+            }),
+          );
+        }),
+      );
+      await expect(
+        Effect.runPromise(
+          rejected.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+        ),
+      ).rejects.toMatchObject({ _tag: "VerificationCompletionStorageFailed" });
+      const rejection = await admin.query({
+        text: `SELECT outcome FROM decision_records
+                WHERE community_id = 'community-creator-guard' AND policy_version_id = 'curated-nationality-v1'`,
+      });
+      expect(rejection.rows).toEqual([]);
+
+      await insertCompletedNationalityEvidence(admin, {
+        suffix: "creator-guard",
+        provider: "zkpassport",
+        requirement: policy.requirement,
+      });
+      const admitted = Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((transaction) =>
+            enforceCreatorNationalityPolicy(transaction, {
+              communityId: "community-creator-guard",
+              userId: "user-a",
+            }),
+          );
+        }),
+      );
+      await expect(
+        Effect.runPromise(
+          admitted.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+        ),
+      ).resolves.toBe(true);
+      const decisions = await admin.query({
+        text: `SELECT outcome FROM decision_records
+                WHERE community_id = 'community-creator-guard' AND policy_version_id = 'curated-nationality-v1'
+                ORDER BY created_at`,
+      });
+      expect(decisions.rows).toEqual([{ outcome: "pass" }]);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("creator activation is a no-op without a current nationality policy", async () => {
+    await withSchema(async (connection, admin) => {
+      await seedHumanCommunity(admin, "community-creator-palm-only");
+      const program = Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((transaction) =>
+            enforceCreatorNationalityPolicy(transaction, {
+              communityId: "community-creator-palm-only",
+              userId: "user-a",
+            }),
+          );
+        }),
+      );
+      await expect(
+        Effect.runPromise(
+          program.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+        ),
+      ).resolves.toBe(true);
+      const decisions = await admin.query({
+        text: `SELECT COUNT(*)::int AS count FROM decision_records
+                WHERE community_id = 'community-creator-palm-only' AND policy_version_id = 'curated-nationality-v1'`,
+      });
+      expect(decisions.rows[0]).toEqual({ count: 0 });
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 6) {
+    if (connectionString !== undefined && completedTestCount === 10) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

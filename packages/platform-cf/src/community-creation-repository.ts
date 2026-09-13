@@ -49,6 +49,12 @@ import {
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
 import { reserveCommunityOwner } from "./community-owner-reservation.ts";
+import {
+  GatesV2CommunityDataInvalid,
+  loadCuratedNationalityEvaluation,
+  loadCuratedNationalityPolicy,
+  persistNationalityEnforceDecision,
+} from "./gates-v2-community.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -946,6 +952,43 @@ function replaceCreationRequirementBindings(
 function verificationStorageFailure(): VerificationCompletionStorageFailed {
   return new VerificationCompletionStorageFailed();
 }
+
+/**
+ * Creator activation under the composed member policy: the creator must
+ * satisfy the community's current nationality policy exactly like a joining
+ * member, with no owner exemption. Returns true when activation may proceed
+ * and fails the transaction when the policy exists and the creator's
+ * nationality evidence does not pass. A community without a current
+ * nationality policy is a no-op, so Palm-only creation is unchanged until
+ * composed authoring lands.
+ */
+export const enforceCreatorNationalityPolicy = Effect.fn("enforceCreatorNationalityPolicy")(
+  function* (
+    transaction: ControlPlaneTransaction,
+    input: Readonly<{ readonly communityId: string; readonly userId: string }>,
+  ): Effect.fn.Return<
+    boolean,
+    VerificationCompletionStorageFailed | GatesV2CommunityDataInvalid | ControlPlaneError
+  > {
+    const policy = yield* loadCuratedNationalityPolicy(transaction, input.communityId);
+    if (policy === null) return true;
+    const evaluation = yield* loadCuratedNationalityEvaluation(transaction, {
+      userId: input.userId,
+      policy,
+    });
+    yield* persistNationalityEnforceDecision(transaction, {
+      communityId: input.communityId,
+      userId: input.userId,
+      requestId: `creation-${globalThis.crypto.randomUUID()}`,
+      policy,
+      evaluation,
+    });
+    if (evaluation.outcome !== "pass") {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    return true;
+  },
+);
 
 function exactCanonicalJson(value: unknown, expected: unknown): boolean {
   return JSON.stringify(jsonValue(value)) === JSON.stringify(expected);
@@ -2378,6 +2421,20 @@ export function makeControlPlaneCommunityCreationRepository(
         ],
         readonly: false,
       });
+      yield* enforceCreatorNationalityPolicy(transaction, {
+        communityId,
+        userId: input.actor.userId,
+      }).pipe(
+        Effect.mapError((error) => {
+          if (error instanceof VerificationCompletionStorageFailed) {
+            return failure("commit", "constraint");
+          }
+          if (error instanceof GatesV2CommunityDataInvalid) {
+            return failure("commit", "invalid-row");
+          }
+          return error;
+        }),
+      );
       if (claim !== null && subjectClaimId !== null) {
         // Pre-amendment intents keep the verified-subject quota ledger.
         yield* transaction.execute({
