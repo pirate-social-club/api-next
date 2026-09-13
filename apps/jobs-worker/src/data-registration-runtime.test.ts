@@ -20,6 +20,30 @@ const candidate: DataRegistrationWorkflowCandidate = {
 };
 
 describe("DATA registration scheduled recovery", () => {
+  test("does not replace finished or indeterminate instances at any budget", async () => {
+    for (const status of ["finished", "indeterminate"] as const) {
+      for (const revision of ["1", "4"]) {
+        let writes = 0;
+        const result = await recoverDataRegistrationWorkflowCandidates(
+          [{ ...candidate, workflow_revision: revision }],
+          {
+            workflow: { get: async () => status, create: async () => "created" },
+            store: {
+              replaceMissingWorkflow: async () => {
+                writes += 1;
+                throw new Error("unexpected replacement");
+              },
+            } as unknown as DataRegistrationStore,
+          },
+        );
+        expect(writes).toBe(0);
+        expect(result.replaced).toBe(0);
+        expect(result.limitReached).toBe(0);
+        expect(result[status]).toBe(1);
+      }
+    }
+  });
+
   test("replaces one exhausted current launch and converges concurrent sweeps", async () => {
     let revision = 1n;
     let replacements = 0;
@@ -93,6 +117,8 @@ describe("DATA registration scheduled recovery", () => {
     });
 
     expect(first).toEqual({
+      finished: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 0,
       replaced: 1,
@@ -101,6 +127,8 @@ describe("DATA registration scheduled recovery", () => {
       lookupFailed: 0,
     });
     expect(second).toEqual({
+      finished: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 0,
       replaced: 0,
@@ -129,6 +157,8 @@ describe("DATA registration scheduled recovery", () => {
       },
     });
     expect(result).toEqual({
+      finished: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 1,
       replaced: 0,
@@ -155,6 +185,8 @@ describe("DATA registration scheduled recovery", () => {
       },
     });
     expect(result).toEqual({
+      finished: 0,
+      indeterminate: 0,
       inspected: 2,
       present: 1,
       replaced: 0,
@@ -180,6 +212,8 @@ describe("DATA registration scheduled recovery", () => {
       },
     );
     expect(result).toEqual({
+      finished: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 0,
       replaced: 0,
@@ -187,7 +221,8 @@ describe("DATA registration scheduled recovery", () => {
       limitReached: 1,
       lookupFailed: 0,
     });
-    expect(reads).toBe(0);
+    // The ceiling limits writes, not inspection of terminal state.
+    expect(reads).toBe(1);
   });
 
   test("advances and wraps the DATA inspection cursor across ticks", async () => {

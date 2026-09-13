@@ -45,3 +45,12 @@ Record any migration/client-version collision before eventual integration.
 DATA transaction/receipt reconciliation, the remaining recovery matrix and
 composed effect-reuse evidence remain open. The broader lyrics/alignment and
 karaoke, Study, and DATA acceptance on one song lineage remain open as well.
+
+DATA prevention checkpoint after 6915ae65: the adapter now distinguishes finished
+and indeterminate instances from confirmed absence. Both the scheduled sweep and
+the replacement helper's second status read refuse to replace either. The budget
+ceiling limits replacement writes, not terminal inspection. The new adapter and
+sweep assertions failed before the change; the three focused suites now pass
+14 tests with 63 assertions and exit 0. Biome passes on the six touched files.
+This is prevention only. Receipt reconciliation and full integrated gates remain
+open, and no database or provider was called for this checkpoint.

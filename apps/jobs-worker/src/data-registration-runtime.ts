@@ -27,6 +27,8 @@ export type DataRegistrationMaintenanceResult = Readonly<{
   dispatchFailed: number;
   inspected: number;
   present: number;
+  finished: number;
+  indeterminate: number;
   replaced: number;
   stale: number;
   limitReached: number;
@@ -49,12 +51,21 @@ export async function recoverDataRegistrationWorkflowCandidates(
 ): Promise<
   Pick<
     DataRegistrationMaintenanceResult,
-    "inspected" | "present" | "replaced" | "stale" | "limitReached" | "lookupFailed"
+    | "inspected"
+    | "present"
+    | "finished"
+    | "indeterminate"
+    | "replaced"
+    | "stale"
+    | "limitReached"
+    | "lookupFailed"
   >
 > {
   const counts = {
     inspected: 0,
     present: 0,
+    finished: 0,
+    indeterminate: 0,
     replaced: 0,
     stale: 0,
     limitReached: 0,
@@ -63,11 +74,7 @@ export async function recoverDataRegistrationWorkflowCandidates(
   for (const candidate of candidates) {
     counts.inspected += 1;
     const revision = BigInt(candidate.workflow_revision);
-    if (dataWorkflowReplacementLimitReached(revision)) {
-      counts.limitReached += 1;
-      continue;
-    }
-    let workflowStatus: "present" | "missing";
+    let workflowStatus: Awaited<ReturnType<typeof dependencies.workflow.get>>;
     try {
       workflowStatus = await dependencies.workflow.get(candidate.workflow_instance_id);
     } catch {
@@ -78,6 +85,14 @@ export async function recoverDataRegistrationWorkflowCandidates(
       counts.present += 1;
       continue;
     }
+    if (workflowStatus === "finished" || workflowStatus === "indeterminate") {
+      counts[workflowStatus] += 1;
+      continue;
+    }
+    if (dataWorkflowReplacementLimitReached(revision)) {
+      counts.limitReached += 1;
+      continue;
+    }
     try {
       const outcome = await replaceLostDataRegistrationWorkflow(
         candidate.registration_operation_id,
@@ -85,6 +100,7 @@ export async function recoverDataRegistrationWorkflowCandidates(
         dependencies,
       );
       if (outcome === "present") counts.present += 1;
+      else if (outcome === "finished" || outcome === "indeterminate") counts[outcome] += 1;
       else counts.replaced += 1;
     } catch {
       counts.stale += 1;

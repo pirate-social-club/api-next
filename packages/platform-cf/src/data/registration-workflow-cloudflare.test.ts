@@ -54,7 +54,7 @@ describe("Cloudflare DATA registration adapters", () => {
     await expect(launcher.create("workflow-1", payload)).rejects.toThrow("transport unavailable");
   });
 
-  test("projects active statuses as present and terminal statuses as replacement candidates", async () => {
+  test("distinguishes active, terminal and indeterminate instances", async () => {
     for (const status of [
       "queued",
       "running",
@@ -77,7 +77,9 @@ describe("Cloudflare DATA registration adapters", () => {
         createBatch: async () => [],
       };
       const launcher = makeCloudflareDataRegistrationWorkflowLauncher(binding, () => false);
-      expect(await launcher.get("workflow-1")).toBe("missing");
+      expect(await launcher.get("workflow-1")).toBe(
+        status === "unknown" ? "indeterminate" : "finished",
+      );
     }
   });
 

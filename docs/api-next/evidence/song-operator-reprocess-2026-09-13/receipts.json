@@ -1,6 +1,6 @@
 {
   "baseHead": "67cbc57c3f6e6c480acdf18c970ae923f1bdfd19",
-  "state": "uncommitted implementation; not publication-ready",
+  "state": "Historical pre-916a499c receipts; implementation preserved in WIP checkpoints, not publication-ready",
   "logSha256": {
     "/tmp/song-recovery-check-final.log": "65c2a9d61386a57d3e8772004ec1ea7da00f21d1f6470518e6a2fa413fb424ba",
     "/tmp/song-recovery-full-pg.log": "7a58d00fe7d0d6564e50f0401ebfeb1712e5964844d2dc25c51661b9f37fa930",
@@ -13,5 +13,12 @@
   "fullTest": "Incomplete. Two 15-second simulation timeouts and one stale CI sentinel shard assertion occurred. The owned scope was stopped (exit 143) after timeout cleanup caused an asynchronous error. Node/workerd phases did not run.",
   "ciPin": "Render-host sentinel moved from shard 3 to computed shard 1. Focused discovery rerun reached a 5-second timeout under host memory pressure; clean verification remains owed.",
   "resources": "No RTK. One heavy job at a time, scoped memory/CPU. Host reached about 630 MiB available with swap full. Owned test scope finished or stopped, and song-recovery-operator-pg was stopped. No other lane process was stopped.",
-  "authority": "User selected the operator-only CLI using existing database-admin access. No browser endpoint, live execution, deployment, or paid provider calls were authorized or performed."
+  "authority": "User selected the operator-only CLI using existing database-admin access. No browser endpoint, live execution, deployment, or paid provider calls were authorized or performed.",
+  "dataPreventionCheckpoint": {
+    "baseHead": "6915ae65b1644e2d2d32100bcf524e0a915aef97",
+    "testFirst": "New adapter and sweep assertions failed before the behavior change (8 pass, 2 fail).",
+    "focused": "14 tests, 0 failures, 63 assertions, exit 0 across DATA adapter, queue and scheduled recovery suites; 1.52 seconds. Biome clean on six touched files.",
+    "scope": "Finished and indeterminate statuses never cause replacement, including the second presence read and exhausted budget. This is prevention only; submitted transaction and receipt reconciliation remains unimplemented.",
+    "resources": "512 MiB memory, zero swap and one CPU scope. No database or provider call. Other-lane test PIDs 710711 and 711623 remained live; no broad gates launched."
+  }
 }
