@@ -10,6 +10,13 @@ WorkingDirectory=/srv/pirate-hns-authority-provisioner/current
 EnvironmentFile=/etc/pirate/hns-authority-provisioner.env
 LoadCredential=hns_axfr_tsig_secret:/etc/pirate/hns-authority-axfr-tsig-secret
 Environment=HNS_AUTHORITY_AXFR_TSIG_SECRET_FILE=/run/credentials/pirate-hns-authority-provisioner.service/hns_axfr_tsig_secret
+Environment=HNS_AUTHORITY_DEPLOYMENT_MANIFEST=/srv/pirate-hns-authority-provisioner/current/deployment-manifest.json
+# Launch guard for the single-owner readiness cutover. It runs outside the
+# service binary so it also constrains an older bundle that predates the
+# schema-compatibility check: an old bundle rejects the unknown flag and the
+# unit refuses to start it, while the compatible bundle verifies its
+# deployment manifest and the recorded compatible schema pair before serving.
+ExecStartPre=/usr/bin/env bun /srv/pirate-hns-authority-provisioner/current/bin/pirate-hns-authority-provisioner.mjs --verify-schema --manifest /srv/pirate-hns-authority-provisioner/current/deployment-manifest.json --bundle /srv/pirate-hns-authority-provisioner/current/bin/pirate-hns-authority-provisioner.mjs
 ExecStart=/usr/bin/env bun /srv/pirate-hns-authority-provisioner/current/bin/pirate-hns-authority-provisioner.mjs --serve
 Restart=on-failure
 RestartSec=3

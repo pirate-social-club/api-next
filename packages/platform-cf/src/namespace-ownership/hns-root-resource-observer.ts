@@ -10,6 +10,11 @@ import {
 } from "@pirate/application/namespace-ownership";
 import { validCommunityRouteRoot } from "@pirate/domain";
 
+// This module is the provisioner's admitted platform-cf surface, so the
+// shared bounded HSD response reader is re-exported here for its read-only
+// incident calls as well as used by the observer below.
+export { readBoundedResponse } from "./hsd-bounded-exchange.ts";
+
 export type HsdFetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
 
 export type HsdRootResourceObserverConfig = Readonly<{

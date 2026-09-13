@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import type {
@@ -32,6 +33,13 @@ import {
 import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
 import { runHnsRetentionReviewOnce } from "./retention-reviewer.ts";
+import {
+  HNS_AUTHORITY_SERVICE_VERSION,
+  HNS_LIFECYCLE_JOB_ENVELOPE_VERSION,
+  hnsLifecycleSchemaCutoverCheck,
+  isBoundedVersion,
+  runHnsLifecycleCutoverProbe,
+} from "./schema-compatibility.ts";
 import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
@@ -184,6 +192,60 @@ function chainInteger(name: string, minimum: number, maximum: number): number {
   return value;
 }
 
+const PROCESS_STARTED_AT = new Date();
+
+/**
+ * The staged bundle digest and cutover attempt this process must prove it is
+ * running. The deployment sequence writes both into the deployment manifest;
+ * the environment override exists for operators who stage by hand. Missing or
+ * malformed identity is reported as absence, never guessed.
+ */
+async function cutoverDeploymentIdentity(): Promise<Readonly<{
+  bundle_sha256: string;
+  attempt_id: string;
+}> | null> {
+  const directSha = process.env.HNS_AUTHORITY_BUNDLE_SHA256;
+  const directAttempt = process.env.HNS_AUTHORITY_ATTEMPT_ID;
+  if (
+    directSha !== undefined &&
+    directSha.trim() === directSha &&
+    /^[0-9a-f]{64}$/u.test(directSha) &&
+    directAttempt !== undefined &&
+    /^[A-Za-z0-9._:-]{8,128}$/u.test(directAttempt)
+  ) {
+    return { bundle_sha256: directSha, attempt_id: directAttempt };
+  }
+  const manifestPath = process.env.HNS_AUTHORITY_DEPLOYMENT_MANIFEST;
+  if (manifestPath === undefined || !isAbsolute(manifestPath)) return null;
+  try {
+    const parsed = JSON.parse(await Bun.file(manifestPath).text()) as {
+      readonly bundle_sha256?: unknown;
+      readonly attempt_id?: unknown;
+    };
+    if (
+      typeof parsed.bundle_sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(parsed.bundle_sha256) ||
+      typeof parsed.attempt_id !== "string" ||
+      !/^[A-Za-z0-9._:-]{8,128}$/u.test(parsed.attempt_id)
+    ) {
+      return null;
+    }
+    return { bundle_sha256: parsed.bundle_sha256, attempt_id: parsed.attempt_id };
+  } catch {
+    return null;
+  }
+}
+
+/** The digest of the entry module actually executing in this process. */
+async function measureRunningArtifactSha256(): Promise<string | null> {
+  try {
+    const bytes = await Bun.file(Bun.main).arrayBuffer();
+    return createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 async function main(serve: boolean): Promise<void> {
   const executorId = required("HNS_AUTHORITY_EXECUTOR_ID");
   const gatewayIpv4 = required("HNS_AUTHORITY_GATEWAY_IPV4");
@@ -192,6 +254,69 @@ async function main(serve: boolean): Promise<void> {
     throw new Error("HNS authority provisioner configuration is invalid");
   }
   const connectionString = required("CONTROL_PLANE_POSTGRES_URL");
+  // Fail closed before any claim when the deployed schema no longer admits
+  // this service generation. The refusal is bounded, redacted and named; the
+  // launch guard rejects an unsupported old bundle that cannot run this check.
+  const cutover = await hnsLifecycleSchemaCutoverCheck({
+    connection_string: connectionString,
+    service_version: HNS_AUTHORITY_SERVICE_VERSION,
+    job_envelope_version: HNS_LIFECYCLE_JOB_ENVELOPE_VERSION,
+  });
+  if (cutover.refusal !== null) {
+    console.error(JSON.stringify({ command: serve ? "serve" : "run-once", ...cutover.refusal }));
+    process.exitCode = 1;
+    return;
+  }
+  // Past the cutover, serving requires proof that this staged artifact is the
+  // running service and that its executor completed the controlled readiness
+  // probe through the single-owner path. A schema check alone is not proof.
+  if (cutover.post_cutover) {
+    const deployment = await cutoverDeploymentIdentity();
+    const measuredBundleSha256 = await measureRunningArtifactSha256();
+    if (deployment === null || measuredBundleSha256 === null) {
+      console.error(
+        JSON.stringify({
+          command: serve ? "serve" : "run-once",
+          outcome: "bundle_identity_missing",
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (deployment.bundle_sha256 !== measuredBundleSha256) {
+      console.error(
+        JSON.stringify({
+          command: serve ? "serve" : "run-once",
+          outcome: "bundle_digest_mismatch",
+          expected_bundle_sha256: deployment.bundle_sha256,
+          measured_bundle_sha256: measuredBundleSha256,
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const probe = await runHnsLifecycleCutoverProbe({
+      connection_string: connectionString,
+      executor_id: executorId,
+      attempt_id: deployment.attempt_id,
+      service_version: HNS_AUTHORITY_SERVICE_VERSION,
+      expected_bundle_sha256: deployment.bundle_sha256,
+      measured_bundle_sha256: measuredBundleSha256,
+      process_started_at: PROCESS_STARTED_AT,
+    });
+    if (probe.outcome !== "ready" && probe.outcome !== "replayed") {
+      console.error(
+        JSON.stringify({
+          command: serve ? "serve" : "run-once",
+          outcome: "cutover_probe_failed",
+          reason: probe.outcome,
+          ...(probe.cause === null ? {} : { cause: probe.cause }),
+        }),
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
   /**
    * How recent a retention review's inspection must be to authorize deletion.
    * Thirty minutes: long enough for a review and the teardown that acts on it
@@ -486,9 +611,108 @@ async function main(serve: boolean): Promise<void> {
   }
 }
 
+function schemaVerificationRefusal(outcome: string, detail: string): number {
+  console.error(JSON.stringify({ command: "verify-schema", outcome, detail }));
+  return 2;
+}
+
+/**
+ * Launch guard entrypoint. The systemd launcher runs the staged bundle with
+ * `--verify-schema` before exec'ing it as the service. An old bundle that
+ * predates this flag fails with its invalid-arguments refusal, so an
+ * unsupported bundle cannot be started after the cutover even though the old
+ * bundle itself cannot know about the compatibility record. The new bundle
+ * additionally verifies its deployment manifest and bundle digest.
+ */
+async function runSchemaVerification(arguments_: readonly string[]): Promise<number> {
+  const manifestIndex = arguments_.indexOf("--manifest");
+  const manifestPath = manifestIndex === -1 ? undefined : arguments_[manifestIndex + 1];
+  if (manifestPath === undefined || manifestPath.startsWith("--")) {
+    return schemaVerificationRefusal("manifest_invalid", "manifest path required");
+  }
+  const bundleIndex = arguments_.indexOf("--bundle");
+  const bundlePath = bundleIndex === -1 ? undefined : arguments_[bundleIndex + 1];
+  const connectionString = process.env.CONTROL_PLANE_POSTGRES_URL;
+  if (
+    connectionString === undefined ||
+    connectionString.trim() !== connectionString ||
+    connectionString.length === 0
+  ) {
+    return schemaVerificationRefusal("configuration_missing", "CONTROL_PLANE_POSTGRES_URL");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await Bun.file(manifestPath).text());
+  } catch {
+    return schemaVerificationRefusal("manifest_invalid", "manifest unreadable");
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return schemaVerificationRefusal("manifest_invalid", "manifest shape");
+  }
+  const manifest = parsed as {
+    readonly bundle_sha256?: unknown;
+    readonly service_version?: unknown;
+    readonly job_envelope_version?: unknown;
+  };
+  if (
+    typeof manifest.bundle_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(manifest.bundle_sha256) ||
+    !isBoundedVersion(manifest.service_version) ||
+    !isBoundedVersion(manifest.job_envelope_version)
+  ) {
+    return schemaVerificationRefusal("manifest_invalid", "manifest fields");
+  }
+  if (bundlePath !== undefined) {
+    try {
+      const bytes = await Bun.file(bundlePath).arrayBuffer();
+      const digest = createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+      if (digest !== manifest.bundle_sha256) {
+        return schemaVerificationRefusal("bundle_mismatch", "bundle digest");
+      }
+    } catch {
+      return schemaVerificationRefusal("bundle_mismatch", "bundle unreadable");
+    }
+  }
+  const refusal = (
+    await hnsLifecycleSchemaCutoverCheck({
+      connection_string: connectionString,
+      service_version: manifest.service_version,
+      job_envelope_version: manifest.job_envelope_version,
+    })
+  ).refusal;
+  if (refusal !== null) {
+    console.error(JSON.stringify({ command: "verify-schema", ...refusal }));
+    return 2;
+  }
+  console.log(
+    JSON.stringify({
+      command: "verify-schema",
+      outcome: "compatible",
+      service_version: manifest.service_version,
+      job_envelope_version: manifest.job_envelope_version,
+    }),
+  );
+  return 0;
+}
+
 if (import.meta.main) {
   const arguments_ = Bun.argv.slice(2);
-  if (arguments_[0] === "--incident-report") {
+  if (arguments_[0] === "--verify-schema") {
+    runSchemaVerification(arguments_)
+      .then((code) => {
+        if (code !== 0) process.exitCode = code;
+      })
+      .catch((error: unknown) => {
+        console.error(
+          JSON.stringify({
+            command: "verify-schema",
+            outcome: "failed",
+            detail: error instanceof Error ? error.message.slice(0, 128) : "verification failed",
+          }),
+        );
+        process.exitCode = 2;
+      });
+  } else if (arguments_[0] === "--incident-report") {
     // The read-only incident command reuses the same HSD and PowerDNS
     // configuration as the serving path. It accepts either an exact root-import
     // session id or a community plus root label, and it reports missing

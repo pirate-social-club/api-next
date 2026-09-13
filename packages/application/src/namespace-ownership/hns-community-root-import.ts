@@ -13,6 +13,7 @@ import {
   NamespaceOwnershipProviderUnboundRejected,
 } from "./adapter.ts";
 import type { HnsActivationCurrentViewGatherResultV1 } from "./hns-activation-current-view.ts";
+import { encodeHnsRootReadinessObservationRequestV1 } from "./hns-readiness-observation-request.ts";
 import {
   decodeHnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
@@ -668,8 +669,7 @@ export const pollHnsCommunityRootImport = Effect.fn("pollHnsCommunityRootImport"
   }
   const observationJobId =
     services.ids?.observationJob?.() ?? `hns-root-observation_${crypto.randomUUID()}`;
-  const observationIdentity = {
-    version: "pirate-hns-root-readiness-observation-request-v1",
+  const observationBytes = encodeHnsRootReadinessObservationRequestV1({
     root_import_session_id: current.root_import_session_id,
     namespace_session_id: authority.namespace_session_id,
     root_label: current.root_label,
@@ -678,8 +678,7 @@ export const pollHnsCommunityRootImport = Effect.fn("pollHnsCommunityRootImport"
     publish_plan_sha256: current.publish_plan_sha256,
     provision_result_sha256: authority.provision_result_sha256,
     expires_at: current.expires_at,
-  } as const;
-  const observationBytes = encoder.encode(canonicalJson(observationIdentity));
+  });
   const outcome = yield* services.store.beginObservation({
     poll: input,
     poll_request_sha256: yield* Effect.promise(() => sha256(pollIdentity)),

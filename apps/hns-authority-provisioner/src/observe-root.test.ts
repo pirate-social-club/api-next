@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
-import { decodeHnsRootImportReadinessResultV1 } from "@pirate/application/namespace-ownership";
+import {
+  decodeHnsRootImportReadinessResultV1,
+  HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
+} from "@pirate/application/namespace-ownership";
 import {
   canonicalJson,
   decideHnsRootImportLifecycleBatchV1,
@@ -8,11 +11,7 @@ import {
   HNS_ROOT_IMPORT_POLICY_V1,
   initialHnsRootImportLifecycleStateV1,
 } from "@pirate/domain";
-import {
-  HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
-  HnsRootReadinessObservationError,
-  observeHnsRootReadinessV1,
-} from "./observe-root.ts";
+import { HnsRootReadinessObservationError, observeHnsRootReadinessV1 } from "./observe-root.ts";
 import {
   HNS_AUTHORITY_PROVISION_REQUEST_VERSION,
   type HnsAuthorityZoneResult,

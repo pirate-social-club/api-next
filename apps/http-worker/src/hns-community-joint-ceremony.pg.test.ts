@@ -209,13 +209,9 @@ pgTest(
       expect(await runOne()).toMatchObject({ claimed: true, outcome: "completed" });
       expect(await phaseOf(base)).toMatchObject({ phase: "checking_authority" });
 
-      // The handover enables readiness ownership; the phase's own transition
-      // already queued the readiness work, so the handover adds none.
-      const handover = await base.admin.query<{ outcome: string; queued_jobs: string }>(
-        "SELECT * FROM begin_hns_root_import_readiness_ownership_v1('joint-ceremony')",
-      );
-      expect(handover.rows[0]).toMatchObject({ outcome: "enabled", queued_jobs: "0" });
-
+      // The single-owner cutover is complete in this schema: the phase's own
+      // transition already queued the readiness work and the lifecycle claim
+      // performs it without an ownership marker or handover.
       // Readiness through the atomic writer takes the operation to ready.
       expect(await runOne()).toMatchObject({ claimed: true, outcome: "completed" });
       expect(await phaseOf(base)).toMatchObject({ phase: "ready" });

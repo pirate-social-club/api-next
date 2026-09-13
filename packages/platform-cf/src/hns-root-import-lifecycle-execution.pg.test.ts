@@ -349,14 +349,9 @@ suite("HNS lifecycle leased execution sequences", () => {
         );
         expect((await phaseOf(admin))?.phase).toBe("checking_authority");
 
-        // Readiness is claimable only under the enabled ownership marker; the
-        // handover transaction is its production writer, and this harness
-        // enables it directly to exercise the runner's dispatch.
-        await admin.query(
-          `UPDATE hns_root_import_execution_ownership
-              SET enabled=TRUE, enabled_at=clock_timestamp(), evidence_ref='exec-suite'
-            WHERE responsibility='readiness'`,
-        );
+        // Readiness is performed unconditionally by the single lifecycle
+        // claim after the single-owner cutover; there is no ownership marker
+        // to enable.
         await queueJob(admin, "observe_readiness");
         await runHnsRootImportLifecycleJobOnce(
           "exec-a",

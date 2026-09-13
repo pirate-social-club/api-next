@@ -67,7 +67,7 @@ GRANT EXECUTE ON FUNCTION commit_hns_root_import_lifecycle_decision_v1(
   TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BIGINT, BIGINT, BIGINT
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION record_hns_root_import_lifecycle_observation_v1(
-  TEXT, BIGINT, TEXT, BIGINT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, TIMESTAMPTZ, TEXT, BIGINT, INTEGER
+  TEXT, BIGINT, TEXT, BIGINT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, TIMESTAMPTZ, TEXT, INTEGER
 ) TO api_next_app;
 GRANT EXECUTE ON FUNCTION claim_hns_root_import_observation_job_v1(TEXT, INTEGER)
   TO api_next_app;
@@ -82,11 +82,31 @@ GRANT EXECUTE ON FUNCTION record_hns_root_import_retention_review_v1(
 GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
   TO api_next_app;
 -- The atomic readiness acceptance: result bytes, session readiness, the
--- lifecycle transition and job completion in one statement. It acts only
--- when the persisted readiness ownership marker is enabled.
+-- lifecycle transition and job completion in one statement. It is the one
+-- readiness writer after the single-owner cutover.
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
   TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
 ) TO api_next_app;
+-- The serving startup check: a pre-cutover schema is compatible with both
+-- bundles; after the cutover only the recorded service and job-envelope
+-- versions may claim work.
+GRANT EXECUTE ON FUNCTION hns_lifecycle_schema_compatibility_v1(TEXT, TEXT)
+  TO api_next_app;
+-- The controlled cutover probe: the running service leases and completes one
+-- synthetic readiness job through the single-owner path and records its
+-- attempt-bound bundle identity. It carries no serving authority. The
+-- attempt-bound six-argument signature is the only one the deployed schema
+-- exposes; migration 0172 drops the retired three-argument overload.
+GRANT EXECUTE ON FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(
+  TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ
+) TO api_next_app;
+-- The durable unresolved cutover dispositions are diagnostic evidence owned
+-- by the migration and the operator recovery path, never by the runtime.
+REVOKE INSERT, UPDATE, DELETE ON hns_readiness_single_owner_cutover_unresolved
+FROM api_next_app;
+-- The service identity record is written only by the SECURITY DEFINER probe;
+-- no broad table grant may reach it, including the template's blanket grant.
+REVOKE ALL ON hns_lifecycle_service_identity FROM api_next_app;
 -- The lifecycle half of activation commits inside the existing activation
 -- transaction, revalidating phase, revision, generation, freshness and the
 -- pre-gathered current-view binding before the activation effects commit.
@@ -117,13 +137,3 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_recovery_v1(
 GRANT EXECUTE ON FUNCTION apply_hns_root_import_recovery_v1(
   TEXT, TEXT, BIGINT, TEXT, JSONB, INTEGER
 ) TO api_next_operator;
--- The readiness ownership handover is an operator transaction: it refuses
--- while a conflicting lease is live, disposes obsolete rows and enables the
--- persisted marker. It is deliberately not a runtime grant.
-GRANT EXECUTE ON FUNCTION begin_hns_root_import_readiness_ownership_v1(TEXT)
-  TO api_next_operator;
--- The reverse handover is the same operator-only transaction in the other
--- direction: it refuses unsafe resumes and live leases, returns readiness to
--- the legacy executor and disables the marker.
-GRANT EXECUTE ON FUNCTION withdraw_hns_root_import_readiness_ownership_v1(TEXT)
-  TO api_next_operator;
