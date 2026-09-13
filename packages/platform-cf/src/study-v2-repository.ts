@@ -625,7 +625,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
           (grader.kind === "source_token_diff_v1" &&
             item.grader_policy_revision === "script_aware_token_diff_v1") ||
           (grader.kind === "source_token_phonetic_v2" &&
-            item.grader_policy_revision === "script_aware_token_phonetic_v2");
+            item.grader_policy_revision === "script_aware_token_phonetic_v2") ||
+          (grader.kind === "source_token_phonetic_v3" &&
+            item.grader_policy_revision === "script_aware_token_phonetic_v3");
         if (
           item.exercise_type !== "say_it_back" ||
           !supportedSpokenGrader ||
@@ -650,6 +652,44 @@ export const makeControlPlaneStudyV2Repository = () => ({
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* lockLearnerAudioAccount(transaction, input.accountId);
+            // A committed command replays by exact account, payload and
+            // idempotency identity before any new-attempt-only constraint: a
+            // response lost after the session advanced or completed must still
+            // return its stored result rather than not-found.
+            const replay = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.reserve-existing",
+              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot,
+                            attempt_id, learner_audio_artifact_id,
+                            lease_expires_at > clock_timestamp() AS lease_live
+                       FROM study_spoken_answer_commands
+                      WHERE session_id=$1 AND account_id=$5 AND (
+                        idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
+                      ) FOR UPDATE`,
+              values: [
+                input.sessionId,
+                input.idempotencyKey,
+                input.sessionItemId,
+                input.attemptNumber,
+                input.accountId,
+              ],
+              readonly: false,
+            });
+            if (replay.rows.length > 1) return yield* rejected("idempotency-conflict");
+            const replayRow = replay.rows[0] as Row | undefined;
+            if (replayRow !== undefined) {
+              if (
+                text(replayRow, "request_hash") !== input.requestHash ||
+                text(replayRow, "audio_digest") !== input.audioDigest
+              ) {
+                return yield* rejected("idempotency-conflict");
+              }
+              if (text(replayRow, "state") === "completed") {
+                return {
+                  state: "completed" as const,
+                  result: decode(StudyAnswerResultV2, json(replayRow.result_snapshot)),
+                };
+              }
+            }
             const selected = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-item",
               text: `SELECT i.item_snapshot, state.presentation_count
@@ -675,41 +715,12 @@ export const makeControlPlaneStudyV2Repository = () => ({
             ) {
               return yield* rejected("attempt-conflict");
             }
-            const replay = yield* transaction.execute<Row>({
-              label: "study-v2.spoken.reserve-existing",
-              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot,
-                            attempt_id, learner_audio_artifact_id,
-                            lease_expires_at > clock_timestamp() AS lease_live
-                       FROM study_spoken_answer_commands
-                      WHERE session_id=$1 AND (
-                        idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
-                      ) FOR UPDATE`,
-              values: [
-                input.sessionId,
-                input.idempotencyKey,
-                input.sessionItemId,
-                input.attemptNumber,
-              ],
-              readonly: false,
-            });
-            if (replay.rows.length > 1) return yield* rejected("idempotency-conflict");
-            const replayRow = replay.rows[0] as Row | undefined;
-            if (replayRow !== undefined) {
-              if (
-                text(replayRow, "request_hash") !== input.requestHash ||
-                text(replayRow, "audio_digest") !== input.audioDigest
-              ) {
-                return yield* rejected("idempotency-conflict");
-              }
-              if (text(replayRow, "state") === "completed") {
-                return {
-                  state: "completed" as const,
-                  result: decode(StudyAnswerResultV2, json(replayRow.result_snapshot)),
-                };
-              }
-              if (text(replayRow, "state") === "reserved" && replayRow.lease_live === true) {
-                return yield* rejected("command-in-flight");
-              }
+            if (
+              replayRow !== undefined &&
+              text(replayRow, "state") === "reserved" &&
+              replayRow.lease_live === true
+            ) {
+              return yield* rejected("command-in-flight");
             }
             const attempts = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-attempt",
@@ -1609,7 +1620,12 @@ export const makeControlPlaneStudyV2Repository = () => ({
                   }).pipe(Effect.mapError(() => failed("constraint")));
                 }
               }
-            } else {
+            } else if (spent) {
+              // A spent answer resolves this presentation: advance to the
+              // server-selected next card. A retryable answer keeps the
+              // current item so the offered immediate retry targets the card
+              // the session still holds; its item presentation count already
+              // moved to this attempt number.
               const next = yield* transaction.execute<Row>({
                 label: "study-v2.answer.next-item",
                 text: `SELECT session_item_id
@@ -1634,6 +1650,18 @@ export const makeControlPlaneStudyV2Repository = () => ({
                   input.acceptedAt,
                   nextPresentationCount,
                 ],
+                readonly: false,
+              });
+            } else {
+              // Every graded answer consumes a queue ordinal — presentations
+              // are unique per (session, ordinal) — but a retryable one must
+              // not move the current card or its presentation clock.
+              yield* transaction.execute({
+                label: "study-v2.answer.session-ordinal",
+                text: `UPDATE study_sessions_v2
+                          SET presentation_count=$2
+                        WHERE session_id=$1 AND status='active'`,
+                values: [input.sessionId, nextPresentationCount],
                 readonly: false,
               });
             }
