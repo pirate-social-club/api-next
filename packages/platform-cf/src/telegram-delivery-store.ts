@@ -245,6 +245,10 @@ export function makeTelegramDeliveryStore(
         );
         if (!rows[0]) throw new TelegramFailure({ reason: "not_found" });
         const record = delivery(rows[0]);
+        // Operator recovery is scoped to channel publications. Private reply,
+        // voice and setup deliveries are automation-owned and are not exposed
+        // through the resolution contract.
+        if (record.kind !== "publication") throw new TelegramFailure({ reason: "not_found" });
         if (record.state !== "uncertain" && record.state !== "failed")
           throw new TelegramFailure({ reason: "conflict" });
         // Resolution confirms or discards the operation's pinned revision,

@@ -231,7 +231,7 @@ suite("community Telegram persistence", () => {
         communityId: "telegram-community",
         botEpoch: "epoch",
         chatId: "123",
-        kind: "reply",
+        kind: "publication",
         postId: null,
         state: "pending",
         desired: { kind: "text", text: "fixture", media: null, buttons: [] },
@@ -574,10 +574,10 @@ suite("community Telegram persistence", () => {
           { kind: "rejected", code: "telegram_400", retryAfter: null },
           "send",
         );
-        await store.resolveDelivery(base.communityId, base.id, "cancel", {
-          ...recoveryCommand,
-          key: kind,
-        });
+        await admin.query(
+          "UPDATE community_telegram_deliveries SET state='cancelled' WHERE delivery_id=$1",
+          [base.id],
+        );
         await store.enqueueDelivery({
           ...base,
           desired: { ...base.desired, text: "New private payload" },
@@ -1424,5 +1424,31 @@ suite("community Telegram persistence", () => {
       await expect(
         store.listDeliveries("telegram-community", "not-a-cursor"),
       ).rejects.toMatchObject({ reason: "invalid" });
+    }));
+
+  test("operator resolution refuses private delivery kinds", () =>
+    fixture(async (store, admin) => {
+      await store.enqueueDelivery({
+        ...publication(),
+        id: "private-resolve",
+        kind: "voice",
+        postId: null,
+      });
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET state='failed' WHERE delivery_id='private-resolve'",
+      );
+      await expect(
+        store.resolveDelivery("telegram-community", "private-resolve", "cancel", {
+          ...recoveryCommand,
+          key: "private",
+        }),
+      ).rejects.toMatchObject({ reason: "not_found" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM community_telegram_deliveries WHERE delivery_id='private-resolve'",
+          )
+        ).rows[0],
+      ).toEqual({ state: "failed" });
     }));
 });
