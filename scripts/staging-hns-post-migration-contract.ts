@@ -97,13 +97,15 @@ export type HnsStagingPostMigrationStep =
   | "service_identity"
   | "executor_progress";
 
+export type HnsStagingPostMigrationStepResult = Readonly<{
+  readonly step: HnsStagingPostMigrationStep;
+  readonly result: Readonly<Record<string, unknown>>;
+}>;
+
 export type HnsStagingPostMigrationResult = Readonly<{
   readonly outcome: "post_migration_applied";
   readonly attempt_id: string;
-  readonly results: readonly Readonly<{
-    readonly step: HnsStagingPostMigrationStep;
-    readonly result: Readonly<Record<string, unknown>>;
-  }>[];
+  readonly results: readonly HnsStagingPostMigrationStepResult[];
 }>;
 
 export type HnsStagingServiceDisposition = Readonly<{
@@ -124,6 +126,10 @@ export type HnsStagingPostMigrationRefusal = Readonly<{
   readonly step: HnsStagingPostMigrationStep;
   readonly reason: string;
   readonly detail?: Readonly<Record<string, unknown>>;
+  /** The named results that completed before the refusal, in order, so a
+   * resumable receipt shows how far the attempt reached. Empty when the
+   * refusal happened before the first step. */
+  readonly completed_results?: readonly HnsStagingPostMigrationStepResult[];
   /** Present once the named staging unit was started, so a partial failure
    * carries an explicit disposition instead of an implicit one. */
   readonly service_disposition?: HnsStagingServiceDisposition;

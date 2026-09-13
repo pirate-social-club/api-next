@@ -23,6 +23,7 @@ import {
   type HnsStagingPostMigrationRefusal,
   type HnsStagingPostMigrationResult,
   type HnsStagingPostMigrationStep,
+  type HnsStagingPostMigrationStepResult,
   type HnsStagingPrivilegeMatrix,
   type HnsStagingPrivilegeRow,
   type HnsStagingRecoveryReceipt,
@@ -271,8 +272,27 @@ function verifyIdentities(
 export async function runHnsStagingPostMigration(
   input: HnsStagingPostMigrationInput,
 ): Promise<HnsStagingPostMigrationResult> {
+  const results: HnsStagingPostMigrationStepResult[] = [];
+  try {
+    return await runHnsStagingPostMigrationSequence(input, results);
+  } catch (error) {
+    if (error instanceof HnsStagingPostMigrationRefused) {
+      throw new HnsStagingPostMigrationRefused({
+        ...error.refusal,
+        completed_results: Object.freeze(
+          results.map((entry) => Object.freeze({ step: entry.step, result: entry.result })),
+        ),
+      });
+    }
+    throw error;
+  }
+}
+
+async function runHnsStagingPostMigrationSequence(
+  input: HnsStagingPostMigrationInput,
+  results: HnsStagingPostMigrationStepResult[],
+): Promise<HnsStagingPostMigrationResult> {
   const { authorized, release, ports } = input;
-  const results: { step: HnsStagingPostMigrationStep; result: Record<string, unknown> }[] = [];
   const push = (step: HnsStagingPostMigrationStep, result: Record<string, unknown>) => {
     results.push({ step, result });
   };

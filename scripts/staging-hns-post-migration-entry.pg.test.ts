@@ -70,6 +70,14 @@ async function createRole(prefix: string): Promise<string> {
   return role;
 }
 
+async function stageableBundle(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "hns-entry-bundle-"));
+  stagedDirectories.add(directory);
+  const path = join(directory, "pirate-hns-authority-provisioner.mjs");
+  await writeFile(path, "export {};\n");
+  return path;
+}
+
 async function cloneDatabase(): Promise<Fixture> {
   const name = `hns_entry_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
   await withRoot(async (root) => {
@@ -232,10 +240,7 @@ suite("HNS staging post-migration entry point (PostgreSQL)", () => {
     const runtimeRole = await createRole("hns_runtime");
     const operatorRole = await createRole("hns_operator");
     process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL = fixture.url.toString();
-    const bundleDir = await mkdtemp(join(tmpdir(), "hns-entry-bundle-"));
-    stagedDirectories.add(bundleDir);
-    const bundlePath = join(bundleDir, "pirate-hns-authority-provisioner.mjs");
-    await writeFile(bundlePath, "export {};\n");
+    const bundlePath = await stageableBundle();
     const stageDirectory = await mkdtemp(join(tmpdir(), "hns-entry-stage-"));
     stagedDirectories.add(stageDirectory);
     const events: string[] = [];
@@ -295,6 +300,46 @@ suite("HNS staging post-migration entry point (PostgreSQL)", () => {
       );
       expect(Number(seeded.rows[0]?.count)).toBeGreaterThan(0);
     });
+  });
+
+  test("the shared steps resolve api_next without a search_path option", async () => {
+    const fixture = await cloneDatabase();
+    const runtimeRole = await createRole("hns_runtime");
+    const operatorRole = await createRole("hns_operator");
+    // The shared cutover steps open the administrator connection themselves;
+    // an authorized staging URL need not carry a search_path option, so the
+    // qualified statements must resolve on their own.
+    const plain = new URL(fixture.url);
+    plain.searchParams.delete("options");
+    expect(plain.searchParams.get("options")).toBeNull();
+    process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL = plain.toString();
+    const bundlePath = await stageableBundle();
+    const events: string[] = [];
+    const ports = makeRealPorts(fixture, {
+      runtimeRole,
+      operatorRole,
+      migratorRole: "postgres",
+      events,
+    });
+    const refusal = await refusalOf(() =>
+      runHnsStagingPostMigration(
+        inputFor(fixture, {
+          runtimeRole,
+          operatorRole,
+          migratorRole: "postgres",
+          ports,
+          attemptId: "attempt-pg-plain-search-path",
+          bundlePath,
+        }),
+      ),
+    );
+    // Reaching the service-identity step proves the six-argument probe grant,
+    // the probe seed and the schema-compatibility read all resolved.
+    expect(refusal).toMatchObject({
+      step: "service_identity",
+      reason: "service_never_started",
+    });
+    expect(events).toEqual(["stage", "seed", "start"]);
   });
 
   test("refuses a short ledger before applying grants or starting the service", async () => {
@@ -474,7 +519,7 @@ suite("HNS staging post-migration entry point (PostgreSQL)", () => {
     });
   });
 
-  test("a failed replay leaves the committed prefix and post-migration never runs", async () => {
+  test("a failed migration call leaves the committed prefix and the entry point refuses", async () => {
     const name = `hns_entry_replay_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
     await withRoot(async (root) => {
       await root.query(`CREATE DATABASE "${name}"`);
@@ -486,11 +531,10 @@ suite("HNS staging post-migration entry point (PostgreSQL)", () => {
       await admin.query("CREATE SCHEMA api_next");
     });
     const migrations = await loadPostgresMigrations();
-    // A replay commits the migrations that completed and rolls back only the
-    // call that failed, so a failure leaves the ledger on the committed prefix.
-    // The reset replays one migration per transaction; the cutover applies its
-    // removal batch as one call. Either way a failed call is not resumable from
-    // the ledger, and this entry point refuses until the endpoint is reached.
+    // This models the in-place cutover's atomic call, not the phased reset's
+    // one-commit-per-migration replay: the call that fails rolls back whole
+    // while the earlier committed call survives. The reset path's own
+    // restore-on-failure proof is staging-persona-phased-reset.pg.test.ts.
     await runPostgresMigrations({ connectionString: url, migrations: migrations.slice(0, 3) });
     const failingChain = migrations
       .slice(0, 5)

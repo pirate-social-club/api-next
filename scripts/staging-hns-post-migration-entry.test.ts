@@ -20,6 +20,7 @@ import {
   postMigrationRefusalJson,
   runHnsStagingPostMigration,
 } from "./staging-hns-post-migration-entry.ts";
+import { postMigrationFailureJson } from "./staging-hns-post-migration-runtime.ts";
 
 const endpoint = "0172_hns_cutover_evidence_consistency.sql";
 const bundleSha = "a".repeat(64);
@@ -649,6 +650,57 @@ describe("HNS staging post-migration entry point", () => {
     });
     expect(second.attempt_id).toBe(ids[1]);
     expect(staged.map((entry) => entry.attempt_id)).toEqual([ids[0], ids[1]]);
+  });
+
+  test("a refusal carries the completed step results for a resumable receipt", async () => {
+    const { ports: firstPorts } = makePorts();
+    const first = await refusalOf(() =>
+      runHnsStagingPostMigration({
+        ...makeInput(firstPorts),
+        authorized: {
+          ...authorizedTarget,
+          service_unit: "pirate-hns-authority-provisioner.service",
+        },
+      }),
+    );
+    expect(first.completed_results).toEqual([]);
+
+    const { ports } = makePorts({
+      readPrivilegeMatrix: async () => ({
+        runtime: {
+          probe_execute: false,
+          identity_insert: false,
+          identity_update: false,
+          identity_delete: false,
+        },
+        operator: {
+          probe_execute: false,
+          identity_insert: false,
+          identity_update: false,
+          identity_delete: false,
+        },
+      }),
+    });
+    const partial = await refusalOf(() => runHnsStagingPostMigration(makeInput(ports)));
+    const completed = partial.completed_results as readonly { step: string }[];
+    expect(completed.map((entry) => entry.step)).toEqual([
+      "target_and_ledger",
+      "identities",
+      "grants",
+    ]);
+    expect(completed[0]).toMatchObject({
+      step: "target_and_ledger",
+      result: { endpoint, applied_migrations: pinnedMigrations.length },
+    });
+  });
+
+  test("the unhandled failure shape redacts credentials", () => {
+    const json = postMigrationFailureJson(
+      new Error("connect failed: postgres://operator:secret@staging.example:5432/postgres"),
+    );
+    expect(json).not.toContain("secret");
+    expect(json).not.toContain("postgres://");
+    expect(JSON.parse(json)).toMatchObject({ outcome: "post_migration_failed" });
   });
 
   test("the refusal JSON carries the named fields and not credentials", () => {

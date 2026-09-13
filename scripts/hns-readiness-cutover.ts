@@ -403,7 +403,7 @@ export async function stageHnsReadinessCutoverBundle(input: {
  * service-side function. Shared by both cutover sequences. */
 export async function seedHnsLifecycleCutoverProbe(): Promise<void> {
   await withClient(async (client) => {
-    await client.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
+    await client.query("SELECT api_next.seed_hns_lifecycle_readiness_cutover_probe_v1()");
   });
 }
 
@@ -417,7 +417,7 @@ export async function readHnsLifecycleSchemaCompatibility(input: {
   return withClient(async (client) => {
     try {
       const result = await client.query<{ compatibility: string }>(
-        "SELECT hns_lifecycle_schema_compatibility_v1($1,$2) AS compatibility",
+        "SELECT api_next.hns_lifecycle_schema_compatibility_v1($1,$2) AS compatibility",
         [input.service_version, input.job_envelope_version],
       );
       return result.rows[0]?.compatibility ?? "unavailable";
@@ -484,7 +484,7 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
         withClient(async (client) => {
           const result = await client.query<{ count: string }>(
             `SELECT count(*)::text AS count
-               FROM hns_root_import_observation_jobs
+               FROM api_next.hns_root_import_observation_jobs
               WHERE operation_kind = 'observe_root_v1'
                 AND state = 'leased'
                 AND lease_expires_at > clock_timestamp()`,
@@ -553,7 +553,7 @@ export async function readCutoverIdentityRow(): Promise<CutoverIdentityRow | und
               service_version, executor_id, probe_job_id, lease_fence, probe_outcome,
               probe_reason, probe_completed_at,
               probe_completed_at > clock_timestamp() - interval '120 seconds' AS probe_fresh
-         FROM hns_lifecycle_service_identity
+         FROM api_next.hns_lifecycle_service_identity
         WHERE service_name = 'pirate-hns-authority-provisioner'`,
     );
     return result.rows[0];

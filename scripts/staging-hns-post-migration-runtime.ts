@@ -1,3 +1,4 @@
+import { redactedDiagnosticCause } from "@pirate/application/namespace-ownership";
 import { Client } from "pg";
 import {
   HNS_AUTHORITY_SERVICE_VERSION,
@@ -310,13 +311,19 @@ if (import.meta.main) {
     if (error instanceof HnsStagingPostMigrationRefused) {
       console.error(postMigrationRefusalJson(error.refusal));
     } else {
-      console.error(
-        JSON.stringify({
-          outcome: "post_migration_failed",
-          reason: error instanceof Error ? error.message.slice(0, 256) : "post-migration failed",
-        }),
-      );
+      console.error(postMigrationFailureJson(error));
     }
     process.exitCode = 1;
+  });
+}
+
+/** The bounded failure shape for anything that is not a named refusal. The
+ * diagnostic is redacted with the same rule as every other cause on this
+ * path, so a connection string or credential never reaches a log. */
+export function postMigrationFailureJson(error: unknown): string {
+  const cause = redactedDiagnosticCause(error);
+  return JSON.stringify({
+    outcome: "post_migration_failed",
+    reason: cause === null || cause.length === 0 ? "post-migration failed" : cause.slice(0, 256),
   });
 }
