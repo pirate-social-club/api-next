@@ -28,6 +28,11 @@ export type DataRegistrationMaintenanceResult = Readonly<{
   inspected: number;
   present: number;
   finished: number;
+  reconciled: number;
+  reverted: number;
+  escalated: number;
+  pending: number;
+  unavailable: number;
   indeterminate: number;
   replaced: number;
   stale: number;
@@ -54,6 +59,11 @@ export async function recoverDataRegistrationWorkflowCandidates(
     | "inspected"
     | "present"
     | "finished"
+    | "reconciled"
+    | "reverted"
+    | "escalated"
+    | "pending"
+    | "unavailable"
     | "indeterminate"
     | "replaced"
     | "stale"
@@ -65,6 +75,11 @@ export async function recoverDataRegistrationWorkflowCandidates(
     inspected: 0,
     present: 0,
     finished: 0,
+    reconciled: 0,
+    reverted: 0,
+    escalated: 0,
+    pending: 0,
+    unavailable: 0,
     indeterminate: 0,
     replaced: 0,
     stale: 0,
@@ -85,8 +100,22 @@ export async function recoverDataRegistrationWorkflowCandidates(
       counts.present += 1;
       continue;
     }
-    if (workflowStatus === "finished" || workflowStatus === "indeterminate") {
-      counts[workflowStatus] += 1;
+    // A finished instance is never replaced: the persisted transaction and
+    // receipt evidence reconciles the operation, and pending or unavailable
+    // evidence is reported without authorizing a resubmission.
+    if (workflowStatus === "finished") {
+      counts.finished += 1;
+      const outcome = await dependencies.store.reconcileTerminalWorkflow(
+        candidate.registration_operation_id,
+        revision,
+      );
+      if (outcome === "stale") counts.stale += 1;
+      else counts[outcome] += 1;
+      continue;
+    }
+    // An existing instance with an unrecognized status proves no absence.
+    if (workflowStatus === "indeterminate") {
+      counts.indeterminate += 1;
       continue;
     }
     if (dataWorkflowReplacementLimitReached(revision)) {

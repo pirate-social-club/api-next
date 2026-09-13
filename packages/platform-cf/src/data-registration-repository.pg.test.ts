@@ -476,6 +476,10 @@ suite("DATA registration persistence", () => {
       expect(registered.state).toBe("registered");
       expect(registered.attachedLicense).toEqual(confirmedReceipt.attachedLicense);
       expect((await store.confirmRegistration(confirmedReceipt)).state).toBe("registered");
+      // A terminal Workflow that observes the already-registered row is a
+      // reconciled replay, while a moved revision stays fenced out.
+      expect(await store.reconcileTerminalWorkflow(registrationOperationId, 2n)).toBe("reconciled");
+      expect(await store.reconcileTerminalWorkflow(registrationOperationId, 3n)).toBe("stale");
       await expect(
         store.confirmRegistration({
           ...confirmedReceipt,
@@ -612,6 +616,386 @@ suite("DATA registration persistence", () => {
         outbox: "2",
         transitions: "13",
       });
+    });
+  });
+
+  test("reconciles a finished Workflow from submitted transaction and receipt evidence", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const media = await seedPublishedSong(admin);
+      const store = makeDataRegistrationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const chainId = 1315n;
+      const registrationRevision = 1n;
+      const registrationOperationId = deterministicDataRegistrationOperationId(
+        chainId,
+        media.postId,
+        registrationRevision,
+      );
+      const workflowRevision = 1n;
+      const responseSnapshotBytes = new TextEncoder().encode("{}");
+      await store.createOperation({
+        registrationOperationId,
+        communityId: media.communityId,
+        actorUserId: media.accountId,
+        submissionId: media.submissionId,
+        mediaOperationId: media.mediaOperationId,
+        postId: media.postId,
+        assetId: media.postId,
+        chainId,
+        registrationRevision,
+        publicationCreationRevision: 2n,
+        publicationAudioRevision: 1n,
+        publicationAnalysisRevision: 1n,
+        publicationDecisionRevision: 1n,
+        canonicalAudioSha256: hash("a"),
+        workflowRevision,
+        workflowInstanceId: deterministicDataRegistrationWorkflowId(
+          registrationOperationId,
+          workflowRevision,
+        ),
+        outboxId: deterministicDataRegistrationOutboxId(registrationOperationId, workflowRevision),
+        outboxEffectIdentity: `${registrationOperationId}:launch:r1`,
+        endpointTemplate: "/internal/data-registration/operations",
+        idempotencyKey: `${registrationOperationId}:create`,
+        requestHash: hash("2"),
+        responseSnapshotBytes,
+        responseSnapshotSha256: await sha256Hex(responseSnapshotBytes),
+      });
+      const artifacts = [
+        ["canonical_audio", "a", "audio/mpeg", null],
+        ["ip_metadata", "b", "application/json", "rfc8785-jcs-v1"],
+        ["nft_metadata", "c", "application/json", "rfc8785-jcs-v1"],
+      ] as const;
+      for (const [kind, byte, mediaType, canonicalizationRevision] of artifacts) {
+        const artifactId = deterministicDataRegistrationArtifactId(registrationOperationId, kind);
+        await store.recordArtifact({
+          artifactId,
+          registrationOperationId,
+          artifactKind: kind,
+          sourceRef: `fixture://${kind}`,
+          mediaType,
+          byteLength: 8n,
+          canonicalSha256: hash(byte),
+          canonicalizationRevision,
+        });
+        for (const [role, providerId] of [
+          ["primary", "filebase"],
+          ["independent_gateway", "ipfs.io"],
+        ] as const) {
+          await store.recordPinVerification({
+            pinVerificationId: `${artifactId}:pin:${role}:1`,
+            registrationOperationId,
+            artifactId,
+            artifactKind: kind,
+            role,
+            providerId,
+            attemptNumber: 1,
+            outcome: "verified",
+            cid: `bafy${kind}`,
+            canonicalSha256: hash(byte),
+            byteLength: 8n,
+            evidenceRef: `evidence://pin/${kind}/${role}`,
+            verifiedAt: "2026-09-11T00:00:00.000Z",
+          });
+        }
+      }
+      const submissionAttemptId = deterministicDataRegistrationAttemptId(
+        registrationOperationId,
+        1,
+      );
+      await store.reserveSigningAttempt({
+        registrationOperationId,
+        submissionAttemptId,
+        chainId,
+        attemptNumber: 1,
+        signerNamespace: "data_registration",
+        signerAddress: address("1"),
+        signingIntentId: deterministicDataRegistrationSigningIntentId(submissionAttemptId),
+        targetAddress: "0x9e2d496f72c547c2c535b167e06ed8729b374a4f",
+        methodSelector: "0x12345678",
+        calldataHash: hash("3"),
+        signingDeadline: "2030-09-11T00:00:00.000Z",
+        valueWei: 0n,
+        gasLimit: 1_500_000n,
+        maxFeePerGas: 5_000_000_000n,
+        maxPriorityFeePerGas: 2_000_000_000n,
+        supersedesSubmissionAttemptId: null,
+        evidenceRef: "evidence://attempt/1",
+      });
+      await store.reserveNonce(submissionAttemptId, 7n, "evidence://nonce/1");
+      const transactionHash = bytes32("d");
+      await store.persistPreparedTransaction(
+        submissionAttemptId,
+        new Uint8Array([1, 2, 3]),
+        transactionHash,
+        "evidence://prepared/1",
+      );
+      await store.markBroadcast(submissionAttemptId, transactionHash, "evidence://broadcast/1");
+
+      // A submitted transaction with no observation is unavailable evidence:
+      // it never authorizes a replacement and leaves the durable row untouched.
+      expect(await store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision)).toBe(
+        "unavailable",
+      );
+      // A moved workflow authority fences the evidence out.
+      expect(
+        await store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision + 1n),
+      ).toBe("stale");
+      expect(await store.getOperation(registrationOperationId)).toMatchObject({
+        state: "broadcast",
+        workflowRevision,
+        failureCode: null,
+      });
+
+      const pendingReceipt = {
+        receiptObservationId: deterministicDataRegistrationReceiptId(submissionAttemptId, 1n),
+        registrationOperationId,
+        submissionAttemptId,
+        observationSequence: 1n,
+        transactionHash,
+        outcome: "pending" as const,
+        blockNumber: null,
+        blockHash: null,
+        logIndex: null,
+        confirmations: 0,
+        registeredIpId: null,
+        ipMetadataUri: null,
+        ipMetadataHash: null,
+        nftMetadataUri: null,
+        nftMetadataHash: null,
+        evidenceRef: "evidence://receipt/pending",
+        observedAt: "2026-08-26T12:00:30.000Z",
+      };
+      expect(await store.recordReceipt(pendingReceipt)).toBe("created");
+      expect(await store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision)).toBe(
+        "pending",
+      );
+      expect(await store.getOperation(registrationOperationId)).toMatchObject({
+        state: "broadcast",
+        failureCode: null,
+      });
+      // In-flight evidence authorizes no replacement launch, even repeatedly.
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM data_registration_outbox WHERE registration_operation_id=$1",
+            [registrationOperationId],
+          )
+        ).rows[0]?.count,
+      ).toBe("1");
+
+      const revertedReceipt = {
+        ...pendingReceipt,
+        receiptObservationId: deterministicDataRegistrationReceiptId(submissionAttemptId, 2n),
+        observationSequence: 2n,
+        outcome: "reverted" as const,
+        blockNumber: 100n,
+        blockHash: bytes32("5"),
+        logIndex: 0,
+        confirmations: 1,
+        evidenceRef: "evidence://receipt/reverted",
+        observedAt: "2026-08-26T12:01:00.000Z",
+      };
+      expect(await store.recordReceipt(revertedReceipt)).toBe("created");
+      expect(
+        await Promise.all([
+          store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision),
+          store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision),
+        ]),
+      ).toEqual(["reverted", "reverted"]);
+      expect(await store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision)).toBe(
+        "reverted",
+      );
+      expect(await store.getOperation(registrationOperationId)).toMatchObject({
+        state: "failed",
+        failureCode: "receipt_reverted",
+      });
+      // A reverted receipt is a durable failure, not grounds for resubmission.
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM data_registration_outbox WHERE registration_operation_id=$1",
+            [registrationOperationId],
+          )
+        ).rows[0]?.count,
+      ).toBe("1");
+      expect(
+        (
+          await admin.query<{ workflow_revision: string }>(
+            "SELECT workflow_revision::text AS workflow_revision FROM data_registration_operations WHERE registration_operation_id=$1",
+            [registrationOperationId],
+          )
+        ).rows[0]?.workflow_revision,
+      ).toBe("1");
+    });
+  });
+
+  test("escalates a confirmed receipt whose completion evidence is not durable", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const media = await seedPublishedSong(admin);
+      const store = makeDataRegistrationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const chainId = 1315n;
+      const registrationRevision = 2n;
+      const registrationOperationId = deterministicDataRegistrationOperationId(
+        chainId,
+        media.postId,
+        registrationRevision,
+      );
+      const workflowRevision = 1n;
+      const responseSnapshotBytes = new TextEncoder().encode("{}");
+      await store.createOperation({
+        registrationOperationId,
+        communityId: media.communityId,
+        actorUserId: media.accountId,
+        submissionId: media.submissionId,
+        mediaOperationId: media.mediaOperationId,
+        postId: media.postId,
+        assetId: media.postId,
+        chainId,
+        registrationRevision,
+        publicationCreationRevision: 2n,
+        publicationAudioRevision: 1n,
+        publicationAnalysisRevision: 1n,
+        publicationDecisionRevision: 1n,
+        canonicalAudioSha256: hash("a"),
+        workflowRevision,
+        workflowInstanceId: deterministicDataRegistrationWorkflowId(
+          registrationOperationId,
+          workflowRevision,
+        ),
+        outboxId: deterministicDataRegistrationOutboxId(registrationOperationId, workflowRevision),
+        outboxEffectIdentity: `${registrationOperationId}:launch:r1`,
+        endpointTemplate: "/internal/data-registration/operations",
+        idempotencyKey: `${registrationOperationId}:create`,
+        requestHash: hash("4"),
+        responseSnapshotBytes,
+        responseSnapshotSha256: await sha256Hex(responseSnapshotBytes),
+      });
+      const artifacts = [
+        ["canonical_audio", "a", "audio/mpeg", null],
+        ["ip_metadata", "b", "application/json", "rfc8785-jcs-v1"],
+        ["nft_metadata", "c", "application/json", "rfc8785-jcs-v1"],
+      ] as const;
+      for (const [kind, byte, mediaType, canonicalizationRevision] of artifacts) {
+        const artifactId = deterministicDataRegistrationArtifactId(registrationOperationId, kind);
+        await store.recordArtifact({
+          artifactId,
+          registrationOperationId,
+          artifactKind: kind,
+          sourceRef: `fixture://${kind}`,
+          mediaType,
+          byteLength: 8n,
+          canonicalSha256: hash(byte),
+          canonicalizationRevision,
+        });
+        for (const [role, providerId] of [
+          ["primary", "filebase"],
+          ["independent_gateway", "ipfs.io"],
+        ] as const) {
+          await store.recordPinVerification({
+            pinVerificationId: `${artifactId}:pin:${role}:1`,
+            registrationOperationId,
+            artifactId,
+            artifactKind: kind,
+            role,
+            providerId,
+            attemptNumber: 1,
+            outcome: "verified",
+            cid: `bafy${kind}`,
+            canonicalSha256: hash(byte),
+            byteLength: 8n,
+            evidenceRef: `evidence://pin/${kind}/${role}`,
+            verifiedAt: "2026-09-11T00:00:00.000Z",
+          });
+        }
+      }
+      const submissionAttemptId = deterministicDataRegistrationAttemptId(
+        registrationOperationId,
+        1,
+      );
+      await store.reserveSigningAttempt({
+        registrationOperationId,
+        submissionAttemptId,
+        chainId,
+        attemptNumber: 1,
+        signerNamespace: "data_registration",
+        signerAddress: address("1"),
+        signingIntentId: deterministicDataRegistrationSigningIntentId(submissionAttemptId),
+        targetAddress: "0x9e2d496f72c547c2c535b167e06ed8729b374a4f",
+        methodSelector: "0x12345678",
+        calldataHash: hash("3"),
+        signingDeadline: "2030-09-11T00:00:00.000Z",
+        valueWei: 0n,
+        gasLimit: 1_500_000n,
+        maxFeePerGas: 5_000_000_000n,
+        maxPriorityFeePerGas: 2_000_000_000n,
+        supersedesSubmissionAttemptId: null,
+        evidenceRef: "evidence://attempt/1",
+      });
+      await store.reserveNonce(submissionAttemptId, 7n, "evidence://nonce/1");
+      const transactionHash = bytes32("d");
+      await store.persistPreparedTransaction(
+        submissionAttemptId,
+        new Uint8Array([1, 2, 3]),
+        transactionHash,
+        "evidence://prepared/1",
+      );
+      await store.markBroadcast(submissionAttemptId, transactionHash, "evidence://broadcast/1");
+      const confirmedReceipt = {
+        receiptObservationId: deterministicDataRegistrationReceiptId(submissionAttemptId, 1n),
+        registrationOperationId,
+        submissionAttemptId,
+        observationSequence: 1n,
+        transactionHash,
+        outcome: "confirmed" as const,
+        blockNumber: 100n,
+        blockHash: bytes32("5"),
+        logIndex: 3,
+        confirmations: 12,
+        registeredIpId: "0xdata-song-ip-id",
+        ipMetadataUri: "ipfs://bafyip_metadata",
+        ipMetadataHash: bytes32("b"),
+        nftMetadataUri: "ipfs://bafynft_metadata",
+        nftMetadataHash: bytes32("c"),
+        evidenceRef: "evidence://receipt/confirmed",
+        observedAt: "2026-08-26T12:02:00.000Z",
+      };
+      expect(await store.recordReceipt(confirmedReceipt)).toBe("created");
+      // Confirmed evidence is recognized and escalated for operator review:
+      // the observation does not carry a song's attached terms, so the
+      // completion fence cannot admit it and it is never resubmitted.
+      expect(
+        await Promise.all([
+          store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision),
+          store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision),
+        ]),
+      ).toEqual(["escalated", "escalated"]);
+      expect(await store.reconcileTerminalWorkflow(registrationOperationId, workflowRevision)).toBe(
+        "escalated",
+      );
+      expect(await store.getOperation(registrationOperationId)).toMatchObject({
+        state: "reconciliation_required",
+        failureCode: null,
+      });
+      expect(
+        (
+          await admin.query<{ data_registration: string }>(
+            "SELECT data_registration FROM media_publication_projections WHERE post_id=$1",
+            [media.postId],
+          )
+        ).rows[0]?.data_registration,
+      ).toBe("pending");
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM data_registration_outbox WHERE registration_operation_id=$1",
+            [registrationOperationId],
+          )
+        ).rows[0]?.count,
+      ).toBe("1");
     });
   });
 

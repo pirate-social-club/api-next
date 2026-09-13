@@ -242,6 +242,24 @@ export type DataRegistrationOutbox = Readonly<{
   failureCode: "queue_unavailable" | "workflow_unavailable" | "invalid_binding" | null;
 }>;
 
+/**
+ * The outcome of reconciling a finished DATA registration Workflow from its
+ * persisted transaction and receipt evidence. `reconciled` is the replay of a
+ * durable row that already reached the registered end state; `reverted`
+ * records the receipt_reverted failure; `escalated` moves a submitted
+ * registration whose completion evidence is not durable (including a
+ * confirmed receipt) to reconciliation_required for an operator decision;
+ * `pending` and `unavailable` prove no completion and never authorize a
+ * replacement; `stale` means the workflow authority already moved.
+ */
+export type DataRegistrationTerminalReconciliation =
+  | "reconciled"
+  | "reverted"
+  | "escalated"
+  | "pending"
+  | "unavailable"
+  | "stale";
+
 export type CreateDataRegistrationOperationInput = Readonly<{
   registrationOperationId: string;
   communityId: string;
@@ -403,6 +421,16 @@ export interface DataRegistrationStore {
     registrationOperationId: string,
     expectedWorkflowRevision: bigint,
   ) => Promise<Readonly<{ operation: DataRegistrationOperation; outbox: DataRegistrationOutbox }>>;
+  /**
+   * Reconciles a finished Workflow from persisted transaction and receipt
+   * evidence. The workflow revision is the completion fence: a mismatched or
+   * moved authority is `stale`. Pending or unavailable evidence leaves the
+   * durable row untouched and never authorizes a replacement submission.
+   */
+  readonly reconcileTerminalWorkflow: (
+    registrationOperationId: string,
+    expectedWorkflowRevision: bigint,
+  ) => Promise<DataRegistrationTerminalReconciliation>;
   readonly getOutbox: (outboxId: string) => Promise<DataRegistrationOutbox | null>;
   readonly listEligibleOutbox: (limit: number) => Promise<readonly DataRegistrationOutbox[]>;
   readonly claimOutbox: (
