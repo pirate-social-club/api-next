@@ -511,6 +511,7 @@ const receiptObservation = <Outcome extends "mined" | "confirmed" | "reverted" |
     ipMetadataHash: null,
     nftMetadataUri: null,
     nftMetadataHash: null,
+    attachedLicense: null,
     evidenceRef: `data-registration://aeneid/receipt/${attempt.submissionAttemptId}/${sequence}`,
     observedAt: new Date().toISOString(),
   } as const;

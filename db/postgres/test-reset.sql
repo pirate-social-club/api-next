@@ -139,6 +139,7 @@ TRUNCATE TABLE
   "dance_sessions",
   "dance_song_segments",
   "dance_upload_reservations",
+  "data_operator_resume_actions",
   "data_registration_artifacts",
   "data_registration_attempt_transitions",
   "data_registration_command_replays",

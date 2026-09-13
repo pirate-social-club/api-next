@@ -175,6 +175,7 @@
     "0172_hns_cutover_evidence_consistency.sql": "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
     "0176_media_workflow_terminal_escalation.sql": "980f6619a7e9b9f199311ac2dcbace699e6045926ec1c5757ee0b3f2626aeb6f",
     "0177_media_operator_reprocess_actions.sql": "3b167635f2fd2e9b565fa8ff2b91891c0d853bde1d5f1986a39e01f91c1b0790",
-    "0178_media_operator_reprocess_transition.sql": "c0b54a72e675cd4ac37326037c3685963e21f9e5a425fc0dbda506c9c2e9d46e"
+    "0178_media_operator_reprocess_transition.sql": "c0b54a72e675cd4ac37326037c3685963e21f9e5a425fc0dbda506c9c2e9d46e",
+    "0179_data_registration_confirmed_recovery.sql": "b10af05a80a08c583ad9464f6d75d2ea88499bb95bd353edf69460ac5f9c6651"
   }
 }

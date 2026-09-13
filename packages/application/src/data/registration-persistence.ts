@@ -222,6 +222,12 @@ export type DataRegistrationReceiptObservation = Readonly<{
   ipMetadataHash: string | null;
   nftMetadataUri: string | null;
   nftMetadataHash: string | null;
+  /**
+   * The terms a confirmed song attached, persisted with the observation that
+   * carries its registration. Null for a video and for a confirmed
+   * observation recorded before the terms evidence was persisted.
+   */
+  attachedLicense: DataAttachedLicense | null;
   evidenceRef: string;
   observedAt: string;
 }>;
@@ -259,6 +265,23 @@ export type DataRegistrationTerminalReconciliation =
   | "pending"
   | "unavailable"
   | "stale";
+
+export type ResumeDataRegistrationReconciliationInput = Readonly<{
+  registrationOperationId: string;
+  operatorPrincipalId: string;
+  idempotencyKey: string;
+  evidenceRef: string;
+  reasonCode: "receipt_inconclusive" | "terms_evidence_unavailable";
+  expectedWorkflowRevision: bigint;
+}>;
+
+export type DataRegistrationResumeResult = Readonly<{
+  kind: "resumed" | "replay";
+  registrationOperationId: string;
+  workflowRevision: bigint;
+  attemptId: string;
+  outbox: DataRegistrationOutbox;
+}>;
 
 export type CreateDataRegistrationOperationInput = Readonly<{
   registrationOperationId: string;
@@ -431,6 +454,15 @@ export interface DataRegistrationStore {
     registrationOperationId: string,
     expectedWorkflowRevision: bigint,
   ) => Promise<DataRegistrationTerminalReconciliation>;
+  /**
+   * Operator-authorized resolution for a reconciliation_required registration:
+   * returns the attempt to observation under a fresh workflow revision and a
+   * pending replacement launch. The audit row, attempt, revision and launch
+   * commit together; a repeated request replays its original result.
+   */
+  readonly resumeReconciliation: (
+    input: ResumeDataRegistrationReconciliationInput,
+  ) => Promise<DataRegistrationResumeResult>;
   readonly getOutbox: (outboxId: string) => Promise<DataRegistrationOutbox | null>;
   readonly listEligibleOutbox: (limit: number) => Promise<readonly DataRegistrationOutbox[]>;
   readonly claimOutbox: (

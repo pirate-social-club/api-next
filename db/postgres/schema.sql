@@ -8803,10 +8803,10 @@ BEGIN
        OR registration_record.submission_id IS DISTINCT FROM NEW.submission_id
        OR registration_record.media_operation_id IS DISTINCT FROM NEW.operation_id
        OR registration_record.publication_creation_revision IS DISTINCT FROM NEW.creation_revision
-       OR registration_record.publication_audio_revision IS DISTINCT FROM NEW.audio_revision
+       OR (NEW.media_kind = 'song' AND registration_record.publication_audio_revision IS DISTINCT FROM NEW.audio_revision)
        OR registration_record.publication_analysis_revision IS DISTINCT FROM NEW.analysis_revision
        OR registration_record.publication_decision_revision IS DISTINCT FROM NEW.decision_revision
-       OR registration_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256
+       OR (NEW.media_kind = 'song' AND registration_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256) OR registration_record.media_kind IS DISTINCT FROM NEW.media_kind
        OR NEW.data_registration IS DISTINCT FROM (CASE registration_record.state
          WHEN 'registered' THEN 'registered'
          WHEN 'failed' THEN 'failed'
@@ -15104,6 +15104,31 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_data_operator_resume_audit() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.state = 'reconciliation_required'
+     AND (
+       NEW.state IN ('broadcast', 'confirming')
+       OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
+     ) THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM data_operator_resume_actions action
+      WHERE action.registration_operation_id = NEW.registration_operation_id
+        AND action.expected_workflow_revision = OLD.workflow_revision
+        AND action.resumed_attempt_id = NEW.current_attempt_id
+        AND action.community_id = NEW.community_id
+        AND action.actor_user_id = NEW.actor_user_id
+        AND action.submission_id = NEW.submission_id
+    ) THEN
+      RAISE EXCEPTION 'operator resume requires its exact audit';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION require_data_registration_attempt_parent() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -18093,6 +18118,40 @@ BEGIN
   END IF;
   RETURN NULL;
 END
+$$;
+
+CREATE FUNCTION validate_data_operator_resume_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM data_registration_operations operation
+      JOIN data_registration_signing_attempts attempt
+        ON attempt.submission_attempt_id = NEW.resumed_attempt_id
+       AND attempt.registration_operation_id = operation.registration_operation_id
+      JOIN data_registration_outbox launch
+        ON launch.outbox_id = NEW.outbox_id
+       AND launch.registration_operation_id = operation.registration_operation_id
+     WHERE operation.registration_operation_id = NEW.registration_operation_id
+       AND operation.community_id = NEW.community_id
+       AND operation.actor_user_id = NEW.actor_user_id
+       AND operation.submission_id = NEW.submission_id
+       AND operation.workflow_revision = NEW.resulting_workflow_revision
+       AND operation.workflow_instance_id = 'data-registration-workflow:'
+           || operation.registration_operation_id || ':r' || operation.workflow_revision::text
+       AND operation.current_attempt_id = NEW.resumed_attempt_id
+       AND operation.state = CASE WHEN attempt.state = 'mined' THEN 'confirming' ELSE 'broadcast' END
+       AND attempt.state IN ('broadcast', 'mined')
+       AND launch.event_type = 'workflow_replacement'
+       AND launch.workflow_revision = NEW.resulting_workflow_revision
+       AND launch.workflow_instance_id = operation.workflow_instance_id
+       AND launch.state = 'pending'
+  ) THEN
+    RAISE EXCEPTION 'operator resume lacks its exact transition, attempt or launch';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION validate_handle_claim_insert_v2() RETURNS trigger
@@ -24515,6 +24574,30 @@ CREATE TABLE dance_upload_reservations (
     CONSTRAINT dance_upload_reservations_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'sealed'::text, 'expired'::text])))
 );
 
+CREATE TABLE data_operator_resume_actions (
+    registration_operation_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    operator_principal_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reason_code text NOT NULL,
+    evidence_ref text NOT NULL,
+    expected_workflow_revision bigint NOT NULL,
+    resulting_workflow_revision bigint NOT NULL,
+    resumed_attempt_id text NOT NULL,
+    outbox_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_operator_resume_actions_check CHECK ((resulting_workflow_revision = (expected_workflow_revision + 1))),
+    CONSTRAINT data_operator_resume_actions_evidence_ref_check CHECK ((evidence_ref <> ''::text)),
+    CONSTRAINT data_operator_resume_actions_expected_workflow_revision_check CHECK ((expected_workflow_revision > 0)),
+    CONSTRAINT data_operator_resume_actions_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT data_operator_resume_actions_operator_principal_id_check CHECK ((operator_principal_id <> ''::text)),
+    CONSTRAINT data_operator_resume_actions_reason_code_check CHECK ((reason_code = ANY (ARRAY['receipt_inconclusive'::text, 'terms_evidence_unavailable'::text]))),
+    CONSTRAINT data_operator_resume_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE data_registration_artifacts (
     artifact_id text NOT NULL,
     registration_operation_id text NOT NULL,
@@ -24773,6 +24856,15 @@ CREATE TABLE data_registration_receipt_observations (
     evidence_ref text NOT NULL,
     observed_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    attached_license_template text,
+    attached_license_terms_id text,
+    attached_license_preset text,
+    attached_commercial_rev_share_bps integer,
+    terms_attachment_transaction_hash text,
+    terms_attachment_block_number bigint,
+    terms_attachment_block_hash text,
+    terms_attachment_log_index integer,
+    CONSTRAINT data_registration_receipt_attached_license_shape CHECK (((NOT ((((((((attached_license_template IS DISTINCT FROM NULL::text) OR (attached_license_terms_id IS DISTINCT FROM NULL::text)) OR (attached_license_preset IS DISTINCT FROM NULL::text)) OR (attached_commercial_rev_share_bps IS DISTINCT FROM NULL::integer)) OR (terms_attachment_transaction_hash IS DISTINCT FROM NULL::text)) OR (terms_attachment_block_number IS DISTINCT FROM NULL::bigint)) OR (terms_attachment_block_hash IS DISTINCT FROM NULL::text)) OR (terms_attachment_log_index IS DISTINCT FROM NULL::integer))) OR ((outcome = 'confirmed'::text) AND (attached_license_template ~ '^0x[0-9a-f]{40}$'::text) AND (attached_license_terms_id ~ '^[1-9][0-9]{0,77}$'::text) AND (attached_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])) AND ((attached_license_preset = 'commercial-remix'::text) = (attached_commercial_rev_share_bps IS NOT NULL)) AND (attached_commercial_rev_share_bps <= 10000) AND (terms_attachment_transaction_hash = transaction_hash) AND (terms_attachment_block_number >= 0) AND (terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text) AND (terms_attachment_log_index >= 0) AND (attached_license_template IS NOT NULL) AND (attached_license_terms_id IS NOT NULL) AND (attached_license_preset IS NOT NULL) AND (terms_attachment_transaction_hash IS NOT NULL) AND (terms_attachment_block_number IS NOT NULL) AND (terms_attachment_block_hash IS NOT NULL) AND (terms_attachment_log_index IS NOT NULL)))),
     CONSTRAINT data_registration_receipt_identity CHECK ((receipt_observation_id = ((submission_attempt_id || ':receipt:'::text) || (observation_sequence)::text))),
     CONSTRAINT data_registration_receipt_observat_receipt_observation_id_check CHECK ((btrim(receipt_observation_id) <> ''::text)),
     CONSTRAINT data_registration_receipt_observatio_observation_sequence_check CHECK ((observation_sequence > 0)),
@@ -31456,6 +31548,15 @@ ALTER TABLE ONLY dance_upload_reservations
 ALTER TABLE ONLY dance_upload_reservations
     ADD CONSTRAINT dance_upload_reservations_session_id_key UNIQUE (session_id);
 
+ALTER TABLE ONLY data_operator_resume_actions
+    ADD CONSTRAINT data_operator_resume_actions_outbox_id_key UNIQUE (outbox_id);
+
+ALTER TABLE ONLY data_operator_resume_actions
+    ADD CONSTRAINT data_operator_resume_actions_pkey PRIMARY KEY (registration_operation_id, resulting_workflow_revision);
+
+ALTER TABLE ONLY data_operator_resume_actions
+    ADD CONSTRAINT data_operator_resume_actions_registration_operation_id_idem_key UNIQUE (registration_operation_id, idempotency_key);
+
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_pkey PRIMARY KEY (artifact_id);
 
@@ -33851,6 +33952,10 @@ CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDAT
 
 CREATE TRIGGER dance_upload_reservations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_upload_reservations FOR EACH ROW EXECUTE FUNCTION guard_dance_upload_reservation();
 
+CREATE CONSTRAINT TRIGGER data_operator_resume_action_transition AFTER INSERT ON data_operator_resume_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_data_operator_resume_action();
+
+CREATE TRIGGER data_operator_resume_actions_append_only BEFORE DELETE OR UPDATE ON data_operator_resume_actions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
 CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
@@ -33858,6 +33963,8 @@ CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE
 CREATE TRIGGER data_registration_attempt_parent BEFORE INSERT ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION require_data_registration_attempt_parent();
 
 CREATE TRIGGER data_registration_operation_update_guard BEFORE DELETE OR UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_operation_update();
+
+CREATE TRIGGER data_registration_operator_resume_guard BEFORE UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION require_data_operator_resume_audit();
 
 CREATE TRIGGER data_registration_outbox_update_guard BEFORE DELETE OR UPDATE ON data_registration_outbox FOR EACH ROW EXECUTE FUNCTION guard_data_registration_outbox_update();
 

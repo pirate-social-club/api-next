@@ -314,6 +314,7 @@ function harness(
           ipMetadataHash: `0x${"b".repeat(64)}`,
           nftMetadataUri: "ipfs://nft-metadata",
           nftMetadataHash: `0x${"c".repeat(64)}`,
+          attachedLicense: null,
           evidenceRef: `evidence://receipt/${receipt}`,
           observedAt: "2026-08-27T00:00:00.000Z",
         };
