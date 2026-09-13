@@ -8674,6 +8674,22 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_operator_reset_launch() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.event_type='workflow_replacement' AND NEW.payload->'replacement_sequence'='0'::jsonb
+     AND NOT EXISTS (
+       SELECT 1 FROM media_operator_reprocess_actions a
+       WHERE a.outbox_event_id=NEW.outbox_event_id AND a.operation_id=NEW.operation_id
+         AND a.submission_id=NEW.submission_id AND a.community_id=NEW.community_id
+         AND a.actor_user_id=NEW.actor_user_id AND a.resulting_creation_revision=NEW.creation_revision
+         AND a.resulting_workflow_revision=NEW.workflow_revision AND a.replacement_budget_after=0
+     ) THEN RAISE EXCEPTION 'zero replacement sequence requires its operator audit'; END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_outbox_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -8923,7 +8939,7 @@ BEGIN
       AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision
       AND NEW.failure_code IS NOT NULL AND NEW.failure_retry_count IS NOT NULL AND NEW.last_safe_phase IS NOT NULL
       AND (NEW.failure_code IS DISTINCT FROM 'upload_seal_conflict' OR OLD.phase = 'finalize'))
-    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.phase IS NOT DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count AND NEW.workflow_replacement_sequence = OLD.workflow_replacement_sequence + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.failure_code IS NULL AND NEW.failure_retry_count IS NULL AND NEW.retryable IS NULL AND NEW.last_safe_phase IS NULL AND NEW.post_id IS NULL AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision))
+    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.phase IS NOT DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count AND NEW.workflow_replacement_sequence = 0 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.failure_code IS NULL AND NEW.failure_retry_count IS NULL AND NEW.retryable IS NULL AND NEW.last_safe_phase IS NULL AND NEW.post_id IS NULL AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0))
     OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = OLD.last_safe_phase
       AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
       AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
@@ -9079,7 +9095,9 @@ BEGIN
     IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.retry_count <> OLD.retry_count OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.moderator_action_id IS DISTINCT FROM OLD.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM OLD.moderator_actor_id OR NEW.moderator_evidence_ref IS DISTINCT FROM OLD.moderator_evidence_ref THEN RAISE EXCEPTION 'media failure pointers are not exact'; END IF;
     IF NEW.phase IS NOT NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.failure_code IS NULL OR NEW.failure_retry_count IS NULL OR NEW.last_safe_phase IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.abandonment_reason IS NOT NULL OR NEW.retention_disposition IS NOT NULL THEN RAISE EXCEPTION 'media failure evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' AND OLD.failure_code = 'workflow_terminal_unconverged' THEN
-    IF NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence + 1 THEN RAISE EXCEPTION 'operator replacement sequence did not advance'; END IF;
+    -- The operator resolution resets the automatic replacement allowance to
+    -- zero; the exact-evidence check below binds that reset to its audit row.
+    IF NEW.workflow_replacement_sequence <> 0 THEN RAISE EXCEPTION 'operator reprocess must reset the replacement sequence'; END IF;
     IF NEW.current_terms_revision IS DISTINCT FROM (CASE WHEN OLD.current_terms_revision IS NULL THEN NULL ELSE NEW.creation_revision END)
       OR (OLD.current_terms_revision IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM media_submission_terms prior JOIN media_submission_terms next
@@ -9090,7 +9108,7 @@ BEGIN
           AND next.creation_revision=NEW.creation_revision
       )) THEN RAISE EXCEPTION 'operator reprocess must preserve accepted terms'; END IF;
     IF (to_jsonb(NEW) - ARRAY['current_terms_revision','actor_account_id','creation_revision','workflow_revision','workflow_replacement_sequence','status','phase','decision_revision','current_decision_revision','failure_code','failure_retry_count','retryable','last_safe_phase','event_sequence','updated_at']) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['current_terms_revision','actor_account_id','creation_revision','workflow_revision','workflow_replacement_sequence','status','phase','decision_revision','current_decision_revision','failure_code','failure_retry_count','retryable','last_safe_phase','event_sequence','updated_at']) THEN RAISE EXCEPTION 'operator reprocess changed unrelated authority'; END IF;
-    IF NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NOT EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision) THEN RAISE EXCEPTION 'operator reprocess transition evidence is not exact'; END IF;
+    IF NEW.workflow_replacement_sequence <> 0 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NOT EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0) THEN RAISE EXCEPTION 'operator reprocess transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
     IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'retry transition pointers are not exact'; END IF;
     IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
@@ -19512,6 +19530,10 @@ BEGIN
       AND e.audio_revision=s.audio_revision AND e.analysis_revision=s.analysis_revision
       AND e.decision_revision=s.decision_revision
       AND e.evidence->>'action'='operator_reprocess'
+      AND NEW.replacement_budget_after=0 AND s.workflow_replacement_sequence=0
+      AND e.evidence->'replacement_budget_before'=to_jsonb(NEW.replacement_budget_before)
+      AND e.evidence->'replacement_budget_after'=to_jsonb(NEW.replacement_budget_after)
+      AND o.payload->'replacement_sequence'='0'::jsonb
       AND e.evidence->>'idempotency_key'=NEW.idempotency_key
       AND e.evidence->>'request_hash'=NEW.request_hash
       AND e.evidence->>'operator_principal_id'=NEW.operator_principal_id
@@ -20041,6 +20063,7 @@ CREATE FUNCTION validate_media_submission_event_pair() RETURNS trigger
     AS $$
 DECLARE expected_event TEXT; event_record media_submission_events%ROWTYPE; reservation_record media_upload_reservations%ROWTYPE;
 BEGIN
+  IF OLD.media_kind = 'song' AND OLD.status = 'processing_failed' AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions a WHERE a.operation_id=NEW.operation_id AND a.submission_id=NEW.submission_id AND a.expected_creation_revision=OLD.creation_revision AND a.expected_workflow_revision=OLD.workflow_revision AND a.resulting_creation_revision=NEW.creation_revision AND a.resulting_workflow_revision=NEW.workflow_revision AND a.replacement_budget_before=OLD.workflow_replacement_sequence AND a.replacement_budget_after=NEW.workflow_replacement_sequence) THEN RETURN NEW; END IF;
   IF OLD.status = 'processing' AND OLD.phase = 'reserve' AND NEW.status = 'processing' AND NEW.phase = 'awaiting_upload' THEN expected_event := 'media_reservation_issued';
   ELSIF (((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL)) AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.current_terms_revision = NEW.creation_revision) THEN expected_event := 'song_terms_bound';
   ELSIF OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND NEW.audio_revision = OLD.audio_revision + 1 THEN expected_event := 'upload_finalized';
@@ -26647,18 +26670,22 @@ CREATE TABLE media_operator_reprocess_actions (
     resulting_creation_revision bigint NOT NULL,
     expected_workflow_revision bigint NOT NULL,
     resulting_workflow_revision bigint NOT NULL,
+    replacement_budget_before bigint NOT NULL,
+    replacement_budget_after bigint DEFAULT 0 NOT NULL,
     outbox_event_id text NOT NULL,
     reason_code text NOT NULL,
     evidence_ref text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_operator_reprocess_actio_expected_creation_revision_check CHECK ((expected_creation_revision > 0)),
     CONSTRAINT media_operator_reprocess_actio_expected_workflow_revision_check CHECK ((expected_workflow_revision > 0)),
+    CONSTRAINT media_operator_reprocess_action_replacement_budget_before_check CHECK ((replacement_budget_before >= 0)),
     CONSTRAINT media_operator_reprocess_actions_check CHECK ((resulting_creation_revision = (expected_creation_revision + 1))),
     CONSTRAINT media_operator_reprocess_actions_check1 CHECK ((resulting_workflow_revision = (expected_workflow_revision + 1))),
     CONSTRAINT media_operator_reprocess_actions_evidence_ref_check CHECK ((evidence_ref <> ''::text)),
     CONSTRAINT media_operator_reprocess_actions_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
     CONSTRAINT media_operator_reprocess_actions_operator_principal_id_check CHECK ((operator_principal_id <> ''::text)),
     CONSTRAINT media_operator_reprocess_actions_reason_code_check CHECK ((reason_code = 'workflow_terminal_unconverged'::text)),
+    CONSTRAINT media_operator_reprocess_actions_replacement_budget_after_check CHECK ((replacement_budget_after = 0)),
     CONSTRAINT media_operator_reprocess_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
@@ -34088,7 +34115,9 @@ CREATE TRIGGER media_operator_reprocess_action_immutable BEFORE DELETE OR UPDATE
 
 CREATE CONSTRAINT TRIGGER media_operator_reprocess_action_pair AFTER INSERT ON media_operator_reprocess_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_media_operator_reprocess_action();
 
-CREATE TRIGGER media_operator_reprocess_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (old.status = 'processing_failed'::text) AND (old.failure_code = 'workflow_terminal_unconverged'::text) AND (new.status = 'processing'::text) AND (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence))) EXECUTE FUNCTION guard_media_submission_update();
+CREATE TRIGGER media_operator_reprocess_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (old.status = 'processing_failed'::text) AND (old.failure_code = 'workflow_terminal_unconverged'::text) AND (new.status = 'processing'::text))) EXECUTE FUNCTION guard_media_submission_update();
+
+CREATE TRIGGER media_operator_reset_launch_guard BEFORE INSERT ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION guard_media_operator_reset_launch();
 
 CREATE TRIGGER media_outbox_payload_guard BEFORE INSERT ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION validate_media_outbox_payload_v2();
 

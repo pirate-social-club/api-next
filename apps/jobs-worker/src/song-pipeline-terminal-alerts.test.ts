@@ -262,7 +262,7 @@ describe("song pipeline terminal alert collectors", () => {
             collectSongPipelineTerminalAlerts(
               controlPlane,
               { media: false, data: true },
-              { data: dataWorkflow("errored") },
+              { data: missingDataWorkflow() },
             ),
           ),
         ),

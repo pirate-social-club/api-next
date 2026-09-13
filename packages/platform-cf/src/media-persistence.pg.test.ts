@@ -55,7 +55,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 59;
+const testCount = 60;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4842,8 +4842,24 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           "SELECT status,phase,workflow_revision,workflow_replacement_sequence,event_sequence,creation_revision,audio_revision,analysis_revision,decision_revision,current_lyrics_revision FROM media_post_submissions WHERE submission_id=$1",
           [submission],
         );
+      // A published song that already spent one automatic replacement: the
+      // hostile fixtures below insert non-zero-sequence launches, which the
+      // zero-sequence operator-audit guard does not admit without an audit.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE media_post_submissions SET workflow_replacement_sequence=1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
       const published = requireRow((await snapshot()).rows[0]);
-      expect(published).toMatchObject({ status: "published", workflow_revision: "2" });
+      expect(published).toMatchObject({
+        status: "published",
+        workflow_revision: "2",
+        workflow_replacement_sequence: "1",
+      });
       expect(
         (
           await admin.query(
@@ -5752,6 +5768,51 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         [submission],
       );
       expect(attemptsAfterRepeat.rows[0]?.count).toBe(attemptsBefore.rows[0]?.count);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
+  test("commits exactly one replacement under concurrent sweepers", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, false, undefined, true);
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      const authority = await store.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing replacement authority");
+      const results = await Promise.all([
+        store.replaceMissingWorkflow(authority),
+        store.replaceMissingWorkflow(authority),
+      ]);
+      expect(results.filter((result) => result === "committed")).toHaveLength(1);
+      expect(results.filter((result) => result === "stale")).toHaveLength(1);
+      // An authority that already moved can never commit again.
+      expect(await store.replaceMissingWorkflow(authority)).toBe("stale");
+      const row = await admin.query<{
+        workflow_revision: string;
+        workflow_replacement_sequence: string;
+      }>(
+        "SELECT workflow_revision::text AS workflow_revision,workflow_replacement_sequence::text AS workflow_replacement_sequence FROM media_post_submissions WHERE submission_id=$1",
+        [submission],
+      );
+      expect(row.rows[0]).toEqual({
+        workflow_revision: "2",
+        workflow_replacement_sequence: "1",
+      });
+      expect(
+        (
+          await admin.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM media_submission_outbox WHERE submission_id=$1 AND workflow_revision=2 AND event_type='workflow_replacement'",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ count: 1 });
+      expect(
+        (
+          await admin.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM media_submission_outbox WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ count: 2 });
     });
     completedTestCount += 1;
   }, 40_000);

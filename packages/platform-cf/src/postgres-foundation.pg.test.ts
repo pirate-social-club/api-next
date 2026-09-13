@@ -1402,6 +1402,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_immutable_objects",
         "media_moderation_actions",
         "media_moderation_projections",
+        "media_operator_reprocess_actions",
         "media_post_submissions",
         "media_processing_attempts",
         "media_publication_decisions",
