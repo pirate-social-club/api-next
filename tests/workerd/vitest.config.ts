@@ -135,6 +135,10 @@ const alias = {
     "../../packages/platform-cf/src/cloudflare-workflow-entrypoint.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/cloudflare-orchestration-primitives": new URL(
+    "../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/data/registration-workflow-cloudflare": new URL(
     "../../packages/platform-cf/src/data/registration-workflow-cloudflare.ts",
     import.meta.url,
