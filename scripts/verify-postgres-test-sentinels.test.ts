@@ -361,4 +361,35 @@ describe("Postgres suite sentinel verification", () => {
       workflow.match(/\/tmp\/api-next-control-plane-postgres-optional-route-v2-suite-complete/gu),
     ).toHaveLength(2);
   });
+
+  test("keeps the song-video media suites fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    for (const marker of ["song-video-composed-flow", "song-video-render-host"]) {
+      const sentinel = `/tmp/api-next-control-plane-postgres-${marker}-suite-complete`;
+      expect(workflow.match(new RegExp(sentinel, "gu"))).toHaveLength(3);
+    }
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_SONG_VIDEO_COMPOSED_FLOW_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete",
+    );
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_SONG_VIDEO_RENDER_HOST_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-song-video-render-host-suite-complete",
+    );
+  });
+
+  test("keeps the check-job media suites required and sentinel-gated", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow.match(/SONG_VIDEO_FFMPEG_REQUIRED: "1"/gu)).toHaveLength(2);
+    expect(workflow).toContain("/tmp/api-next-song-video-ffmpeg-suite-complete");
+    expect(workflow).toContain("/tmp/api-next-video-analysis-ffmpeg-suite-complete");
+  });
 });

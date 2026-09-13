@@ -2,10 +2,12 @@ import { phoneticStreamSimilarity } from "../study/english-phonetics.ts";
 
 export const STUDY_TRANSCRIPT_GRADER_POLICY_V1 = "script_aware_token_diff_v1" as const;
 export const STUDY_TRANSCRIPT_GRADER_POLICY_V2 = "script_aware_token_phonetic_v2" as const;
+export const STUDY_TRANSCRIPT_GRADER_POLICY_V3 = "script_aware_token_phonetic_v3" as const;
 
 export type StudyTranscriptGraderPolicyRevision =
   | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V1
-  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V2;
+  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V2
+  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V3;
 export type StudyTranscriptMatchKind = "exact" | "phonetic" | "none";
 
 export const studyTranscriptReviewGrade = (
@@ -56,6 +58,26 @@ export const gradeExactChoiceV2 = (submittedChoiceKey: string, correctChoiceKey:
 
 const ignoredEnglishRecallTokens = new Set(["a", "an", "the"]);
 
+// Tokens whose substitution, omission or insertion changes what the line
+// says rather than how it was fragmented or inflected. Phonetic tolerance
+// must never absorb these under revision v3.
+const meaningChangingEnglishTokens = new Set([
+  "not",
+  "no",
+  "never",
+  "none",
+  "nothing",
+  "nobody",
+  "nowhere",
+  "nor",
+  "cannot",
+  "cant",
+  "without",
+]);
+
+const isMeaningChangingToken = (token: string): boolean =>
+  /\p{N}/u.test(token) || meaningChangingEnglishTokens.has(token);
+
 const expandEnglishContractions = (value: string): string =>
   value
     .replace(/\b(can)'t\b/giu, "$1 not")
@@ -76,13 +98,18 @@ const normalizeEnglishRecallToken = (token: string): string => {
   return compact.length > 3 && compact.endsWith("s") ? compact.slice(0, -1) : compact;
 };
 
-const tokens = (value: string, dominantLanguage: string | null): string[] => {
+const rawTokens = (value: string, dominantLanguage: string | null): string[] => {
   const english = dominantLanguage?.split("-", 1)[0] === "en";
   const normalized = normalizeText(english ? expandEnglishContractions(value) : value);
   if (normalized.length === 0) return [];
-  const segmented = [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(normalized)]
+  return [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(normalized)]
     .filter(({ isWordLike }) => isWordLike === true)
     .map(({ segment }) => segment);
+};
+
+const tokens = (value: string, dominantLanguage: string | null): string[] => {
+  const english = dominantLanguage?.split("-", 1)[0] === "en";
+  const segmented = rawTokens(value, dominantLanguage);
   if (!english) return segmented;
   return segmented
     .map(normalizeEnglishRecallToken)
@@ -95,8 +122,33 @@ export const gradeTranscriptV2 = (
   dominantLanguage: string | null,
   policyRevision: StudyTranscriptGraderPolicyRevision,
 ): StudyTranscriptGradeV2 => {
-  const expected = tokens(reference, dominantLanguage);
-  const actual = tokens(heardTranscript, dominantLanguage);
+  const v3 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3;
+  let expected = tokens(reference, dominantLanguage);
+  let actual = tokens(heardTranscript, dominantLanguage);
+  // Revision v3 refuses vacuous comparisons: when article and stopword
+  // filtering empties both sides, compare the unfiltered segmentation so an
+  // article-only line versus silence is incorrect while the same article on
+  // both sides stays exact.
+  if (v3 && expected.length === 0 && actual.length === 0) {
+    const rawExpected = rawTokens(reference, dominantLanguage);
+    const rawActual = rawTokens(heardTranscript, dominantLanguage);
+    if (rawExpected.length === 0) {
+      // No meaningful reference remains: refuse rather than score an empty
+      // comparison as a match.
+      return {
+        correct: false,
+        matchKind: "none",
+        heardTranscript,
+        matched: [],
+        missing: [],
+        extra: [],
+        substituted: [],
+        policyRevision,
+      };
+    }
+    expected = rawExpected;
+    actual = rawActual;
+  }
   const distance = Array.from({ length: expected.length + 1 }, (_, left) =>
     Array.from({ length: actual.length + 1 }, (_, right) =>
       left === 0 ? right : right === 0 ? left : 0,
@@ -158,8 +210,22 @@ export const gradeTranscriptV2 = (
   substituted.reverse();
   const exact = missing.length === 0 && extra.length === 0 && substituted.length === 0;
   const english = dominantLanguage?.split("-", 1)[0] === "en";
+  // Revision v3 refuses phonetic acceptance when a negation or numeric token
+  // was substituted, inserted or dropped: those changes alter what the line
+  // says, and the phonetic budget must never absorb them.
+  const meaningChanged =
+    v3 &&
+    (missing.some(({ token }) => isMeaningChangingToken(token)) ||
+      extra.some(isMeaningChangingToken) ||
+      substituted.some(
+        ({ expected: mismatch, heard }) =>
+          isMeaningChangingToken(mismatch.token) || isMeaningChangingToken(heard),
+      ));
   const phonetic =
-    !exact && english && policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V2
+    !exact &&
+    english &&
+    (policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V2 ||
+      policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3)
       ? phoneticStreamSimilarity(expected, actual)
       : null;
   // Ported calibration: the floor accepts short inflection/fragmentation errors,
@@ -168,20 +234,26 @@ export const gradeTranscriptV2 = (
     phonetic === null ? 0 : Math.max(2, Math.min(Math.floor(0.15 * phonetic.length), 4));
   const matchKind: StudyTranscriptMatchKind = exact
     ? "exact"
-    : phonetic?.available === true && phonetic.distance <= phoneticBudget
+    : phonetic?.available === true && phonetic.distance <= phoneticBudget && !meaningChanged
       ? "phonetic"
       : "none";
+  // Revision v2 cleared the diff on phonetic acceptance; v3 keeps it so the
+  // learner sees what changed even on an accepted near-match.
+  const clearDiff = matchKind === "phonetic" && !v3;
   return {
     correct: matchKind !== "none",
     matchKind,
     heardTranscript,
-    matched: matchKind === "phonetic" ? [] : matched,
-    missing: matchKind === "phonetic" ? [] : missing,
-    extra: matchKind === "phonetic" ? [] : extra,
-    substituted: matchKind === "phonetic" ? [] : substituted,
+    matched: clearDiff ? [] : matched,
+    missing: clearDiff ? [] : missing,
+    extra: clearDiff ? [] : extra,
+    substituted: clearDiff ? [] : substituted,
     policyRevision,
   };
 };
 
 export const gradeEnglishTranscriptV2 = (reference: string, heardTranscript: string) =>
   gradeTranscriptV2(reference, heardTranscript, "en", STUDY_TRANSCRIPT_GRADER_POLICY_V2);
+
+export const gradeEnglishTranscriptV3 = (reference: string, heardTranscript: string) =>
+  gradeTranscriptV2(reference, heardTranscript, "en", STUDY_TRANSCRIPT_GRADER_POLICY_V3);

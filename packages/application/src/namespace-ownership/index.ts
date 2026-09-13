@@ -367,6 +367,7 @@ export {
   mapHnsControlObservationToTargetV3,
   promoteHnsControlObservationResultV1ToV2,
 } from "./hns-control-observer-v2.ts";
+export * from "./hns-diagnostic-redaction.ts";
 export type {
   HnsNamespaceStartInput,
   HnsOwnerRawResponse,
@@ -459,11 +460,12 @@ export {
   hnsPrivateDriverErrorStatus,
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
+export * from "./hns-readiness-observation-request.ts";
 export * from "./hns-resource-codec.ts";
 export * from "./hns-retention-review.ts";
 export * from "./hns-root-import.ts";
+export * from "./hns-root-import-lifecycle-codec.ts";
 export * from "./hns-root-import-lifecycle-projection.ts";
-export * from "./hns-root-import-lifecycle-service.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,
   HnsRootImportNameProofMessageInput,

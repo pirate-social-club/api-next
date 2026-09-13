@@ -4,7 +4,6 @@ import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-owne
 import {
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
-  preflightEncodeHnsResourceV1,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
 import { Effect, Redacted } from "effect";
@@ -21,7 +20,9 @@ import {
 } from "../../../packages/platform-cf/src/route-attachment-start-repository.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { runHnsAuthorityProvisionExecutorOnce } from "../../hns-authority-provisioner/src/executor.ts";
-import { makePostgresHnsRootObservationQueue } from "../../hns-authority-provisioner/src/observation-queue.ts";
+import type { HnsLifecycleClaimV1 } from "../../hns-authority-provisioner/src/lifecycle-executor.ts";
+import { makePostgresHnsLifecycleReadinessPorts } from "../../hns-authority-provisioner/src/lifecycle-queue.ts";
+import { runHnsRootImportReadinessOnce } from "../../hns-authority-provisioner/src/lifecycle-readiness.ts";
 import type { HnsAuthorityZoneResult } from "../../hns-authority-provisioner/src/provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "../../hns-authority-provisioner/src/queue.ts";
 import { attachmentObserverFixture } from "../../hns-owner-verifier/src/attachment-observer.fixture.ts";
@@ -354,46 +355,88 @@ export async function prepareReadyImport(input: {
       observed_zone_bytes: zoneResult.managed_zone_bytes,
       observed_zone_sha256: zoneResult.managed_rrset_sha256,
     });
-    const readinessExecutor = await runHnsAuthorityProvisionExecutorOnce({
-      executor_id: "readiness-executor",
-      queue: makePostgresHnsAuthorityProvisionQueue(acknowledged.scopedConnectionString),
-      provision: {
-        observe_current_resource: async () => observedCurrent(planRecords),
-        ensure_zone: async () => zoneResult,
-      },
-      observation: {
-        queue: makePostgresHnsRootObservationQueue(acknowledged.scopedConnectionString),
-        observe: {
-          observe_current_resource: async () => observedCurrent(planRecords),
-          reconcile_zone: async () => {},
-          inspect_zone: async () => ({ ...zoneResult, created: false }),
-          observe_live: async () => ({
-            authority_views: [authorityView(1), authorityView(2)],
-            gateway: {
-              normalized_host: "app.harbor",
-              gateway_address: zoneResult.gateway_ipv4,
-              certificate_spki_sha256: zoneResult.gateway_certificate_spki_sha256,
-              http_status: 421 as const,
-            },
-          }),
-        },
-        teardown_zone: async () => {
-          throw new Error("No teardown expected");
-        },
-        config: { environment: "staging", valid_for_seconds: 3600 },
-      },
-    });
-    expect(readinessExecutor.outcome).toBe("ready");
-    // This harness drives the legacy readiness writer, which persists the
-    // session result; the lifecycle row is brought to the ready state the
-    // production performer would produce. The joint ceremony exercises the
-    // performer itself through the handover.
+    // The single readiness owner claims the lifecycle readiness job and
+    // commits the evidence through the atomic writer; the writer advances the
+    // lifecycle row to ready in the same transaction.
+    // Observation advancement is exercised by the lifecycle suite; this
+    // fixture forces the readiness phase and its one scheduled job, then
+    // commits through the single owner.
     await admin.query(
-      `UPDATE hns_root_import_lifecycle
-          SET phase='ready', readiness_observed_at=clock_timestamp()
-        WHERE root_import_session_id=$1`,
+      `UPDATE hns_root_import_lifecycle AS lifecycle
+          SET phase='checking_authority', revision=lifecycle.revision + 1,
+              first_current_observation_at = COALESCE(
+                lifecycle.first_current_observation_at, clock_timestamp() - interval '2 hours'
+              ),
+              finality_deadline_at = COALESCE(
+                lifecycle.finality_deadline_at, clock_timestamp() + interval '22 hours'
+              ),
+              readiness_observed_at=NULL
+        WHERE lifecycle.root_import_session_id=$1`,
       [sessionId],
     );
+    await admin.query(
+      `INSERT INTO hns_root_import_lifecycle_jobs (
+         root_import_session_id, job_kind, due_at, generation
+       )
+       SELECT lifecycle.root_import_session_id, 'observe_readiness',
+              clock_timestamp() - interval '1 second', lifecycle.generation
+         FROM hns_root_import_lifecycle AS lifecycle
+        WHERE lifecycle.root_import_session_id=$1`,
+      [sessionId],
+    );
+    const claimed = await admin.query<Record<string, unknown>>(
+      "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+      ["readiness-executor", 60],
+    );
+    const readinessJob = claimed.rows[0];
+    expect(readinessJob?.job_kind).toBe("observe_readiness");
+    // The single readiness owner runs the real performer against the claimed
+    // job; the atomic writer commits session readiness, the lifecycle
+    // transition and job completion in one statement.
+    const finalizeLifecycle = async (
+      job: HnsLifecycleClaimV1,
+      executorId: string,
+      outcome: "completed" | "failed" | "retry",
+      failureCode: string | null,
+    ) => {
+      const finalized = await admin.query<{ outcome: string }>(
+        "SELECT * FROM finalize_hns_root_import_lifecycle_job_v1($1,$2,$3,$4,$5)",
+        [job.lifecycle_job_id, executorId, job.lease_fence, outcome, failureCode],
+      );
+      return { outcome: finalized.rows[0]?.outcome ?? "unknown" };
+    };
+    const readinessPorts = makePostgresHnsLifecycleReadinessPorts(
+      acknowledged.scopedConnectionString,
+      {
+        observe_current_resource: async () => observedCurrent(planRecords),
+        reconcile_zone: async () => {},
+        inspect_zone: async () => ({ ...zoneResult, created: false }),
+        observe_live: async () => ({
+          authority_views: [authorityView(1), authorityView(2)],
+          gateway: {
+            normalized_host: "app.harbor",
+            gateway_address: zoneResult.gateway_ipv4,
+            certificate_spki_sha256: zoneResult.gateway_certificate_spki_sha256,
+            http_status: 421 as const,
+          },
+        }),
+      },
+      { environment: "staging", valid_for_seconds: 3600 },
+      finalizeLifecycle,
+    );
+    const readinessClaim: HnsLifecycleClaimV1 = {
+      lifecycle_job_id: String(readinessJob?.lifecycle_job_id),
+      root_import_session_id: String(readinessJob?.root_import_session_id),
+      job_kind: "observe_readiness",
+      lease_fence: Number(readinessJob?.lease_fence),
+      generation: Number(readinessJob?.generation),
+    };
+    const readinessResult = await runHnsRootImportReadinessOnce(
+      readinessClaim,
+      "readiness-executor",
+      readinessPorts,
+    );
+    expect(readinessResult.outcome).toBe("completed");
     const activatable = (await (await call(sessionUrl)).json()) as {
       status: string;
       revision: number;

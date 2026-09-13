@@ -215,11 +215,11 @@ export const materializeAcceptedLyricLineCatalog = (
                  safety_validator_revision, quality_validator_revision, quality_policy_revision,
                  generated_at, validated_at, accepted_at
                ) VALUES (
-                 $1,$2,$3,$4,$5,$6,$7,$8,$9,'say_it_back','spoken-recall-v2','en',NULL,
-                 NULL,$15,$10::jsonb,$11::jsonb,$12,NULL,'always_visible',
-                 'every_graded_attempt','script_aware_token_phonetic_v2','spoken-feedback-v1',
-                 'deterministic',$13,'accepted-lyrics-say-it-back-v2',NULL,
-                 'accepted-say-it-back-v2',$14,$8,'study-source-structure-v1',
+                  $1,$2,$3,$4,$5,$6,$7,$8,$9,'say_it_back','spoken-recall-v2','en',NULL,
+                  NULL,$15,$10::jsonb,$11::jsonb,$12,NULL,'always_visible',
+                  'every_graded_attempt','script_aware_token_phonetic_v3','spoken-feedback-v1',
+                  'deterministic',$13,'accepted-lyrics-say-it-back-v2',NULL,
+                  'accepted-say-it-back-v3',$14,$8,'study-source-structure-v1',
                  'study-source-semantic-v1','study-source-safety-v1',
                  'study-source-quality-v1','accepted-source-v1',clock_timestamp(),
                  clock_timestamp(),clock_timestamp()
@@ -240,15 +240,15 @@ export const materializeAcceptedLyricLineCatalog = (
                 capture: "microphone_audio",
               }),
               JSON.stringify({
-                kind: "source_token_phonetic_v2",
+                kind: "source_token_phonetic_v3",
                 reference_text: line.canonicalText,
-                tokenizer_policy_revision: "script_aware_token_phonetic_v2",
+                tokenizer_policy_revision: "script_aware_token_phonetic_v3",
               }),
               line.studyUnitId,
               `study-source-${crypto.randomUUID()}`,
               sha256(
                 JSON.stringify([
-                  "accepted_say_it_back_v2",
+                  "accepted_say_it_back_v3",
                   input.postId,
                   input.audioRevision,
                   input.lyricsRevision,
@@ -257,7 +257,7 @@ export const materializeAcceptedLyricLineCatalog = (
                   sourceHash,
                 ]),
               ),
-              (input.audioRevision * 1_000_000 + input.lyricsRevision) * 100 + 2,
+              (input.audioRevision * 1_000_000 + input.lyricsRevision) * 100 + 3,
             ],
             readonly: false,
           });

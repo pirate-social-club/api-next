@@ -21,9 +21,11 @@ concluded is reported pending and left claimed for reconciliation.
 The instance must provide `ffmpeg` and `ffprobe` exactly 6.1.1 on `PATH`; the
 engine refuses a drifted tool before it touches media, and a different decoder
 can produce a different sample count. Bun 1.4 and the checkout's installed
-dependencies are required. The image reference and its digest are recorded in
-`config.example.json`; the operator supplies the retained pinned-input FFmpeg
-image there at deployment time.
+dependencies are required. The pinned artifact is recorded once in
+`pinned-ffmpeg.env` beside this file: the source image and layer digests, the
+download URL and its SHA-256. Both the image build below and the CI real-media
+jobs read that file, and the build fails closed if the fetched layer does not
+match the recorded digest.
 
 ## Configuration
 
@@ -41,15 +43,12 @@ runtime and tool versions and then runs the entry point as-is:
 infra/cloudflare/song-video-render-host/run-host.sh
 ```
 
-The image path builds a wrapper on a pinned Bun runtime and installs FFmpeg
-from an operator-supplied tarball, verified by digest, failing closed without
-one:
+The image path builds a wrapper on a pinned Bun runtime and installs the
+digest-verified FFmpeg 6.1.1 binaries from `pinned-ffmpeg.env`, failing closed
+without a matching artifact:
 
 ```sh
-docker build \
-  --build-arg FFMPEG_TARBALL_URL=<pinned 6.1.1 tarball URL> \
-  --build-arg FFMPEG_TARBALL_SHA256=<sha256 of that tarball> \
-  -t song-video-render-host infra/cloudflare/song-video-render-host
+docker build -t song-video-render-host infra/cloudflare/song-video-render-host
 
 docker run --rm --env-file /private/render-host.env \
   -v "$PWD:/app" -w /app song-video-render-host

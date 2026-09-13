@@ -1,8 +1,7 @@
-import { canonicalJson } from "@pirate/domain";
+import { encodeHnsRootReadinessObservationRequestV1 } from "@pirate/application/namespace-ownership";
 import type { HnsLifecycleClaimV1, HnsLifecycleReadinessResultV1 } from "./lifecycle-executor.ts";
 import {
   decodeHnsRootReadinessObservationRequestV1,
-  HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
   type HnsRootReadinessObservationConfig,
   HnsRootReadinessObservationError,
   type HnsRootReadinessObservationPorts,
@@ -97,8 +96,6 @@ const TERMINAL_REFUSALS = new Set([
 // writer that reintroduced one would not be treating it as a terminal
 // refusal without a matching policy change.
 
-const encoder = new TextEncoder();
-
 export async function runHnsRootImportReadinessOnce(
   job: HnsLifecycleClaimV1,
   executorId: string,
@@ -116,19 +113,16 @@ export async function runHnsRootImportReadinessOnce(
     return { outcome: "failed", reason: "lifecycle_absent" };
   }
 
-  const requestBytes = encoder.encode(
-    canonicalJson({
-      version: HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
-      root_import_session_id: job.root_import_session_id,
-      namespace_session_id: context.namespace_session_id,
-      root_label: context.root_label,
-      challenge_txt_value: context.challenge_txt_value,
-      ownership_result_sha256: context.ownership_result_sha256,
-      publish_plan_sha256: context.publish_plan_sha256,
-      provision_result_sha256: context.provision_result_sha256,
-      expires_at: context.expires_at,
-    }),
-  );
+  const requestBytes = encodeHnsRootReadinessObservationRequestV1({
+    root_import_session_id: job.root_import_session_id,
+    namespace_session_id: context.namespace_session_id,
+    root_label: context.root_label,
+    challenge_txt_value: context.challenge_txt_value,
+    ownership_result_sha256: context.ownership_result_sha256,
+    publish_plan_sha256: context.publish_plan_sha256,
+    provision_result_sha256: context.provision_result_sha256,
+    expires_at: context.expires_at,
+  });
   let request: ReturnType<typeof decodeHnsRootReadinessObservationRequestV1>;
   try {
     request = decodeHnsRootReadinessObservationRequestV1(requestBytes);

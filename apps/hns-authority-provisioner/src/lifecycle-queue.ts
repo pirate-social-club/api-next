@@ -38,7 +38,6 @@ const JOB_KINDS = [
   "observe_safe",
   "observe_readiness",
   "reconcile_provider",
-  "schedule_activation_window",
   "retention_review",
 ] as const;
 

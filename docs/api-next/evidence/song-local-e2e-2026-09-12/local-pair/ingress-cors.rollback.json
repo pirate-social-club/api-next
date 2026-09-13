@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://web-next-staging.pirate.sc"],
+        "methods": ["PUT"],
+        "headers": ["content-type"]
+      }
+    }
+  ]
+}

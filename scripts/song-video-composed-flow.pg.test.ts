@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,21 +90,40 @@ import { makeLocalPinnedFfmpegVideoAnalysisEngine } from "./video-analysis-ffmpe
  * measures the canonical song, probes and frames the capture, and renders and
  * verifies the master. Only external providers are fakes: object storage,
  * the safety classifier and Cloudflare Stream. Skipped where either the
- * database or the pinned FFmpeg is absent, so a skip is never read as a pass.
+ * database or the pinned FFmpeg is absent, so a skip is never read as a pass;
+ * with `SONG_VIDEO_FFMPEG_REQUIRED=1` an absent pinned tool fails at module
+ * load instead, because CI must not count a skipped suite as execution.
  */
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
+const ffmpegRequired = process.env.SONG_VIDEO_FFMPEG_REQUIRED === "1";
 const ffmpegAvailable = Bun.which("ffmpeg") !== null;
+const ffprobeAvailable = Bun.which("ffprobe") !== null;
 const version = ffmpegAvailable
   ? Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
+const ffprobeVersion = ffprobeAvailable
+  ? Bun.spawnSync(["ffprobe", "-version"], { stdout: "pipe", stderr: "ignore" })
   : null;
 const pinned =
   version !== null &&
   version.exitCode === 0 &&
-  new TextDecoder().decode(version.stdout).startsWith("ffmpeg version 6.1.1");
+  ffprobeVersion !== null &&
+  ffprobeVersion.exitCode === 0 &&
+  new TextDecoder().decode(version.stdout).startsWith("ffmpeg version 6.1.1") &&
+  new TextDecoder().decode(ffprobeVersion.stdout).startsWith("ffprobe version 6.1.1");
+if (ffmpegRequired && !pinned) {
+  throw new Error("SONG_VIDEO_FFMPEG_REQUIRED=1 requires pinned FFmpeg and ffprobe 6.1.1 on PATH");
+}
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_SONG_VIDEO_COMPOSED_FLOW_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete";
+const sentinelContents =
+  "api-next-control-plane-postgres-song-video-composed-flow-suite-complete\n";
 const suite = connectionString !== undefined && pinned ? describe : describe.skip;
+let completedTestCount = 0;
 
 const SECOND = 48_000;
 const SONG_POST = "post-song-composed";
@@ -1176,6 +1195,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       expect(delivered.thumbnail).toBe("ready");
       expect(delivered.poster.status).toBe(200);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a policy that stops permitting before the decision blocks the video and renders nothing", async () => {
@@ -1221,6 +1241,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
         ),
       ).toBeNull();
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a renderer refusal fails the submission retryably and publishes nothing", async () => {
@@ -1271,6 +1292,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       });
       expect(String(facts.rows[0]?.evidence)).toEndWith(":master_not_exact");
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a lost render response is observed, not rendered again, and publishes", async () => {
@@ -1299,6 +1321,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       // Never acknowledged, so still submitting; its output was sealed anyway.
       expect(await attemptsOf(composed)).toEqual(["accepted:submitting"]);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a lost output-write acknowledgement reconciles from the stored bytes without a second render", async () => {
@@ -1341,6 +1364,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       // and accepted without rendering again.
       expect(await attemptsOf(composed)).toEqual(["accepted:submitting"]);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("an execution with no output stays pending for reconciliation and is never re-run", async () => {
@@ -1391,6 +1415,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
         ),
       ).rejects.toMatchObject({ details: { reason_code: "retry_not_allowed" } });
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("the Worker submits and waits while a separate host claims, renders and accepts", async () => {
@@ -1426,6 +1451,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       expect(worker.calls.observe).toBe(1);
       expect(await attemptsOf(composed)).toEqual(["accepted:submitted"]);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a sealed attempt advances the same waiting Worker to acceptance", async () => {
@@ -1456,6 +1482,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       expect(worker.calls.submit).toBe(1);
       expect(await attemptsOf(composed)).toEqual(["accepted:submitted"]);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a cached-step resume advances a sealed attempt to acceptance without rendering again", async () => {
@@ -1502,6 +1529,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       expect(resumed.calls.observe).toBe(1);
       expect(await attemptsOf(composed)).toEqual(["accepted:submitted"]);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("after an explicit refusal the author's retry renders a new attempt and publishes", async () => {
@@ -1554,6 +1582,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       );
       expect(decisions.rows[0]?.decisions).toEqual(["1:publish", "2:publish"]);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a song made adult-only while its master renders publishes the video adult-only", async () => {
@@ -1590,6 +1619,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       // Decided general before the change; published at the song's floor.
       expect(ratings.rows[0]).toEqual({ decided: "general", published: "adult_18" });
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a publication retry after lost membership publishes on its decision, then plays and serves its poster", async () => {
@@ -1670,6 +1700,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
       expect(delivered.poster.status).toBe(200);
       expect(delivered.copied).toHaveLength(1);
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("an owner revocation before a publication retry blocks it at the retried revision", async () => {
@@ -1740,6 +1771,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
         accepted: 1,
       });
     });
+    completedTestCount += 1;
   }, 600_000);
 
   test("a policy that stops permitting after rendering is refused at commit and re-decided", async () => {
@@ -1801,5 +1833,10 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
         registrations: 0,
       });
     });
+    completedTestCount += 1;
   }, 600_000);
+
+  afterAll(async () => {
+    if (completedTestCount === 14) await Bun.write(sentinelPath, sentinelContents);
+  });
 });

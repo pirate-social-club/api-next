@@ -1,12 +1,8 @@
 import {
-  hnsRootImportLifecycleDeadlinePatchV1,
   hnsRootImportLifecycleStateFromRowV1,
+  planHnsRootImportLifecycleCommitV1,
 } from "@pirate/application/namespace-ownership";
-import {
-  decideHnsRootImportLifecycleV1,
-  HNS_ROOT_IMPORT_POLICY_V1,
-  type HnsRootImportLifecycleEventV1,
-} from "@pirate/domain";
+import type { HnsRootImportLifecycleEventV1 } from "@pirate/domain";
 
 /**
  * Commit one lifecycle event inside a transaction the caller already owns.
@@ -62,31 +58,20 @@ export async function commitLifecycleEventInTransaction(
     row,
     applied.rows.map((entry) => entry.event_id),
   );
-  const decision = decideHnsRootImportLifecycleV1(
-    state,
-    event,
-    HNS_ROOT_IMPORT_POLICY_V1,
-    nowEpochMs,
-  );
-  const next = decision.next_state;
+  const plan = planHnsRootImportLifecycleCommitV1(state, event, nowEpochMs);
   await client.query(
     `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`,
     [
       rootImportSessionId,
-      state.revision,
+      plan.expected_revision,
       event.event_id,
       event.event,
-      decision.outcome.kind,
-      decision.outcome.reason,
-      next === null ? null : next.phase,
-      next === null ? "{}" : hnsRootImportLifecycleDeadlinePatchV1(next, state),
-      JSON.stringify(
-        decision.requested_work.map((work) => ({
-          kind: work.kind,
-          due_at: new Date(work.due_at_epoch_ms).toISOString(),
-        })),
-      ),
+      plan.outcome_kind,
+      plan.outcome_reason,
+      plan.next_phase,
+      plan.deadline_patch,
+      plan.requested_work_json,
     ],
   );
-  return { applied: decision.outcome.kind === "transition", reason: decision.outcome.reason };
+  return { applied: plan.outcome_kind === "transition", reason: plan.outcome_reason };
 }

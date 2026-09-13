@@ -29,7 +29,6 @@ type HnsLifecycleJobKindV1 =
   | "observe_safe"
   | "observe_readiness"
   | "reconcile_provider"
-  | "schedule_activation_window"
   | "retention_review";
 
 export type HnsLifecycleClaimV1 = Readonly<{

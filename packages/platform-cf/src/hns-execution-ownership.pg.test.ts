@@ -8,12 +8,13 @@ import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts"
 /**
  * One execution owner per root-import operation, settled in SQL.
  *
- * The older readiness-observation path and the lifecycle runner could each
- * claim work for the same operation. Both read the same chain and both drive
- * the same authority, and no lock spans claim, observation and finalization, so
- * ordering alone could not separate them. Migration 0141 makes a lifecycle row
- * the ownership record: the older path yields the whole operation, and the
- * lifecycle runner waits out any legacy lease that was already in flight.
+ * The ratified single-owner cutover ends the coexistence model: observation
+ * and readiness belong to the lifecycle runner, and the retired observation
+ * claim keeps only teardown work. The lifecycle claim still waits out a live
+ * legacy observation lease, so an observation already in flight at cutover
+ * cannot run alongside the lifecycle runner. These cases assert that split
+ * from the SQL contract up, plus the lease fence that keeps a leased lifecycle
+ * job with exactly one owner.
  *
  * The plan digest is checked here too, because it is what qualification
  * compares against and it is now write-once state on the same row.
@@ -42,6 +43,8 @@ type SessionFixture = Readonly<{
   readonly label: string;
   /** Whether a lifecycle row claims ownership of the operation. */
   readonly lifecycle: boolean;
+  /** Session status; defaults to `observing`. */
+  readonly status?: string;
 }>;
 
 /**
@@ -71,14 +74,22 @@ async function seedObservingSession(admin: Client, fixture: SessionFixture): Pro
        expires_at
      ) VALUES (
        $1,'ownership-actor','ownership-intent','ownership-ceremony',
-       $2,1,1,$3,'pirate-verification=ownership','observing',1,
+       $2,1,1,$3,'pirate-verification=ownership',$7,1,
        'start-' || $1,$4,'provision-' || $1,
        'namespace_ownership',$4,'idem-' || $1,$4,
        $5,$6,$4,
        'observation-' || $1,'obs-idem-' || $1,$4,
        clock_timestamp() + interval '30 days'
      )`,
-    [fixture.session, `namespace-${fixture.session}`, fixture.label, shaA, planBytes, planSha256],
+    [
+      fixture.session,
+      `namespace-${fixture.session}`,
+      fixture.label,
+      shaA,
+      planBytes,
+      planSha256,
+      fixture.status ?? "observing",
+    ],
   );
   await admin.query(
     `INSERT INTO hns_authority_provision_jobs (
@@ -128,7 +139,7 @@ async function schemaWithMigrations(admin: Client, schema: string): Promise<void
 
 suite("one execution owner per HNS root-import operation on PostgreSQL 17", () => {
   test(
-    "a lifecycle-managed operation is still claimable for readiness work",
+    "readiness for a lifecycle-managed operation is claimed by the lifecycle runner, never by the retired route",
     async () => {
       const schema = `hns_ownership_ready_${randomUUID().replaceAll("-", "").slice(0, 18)}`;
       const admin = new Client({ connectionString });
@@ -140,19 +151,51 @@ suite("one execution owner per HNS root-import operation on PostgreSQL 17", () =
           label: "readyowned",
           lifecycle: true,
         });
+        await admin.query(
+          `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at, generation)
+           VALUES ('readiness-owned','observe_readiness', clock_timestamp() - interval '1 second', 1)`,
+        );
         await admin.query("COMMIT");
-        // 0141 excluded this claim and 0147 withdrew that. The lifecycle runner
-        // implements chain observation only; the readiness leg is the live DNS
-        // and gateway check that moves a session to `ready`, and nothing else
-        // performs it. Excluding it meant no community operation could ever
-        // become ready.
-        const claimed = await admin.query(
+        // The retired observation claim serves teardown work only. Readiness
+        // for a lifecycle-managed operation is never claimable there, even
+        // while a queued legacy observation job exists.
+        const retired = await admin.query(
           "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
           ["readiness-executor", 60],
         );
+        expect(retired.rows).toHaveLength(0);
+        // The lifecycle runner owns the readiness leg and claims it.
+        const claimed = await admin.query<{
+          root_import_session_id: string;
+          job_kind: string;
+          lease_fence: string;
+        }>("SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)", [
+          "readiness-executor",
+          60,
+        ]);
         expect(claimed.rows).toHaveLength(1);
         expect(claimed.rows[0]?.root_import_session_id).toBe("readiness-owned");
-        expect(claimed.rows[0]?.operation_kind).toBe("observe_root_v1");
+        expect(claimed.rows[0]?.job_kind).toBe("observe_readiness");
+        // A leased job keeps exactly one owner: a second executor takes
+        // nothing until the lease lapses, and recovery advances the fence.
+        const duplicate = await admin.query(
+          "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+          ["other-executor", 60],
+        );
+        expect(duplicate.rows).toHaveLength(0);
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle_jobs
+              SET lease_expires_at = clock_timestamp() - interval '1 second'
+            WHERE root_import_session_id = 'readiness-owned'`,
+        );
+        const recovered = await admin.query<{ lease_fence: string }>(
+          "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+          ["recovery-executor", 60],
+        );
+        expect(recovered.rows).toHaveLength(1);
+        expect(Number(recovered.rows[0]?.lease_fence)).toBe(
+          Number(claimed.rows[0]?.lease_fence) + 1,
+        );
       } finally {
         await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`).catch(() => undefined);
         await admin.end().catch(() => undefined);
@@ -162,7 +205,7 @@ suite("one execution owner per HNS root-import operation on PostgreSQL 17", () =
   );
 
   test(
-    "the lifecycle runner waits out a legacy lease that was already in flight",
+    "the lifecycle runner waits out a live legacy lease, and teardown stays on the retired route",
     async () => {
       const schema = `hns_ownership_race_${randomUUID().replaceAll("-", "").slice(0, 20)}`;
       const admin = new Client({ connectionString });
@@ -172,34 +215,29 @@ suite("one execution owner per HNS root-import operation on PostgreSQL 17", () =
         await seedObservingSession(admin, {
           session: "raced-operation",
           label: "racedname",
-          lifecycle: false,
+          lifecycle: true,
         });
+        await seedObservingSession(admin, {
+          session: "teardown-operation",
+          label: "teardownname",
+          lifecycle: false,
+          status: "failed",
+        });
+        await admin.query(
+          `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at, generation)
+           VALUES ('raced-operation','observe_current', clock_timestamp() - interval '1 second', 1)`,
+        );
+        // A legacy observation lease already in flight at cutover. The retired
+        // route no longer creates one, so the fixture models the inherited
+        // lease the lifecycle claim must wait out.
+        await admin.query(
+          `UPDATE hns_root_import_observation_jobs
+              SET state='leased', leased_by='legacy-executor', lease_fence=1,
+                  lease_expires_at=clock_timestamp() + interval '10 minutes'
+            WHERE root_import_session_id='raced-operation'`,
+        );
         await admin.query("COMMIT");
 
-        // The legacy path takes the operation first, as it may while no
-        // lifecycle row exists.
-        const legacy = await admin.query(
-          "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-          ["legacy-executor", 60],
-        );
-        expect(legacy.rows).toHaveLength(1);
-
-        // Ownership transfers mid-flight.
-        await admin.query(
-          `INSERT INTO hns_root_import_lifecycle (
-           root_import_session_id, root_label, phase, revision, generation,
-           plan_exposed_at, publication_deadline_at, pending_reason,
-           policy_name, policy_digest
-         ) VALUES ('raced-operation','racedname','checking_publication',1,1,
-           clock_timestamp() - interval '1 hour', clock_timestamp() + interval '13 days',
-           'awaiting_publication','hns_root_import_lifecycle_v1','ownership')`,
-        );
-        await admin.query(
-          `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
-           VALUES ('raced-operation','observe_current', clock_timestamp() - interval '1 second')`,
-        );
-
-        // The lifecycle runner declines while the legacy lease is live.
         const contended = await admin.query(
           "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
           ["lifecycle-executor", 60],
@@ -212,22 +250,32 @@ suite("one execution owner per HNS root-import operation on PostgreSQL 17", () =
             SET lease_expires_at = clock_timestamp() - interval '1 second'
           WHERE root_import_session_id = 'raced-operation'`,
         );
-        const drained = await admin.query(
+        const drained = await admin.query<{ job_kind: string }>(
           "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
           ["lifecycle-executor", 60],
         );
         expect(drained.rows).toHaveLength(1);
         expect(drained.rows[0]?.job_kind).toBe("observe_current");
-        // The legacy readiness job remains claimable: 0147 withdrew the
-        // ownership transfer, because the lifecycle runner does not perform
-        // readiness work and excluding it left nobody who did. The fence that
-        // survives is the one proven above — the lifecycle waits for an
-        // in-flight legacy lease rather than observing alongside it.
-        const reclaimed = await admin.query(
-          "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-          ["legacy-executor", 60],
+
+        // Teardown continues on the retired route for a failed operation, and
+        // renewal continues on its own unchanged claim covered by the renewal
+        // suites. The lifecycle runner owns observation and readiness only.
+        await admin.query(
+          `INSERT INTO hns_root_import_teardown_jobs (teardown_job_id, root_import_session_id, state)
+           VALUES ('teardown-raced','teardown-operation','waiting')`,
         );
-        expect(reclaimed.rows).toHaveLength(1);
+        const cleanup = await admin.query<{
+          root_import_session_id: string;
+          operation_kind: string;
+          lease_fence: string;
+        }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
+          "teardown-executor",
+          60,
+        ]);
+        expect(cleanup.rows).toHaveLength(1);
+        expect(cleanup.rows[0]?.root_import_session_id).toBe("teardown-operation");
+        expect(cleanup.rows[0]?.operation_kind).toBe("teardown_root_v1");
+        expect(Number(cleanup.rows[0]?.lease_fence)).toBe(1);
       } finally {
         await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`).catch(() => undefined);
         await admin.end().catch(() => undefined);

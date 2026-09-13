@@ -10,6 +10,7 @@ import {
   gradeTranscriptV2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V1,
   STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V3,
   type StudyTranscriptGraderPolicyRevision,
   type StudyTranscriptGradeV2,
 } from "@pirate/domain";
@@ -199,8 +200,10 @@ const instant = (milliseconds: number): string => new Date(milliseconds).toISOSt
 const transcriptGraderPolicy = (
   revision: string,
 ): Effect.Effect<StudyTranscriptGraderPolicyRevision, StudyV2CommandRejected> =>
-  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V1 || revision === STUDY_TRANSCRIPT_GRADER_POLICY_V2
-    ? Effect.succeed(revision)
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V1 ||
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V2 ||
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V3
+    ? Effect.succeed(revision as StudyTranscriptGraderPolicyRevision)
     : Effect.fail(rejected("submission-kind-mismatch"));
 
 const sha256Hex = (bytes: Uint8Array) =>

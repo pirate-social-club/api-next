@@ -12,17 +12,34 @@ import {
 
 /**
  * Real FFmpeg, real media. Skipped where the pinned FFmpeg 6.1.1 is absent, so
- * a machine without it reports a skip rather than a pass.
+ * a machine without it reports a skip rather than a pass. When
+ * `SONG_VIDEO_FFMPEG_REQUIRED=1` the absence is a module-load failure instead:
+ * CI must never count a skipped suite as evidence that the engine ran.
  */
+const ffmpegRequired = process.env.SONG_VIDEO_FFMPEG_REQUIRED === "1";
 const ffmpegAvailable = Bun.which("ffmpeg") !== null;
+const ffprobeAvailable = Bun.which("ffprobe") !== null;
 const version = ffmpegAvailable
   ? Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
+const ffprobeVersion = ffprobeAvailable
+  ? Bun.spawnSync(["ffprobe", "-version"], { stdout: "pipe", stderr: "ignore" })
   : null;
 const pinned =
   version !== null &&
   version.exitCode === 0 &&
-  new TextDecoder().decode(version.stdout).startsWith("ffmpeg version 6.1.1");
+  ffprobeVersion !== null &&
+  ffprobeVersion.exitCode === 0 &&
+  new TextDecoder().decode(version.stdout).startsWith("ffmpeg version 6.1.1") &&
+  new TextDecoder().decode(ffprobeVersion.stdout).startsWith("ffprobe version 6.1.1");
+if (ffmpegRequired && !pinned) {
+  throw new Error("SONG_VIDEO_FFMPEG_REQUIRED=1 requires pinned FFmpeg and ffprobe 6.1.1 on PATH");
+}
+const sentinelPath =
+  process.env.SONG_VIDEO_FFMPEG_TEST_SENTINEL ?? "/tmp/api-next-song-video-ffmpeg-suite-complete";
+const sentinelContents = "api-next-song-video-ffmpeg-suite-complete\n";
 const suite = pinned ? describe : describe.skip;
+let completedTestCount = 0;
 
 const SECOND = 48_000;
 
@@ -117,6 +134,7 @@ suite("local song-video engine", () => {
 
   afterAll(async () => {
     if (directory) await rm(directory, { recursive: true, force: true });
+    if (completedTestCount === 7) await Bun.write(sentinelPath, sentinelContents);
   });
 
   test("measures the decoded length, which a frame-sum estimate overstates", async () => {
@@ -151,6 +169,7 @@ suite("local song-video engine", () => {
       (Number(new TextDecoder().decode(frames.stdout).trim()) * 1152 * SECOND) / 44_100,
     );
     expect(frameSum).toBeGreaterThan(20 * SECOND);
+    completedTestCount += 1;
   }, 60_000);
 
   test("refuses to measure bytes that are not the expected song", async () => {
@@ -162,6 +181,7 @@ suite("local song-video engine", () => {
         audioAssetRef: song.reference,
       }),
     ).toEqual({ ok: false, permanent: true, failureCode: "source_digest_mismatch" });
+    completedTestCount += 1;
   });
 
   test("renders an interval that is not a whole number of video frames, exactly", async () => {
@@ -232,6 +252,7 @@ suite("local song-video engine", () => {
         clipDurationSamples: duration,
       }),
     ).toBeNull();
+    completedTestCount += 1;
   }, 180_000);
 
   test("refuses a recording shorter than the interval instead of padding it", async () => {
@@ -242,6 +263,7 @@ suite("local song-video engine", () => {
       clipDurationSamples: 15 * SECOND,
     });
     expect(result).toEqual({ ok: false, reason: "source_video_too_short" });
+    completedTestCount += 1;
   }, 120_000);
 
   test("refuses a plan frozen against a length this decode does not reproduce", async () => {
@@ -252,6 +274,7 @@ suite("local song-video engine", () => {
       clipDurationSamples: 5 * SECOND,
     });
     expect(result).toEqual({ ok: false, reason: "canonical_duration_mismatch" });
+    completedTestCount += 1;
   }, 120_000);
 
   test("refuses an interval past the canonical end before running anything", async () => {
@@ -262,6 +285,7 @@ suite("local song-video engine", () => {
       clipDurationSamples: 5 * SECOND,
     });
     expect(result).toEqual({ ok: false, reason: "invalid_interval" });
+    completedTestCount += 1;
   });
 
   test("leaves no workspace behind", async () => {
@@ -273,5 +297,6 @@ suite("local song-video engine", () => {
       }),
     );
     expect(leftovers).toEqual([]);
+    completedTestCount += 1;
   });
 });
