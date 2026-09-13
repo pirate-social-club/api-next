@@ -20,7 +20,7 @@ import {
   type SubjectKey,
 } from "@pirate/domain/verification";
 import { Data, Effect, type Layer, Option, Schema } from "effect";
-import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-repository.ts";
+import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
