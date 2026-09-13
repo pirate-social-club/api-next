@@ -11,20 +11,20 @@ import {
 
 export const HNS_ROOT_HEALTH_RENEWAL_JOB = "hns-root-health-renewal.schedule";
 export const HNS_ROOT_HEALTH_RENEWAL_LANE = "hns-root-health-renewal";
-export const HNS_ROOT_HEALTH_RENEWAL_SCHEDULE = "*/30 * * * *";
-export const HNS_ROOT_HEALTH_RENEWAL_TIMEOUT = "15 seconds";
+const HNS_ROOT_HEALTH_RENEWAL_SCHEDULE = "*/30 * * * *";
+const HNS_ROOT_HEALTH_RENEWAL_TIMEOUT = "15 seconds";
 export const HNS_ROOT_HEALTH_RENEW_WHEN_REMAINING_SECONDS = 3 * 24 * 60 * 60;
 export const HNS_ROOT_HEALTH_HEARTBEAT_FRESHNESS_SECONDS = 2 * 60 * 60;
 export const HNS_ROOT_HEALTH_RENEWAL_BATCH_LIMIT = 25;
 
-export const HNS_ROOT_HEALTH_RENEWAL_READS = [
+const HNS_ROOT_HEALTH_RENEWAL_READS = [
   "postgres:hns_root_import_activation_operations",
   "postgres:hns_root_import_sessions",
   "postgres:hns_dns_zone_activation_current",
   "postgres:hns_dns_zone_health_observations",
 ] as const satisfies readonly TableKey[];
 
-export const HNS_ROOT_HEALTH_RENEWAL_WRITES = [
+const HNS_ROOT_HEALTH_RENEWAL_WRITES = [
   "postgres:hns_root_health_renewal_jobs",
   "postgres:hns_root_health_renewal_scheduler_heartbeat",
 ] as const satisfies readonly TableKey[];

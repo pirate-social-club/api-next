@@ -224,6 +224,20 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-public-post-slug-suite-complete",
     contents: "api-next-control-plane-postgres-public-post-slug-suite-complete\n",
   },
+  {
+    name: "postgres song-video composed flow",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_SONG_VIDEO_COMPOSED_FLOW_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete",
+    contents: "api-next-control-plane-postgres-song-video-composed-flow-suite-complete\n",
+  },
+  {
+    name: "postgres song-video render host",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_SONG_VIDEO_RENDER_HOST_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-song-video-render-host-suite-complete",
+    contents: "api-next-control-plane-postgres-song-video-render-host-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(
