@@ -20,7 +20,11 @@ import { Effect } from "effect";
 import { Client } from "pg";
 
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
-import { enforceCreatorNationalityPolicy } from "./community-creation-repository.ts";
+import {
+  advanceCommunityCreationVerificationInTransaction,
+  enforceCreatorNationalityPolicy,
+} from "./community-creation-repository.ts";
+import { makeControlPlaneCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
 import { loadCuratedNationalityEvaluation } from "./gates-v2-community.ts";
 import { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -475,6 +479,67 @@ async function seedPalmEvidence(admin: Client, suffix: string, communityId: stri
   }
 }
 
+const JOIN_NATIONALITY_RESULT_HASH = "b".repeat(64);
+
+async function seedCompletedJoinNationalitySession(
+  admin: Client,
+  input: Readonly<{
+    readonly sessionId: string;
+    readonly actorId: string;
+    readonly ceremonyIntentId: string;
+    readonly requirement: Readonly<{
+      readonly claim_id: "nationality.allowed";
+      readonly allowed_countries: readonly string[];
+    }>;
+  }>,
+): Promise<void> {
+  await admin.query("BEGIN");
+  try {
+    await admin.query({
+      text: `INSERT INTO proof_sessions (
+               proof_session_id, actor_id, intent_id, request_hash, provider_id,
+               provider_configuration_kind, provider_configuration_ref,
+               provider_configuration_version, method, issuer, scope_kind,
+               issuer_rp_scope, issuer_rp_action_scope, request_mode,
+               requested_requirements, requested_claim_ids, subject_binding_intent,
+               protocol_version, environment, status, started_at, expires_at
+             ) VALUES ($1, $2, $3, repeat('a', 64), 'zkpassport', 'dynamic', 'test:zkpassport',
+                       '1', 'document', 'zkpassport', 'issuer_rp_scope', 'test', NULL, 'dynamic',
+                       $4::jsonb, '["nationality.allowed"]'::jsonb, 'establish', 'zkpassport-v2',
+                       'test', 'pending', clock_timestamp() - interval '10 minutes',
+                       clock_timestamp() + interval '1 hour')`,
+      values: [
+        input.sessionId,
+        input.actorId,
+        input.ceremonyIntentId,
+        JSON.stringify([input.requirement]),
+      ],
+    });
+    await admin.query({
+      text: `WITH terminal(value) AS (SELECT clock_timestamp())
+             UPDATE proof_sessions
+                SET status = 'completed', completed_at = terminal.value,
+                    completion_idempotency_key = $2, completion_result_hash = $3,
+                    terminal_at = terminal.value
+               FROM terminal WHERE proof_session_id = $1`,
+      values: [input.sessionId, `complete-${input.sessionId}`, JOIN_NATIONALITY_RESULT_HASH],
+    });
+    await admin.query({
+      text: `INSERT INTO proof_session_completion_events (
+               completion_event_id, proof_session_id, actor_id, idempotency_key,
+               terminal_status, result_hash, terminal_at
+             ) SELECT $2, proof_session_id, actor_id, completion_idempotency_key,
+                      status, completion_result_hash, terminal_at
+                 FROM proof_sessions WHERE proof_session_id = $1`,
+      values: [input.sessionId, `completion-${input.sessionId}`],
+    });
+    await admin.query("COMMIT");
+  } catch (error) {
+    await admin.query("ROLLBACK");
+    throw error;
+  }
+}
+
 suite("Gates v2 nationality provider alternatives and evidence loader", () => {
   test("widened provider key stores both alternatives and rejects a duplicate provider row", async () => {
     await withSchema(async (_connection, admin) => {
@@ -795,8 +860,136 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("issues, fences, completes, and joins through the joiner nationality ceremony", async () => {
+    await withSchema(async (connection, admin) => {
+      const policy = nationalityPolicy(["US"]);
+      await seedHumanCommunity(admin, "community-join-ceremony");
+      await seedNationalityPolicy(admin, "community-join-ceremony", policy);
+      await seedPalmEvidence(admin, "join-ceremony", "community-join-ceremony");
+
+      const first = await runStore(connection, (store) =>
+        store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
+      );
+      expect(first).toMatchObject({
+        status: "verification_required",
+        missing_capabilities: ["nationality"],
+        suggested_verification_provider: "self.pass",
+        next_action: { kind: "start_verification", provider_id: "self.pass" },
+      });
+      expect(first?.membership_gate_summaries.map((summary) => summary.gate_type)).toEqual([
+        "human_verification",
+        "nationality",
+      ]);
+      const ceremonyId =
+        first?.next_action.kind === "start_verification" ? first.next_action.intent_id : null;
+      if (ceremonyId === null) throw new Error("expected a joiner nationality ceremony");
+      expect(ceremonyId).toStartWith("nationality-community_join_");
+
+      const resolver = makeControlPlaneCommunityJoinIntentResolver(
+        makeDirectPostgresControlPlaneLayer(connection),
+        "test",
+      );
+      await expect(
+        Effect.runPromise(
+          resolver.resolve({
+            actor_id: "user-a",
+            intent_id: ceremonyId,
+            provider_id: "self.pass",
+          }),
+        ),
+      ).resolves.toMatchObject({
+        method: "document",
+        protocol_version: "self-pass-v1",
+        requested_claim_ids: ["nationality.allowed"],
+        environment: "test",
+      });
+
+      await expect(
+        Effect.runPromise(
+          resolver.resolve({
+            actor_id: "user-a",
+            intent_id: ceremonyId,
+            provider_id: "zkpassport",
+          }),
+        ),
+      ).resolves.toMatchObject({ protocol_version: "zkpassport-v2" });
+
+      const state = await admin.query({
+        text: `SELECT status, generation::int AS generation, current_provider_id,
+                      current_ceremony_intent_id
+                 FROM nationality_requirement_states
+                WHERE action_kind = 'community_join'`,
+      });
+      expect(state.rows).toMatchObject([
+        { status: "pending", generation: 2, current_provider_id: "zkpassport" },
+      ]);
+      const currentCeremonyId = state.rows[0]?.current_ceremony_intent_id;
+      if (typeof currentCeremonyId !== "string") throw new Error("expected a current ceremony");
+
+      await expect(
+        Effect.runPromise(
+          resolver.resolve({
+            actor_id: "user-a",
+            intent_id: ceremonyId,
+            provider_id: "zkpassport",
+          }),
+        ),
+      ).resolves.toBeNull();
+
+      await seedCompletedJoinNationalitySession(admin, {
+        sessionId: "session-join-nationality",
+        actorId: "user-a",
+        ceremonyIntentId: currentCeremonyId,
+        requirement: policy.requirement,
+      });
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.withTransaction((transaction) =>
+              advanceCommunityCreationVerificationInTransaction(transaction, {
+                actor_id: "user-a",
+                proof_session_id: "session-join-nationality",
+                result_hash: JOIN_NATIONALITY_RESULT_HASH,
+              }),
+            );
+          }),
+        ).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+      );
+      const satisfied = await admin.query({
+        text: `SELECT status FROM nationality_requirement_states
+                WHERE action_kind = 'community_join'`,
+      });
+      expect(satisfied.rows).toEqual([{ status: "satisfied" }]);
+
+      await insertCompletedNationalityEvidence(admin, {
+        suffix: "join-ceremony",
+        provider: "zkpassport",
+        requirement: policy.requirement,
+      });
+      const joined = await runStore(connection, (store) =>
+        store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
+      );
+      expect(joined).toMatchObject({
+        status: "joinable",
+        joinable_now: true,
+        next_action: { kind: "join" },
+      });
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-join-ceremony",
+            actor: { userId: "user-a", kind: "user" },
+            body: { persona: { kind: "create_new" } },
+          }),
+        ),
+      ).resolves.toMatchObject({ community: "community-join-ceremony", status: "joined" });
+    });
+    completedTestCount += 1;
+  }, 90_000);
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 10) {
+    if (connectionString !== undefined && completedTestCount === 11) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

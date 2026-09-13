@@ -226,7 +226,13 @@ function transactionWith(
   return {
     execute: <ResultRow>(statement: ControlPlaneStatement) => {
       statements.push(statement);
-      const configured = responses[statement.label];
+      const configured =
+        responses[statement.label] ??
+        // The join nationality router runs first and no-ops on an empty
+        // session lookup; these suites exercise the creation path only.
+        (statement.label === "community.join.nationality.lock-session"
+          ? { rows: [], rowCount: 0 }
+          : undefined);
       if (configured === undefined) throw new Error(`unexpected statement: ${statement.label}`);
       const sequence = Array.isArray(configured) ? configured : [configured];
       const position = positions.get(statement.label) ?? 0;

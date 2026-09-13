@@ -54,6 +54,7 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { advanceCommunityJoinNationalityVerificationInTransaction } from "./community-join-nationality-completion.ts";
 import { reserveCommunityOwner } from "./community-owner-reservation.ts";
 import {
   GatesV2CommunityDataInvalid,
@@ -1828,6 +1829,11 @@ export function advanceCommunityCreationVerificationInTransaction(
     ) {
       return yield* Effect.fail(verificationStorageFailure());
     }
+
+    // Generic sessions for join nationality child ceremonies route here too:
+    // the join advance satisfies its own requirement state and every other
+    // path treats the completion as not applicable.
+    yield* advanceCommunityJoinNationalityVerificationInTransaction(transaction, input);
 
     const sessionResult = yield* transaction.execute<Row>({
       label: "community.creation.verification.lock-session",
