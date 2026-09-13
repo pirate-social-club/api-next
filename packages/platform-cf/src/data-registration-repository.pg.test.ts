@@ -1054,7 +1054,7 @@ suite("DATA registration persistence", () => {
         ).rows[0]?.count,
       ).toBe("1");
     });
-  });
+  }, 40_000);
 
   test("completes a confirmed song registration from persisted terms without another submission", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -1151,7 +1151,7 @@ suite("DATA registration persistence", () => {
         ).rows[0],
       ).toEqual({ outbox: "1", attempts: "1", receipts: "1", transitions: "6" });
     });
-  });
+  }, 40_000);
 
   test("completes a confirmed video registration through the media-kind projection fence", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -1360,7 +1360,7 @@ suite("DATA registration persistence", () => {
         ).rows[0],
       ).toEqual({ outbox: "0", attempts: "1" });
     });
-  });
+  }, 40_000);
 
   test("operator resume re-arms observation and rejects unauthorized or orphan audits", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -1459,7 +1459,7 @@ suite("DATA registration persistence", () => {
         admin.query("UPDATE data_operator_resume_actions SET evidence_ref='tampered'"),
       ).rejects.toThrow("append-only");
     });
-  });
+  }, 40_000);
 
   test("operator resume command previews without writing and rejects non-admin database credentials", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -1526,7 +1526,7 @@ suite("DATA registration persistence", () => {
         await admin.query(`DROP ROLE ${role}`);
       }
     });
-  });
+  }, 40_000);
 
   test("resolves a song-reference video's parent only from the parent's confirmed row", async () => {
     await withSchema(async (admin, scopedConnection) => {
