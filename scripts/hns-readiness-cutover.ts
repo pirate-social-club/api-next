@@ -215,74 +215,121 @@ export async function runHnsReadinessCutover(input: {
   if (identity === null) {
     throw refused("service_identity", "service_never_started");
   }
-  if (identity.attempt_id !== input.bundle.attempt_id) {
-    throw refused("service_identity", "stale_attempt_result", {
-      expected_attempt_id: input.bundle.attempt_id,
-      actual_attempt_id: identity.attempt_id.slice(0, 64),
-    });
-  }
-  // The probe records its own definitive failure with this attempt's
-  // identifier; report that name immediately instead of waiting out the poll
-  // or falling through to the generic artifact check.
-  const identityRefusal = probeOutcomeRefusal(identity.probe_outcome, identity.probe_reason);
-  if (identityRefusal !== null) {
-    throw refused("service_identity", identityRefusal, {
-      probe_outcome: identity.probe_outcome.slice(0, 64),
-      probe_reason: identity.probe_reason === null ? null : identity.probe_reason.slice(0, 64),
-    });
-  }
-  if (
-    identity.bundle_sha256 !== input.bundle.bundle_sha256 ||
-    identity.measured_bundle_sha256 !== input.bundle.bundle_sha256 ||
-    identity.expected_bundle_sha256 !== input.bundle.bundle_sha256 ||
-    identity.service_version !== input.bundle.service_version ||
-    identity.executor_id !== input.bundle.executor_id ||
-    identity.probe_job_id === null ||
-    identity.lease_fence === null ||
-    identity.probe_completed_at === null ||
-    !identity.probe_fresh
-  ) {
-    throw refused("service_identity", "wrong_running_artifact", {
-      expected_bundle_sha256: input.bundle.bundle_sha256,
-      actual_bundle_sha256: identity.bundle_sha256.slice(0, 64),
-      measured_bundle_sha256: identity.measured_bundle_sha256.slice(0, 64),
-      expected_service_version: input.bundle.service_version,
-      actual_service_version: identity.service_version.slice(0, 64),
-      expected_executor_id: input.bundle.executor_id,
-      actual_executor_id: identity.executor_id.slice(0, 64),
-    });
+  const identityDecision = hnsRunningIdentityRefusal(identity, input.bundle);
+  if (identityDecision !== null) {
+    throw refused("service_identity", identityDecision.reason, identityDecision.detail);
   }
   steps.push("service_identity_verified");
 
   const progress = await input.ports.verifyExecutorProgress();
-  if (progress === null) {
-    throw refused("executor_progress", "executor_progress_missing", { probe_outcome: "absent" });
-  }
-  const progressRefusal = probeOutcomeRefusal(progress.probe_outcome, progress.probe_reason);
-  if (progressRefusal !== null) {
-    throw refused("executor_progress", progressRefusal, {
-      probe_outcome: progress.probe_outcome.slice(0, 64),
-      probe_reason: progress.probe_reason === null ? null : progress.probe_reason.slice(0, 64),
-    });
-  }
-  if (
-    !progress.probe_fresh ||
-    (progress.probe_outcome !== "ready" && progress.probe_outcome !== "replayed")
-  ) {
-    throw refused("executor_progress", "executor_progress_missing", {
-      probe_outcome: progress.probe_outcome.slice(0, 64),
-    });
+  const progressDecision = hnsExecutorProgressRefusal(progress);
+  if (progressDecision !== null) {
+    throw refused("executor_progress", progressDecision.reason, progressDecision.detail);
   }
   steps.push("executor_progress_verified");
 
   return steps;
 }
 
+/**
+ * The named decision for a polled running identity against the staged bundle.
+ * A row that belongs to a previous attempt is `stale_attempt_result`; a probe
+ * that recorded its own failure is reported by name; any other divergence is
+ * `wrong_running_artifact`. Absence is the caller's own `service_never_started`
+ * case and is not folded here.
+ */
+export function hnsRunningIdentityRefusal(
+  identity: HnsRunningIdentity,
+  bundle: HnsReadinessCutoverBundle,
+): Readonly<{
+  readonly reason: string;
+  readonly detail: Readonly<Record<string, unknown>>;
+}> | null {
+  if (identity.attempt_id !== bundle.attempt_id) {
+    return {
+      reason: "stale_attempt_result",
+      detail: {
+        expected_attempt_id: bundle.attempt_id,
+        actual_attempt_id: identity.attempt_id.slice(0, 64),
+      },
+    };
+  }
+  const identityRefusal = probeOutcomeRefusal(identity.probe_outcome, identity.probe_reason);
+  if (identityRefusal !== null) {
+    return {
+      reason: identityRefusal,
+      detail: {
+        probe_outcome: identity.probe_outcome.slice(0, 64),
+        probe_reason: identity.probe_reason === null ? null : identity.probe_reason.slice(0, 64),
+      },
+    };
+  }
+  if (
+    identity.bundle_sha256 !== bundle.bundle_sha256 ||
+    identity.measured_bundle_sha256 !== bundle.bundle_sha256 ||
+    identity.expected_bundle_sha256 !== bundle.bundle_sha256 ||
+    identity.service_version !== bundle.service_version ||
+    identity.executor_id !== bundle.executor_id ||
+    identity.probe_job_id === null ||
+    identity.lease_fence === null ||
+    identity.probe_completed_at === null ||
+    !identity.probe_fresh
+  ) {
+    return {
+      reason: "wrong_running_artifact",
+      detail: {
+        expected_bundle_sha256: bundle.bundle_sha256,
+        actual_bundle_sha256: identity.bundle_sha256.slice(0, 64),
+        measured_bundle_sha256: identity.measured_bundle_sha256.slice(0, 64),
+        expected_service_version: bundle.service_version,
+        actual_service_version: identity.service_version.slice(0, 64),
+        expected_executor_id: bundle.executor_id,
+        actual_executor_id: identity.executor_id.slice(0, 64),
+      },
+    };
+  }
+  return null;
+}
+
+/**
+ * The named decision for the separately read executor progress. Absence and a
+ * non-fresh or non-terminal outcome are both `executor_progress_missing`; a
+ * recorded failure is reported by its own name.
+ */
+export function hnsExecutorProgressRefusal(progress: HnsExecutorProgress | null): Readonly<{
+  readonly reason: string;
+  readonly detail: Readonly<Record<string, unknown>>;
+}> | null {
+  if (progress === null) {
+    return { reason: "executor_progress_missing", detail: { probe_outcome: "absent" } };
+  }
+  const progressRefusal = probeOutcomeRefusal(progress.probe_outcome, progress.probe_reason);
+  if (progressRefusal !== null) {
+    return {
+      reason: progressRefusal,
+      detail: {
+        probe_outcome: progress.probe_outcome.slice(0, 64),
+        probe_reason: progress.probe_reason === null ? null : progress.probe_reason.slice(0, 64),
+      },
+    };
+  }
+  if (
+    !progress.probe_fresh ||
+    (progress.probe_outcome !== "ready" && progress.probe_outcome !== "replayed")
+  ) {
+    return {
+      reason: "executor_progress_missing",
+      detail: { probe_outcome: progress.probe_outcome.slice(0, 64) },
+    };
+  }
+  return null;
+}
+
 export function cutoverRefusalJson(refusal: HnsReadinessCutoverRefusal): string {
   return JSON.stringify(refusal);
 }
 
-async function sha256File(path: string): Promise<string> {
+export async function sha256File(path: string): Promise<string> {
   return createHash("sha256")
     .update(await readFile(path))
     .digest("hex");
@@ -323,6 +370,61 @@ async function runCommand(command: readonly string[], step: "quiesce" | "start")
     // bounded refusal.
     throw refused(step, "command_failed", { command: command[0] });
   }
+}
+
+/** Stages the reviewed bundle beside its deployment manifest. The in-place
+ * cutover and the staging post-migration entry point share this step so the
+ * service reads one manifest shape. */
+export async function stageHnsReadinessCutoverBundle(input: {
+  readonly bundle: HnsReadinessCutoverBundle;
+  readonly stage_directory: string;
+}): Promise<void> {
+  await mkdir(input.stage_directory, { recursive: true });
+  const target = join(input.stage_directory, "pirate-hns-authority-provisioner.mjs");
+  await Bun.write(target, Bun.file(input.bundle.bundle_path));
+  await writeFile(
+    join(input.stage_directory, "deployment-manifest.json"),
+    `${JSON.stringify(
+      {
+        bundle_sha256: input.bundle.bundle_sha256,
+        service_version: input.bundle.service_version,
+        job_envelope_version: input.bundle.job_envelope_version,
+        executor_id: input.bundle.executor_id,
+        attempt_id: input.bundle.attempt_id,
+        staged_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+/** Seeds or refreshes the synthetic controlled probe through the reviewed
+ * service-side function. Shared by both cutover sequences. */
+export async function seedHnsLifecycleCutoverProbe(): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
+  });
+}
+
+/** Reads the recorded compatible service/envelope pair as the named outcome.
+ * An unavailable read reports `incompatible` rather than a refusal reason, so
+ * the sequence decides. */
+export async function readHnsLifecycleSchemaCompatibility(input: {
+  readonly service_version: string;
+  readonly job_envelope_version: string;
+}): Promise<string> {
+  return withClient(async (client) => {
+    try {
+      const result = await client.query<{ compatibility: string }>(
+        "SELECT hns_lifecycle_schema_compatibility_v1($1,$2) AS compatibility",
+        [input.service_version, input.job_envelope_version],
+      );
+      return result.rows[0]?.compatibility ?? "unavailable";
+    } catch {
+      return "incompatible";
+    }
+  });
 }
 
 async function applyMigrationsBeforeRemoval(): Promise<void> {
@@ -376,26 +478,7 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
     ports: {
       readSchemaState: () =>
         withClient((client) => readSchemaCutoverState((text) => client.query(text))),
-      stageBundle: async ({ bundle: staged, stage_directory }) => {
-        await mkdir(stage_directory, { recursive: true });
-        const target = join(stage_directory, "pirate-hns-authority-provisioner.mjs");
-        await Bun.write(target, Bun.file(staged.bundle_path));
-        await writeFile(
-          join(stage_directory, "deployment-manifest.json"),
-          `${JSON.stringify(
-            {
-              bundle_sha256: staged.bundle_sha256,
-              service_version: staged.service_version,
-              job_envelope_version: staged.job_envelope_version,
-              executor_id: staged.executor_id,
-              attempt_id: staged.attempt_id,
-              staged_at: new Date().toISOString(),
-            },
-            null,
-            2,
-          )}\n`,
-        );
-      },
+      stageBundle: stageHnsReadinessCutoverBundle,
       quiesceExecutor: () => runCommand(quiesceCommand.split(" "), "quiesce"),
       accountLiveLegacyLeases: () =>
         withClient(async (client) => {
@@ -410,22 +493,12 @@ export async function main(arguments_: readonly string[] = Bun.argv.slice(2)): P
         }),
       applyPreflight: applyMigrationsBeforeRemoval,
       applyRemoval: applyRemovalMigration,
-      seedExecutionProbe: () =>
-        withClient(async (client) => {
-          await client.query("SELECT seed_hns_lifecycle_readiness_cutover_probe_v1()");
-        }),
+      seedExecutionProbe: seedHnsLifecycleCutoverProbe,
       startService: () => runCommand(startCommand.split(" "), "start"),
       readSchemaCompatibility: () =>
-        withClient(async (client) => {
-          try {
-            const result = await client.query<{ compatibility: string }>(
-              "SELECT hns_lifecycle_schema_compatibility_v1($1,$2) AS compatibility",
-              [bundle.service_version, bundle.job_envelope_version],
-            );
-            return result.rows[0]?.compatibility ?? "unavailable";
-          } catch {
-            return "incompatible";
-          }
+        readHnsLifecycleSchemaCompatibility({
+          service_version: bundle.service_version,
+          job_envelope_version: bundle.job_envelope_version,
         }),
       verifyRunningIdentity: () =>
         pollCutoverIdentity({
@@ -473,7 +546,7 @@ export type CutoverIdentityPoll = Readonly<{
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }>;
 
-async function readCutoverIdentityRow(): Promise<CutoverIdentityRow | undefined> {
+export async function readCutoverIdentityRow(): Promise<CutoverIdentityRow | undefined> {
   return withClient(async (client) => {
     const result = await client.query<CutoverIdentityRow>(
       `SELECT attempt_id, bundle_sha256, measured_bundle_sha256, expected_bundle_sha256,
