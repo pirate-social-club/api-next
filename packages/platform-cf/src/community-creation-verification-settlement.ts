@@ -32,7 +32,7 @@ import {
   TERMINAL_STATUSES,
   VERY_WEB_EVIDENCE_KIND,
   validId,
-} from "./community-creation-repository.ts";
+} from "./community-creation-internals.ts";
 
 /**
  * Historical community creation settlement.
