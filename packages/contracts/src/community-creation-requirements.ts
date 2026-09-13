@@ -112,12 +112,22 @@ export type CreationHumanIdentityRequirementProgressV2 = Schema.Schema.Type<
   typeof CreationHumanIdentityRequirementProgressV2
 >;
 
+export const CreationNationalityRequirementProgressV2 = Schema.Struct({
+  ...creationRequirementProgressFields,
+  requirement: Schema.Literal("nationality"),
+}).check(Schema.makeFilter((progress) => validProgress(progress)));
+export type CreationNationalityRequirementProgressV2 = Schema.Schema.Type<
+  typeof CreationNationalityRequirementProgressV2
+>;
+
 /**
  * Post-amendment optional-route intents carry no creator requirement, so the
- * map is empty; grandfathered intents keep their single human entry.
+ * map is empty; grandfathered intents keep their single human entry. A
+ * nationality-gated creation adds the creator's nationality entry.
  */
 export const CommunityCreationRequirementsV2 = Schema.Struct({
   human_identity: Schema.optional(CreationHumanIdentityRequirementProgressV2),
+  nationality: Schema.optional(CreationNationalityRequirementProgressV2),
 });
 export type CommunityCreationRequirementsV2 = Schema.Schema.Type<
   typeof CommunityCreationRequirementsV2
