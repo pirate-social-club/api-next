@@ -130,6 +130,9 @@ export const resolveOrIssueNationalityCeremony = Effect.fn("resolveOrIssueNation
         return yield* Effect.fail(new NationalityCeremonyDataInvalid());
       }
       if (attemptRow !== undefined && generation !== null) {
+        if (!validId(attemptRow.ceremony_intent_id) || typeof attemptRow.provider_id !== "string") {
+          return yield* Effect.fail(new NationalityCeremonyDataInvalid());
+        }
         if (attemptRow.provider_id === input.selectedProviderId) {
           return {
             kind: "wait",
