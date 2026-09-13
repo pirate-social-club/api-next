@@ -791,7 +791,7 @@ export function makeMediaProcessingStore(
         expectedCreationRevision: authority.creationRevision,
         failure: {
           code: reason,
-          retryable: reason !== "invalid_media",
+          retryable: reason !== "invalid_media" && reason !== "workflow_terminal_unconverged",
           retryCount: Math.min(3, authority.retryCount) as 0 | 1 | 2 | 3,
           lastSafePhase: authority.phase ?? "analysis",
           evidenceRef: `media-processing-failure-${authority.operationId}-${reason}`,
@@ -863,7 +863,11 @@ export function makeMediaProcessingStore(
       const commit = await commitPublication(authority);
       return commit === "stale" ? "stale" : "reconciled";
     }
-    return "unresolved";
+    // A terminal instance with no durable completion escalates through the
+    // existing failure commit as an explicit, non-retryable terminal record;
+    // the operator resolution is surfaced through the terminal alert tick.
+    const escalation = await commitProcessingFailure(authority, "workflow_terminal_unconverged");
+    return escalation === "stale" ? "stale" : "escalated";
   };
 
   const listWorkflowCandidates: MediaProcessingStore["listWorkflowCandidates"] = async () => {

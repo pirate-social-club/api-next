@@ -48,7 +48,7 @@ describe("media Workflow missing-instance sweep", () => {
     const observed: number[] = [];
     const dependencies = {
       store: {
-        reconcileTerminalWorkflow: async () => "unresolved" as const,
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [current],
         loadAuthority: async () => current,
         replaceMissingWorkflow: async (
@@ -71,7 +71,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 1,
       stale: 0,
@@ -88,7 +88,7 @@ describe("media Workflow missing-instance sweep", () => {
     let replacementWrites = 0;
     const result = await sweepMissingMediaWorkflows({
       store: {
-        reconcileTerminalWorkflow: async () => "unresolved" as const,
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [active, terminal],
         loadAuthority: async () => ({ ...active, workflowRevision: 2 }),
         replaceMissingWorkflow: async () => {
@@ -103,7 +103,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 0,
       stale: 1,
@@ -114,7 +114,7 @@ describe("media Workflow missing-instance sweep", () => {
 
     const present = await sweepMissingMediaWorkflows({
       store: {
-        reconcileTerminalWorkflow: async () => "unresolved" as const,
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [active],
         loadAuthority: async () => active,
         replaceMissingWorkflow: async () => {
@@ -129,7 +129,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 1,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 0,
       stale: 0,
@@ -144,7 +144,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [active],
           loadAuthority: async () => active,
           replaceMissingWorkflow: async () => "replay",
@@ -156,7 +156,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 0,
       stale: 1,
@@ -170,7 +170,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [
             candidate({ workflowRevision: 4, replacementSequence: 3 }),
           ],
@@ -187,7 +187,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 0,
       stale: 0,
@@ -210,7 +210,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [current],
           loadAuthority: async () => current,
           replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
@@ -231,7 +231,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 1,
       stale: 0,
@@ -253,7 +253,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [current],
           loadAuthority: async () => current,
           replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
@@ -270,7 +270,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 1,
       stale: 0,
@@ -288,7 +288,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [failing, healthy],
           loadAuthority: async () => healthy,
           replaceMissingWorkflow: async () => {
@@ -311,7 +311,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 1,
       stale: 0,
@@ -329,7 +329,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [active],
           loadAuthority: async () => active,
           replaceMissingWorkflow: async () => {
@@ -345,7 +345,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 1,
       reconciled: 0,
-      unresolved: 1,
+      escalated: 1,
       indeterminate: 0,
       replaced: 0,
       stale: 0,
@@ -379,7 +379,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 1,
       reconciled: 1,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 0,
       replaced: 0,
       stale: 0,
@@ -395,7 +395,7 @@ describe("media Workflow missing-instance sweep", () => {
     let replacementWrites = 0;
     const dependencies = {
       store: {
-        reconcileTerminalWorkflow: async () => "unresolved" as const,
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [current],
         loadAuthority: async () => current,
         replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
@@ -422,7 +422,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
-          reconcileTerminalWorkflow: async () => "unresolved" as const,
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [active],
           loadAuthority: async () => active,
           replaceMissingWorkflow: async () => {
@@ -437,7 +437,7 @@ describe("media Workflow missing-instance sweep", () => {
       present: 0,
       finished: 0,
       reconciled: 0,
-      unresolved: 0,
+      escalated: 0,
       indeterminate: 1,
       replaced: 0,
       stale: 0,

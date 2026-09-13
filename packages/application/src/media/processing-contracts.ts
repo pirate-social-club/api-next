@@ -388,7 +388,7 @@ export interface MediaProcessingStore {
   ) => Promise<AlignmentRecoveryRead>;
   readonly commitProcessingFailure: (
     authority: MediaProcessingAuthority,
-    reason: "invalid_media" | "probe_failed" | "transform_failed",
+    reason: "invalid_media" | "probe_failed" | "transform_failed" | "workflow_terminal_unconverged",
   ) => Promise<MediaProcessingCommit>;
   readonly commitProviderUnavailableReview: (
     authority: MediaProcessingAuthority,
@@ -399,7 +399,7 @@ export interface MediaProcessingStore {
   ) => Promise<MediaProcessingCommit>;
   readonly reconcileTerminalWorkflow: (
     authority: MediaProcessingAuthority,
-  ) => Promise<"reconciled" | "unresolved" | "stale">;
+  ) => Promise<"reconciled" | "escalated" | "stale">;
   readonly listWorkflowCandidates: () => Promise<readonly MediaProcessingAuthority[]>;
   readonly readModerationPolicy: (communityId: string) => Promise<TextModerationPolicySnapshotV2>;
 }

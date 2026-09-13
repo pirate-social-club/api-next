@@ -69,6 +69,14 @@ const DATA_RECONCILIATION_ALERT_SQL = `SELECT operation.registration_operation_i
  ORDER BY operation.updated_at,operation.registration_operation_id
  LIMIT 50`;
 
+const MEDIA_TERMINAL_UNCONVERGED_ALERT_SQL = `SELECT submission.operation_id,
+       submission.workflow_revision::text AS workflow_revision
+  FROM media_post_submissions submission
+ WHERE submission.status='processing_failed'
+   AND submission.failure_code='workflow_terminal_unconverged'
+ ORDER BY submission.updated_at,submission.operation_id
+ LIMIT 50`;
+
 const MEDIA_PROVIDER_FAILURE_ALERT_SQL = `SELECT submission.operation_id,
        submission.workflow_revision::text AS workflow_revision,
        attempt.attempt_id,
@@ -166,8 +174,20 @@ const dataReconciliationAlert = (row: ReconciliationRow) => ({
   outcome: "terminal" as const,
 });
 
-const mediaProviderFailureAlert = (row: ProviderFailureRow) => ({
-  key: "song-pipeline:media-provider-terminal-failure",
+const mediaTerminalUnconvergedAlert = (row: ReconciliationRow) => ({
+  key: "song-pipeline:media-workflow-terminal-unconverged",
+  severity: "high" as const,
+  body: "A media Workflow ended without durable completion and is recorded as workflow_terminal_unconverged; the submission is terminal and non-retryable. Resolution requires an operator-reviewed reprocess decision, not an automatic retry.",
+  entity: `media:${row.operation_id}:r${row.workflow_revision}`,
+  subsystem: "media" as const,
+  operation: "media-analysis" as const,
+  operation_id: row.operation_id,
+  workflow_revision: Number(row.workflow_revision),
+  failure_class: "workflow_terminal_unconverged",
+  outcome: "terminal" as const,
+});
+
+const mediaProviderFailureAlert = (row: ProviderFailureRow) => ({  key: "song-pipeline:media-provider-terminal-failure",
   severity: "high" as const,
   body: "A current media-provider attempt exhausted and requires observation.",
   entity: `media:${row.operation_id}:r${row.workflow_revision}:${row.attempt_id}`,
@@ -318,6 +338,23 @@ export function collectSongPipelineTerminalAlerts(
             continue;
           }
           yield* collector.emit(mediaProviderFailureAlert(row));
+          emitted += 1;
+        }
+
+        const unconverged = yield* safeRows(
+          db
+            .execute<ReconciliationRow>({
+              label: "song-pipeline.terminal.media-terminal-unconverged",
+              text: MEDIA_TERMINAL_UNCONVERGED_ALERT_SQL,
+              values: [],
+              readonly: true,
+            })
+            .pipe(Effect.map((result) => result.rows)),
+          "song-pipeline media terminal-unconverged alert query unavailable",
+        );
+        for (const row of unconverged) {
+          if (!validIdentity(row.operation_id) || !validRevision(row.workflow_revision)) continue;
+          yield* collector.emit(mediaTerminalUnconvergedAlert(row));
           emitted += 1;
         }
       }

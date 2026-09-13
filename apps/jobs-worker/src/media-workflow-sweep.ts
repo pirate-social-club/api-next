@@ -12,7 +12,7 @@ export type MediaWorkflowSweepResult = Readonly<{
   readonly present: number;
   readonly finished: number;
   readonly reconciled: number;
-  readonly unresolved: number;
+  readonly escalated: number;
   readonly indeterminate: number;
   readonly replaced: number;
   readonly stale: number;
@@ -49,7 +49,7 @@ export async function sweepMissingMediaWorkflows(
     present: 0,
     finished: 0,
     reconciled: 0,
-    unresolved: 0,
+    escalated: 0,
     indeterminate: 0,
     replaced: 0,
     stale: 0,
@@ -107,7 +107,7 @@ export async function sweepMissingMediaWorkflows(
       result.finished += 1;
       const disposition = await dependencies.store.reconcileTerminalWorkflow(authority);
       if (disposition === "reconciled") result.reconciled += 1;
-      else if (disposition === "unresolved") result.unresolved += 1;
+      else if (disposition === "escalated") result.escalated += 1;
       else result.stale += 1;
       dependencies.observe?.({
         event: "workflow_terminal",
