@@ -115,3 +115,55 @@ Still open outside this lane: the operator resolution surface for DATA
 reconciliation_required rows (no command or endpoint yet), the confirmed-video
 projection fence gap recorded above, and the broader song acceptance evidence
 on one song lineage for lyrics/alignment/karaoke, Study and DATA.
+
+Confirmed recovery completion — 2026-09-13. Review held the earlier completion
+claim too broad: confirmed DATA evidence escalated instead of completing and
+the escalation had no executable resolution. Both gaps are closed on this
+branch.
+
+Migration 0179 persists the terms a confirmed song attached with the receipt
+observation that carries its registration, makes the publication projection
+guard and the store's confirmation projection update follow the media kind,
+and adds the data_operator_resume_actions audit with its binding triggers.
+Terminal reconciliation now completes a confirmed song from its persisted terms
+and a confirmed video through the media-kind fence, through the existing
+confirmation fence. The attempt keeps its exact transaction identity, no
+signing or broadcasting occurs, and no replacement launch is emitted. A
+confirmed observation recorded before the terms were persisted still escalates;
+terms are never invented.
+
+reconciliation_required rows have an executable, authorized resolution.
+scripts/data-registration-operator-resume.ts requires database-operator
+authority, previews by default, and returns the existing attempt to observation
+under a fresh workflow revision with a pending replacement launch. The audit
+row, attempt state, revision and launch commit together behind the binding
+trigger; the audit is append-only; repeated requests replay their original
+result; changed contents conflict and stale revisions are refused. The runbook
+is docs/runbooks/data-registration-operator-resume.md.
+
+PostgreSQL receipts at 824cdab5 on disposable PostgreSQL 17.11:
+data-registration-repository.pg.test.ts ran 10 tests with 0 failures, 135
+expect calls and exit 0 in 62.64 s. It proves confirmed song completion from
+persisted terms with exactly one launch and one attempt and six append-only
+transitions, confirmed video completion through the media-kind projection
+fence, legacy confirmation escalation, operator resume concurrency (one
+resumed and one replay) with one audit and one launch, unauthorized transition
+and orphan audit rejection, stale revision, idempotency conflict, append-only
+enforcement, and the existing pin, attempt, receipt, replacement and parent
+fences. media-persistence.pg.test.ts ran 60 tests with 0 failures, 1001 expect
+calls and exit 0 in 179.79 s against the same projection guard. The integrated
+sequence through 0179 applies cleanly and the generated baseline passes
+check:baseline:fresh.
+
+Repository gates at the same head: bun run check exits 0, and bun run test
+covers the non-unit phases as well as the unit phase (test:unit 4,045 tests,
+0 failures; test:node 20 tests; test:workerd five pools). The workerd pool
+needed a missing alias for the orchestration classifier that this lane added;
+that alias is fixed. The CI sentinel shard pins were recomputed to shard 2 for
+both song-video suites and remain unverified until a hosted run. No
+publication, deployment, live migration, key rotation or paid provider call
+was performed.
+
+Still open outside this lane and not claimed here: hosted verification of the
+CI shard pins and the separate song acceptance evidence for
+lyrics/alignment/karaoke, Study and DATA on one lineage.

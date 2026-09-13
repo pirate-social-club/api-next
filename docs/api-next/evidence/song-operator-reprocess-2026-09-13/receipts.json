@@ -40,5 +40,29 @@
       "/tmp/opencode/final-migrations.log": "ad8b4897ded0927d2c3b6f53b88036fd0d83396f88eafcd10a33e211aa917bb1"
     },
     "authority": "Local implementation, database and gate work only. No publication, deployment, live migration, key rotation or paid provider call."
+  },
+  "confirmedRecovery": {
+    "codeHead": "824cdab5",
+    "implementationCommit": "9cfb0a4d",
+    "resolution": "Confirmed DATA evidence now completes registration. Migration 0179 persists a song's attached terms with its confirmed receipt observation, makes the publication projection guard and the store's confirmation projection update media-kind aware, and adds the data_operator_resume_actions audit. A legacy confirmed observation without terms still escalates, and the new operator resume command (database-admin authority, preview default, append-only audit, replayable) returns the exact attempt to observation under a fresh workflow revision and pending launch without another submission.",
+    "migrationAllocation": "0179 data_registration_confirmed_recovery, after the recheck held the prior allocation at 0176-0178 and the first free number at 0179. Manifest and baseline checks pass.",
+    "postgres": {
+      "dataRegistration": "10 tests, 0 failures, 135 expect calls, exit 0 in 62.64 s",
+      "mediaPersistence": "60 tests, 0 failures, 1001 expect calls, exit 0 in 179.79 s"
+    },
+    "gates": {
+      "check": "bun run check exit 0 at 824cdab5",
+      "test": "bun run test exit 0: test:unit 4,045 tests, 0 failures; test:node 20 tests; test:workerd 14/82, 22/74, 1/2, 7/10, 4/15 across its five pools",
+      "baseline": "bun run check:baseline:fresh exit 0"
+    },
+    "ciPins": "Both song-video sentinel uploads recomputed to shard 2; a hosted CI run remains the only verification and no publication occurred.",
+    "logSha256": {
+      "/tmp/opencode/v2-data-pg4.log": "7e9c41a358465ca13014fb3f428f01e0f9ea7632c533b9cd90467a29aa81053f",
+      "/tmp/opencode/v2-media-pg3.log": "2db9e8799b16faf8ed4c8e4dfbc8340bb880b12d3c956f8ba0c7955ed7be10c1",
+      "/tmp/opencode/v2-full-test2.log": "d6573101f214252c0c700f34f4cf0bd1c2b80985e14893f5715bc21803dfda69",
+      "/tmp/opencode/v2-check4.log": "e0c70f2812561a02e6e9d1ee2290105cf6b19bfa9cf39a7342a7758703f819f4",
+      "/tmp/opencode/v2-baseline-fresh3.log": "9252f63f3784254673d68bb9d4ac575e648945719fbd0d530d4a3b4f3d16ba8b"
+    },
+    "authority": "Local implementation, database and gate work only. No publication, deployment, live migration, key rotation or paid provider call. The CI shard pins remain unverified until a hosted run."
   }
 }
