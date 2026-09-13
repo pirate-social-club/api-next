@@ -26,6 +26,7 @@ import {
 } from "@pirate/contracts";
 import {
   COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
+  COMMUNITY_GATE_COMPILER_VERSION,
   type CommunityCreationIntentState,
   type CommunityCreationProviderBinding,
   type CreationRequirementProgress,
@@ -34,8 +35,10 @@ import {
   communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,
   compileCommunityGatePolicy,
+  compileCommunityGatePolicyV2,
   creationNextAction,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+  type NationalityPolicy,
   type SupportedCommunityGateCompilation,
   transitionCommunityCreationIntent,
   transitionCreationRequirement,
@@ -109,6 +112,12 @@ export type CommunityCreationRepositoryOptions = Readonly<{
   readonly next_route_authority_grant_id?: () => string;
   readonly next_subject_claim_id?: () => string;
   readonly next_ceremony_intent_id?: () => string;
+  /**
+   * Server-resolved nationality authoring (revision, explicit lifetime, both
+   * provider bindings). Absent means a nationality draft fails closed; no
+   * lifetime default may be invented here.
+   */
+  readonly nationality_authoring?: unknown;
 }>;
 
 type IntentBinding = Readonly<{
@@ -118,12 +127,20 @@ type IntentBinding = Readonly<{
   readonly configurationVersion: string;
 }>;
 
+type CompiledNationalityDraft = Readonly<{
+  readonly policy: NationalityPolicy;
+  readonly requirementHash: string;
+  readonly providerBindings: NationalityPolicy["provider_bindings"];
+  readonly compiledPlan: string;
+}>;
+
 type CompiledHumanDraft = Readonly<{
   readonly status: "verification_required" | "gate_unsupported";
   readonly canonicalPolicyHash: string;
   readonly verificationRequirementHash: string;
   readonly binding: IntentBinding;
   readonly humanProviderBindingHash: string;
+  readonly nationality?: CompiledNationalityDraft;
 }>;
 
 function failure(
@@ -180,7 +197,125 @@ function oneRow(rows: readonly Row[]): Row | null | undefined {
   return rows[0] ?? null;
 }
 
-function compileOptionalRouteDraft(policy: unknown): CompiledHumanDraft | null {
+/**
+ * The canonical v1 Palm compilation constants, used as the human half of a
+ * composed community's policy rows. Byte-identical to the v1 compiler output
+ * except for the unused canonical hash of the composed draft.
+ */
+function supportedHumanCompilation(): SupportedCommunityGateCompilation {
+  const providerBinding = {
+    provider_id: VERY_WEB_PROVIDER_ID,
+    provider_configuration: {
+      kind: "dynamic" as const,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
+    },
+    method: VERY_WEB_METHOD,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
+    scope: {
+      kind: "named" as const,
+      scope_semantics: "issuer_rp_scope" as const,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
+    },
+  };
+  return {
+    kind: "supported",
+    canonical_policy: CURATED_HUMAN_MEMBERSHIP_POLICY,
+    canonical_policy_hash: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_hash,
+    verification_requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+    provider_binding: providerBinding,
+    compiled_plan: {
+      compiler_version: COMMUNITY_GATE_COMPILER_VERSION,
+      evaluator: "curated-human-membership-v1",
+      provider_binding: providerBinding,
+    },
+  };
+}
+
+function policyCarriesNationalityRequirement(policy: unknown): boolean {
+  if (policy === null || typeof policy !== "object" || Array.isArray(policy)) return false;
+  const record = policy as Record<string, unknown>;
+  if (!Array.isArray(record.accessPaths)) return false;
+  return record.accessPaths.some(
+    (path) =>
+      path !== null &&
+      typeof path === "object" &&
+      !Array.isArray(path) &&
+      Array.isArray((path as Record<string, unknown>).requirements) &&
+      ((path as Record<string, unknown>).requirements as unknown[]).some(
+        (requirement) =>
+          requirement !== null &&
+          typeof requirement === "object" &&
+          !Array.isArray(requirement) &&
+          (requirement as Record<string, unknown>).requirement === "nationality-allowed",
+      ),
+  );
+}
+
+/**
+ * Compiles the wizard draft policy. A draft carrying a nationality
+ * requirement selects the composed v2 compiler, which needs the explicit
+ * server-resolved authoring input; without a valid lifetime or both provider
+ * bindings the draft fails closed as gate-unsupported. Human-only drafts
+ * keep the frozen v1 path byte-identical.
+ */
+export function compileOptionalRouteDraft(
+  policy: unknown,
+  nationalityAuthoring?: unknown,
+): CompiledHumanDraft | null {
+  if (policyCarriesNationalityRequirement(policy)) {
+    const composed = compileCommunityGatePolicyV2(policy, nationalityAuthoring);
+    if (composed.kind === "unsupported") {
+      return {
+        status: "gate_unsupported",
+        canonicalPolicyHash: composed.canonical_policy_hash,
+        verificationRequirementHash: composed.verification_requirement_hash,
+        binding: {
+          providerId: UNRESOLVED_PROVIDER_ID,
+          configurationKind: "dynamic",
+          configurationReference: UNRESOLVED_PROVIDER_CONFIGURATION,
+          configurationVersion: "1",
+        },
+        humanProviderBindingHash: "",
+      };
+    }
+    const humanBinding: CommunityCreationProviderBinding = {
+      requirement: "human_identity",
+      family: null,
+      provider_id: VERY_WEB_PROVIDER_ID,
+      provider_configuration: {
+        kind: "dynamic",
+        reference: VERY_WEB_CONFIGURATION_REFERENCE,
+        version: VERY_WEB_CONFIGURATION_VERSION,
+      },
+      protocol_version: VERY_WEB_PROTOCOL_VERSION,
+    };
+    let humanProviderBindingHash: string;
+    try {
+      humanProviderBindingHash = communityCreationProviderBindingHash(humanBinding);
+    } catch {
+      return null;
+    }
+    return {
+      status: "verification_required",
+      canonicalPolicyHash: composed.canonical_policy_hash,
+      verificationRequirementHash: composed.human_verification_requirement_hash,
+      binding: {
+        providerId: humanBinding.provider_id,
+        configurationKind: humanBinding.provider_configuration.kind,
+        configurationReference: humanBinding.provider_configuration.reference,
+        configurationVersion: humanBinding.provider_configuration.version,
+      },
+      humanProviderBindingHash,
+      nationality: {
+        policy: composed.canonical_policy.nationality,
+        requirementHash: composed.compiled_plan.nationality_requirement_hash,
+        providerBindings: composed.compiled_plan.nationality_provider_bindings,
+        compiledPlan: JSON.stringify(composed.compiled_plan),
+      },
+    };
+  }
   const compilation = compileCommunityGatePolicy(policy);
   const humanBinding: CommunityCreationProviderBinding = {
     requirement: "human_identity",
@@ -1766,7 +1901,7 @@ export function makeControlPlaneCommunityCreationRepository(
       const body = decodedBody.value;
       const intentId = nextIntentId();
       if (!validId(intentId)) return yield* Effect.fail(failure("create", "constraint"));
-      const compiled = compileOptionalRouteDraft(body.draft.policy);
+      const compiled = compileOptionalRouteDraft(body.draft.policy, options.nationality_authoring);
       if (compiled === null) return yield* Effect.fail(failure("create", "constraint"));
       const canonicalDraft = body.draft;
       const db = yield* ControlPlaneDb;
@@ -1910,7 +2045,7 @@ export function makeControlPlaneCommunityCreationRepository(
         return yield* Effect.fail(failure("update", "constraint"));
       }
       const body = decodedBody.value;
-      const compiled = compileOptionalRouteDraft(body.draft.policy);
+      const compiled = compileOptionalRouteDraft(body.draft.policy, options.nationality_authoring);
       if (compiled === null) return yield* Effect.fail(failure("update", "constraint"));
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
@@ -2119,6 +2254,7 @@ export function makeControlPlaneCommunityCreationRepository(
       readonly approvalExpiresAt: string | null;
       readonly requirementHash: string;
     }> | null,
+    nationality: CompiledNationalityDraft | null,
   ) =>
     Effect.gen(function* () {
       const activationClockResult = yield* transaction.execute<Row>({
@@ -2421,6 +2557,70 @@ export function makeControlPlaneCommunityCreationRepository(
         ],
         readonly: false,
       });
+      if (nationality !== null) {
+        yield* transaction.execute({
+          label: "community.creation.commit-v2.insert-nationality-policy",
+          text: `INSERT INTO policy_versions (
+                   policy_version_id, community_id, policy_key, revision,
+                   policy_hash, policy, compiled_plan, compiler_version,
+                   uniqueness_model, created_by_user_id, published_at,
+                   policy_purpose
+                 ) VALUES (
+                   'curated-nationality-v1', $1, 'curated-nationality', $2,
+                   $3, $4::jsonb, $5::jsonb, 'community-gate-compiler-v2',
+                   '{"kind":"none"}'::jsonb, $6, $7::timestamptz, 'access'
+                 )`,
+          values: [
+            communityId,
+            nationality.policy.policy_revision,
+            nationality.policy.policy_hash,
+            JSON.stringify(nationality.policy),
+            nationality.compiledPlan,
+            input.actor.userId,
+            activationNow,
+          ],
+          readonly: false,
+        });
+        for (const binding of nationality.providerBindings) {
+          yield* transaction.execute({
+            label: "community.creation.commit-v2.insert-nationality-binding",
+            text: `INSERT INTO community_policy_provider_bindings (
+                     community_id, policy_key, policy_version_id,
+                     verification_requirement_hash, provider_id,
+                     provider_configuration_kind, provider_configuration_ref,
+                     provider_configuration_version, method, protocol_version,
+                     issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+                     request_mode, evaluator_id
+                   ) VALUES (
+                     $1, 'curated-nationality', 'curated-nationality-v1',
+                     $2, $3, $4, $5, $6, $7, $8, $9, 'issuer_rp_scope', $10, $11,
+                     'dynamic', 'curated-nationality-v1'
+                   )`,
+            values: [
+              communityId,
+              nationality.requirementHash,
+              binding.provider_id,
+              binding.provider_configuration.kind,
+              binding.provider_configuration.reference,
+              binding.provider_configuration.version,
+              binding.method,
+              binding.protocol_version,
+              binding.scope.issuer,
+              binding.scope.rp_scope,
+              "action_scope" in binding.scope ? binding.scope.action_scope : null,
+            ],
+            readonly: false,
+          });
+        }
+        yield* transaction.execute({
+          label: "community.creation.commit-v2.insert-current-nationality-policy",
+          text: `INSERT INTO community_policy_current (
+                   community_id, policy_key, policy_version_id, activated_at
+                 ) VALUES ($1, 'curated-nationality', 'curated-nationality-v1', $2::timestamptz)`,
+          values: [communityId, activationNow],
+          readonly: false,
+        });
+      }
       yield* enforceCreatorNationalityPolicy(transaction, {
         communityId,
         userId: input.actor.userId,
@@ -2527,16 +2727,24 @@ export function makeControlPlaneCommunityCreationRepository(
         );
       }
       const creatorRequirement = document.requirements.human_identity;
-      const compilation = compileCommunityGatePolicy(document.draft.policy);
+      const compiledDraft = compileOptionalRouteDraft(
+        document.draft.policy,
+        options.nationality_authoring,
+      );
+      const composed = compiledDraft !== null && compiledDraft.nationality !== undefined;
+      const compilation = composed ? null : compileCommunityGatePolicy(document.draft.policy);
       if (creatorRequirement === undefined) {
         // Creator-requirement removal amendment: no creator evidence exists, so
         // commit rechecks the member policy, persona ownership (locked above),
         // and the account-scoped creation cap only.
-        if (
-          providerId !== null ||
-          compilation.kind !== "supported" ||
-          compilation.canonical_policy_hash !== document.canonical_policy_hash
-        ) {
+        const policyAgrees = composed
+          ? compiledDraft !== null &&
+            compiledDraft.status !== "gate_unsupported" &&
+            compiledDraft.canonicalPolicyHash === document.canonical_policy_hash
+          : compilation !== null &&
+            compilation.kind === "supported" &&
+            compilation.canonical_policy_hash === document.canonical_policy_hash;
+        if (providerId !== null || !policyAgrees) {
           return yield* Effect.fail(failure("commit", "constraint"));
         }
         const createdResult = yield* transaction.execute<Row>({
@@ -2552,19 +2760,25 @@ export function makeControlPlaneCommunityCreationRepository(
         if (created >= accountCommunityCap) {
           return yield* settleQuotaExceeded(transaction, input, body, document, providerId);
         }
+        const activationCompilation = composed ? supportedHumanCompilation() : compilation;
+        if (activationCompilation === null || activationCompilation.kind !== "supported") {
+          return yield* Effect.fail(failure("commit", "constraint"));
+        }
         return yield* activateOptionalRouteV2(
           transaction,
           input,
           body,
           document,
           providerId,
-          compilation,
+          activationCompilation,
           null,
+          compiledDraft?.nationality ?? null,
         );
       }
       if (providerId === null) return yield* Effect.fail(failure("commit", "constraint"));
-      const compiledDraft = compileOptionalRouteDraft(document.draft.policy);
       if (
+        compilation === null ||
+        composed ||
         compilation.kind !== "supported" ||
         compiledDraft === null ||
         compiledDraft.status !== "verification_required" ||
@@ -2861,6 +3075,7 @@ export function makeControlPlaneCommunityCreationRepository(
           approvalExpiresAt,
           requirementHash: creatorRequirement.requirement_hash,
         },
+        null,
       );
     });
 
