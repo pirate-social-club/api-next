@@ -49,4 +49,5 @@ export {
   compileNationalityPolicy,
   NationalityPolicy,
   nationalityCeremonyReservationHash,
+  nationalityProviderBindingHash,
 } from "./nationality-policy.ts";

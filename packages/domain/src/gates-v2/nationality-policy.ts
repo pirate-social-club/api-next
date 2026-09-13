@@ -144,6 +144,13 @@ export function compileNationalityPolicy(input: unknown): NationalityPolicyCompi
   return { kind: "compiled", policy: { ...policy, policy_hash: policyHash(policy) } };
 }
 
+/** Stable identity for one provider's ceremony binding; never a provider preference. */
+export function nationalityProviderBindingHash(
+  binding: NationalityPolicy["provider_bindings"][number],
+): string {
+  return sha256Hex(canonicalJson({ binding, version: "nationality-provider-binding-v1" }));
+}
+
 export function nationalityCeremonyReservationHash(reservation: unknown): string {
   return sha256Hex(canonicalJson({ reservation, version: "nationality-ceremony-reservation-v1" }));
 }
