@@ -19,6 +19,7 @@ CREATE TABLE media_operator_reprocess_actions (
     request_hash TEXT NOT NULL,
     expected_creation_revision BIGINT NOT NULL,
     resulting_creation_revision BIGINT NOT NULL,
+    resulting_workflow_revision BIGINT NOT NULL,
     reason_code TEXT NOT NULL CHECK (reason_code IN ('workflow_terminal_unconverged')),
     evidence_ref TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
