@@ -70258,6 +70258,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -72265,6 +72266,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -74126,6 +74128,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -76066,6 +76069,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -78614,6 +78618,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -80346,6 +80351,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -82178,6 +82184,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -85085,6 +85092,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },
@@ -87220,6 +87228,7 @@
                                 "hash_failed",
                                 "transform_failed",
                                 "publication_failed",
+                                "workflow_terminal_unconverged",
                                 "upload_seal_conflict"
                               ]
                             },

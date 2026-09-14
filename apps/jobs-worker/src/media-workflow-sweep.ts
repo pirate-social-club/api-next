@@ -10,6 +10,10 @@ import { songWorkflowReplacementLimitReached } from "./song-workflow-recovery-po
 export type MediaWorkflowSweepResult = Readonly<{
   readonly inspected: number;
   readonly present: number;
+  readonly finished: number;
+  readonly reconciled: number;
+  readonly escalated: number;
+  readonly indeterminate: number;
   readonly replaced: number;
   readonly stale: number;
   readonly limitReached: number;
@@ -20,7 +24,8 @@ export type MediaWorkflowSweepDependencies = Readonly<{
   readonly store: Pick<
     MediaProcessingStore,
     "listWorkflowCandidates" | "loadAuthority" | "replaceMissingWorkflow"
-  >;
+  > &
+    Pick<MediaProcessingStore, "reconcileTerminalWorkflow">;
   readonly workflow: Pick<MediaProcessingWorkflowLauncher, "get">;
   readonly observe?: MediaProcessingObserver;
 }>;
@@ -42,6 +47,10 @@ export async function sweepMissingMediaWorkflows(
   const result = {
     inspected: 0,
     present: 0,
+    finished: 0,
+    reconciled: 0,
+    escalated: 0,
+    indeterminate: 0,
     replaced: 0,
     stale: 0,
     limitReached: 0,
@@ -51,11 +60,7 @@ export async function sweepMissingMediaWorkflows(
     if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
       continue;
     result.inspected += 1;
-    if (songWorkflowReplacementLimitReached(candidate.replacementSequence)) {
-      result.limitReached += 1;
-      continue;
-    }
-    let workflowStatus: "present" | "missing";
+    let workflowStatus: "present" | "finished" | "indeterminate" | "missing";
     try {
       workflowStatus = await dependencies.workflow.get(workflowInstanceId(candidate));
     } catch {
@@ -72,6 +77,42 @@ export async function sweepMissingMediaWorkflows(
       result.present += 1;
       continue;
     }
+    // An existing instance with an unrecognized status proves no absence and
+    // never grounds for replacement; leave the durable row untouched.
+    if (workflowStatus === "indeterminate") {
+      result.indeterminate += 1;
+      continue;
+    }
+    // A finished instance is not proof of success and never grounds for a
+    // blind replacement. The persisted operation row stays authoritative: the
+    // normal convergence path reconciles it from persisted state, and this
+    // sweep only reports the unreconciled row.
+    if (workflowStatus === "finished") {
+      const authority = await dependencies.store.loadAuthority(
+        candidate.submissionId,
+        candidate.operationId,
+      );
+      if (
+        authority === null ||
+        authority.workflowRevision !== candidate.workflowRevision ||
+        isMediaTerminalSubmissionStatus(authority.status)
+      ) {
+        result.stale += 1;
+        continue;
+      }
+      result.finished += 1;
+      const disposition = await dependencies.store.reconcileTerminalWorkflow(authority);
+      if (disposition === "reconciled") result.reconciled += 1;
+      else if (disposition === "escalated") result.escalated += 1;
+      else result.stale += 1;
+      dependencies.observe?.({
+        event: "workflow_terminal",
+        operationId: authority.operationId,
+        submissionId: authority.submissionId,
+        workflowRevision: authority.workflowRevision,
+      });
+      continue;
+    }
 
     const authority = await dependencies.store.loadAuthority(
       candidate.submissionId,
@@ -83,6 +124,12 @@ export async function sweepMissingMediaWorkflows(
       isMediaTerminalSubmissionStatus(authority.status)
     ) {
       result.stale += 1;
+      continue;
+    }
+    // The ceiling limits replacement writes, not terminal reconciliation or
+    // escalation. A spent budget must still reach its operator resolution.
+    if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
+      result.limitReached += 1;
       continue;
     }
     const committed = await dependencies.store.replaceMissingWorkflow(authority);

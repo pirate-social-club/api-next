@@ -188,6 +188,7 @@ export type ProcessingFailureCode =
   | "hash_failed"
   | "transform_failed"
   | "publication_failed"
+  | "workflow_terminal_unconverged"
   | "upload_seal_conflict";
 export type ProcessingFailure = Readonly<{
   code: ProcessingFailureCode;
@@ -739,7 +740,18 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
     !sameReference(state.analysis.boundReference, state.boundReference)
   )
     return "reference_projection";
-  if ((state.decisionRevision === 0) !== (state.decision === null)) return "decision_presence";
+  // Recovery retains the historical decision counter while requiring a new
+  // decision for the new creation revision. A counter alone never permits publish.
+  if (
+    (state.decisionRevision === 0 && state.decision !== null) ||
+    (state.decisionRevision > 0 &&
+      state.decision === null &&
+      !(
+        state.status === "processing" &&
+        (state.phase === "analysis" || state.phase === "decision")
+      ))
+  )
+    return "decision_presence";
   if (
     state.decision !== null &&
     (state.decision.decisionRevision !== state.decisionRevision ||
@@ -1018,7 +1030,7 @@ export function transitionMediaSubmission(
         analysis: command.analysis,
         boundReference: command.analysis.boundReference ?? current.boundReference,
         decision: null,
-        decisionRevision: 0,
+        decisionRevision: current.decision === null ? current.decisionRevision : 0,
         status: "processing",
         phase:
           command.analysis.acr.decision === "inconclusive"

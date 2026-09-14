@@ -6,9 +6,9 @@ head, required CI results, and retained provider acceptance must be pinned in
 the release record before execution. Do not infer release approval from local
 test results or from this document.
 
-The compatible client is @pirate/api-client 0.78.0, artifact
-`artifacts/api-client/pirate-api-client-0.78.0.tgz`, SHA-256
-`2d7de646a7d644f10673fcb6ec31aaaeb45dfc4265f88e6e58a25b593a91ec8e`.
+The combined compatible client is @pirate/api-client 0.79.0, artifact
+`artifacts/api-client/pirate-api-client-0.79.0.tgz`, SHA-256
+`85488f318432c4ee3e124f16be406acc4a762c4953fc8f1cc58f0a2cc6e19c27`.
 Older strict consumers cannot decode composed join eligibility. Keep nationality
 authoring disabled until every serving Solid consumer uses the compatible
 artifact and has passed provenance, session/CSRF, SSR, and browser checks.

@@ -3,21 +3,21 @@
   "kind": "api-client-release-handoff",
   "package": "@pirate/api-client",
   "version": "0.73.0",
-  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
-  "wireContract": "Additive over 0.72.0: community-creation requirement progress gains an optional nationality entry, and the optional-route creation next action widens its start_verification and wait requirement values from human_identity to human_identity or nationality. Existing values decode identically; consumers on 0.72.0 fail strict decoding when a nationality value arrives, so the Solid consumer must move to 0.73.0 before nationality-gated creation is advertised.",
+  "sourceBranch": "fix/song-workflow-recovery-hardening",
+  "wireContract": "Adds workflow_terminal_unconverged to the song processing_failed reason codes. Video contracts and operator browser permissions are unchanged. Strict older decoders reject the new reason; the Solid consumer must adopt this artifact before the paired release exposes it. Operator recovery uses a database-admin CLI, not a new HTTP endpoint.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.73.0.tgz",
-    "sha256": "bf5c36323dcc9b4416e82580fa45f29132be944bb5789fd874b06694eb10f3d8"
+    "sha256": "26f0d0135399b2a8627d48a529ef49e76e91282d555e33166f65d19acb85e1b9"
   },
   "provenance": {
     "schemaVersion": 1,
     "package": "@pirate/api-client",
     "version": "0.73.0",
-    "sourceIdentifier": "api-next-contracts@6db430a07db39c1505d80ca92a2ef71a6f10592ea4f456275bc4fd827a3436dd",
-    "openapiSha256": "6db430a07db39c1505d80ca92a2ef71a6f10592ea4f456275bc4fd827a3436dd",
-    "clientSha256": "67d0a19c5e7ecbe2f684f0fa7cfc6e73e5c10d29b434584228f2db246543ce84"
+    "sourceIdentifier": "api-next-contracts@79cce9f785a1b539ad9c1b522a1cea4d55a95c76a726c24568d16cc71d82514e",
+    "openapiSha256": "79cce9f785a1b539ad9c1b522a1cea4d55a95c76a726c24568d16cc71d82514e",
+    "clientSha256": "d724eab7f099ba802e1546b403e14f857e92935fc8b86216d3688b7ccc887213"
   },
   "verification": {
-    "status": "Cut from the nationality lane tip with migration 0175 present; generate:contracts and check:fresh pass locally. The full check and required gates remain outstanding; no consumer-side update is included in this lane."
+    "status": "Prepared locally from the recovery lane. No remote publication or deployment. Full final gates and Solid adoption remain to be recorded."
   }
 }

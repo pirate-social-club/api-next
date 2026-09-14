@@ -1259,6 +1259,7 @@ export const SongMediaPostSubmissionV1 = Schema.Union([
       "hash_failed",
       "transform_failed",
       "publication_failed",
+      "workflow_terminal_unconverged",
       "upload_seal_conflict",
     ]),
     retry_count: Schema.Literals([0, 1, 2, 3]),

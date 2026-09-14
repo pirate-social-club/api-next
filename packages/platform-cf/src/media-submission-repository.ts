@@ -802,7 +802,12 @@ function decodeState(
         !validHash(row.lyrics_sha256) ||
         !["pasted", "corrected"].includes(String(row.lyrics_provenance)))) ||
     (analysisRevision === 0 && analysis !== null) ||
-    (decisionRevision === 0) !== (decision === null)
+    (row.current_decision_revision === null) !== (decision === null) ||
+    (decision !== null && integer(row.current_decision_revision) !== decisionRevision) ||
+    (decisionRevision === 0 && decision !== null) ||
+    (decisionRevision > 0 &&
+      decision === null &&
+      !(row.status === "processing" && (row.phase === "analysis" || row.phase === "decision")))
   )
     throw fail(
       operation,
@@ -2142,7 +2147,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           });
           const updated = yield* tx.execute<Row>({
             label: "media-analysis.project",
-            text: "UPDATE media_post_submissions SET analysis_revision=$1,current_analysis_revision=$1,decision_revision=0,current_decision_revision=NULL,status='processing',phase=$2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND audio_revision=$6 AND analysis_revision=$7 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET analysis_revision=$1,current_analysis_revision=$1,decision_revision=$8,current_decision_revision=NULL,status='processing',phase=$2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND audio_revision=$6 AND analysis_revision=$7 RETURNING event_sequence",
             values: [
               next.analysisRevision,
               next.phase,
@@ -2151,6 +2156,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               current.submissionId,
               current.audioRevision,
               current.analysisRevision,
+              next.decisionRevision,
             ],
             readonly: false,
           });

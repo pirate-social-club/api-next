@@ -791,7 +791,7 @@ export function makeMediaProcessingStore(
         expectedCreationRevision: authority.creationRevision,
         failure: {
           code: reason,
-          retryable: reason !== "invalid_media",
+          retryable: reason !== "invalid_media" && reason !== "workflow_terminal_unconverged",
           retryCount: Math.min(3, authority.retryCount) as 0 | 1 | 2 | 3,
           lastSafePhase: authority.phase ?? "analysis",
           evidenceRef: `media-processing-failure-${authority.operationId}-${reason}`,
@@ -847,6 +847,29 @@ export function makeMediaProcessingStore(
     );
   };
 
+  const reconcileTerminalWorkflow: MediaProcessingStore["reconcileTerminalWorkflow"] = async (
+    authority,
+  ) => {
+    // A finished Workflow cannot advance, but durable results may already
+    // establish the remaining business work. A publish-phase row with a
+    // committed decision completes through the existing publication fence with
+    // no provider calls; every other unfinished case has no automatic path yet
+    // and is reported unresolved for explicit escalation.
+    if (
+      authority.phase === "publish" &&
+      authority.decisionRevision > 0 &&
+      authority.postId === null
+    ) {
+      const commit = await commitPublication(authority);
+      return commit === "stale" ? "stale" : "reconciled";
+    }
+    // A terminal instance with no durable completion escalates through the
+    // existing failure commit as an explicit, non-retryable terminal record;
+    // the operator resolution is surfaced through the terminal alert tick.
+    const escalation = await commitProcessingFailure(authority, "workflow_terminal_unconverged");
+    return escalation === "stale" ? "stale" : "escalated";
+  };
+
   const listWorkflowCandidates: MediaProcessingStore["listWorkflowCandidates"] = async () => {
     if (
       !Number.isSafeInteger(workflowCandidateLimit) ||
@@ -870,7 +893,14 @@ export function makeMediaProcessingStore(
             const page = (after: Row | undefined) =>
               tx.execute<Row>({
                 label: "media-processing.workflow-candidates",
-                text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} ${
+                text: `SELECT s.submission_id,s.operation_id,s.updated_at::text AS updated_at FROM media_post_submissions s WHERE s.workflow_revision>0 AND ${mediaRecoveryRequiredSql("s")} AND EXISTS (
+                  SELECT 1 FROM media_submission_outbox launch
+                   WHERE launch.submission_id=s.submission_id
+                     AND launch.operation_id=s.operation_id
+                     AND launch.workflow_revision=s.workflow_revision
+                     AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
+                     AND launch.state IN ('delivered','exhausted')
+                ) ${
                   after === undefined
                     ? ""
                     : "AND (s.updated_at,s.submission_id)>($2::timestamptz,$3::text)"
@@ -1083,6 +1113,7 @@ export function makeMediaProcessingStore(
     commitProcessingFailure,
     commitProviderUnavailableReview,
     replaceMissingWorkflow,
+    reconcileTerminalWorkflow,
     listWorkflowCandidates,
     readModerationPolicy,
   };

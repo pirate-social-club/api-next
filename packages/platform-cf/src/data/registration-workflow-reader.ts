@@ -175,6 +175,7 @@ export function makeDataRegistrationWorkflowReaders(
               ipMetadataHash: nullable(row.ip_metadata_hash),
               nftMetadataUri: nullable(row.nft_metadata_uri),
               nftMetadataHash: nullable(row.nft_metadata_hash),
+              attachedLicense: null,
               evidenceRef: id(row.evidence_ref),
               observedAt,
             };

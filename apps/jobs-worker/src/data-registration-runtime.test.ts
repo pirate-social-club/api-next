@@ -20,6 +20,62 @@ const candidate: DataRegistrationWorkflowCandidate = {
 };
 
 describe("DATA registration scheduled recovery", () => {
+  test("reconciles finished instances at any budget and never replaces indeterminate ones", async () => {
+    const outcomes = [
+      "reconciled",
+      "reverted",
+      "escalated",
+      "pending",
+      "unavailable",
+      "stale",
+    ] as const;
+    for (const revision of ["1", "4"]) {
+      for (const outcome of outcomes) {
+        let replacements = 0;
+        const fences: (readonly [string, bigint])[] = [];
+        const result = await recoverDataRegistrationWorkflowCandidates(
+          [{ ...candidate, workflow_revision: revision }],
+          {
+            workflow: { get: async () => "finished", create: async () => "created" },
+            store: {
+              replaceMissingWorkflow: async () => {
+                replacements += 1;
+                throw new Error("unexpected replacement");
+              },
+              reconcileTerminalWorkflow: async (operationId: string, expected: bigint) => {
+                fences.push([operationId, expected]);
+                return outcome;
+              },
+            } as unknown as DataRegistrationStore,
+          },
+        );
+        expect(replacements).toBe(0);
+        expect(fences).toEqual([[candidate.registration_operation_id, BigInt(revision)]]);
+        expect(result.finished).toBe(1);
+        expect(result.replaced).toBe(0);
+        if (outcome === "stale") {
+          expect(result.stale).toBe(1);
+        } else {
+          expect(result[outcome]).toBe(1);
+        }
+      }
+    }
+
+    let writes = 0;
+    const indeterminate = await recoverDataRegistrationWorkflowCandidates([candidate], {
+      workflow: { get: async () => "indeterminate", create: async () => "created" },
+      store: {
+        reconcileTerminalWorkflow: async () => {
+          writes += 1;
+          throw new Error("an indeterminate instance must not be reconciled");
+        },
+      } as unknown as DataRegistrationStore,
+    });
+    expect(writes).toBe(0);
+    expect(indeterminate.replaced).toBe(0);
+    expect(indeterminate.indeterminate).toBe(1);
+  });
+
   test("replaces one exhausted current launch and converges concurrent sweeps", async () => {
     let revision = 1n;
     let replacements = 0;
@@ -93,6 +149,13 @@ describe("DATA registration scheduled recovery", () => {
     });
 
     expect(first).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 0,
       replaced: 1,
@@ -101,6 +164,13 @@ describe("DATA registration scheduled recovery", () => {
       lookupFailed: 0,
     });
     expect(second).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 0,
       replaced: 0,
@@ -129,6 +199,13 @@ describe("DATA registration scheduled recovery", () => {
       },
     });
     expect(result).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 1,
       replaced: 0,
@@ -155,6 +232,13 @@ describe("DATA registration scheduled recovery", () => {
       },
     });
     expect(result).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
       inspected: 2,
       present: 1,
       replaced: 0,
@@ -180,6 +264,13 @@ describe("DATA registration scheduled recovery", () => {
       },
     );
     expect(result).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
       inspected: 1,
       present: 0,
       replaced: 0,
@@ -187,7 +278,8 @@ describe("DATA registration scheduled recovery", () => {
       limitReached: 1,
       lookupFailed: 0,
     });
-    expect(reads).toBe(0);
+    // The ceiling limits writes, not inspection of terminal state.
+    expect(reads).toBe(1);
   });
 
   test("advances and wraps the DATA inspection cursor across ticks", async () => {

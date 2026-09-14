@@ -374,7 +374,7 @@ export interface MediaProcessingStore {
   ) => Promise<AlignmentRecoveryRead>;
   readonly commitProcessingFailure: (
     authority: MediaProcessingAuthority,
-    reason: "invalid_media" | "probe_failed" | "transform_failed",
+    reason: "invalid_media" | "probe_failed" | "transform_failed" | "workflow_terminal_unconverged",
   ) => Promise<MediaProcessingCommit>;
   readonly commitProviderUnavailableReview: (
     authority: MediaProcessingAuthority,
@@ -383,6 +383,9 @@ export interface MediaProcessingStore {
   readonly replaceMissingWorkflow: (
     authority: MediaProcessingAuthority,
   ) => Promise<MediaProcessingCommit>;
+  readonly reconcileTerminalWorkflow: (
+    authority: MediaProcessingAuthority,
+  ) => Promise<"reconciled" | "escalated" | "stale">;
   readonly listWorkflowCandidates: () => Promise<readonly MediaProcessingAuthority[]>;
   readonly readModerationPolicy: (communityId: string) => Promise<TextModerationPolicySnapshotV2>;
 }
@@ -479,7 +482,9 @@ export type MediaProcessingProviders = Readonly<{
 }>;
 
 export interface MediaProcessingWorkflowLauncher {
-  readonly get: (instanceId: string) => Promise<"present" | "missing">;
+  readonly get: (
+    instanceId: string,
+  ) => Promise<"present" | "finished" | "indeterminate" | "missing">;
   readonly create: (
     instanceId: string,
     payload: MediaProcessingWorkflowPayload,

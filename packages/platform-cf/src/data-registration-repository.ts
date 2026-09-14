@@ -4,6 +4,7 @@ import {
   type ControlPlaneTransaction,
 } from "@pirate/application";
 import {
+  type ConfirmDataRegistrationInput,
   type DataAttachedLicense,
   type DataLicensePreset,
   type DataParentReference,
@@ -429,6 +430,41 @@ const attemptFromRow = (row: Row): DataRegistrationSigningAttempt => {
   };
 };
 
+const attachedLicenseFromReceiptRow = (
+  row: Row,
+): DataRegistrationReceiptObservation["attachedLicense"] => {
+  const licenseTemplate = nullableText(row, "attached_license_template");
+  const licenseTermsId = nullableText(row, "attached_license_terms_id");
+  const preset = nullableText(row, "attached_license_preset");
+  const attachmentTransactionHash = nullableText(row, "terms_attachment_transaction_hash");
+  const attachmentBlockNumber = nullableBigint(row, "terms_attachment_block_number");
+  const attachmentBlockHash = nullableText(row, "terms_attachment_block_hash");
+  const attachmentLogIndex = nullableInteger(row, "terms_attachment_log_index");
+  if (
+    licenseTemplate === null ||
+    licenseTermsId === null ||
+    preset === null ||
+    attachmentTransactionHash === null ||
+    attachmentBlockNumber === null ||
+    attachmentBlockHash === null ||
+    attachmentLogIndex === null
+  ) {
+    return null;
+  }
+  return {
+    licenseTemplate,
+    licenseTermsId,
+    preset: preset as DataLicensePreset,
+    commercialRevShareBps: nullableInteger(row, "attached_commercial_rev_share_bps"),
+    attachment: {
+      transactionHash: attachmentTransactionHash,
+      blockNumber: attachmentBlockNumber,
+      blockHash: attachmentBlockHash,
+      logIndex: attachmentLogIndex,
+    },
+  };
+};
+
 const receiptFromRow = (row: Row): DataRegistrationReceiptObservation => ({
   receiptObservationId: text(row, "receipt_observation_id"),
   registrationOperationId: text(row, "registration_operation_id"),
@@ -445,6 +481,7 @@ const receiptFromRow = (row: Row): DataRegistrationReceiptObservation => ({
   ipMetadataHash: nullableText(row, "ip_metadata_hash"),
   nftMetadataUri: nullableText(row, "nft_metadata_uri"),
   nftMetadataHash: nullableText(row, "nft_metadata_hash"),
+  attachedLicense: attachedLicenseFromReceiptRow(row),
   evidenceRef: text(row, "evidence_ref"),
   observedAt: instant(row, "observed_at"),
 });
@@ -514,7 +551,11 @@ const RECEIPT_SELECT = `
   SELECT receipt_observation_id,registration_operation_id,submission_attempt_id,
          observation_sequence,transaction_hash,outcome,block_number,block_hash,
          log_index,confirmations,registered_ip_id,ip_metadata_uri,ip_metadata_hash,
-         nft_metadata_uri,nft_metadata_hash,evidence_ref,observed_at
+         nft_metadata_uri,nft_metadata_hash,attached_license_template,
+         attached_license_terms_id,attached_license_preset,
+         attached_commercial_rev_share_bps,terms_attachment_transaction_hash,
+         terms_attachment_block_number,terms_attachment_block_hash,
+         terms_attachment_log_index,evidence_ref,observed_at
     FROM data_registration_receipt_observations`;
 const OUTBOX_SELECT = `
   SELECT outbox_id,registration_operation_id,workflow_revision,workflow_instance_id,
@@ -565,6 +606,33 @@ const readAttempt = (db: ControlPlaneTransaction, submissionAttemptId: string, l
       return yield* Effect.fail(fail("attempt", "invalid-row"));
     }
     return yield* decode("attempt", result.rows[0], attemptFromRow);
+  });
+
+const readAttemptReceipts = (db: ControlPlaneTransaction, submissionAttemptId: string) =>
+  Effect.gen(function* () {
+    const result = yield* db.execute<Row>({
+      label: "data-registration.receipt.attempt-read",
+      text: `${RECEIPT_SELECT} WHERE submission_attempt_id=$1 ORDER BY observation_sequence DESC`,
+      values: [submissionAttemptId],
+      readonly: false,
+    });
+    const receipts: DataRegistrationReceiptObservation[] = [];
+    for (const row of result.rows) receipts.push(yield* decode("receipt", row, receiptFromRow));
+    return receipts;
+  });
+
+const readOutboxIn = (db: ControlPlaneTransaction, outboxId: string) =>
+  Effect.gen(function* () {
+    const result = yield* db.execute<Row>({
+      label: "data-registration.outbox.read-by-id",
+      text: `${OUTBOX_SELECT} WHERE outbox_id=$1`,
+      values: [outboxId],
+      readonly: false,
+    });
+    if (result.rows.length !== 1 || result.rows[0] === undefined) {
+      return yield* Effect.fail(fail("outbox", "invalid-row"));
+    }
+    return yield* decode("outbox", result.rows[0], outboxFromRow);
   });
 
 const appendTransition = (
@@ -666,8 +734,53 @@ const receiptMatches = (
   left.ipMetadataHash === right.ipMetadataHash &&
   left.nftMetadataUri === right.nftMetadataUri &&
   left.nftMetadataHash === right.nftMetadataHash &&
+  sameAttachedLicense(left.attachedLicense, right.attachedLicense) &&
   left.evidenceRef === right.evidenceRef &&
   Date.parse(left.observedAt) === Date.parse(right.observedAt);
+
+/**
+ * A confirmed observation is complete evidence only when it carries the
+ * registration's own coordinates and metadata; a song additionally needs the
+ * terms it attached. An observation that lacks the terms stays escalation-only
+ * rather than inventing them.
+ */
+const confirmationFromObservation = (
+  observation: DataRegistrationReceiptObservation,
+): ConfirmDataRegistrationInput | null => {
+  if (
+    observation.outcome !== "confirmed" ||
+    observation.registeredIpId === null ||
+    observation.blockNumber === null ||
+    observation.blockHash === null ||
+    observation.logIndex === null ||
+    observation.ipMetadataUri === null ||
+    observation.ipMetadataHash === null ||
+    observation.nftMetadataUri === null ||
+    observation.nftMetadataHash === null
+  ) {
+    return null;
+  }
+  return {
+    receiptObservationId: observation.receiptObservationId,
+    registrationOperationId: observation.registrationOperationId,
+    submissionAttemptId: observation.submissionAttemptId,
+    observationSequence: observation.observationSequence,
+    transactionHash: observation.transactionHash,
+    outcome: "confirmed",
+    blockNumber: observation.blockNumber,
+    blockHash: observation.blockHash,
+    logIndex: observation.logIndex,
+    confirmations: observation.confirmations,
+    registeredIpId: observation.registeredIpId,
+    ipMetadataUri: observation.ipMetadataUri,
+    ipMetadataHash: observation.ipMetadataHash,
+    nftMetadataUri: observation.nftMetadataUri,
+    nftMetadataHash: observation.nftMetadataHash,
+    evidenceRef: observation.evidenceRef,
+    observedAt: observation.observedAt,
+    attachedLicense: observation.attachedLicense,
+  };
+};
 
 const recordReceiptIn = (db: ControlPlaneTransaction, input: DataRegistrationReceiptInput) =>
   Effect.gen(function* () {
@@ -686,7 +799,7 @@ const recordReceiptIn = (db: ControlPlaneTransaction, input: DataRegistrationRec
     if (existing.rows.length !== 0) return yield* Effect.fail(fail("receipt", "invalid-row"));
     yield* db.execute({
       label: "data-registration.receipt.insert",
-      text: "INSERT INTO data_registration_receipt_observations (receipt_observation_id,registration_operation_id,submission_attempt_id,observation_sequence,transaction_hash,outcome,block_number,block_hash,log_index,confirmations,registered_ip_id,ip_metadata_uri,ip_metadata_hash,nft_metadata_uri,nft_metadata_hash,evidence_ref,observed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+      text: "INSERT INTO data_registration_receipt_observations (receipt_observation_id,registration_operation_id,submission_attempt_id,observation_sequence,transaction_hash,outcome,block_number,block_hash,log_index,confirmations,registered_ip_id,ip_metadata_uri,ip_metadata_hash,nft_metadata_uri,nft_metadata_hash,attached_license_template,attached_license_terms_id,attached_license_preset,attached_commercial_rev_share_bps,terms_attachment_transaction_hash,terms_attachment_block_number,terms_attachment_block_hash,terms_attachment_log_index,evidence_ref,observed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)",
       values: [
         input.receiptObservationId,
         input.registrationOperationId,
@@ -703,6 +816,14 @@ const recordReceiptIn = (db: ControlPlaneTransaction, input: DataRegistrationRec
         input.ipMetadataHash,
         input.nftMetadataUri,
         input.nftMetadataHash,
+        input.attachedLicense?.licenseTemplate ?? null,
+        input.attachedLicense?.licenseTermsId ?? null,
+        input.attachedLicense?.preset ?? null,
+        input.attachedLicense?.commercialRevShareBps ?? null,
+        input.attachedLicense?.attachment.transactionHash ?? null,
+        input.attachedLicense?.attachment.blockNumber.toString() ?? null,
+        input.attachedLicense?.attachment.blockHash ?? null,
+        input.attachedLicense?.attachment.logIndex ?? null,
         input.evidenceRef,
         input.observedAt,
       ],
@@ -1402,6 +1523,37 @@ export function makeDataRegistrationStore(
     );
   };
 
+  const markMinedFrom = (
+    transaction: ControlPlaneTransaction,
+    current: DataRegistrationSigningAttempt,
+    evidenceRef: string,
+  ) =>
+    Effect.gen(function* () {
+      if (current.state === "mined") return current;
+      if (current.state !== "broadcast") {
+        return yield* Effect.fail(fail("attempt", "stale-state", current.registrationOperationId));
+      }
+      yield* transaction.execute({
+        label: "data-registration.attempt.mined",
+        text: "UPDATE data_registration_signing_attempts SET state='mined',updated_at=clock_timestamp() WHERE submission_attempt_id=$1 AND state='broadcast'",
+        values: [current.submissionAttemptId],
+        readonly: false,
+      });
+      yield* appendTransition(transaction, current, "broadcast", "mined", evidenceRef);
+      const operation = yield* transaction.execute({
+        label: "data-registration.operation.confirming",
+        text: "UPDATE data_registration_operations SET state='confirming',updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND current_attempt_id=$2 AND state='broadcast'",
+        values: [current.registrationOperationId, current.submissionAttemptId],
+        readonly: false,
+      });
+      if (operation.rowCount !== 1) {
+        return yield* Effect.fail(fail("attempt", "stale-state", current.registrationOperationId));
+      }
+      const result = yield* readAttempt(transaction, current.submissionAttemptId);
+      if (result === null) return yield* Effect.fail(fail("attempt", "invalid-row"));
+      return result;
+    });
+
   const markMined: DataRegistrationStore["markMined"] = (submissionAttemptId, evidenceRef) =>
     run(
       Effect.gen(function* () {
@@ -1413,123 +1565,67 @@ export function makeDataRegistrationStore(
           Effect.gen(function* () {
             const current = yield* readAttempt(transaction, submissionAttemptId, true);
             if (current === null) return yield* Effect.fail(fail("attempt", "not-found"));
-            if (current.state === "mined") return current;
-            if (current.state !== "broadcast") {
-              return yield* Effect.fail(
-                fail("attempt", "stale-state", current.registrationOperationId),
-              );
-            }
-            yield* transaction.execute({
-              label: "data-registration.attempt.mined",
-              text: "UPDATE data_registration_signing_attempts SET state='mined',updated_at=clock_timestamp() WHERE submission_attempt_id=$1 AND state='broadcast'",
-              values: [submissionAttemptId],
-              readonly: false,
-            });
-            yield* appendTransition(transaction, current, "broadcast", "mined", evidenceRef);
-            const operation = yield* transaction.execute({
-              label: "data-registration.operation.confirming",
-              text: "UPDATE data_registration_operations SET state='confirming',updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND current_attempt_id=$2 AND state='broadcast'",
-              values: [current.registrationOperationId, submissionAttemptId],
-              readonly: false,
-            });
-            if (operation.rowCount !== 1) {
-              return yield* Effect.fail(
-                fail("attempt", "stale-state", current.registrationOperationId),
-              );
-            }
-            const result = yield* readAttempt(transaction, submissionAttemptId);
-            if (result === null) return yield* Effect.fail(fail("attempt", "invalid-row"));
-            return result;
+            return yield* markMinedFrom(transaction, current, evidenceRef);
           }),
         );
       }),
     );
 
-  const confirmRegistration: DataRegistrationStore["confirmRegistration"] = (observation) => {
-    if (
-      observation.outcome !== "confirmed" ||
-      observation.receiptObservationId !==
-        deterministicDataRegistrationReceiptId(
-          observation.submissionAttemptId,
-          observation.observationSequence,
-        ) ||
-      !positive(observation.observationSequence) ||
-      !validTransactionHash(observation.transactionHash) ||
-      observation.blockNumber < 0n ||
-      !validTransactionHash(observation.blockHash) ||
-      observation.logIndex < 0 ||
-      observation.confirmations < 1 ||
-      ![
-        observation.registeredIpId,
-        observation.ipMetadataUri,
-        observation.nftMetadataUri,
-        observation.evidenceRef,
-      ].every((value) => validId(value)) ||
-      !validTransactionHash(observation.ipMetadataHash) ||
-      !validTransactionHash(observation.nftMetadataHash) ||
-      !validInstant(observation.observedAt) ||
-      (observation.attachedLicense !== null &&
-        (!validLicense(observation.attachedLicense) ||
-          !validCoordinates(observation.attachedLicense.attachment) ||
-          observation.attachedLicense.attachment.transactionHash !== observation.transactionHash))
-    ) {
-      return Promise.reject(fail("confirm", "invalid-input", observation.registrationOperationId));
-    }
-    return run(
-      Effect.gen(function* () {
-        const db = yield* ControlPlaneDb;
-        return yield* db.withTransaction((transaction) =>
-          Effect.gen(function* () {
-            const attempt = yield* readAttempt(transaction, observation.submissionAttemptId, true);
-            const operation = yield* readOperation(
-              transaction,
-              observation.registrationOperationId,
-              true,
-            );
-            if (attempt === null || operation === null) {
-              return yield* Effect.fail(
-                fail("confirm", "not-found", observation.registrationOperationId),
-              );
-            }
-            // A song confirms with the terms it attached; a video attaches none.
-            if ((operation.mediaKind === "song") !== (observation.attachedLicense !== null)) {
-              return yield* Effect.fail(
-                fail("confirm", "invalid-input", observation.registrationOperationId),
-              );
-            }
-            if (
-              attempt.registrationOperationId !== observation.registrationOperationId ||
-              attempt.transactionHash !== observation.transactionHash
-            ) {
-              return yield* Effect.fail(
-                fail("confirm", "identity-conflict", observation.registrationOperationId),
-              );
-            }
-            if (operation.state === "registered") {
-              if (
-                operation.currentAttemptId !== observation.submissionAttemptId ||
-                operation.registeredIpId !== observation.registeredIpId ||
-                operation.confirmedTransactionHash !== observation.transactionHash ||
-                operation.confirmedBlockNumber !== observation.blockNumber ||
-                operation.confirmedBlockHash !== observation.blockHash ||
-                operation.confirmedLogIndex !== observation.logIndex ||
-                !sameAttachedLicense(operation.attachedLicense, observation.attachedLicense)
-              ) {
-                return yield* Effect.fail(
-                  fail("confirm", "identity-conflict", observation.registrationOperationId),
-                );
-              }
-              yield* recordReceiptIn(transaction, observation);
-              return operation;
-            }
-            if (!dataConfirmationStates(attempt.state, operation.state)) {
-              return yield* Effect.fail(
-                fail("confirm", "stale-state", observation.registrationOperationId),
-              );
-            }
-            const metadata = yield* transaction.execute<Row>({
-              label: "data-registration.confirm.metadata",
-              text: `SELECT data_registration_pins_are_ready($1) AND
+  const confirmRegistrationIn = (
+    transaction: ControlPlaneTransaction,
+    observation: ConfirmDataRegistrationInput,
+  ) =>
+    Effect.gen(function* () {
+      const attempt = yield* readAttempt(transaction, observation.submissionAttemptId, true);
+      const operation = yield* readOperation(
+        transaction,
+        observation.registrationOperationId,
+        true,
+      );
+      if (attempt === null || operation === null) {
+        return yield* Effect.fail(
+          fail("confirm", "not-found", observation.registrationOperationId),
+        );
+      }
+      // A song confirms with the terms it attached; a video attaches none.
+      if ((operation.mediaKind === "song") !== (observation.attachedLicense !== null)) {
+        return yield* Effect.fail(
+          fail("confirm", "invalid-input", observation.registrationOperationId),
+        );
+      }
+      if (
+        attempt.registrationOperationId !== observation.registrationOperationId ||
+        attempt.transactionHash !== observation.transactionHash
+      ) {
+        return yield* Effect.fail(
+          fail("confirm", "identity-conflict", observation.registrationOperationId),
+        );
+      }
+      if (operation.state === "registered") {
+        if (
+          operation.currentAttemptId !== observation.submissionAttemptId ||
+          operation.registeredIpId !== observation.registeredIpId ||
+          operation.confirmedTransactionHash !== observation.transactionHash ||
+          operation.confirmedBlockNumber !== observation.blockNumber ||
+          operation.confirmedBlockHash !== observation.blockHash ||
+          operation.confirmedLogIndex !== observation.logIndex ||
+          !sameAttachedLicense(operation.attachedLicense, observation.attachedLicense)
+        ) {
+          return yield* Effect.fail(
+            fail("confirm", "identity-conflict", observation.registrationOperationId),
+          );
+        }
+        yield* recordReceiptIn(transaction, observation);
+        return operation;
+      }
+      if (!dataConfirmationStates(attempt.state, operation.state)) {
+        return yield* Effect.fail(
+          fail("confirm", "stale-state", observation.registrationOperationId),
+        );
+      }
+      const metadata = yield* transaction.execute<Row>({
+        label: "data-registration.confirm.metadata",
+        text: `SELECT data_registration_pins_are_ready($1) AND
                        EXISTS (
                          SELECT 1 FROM data_registration_artifacts artifact
                          JOIN data_registration_pin_verifications primary_pin
@@ -1571,37 +1667,37 @@ export function makeDataRegistrationStore(
                            AND 'ipfs://'||primary_pin.cid=$4
                            AND '0x'||artifact.canonical_sha256=$5
                        ) AS matches`,
-              values: [
-                observation.registrationOperationId,
-                observation.ipMetadataUri,
-                observation.ipMetadataHash,
-                observation.nftMetadataUri,
-                observation.nftMetadataHash,
-              ],
-              readonly: false,
-            });
-            if (metadata.rows[0]?.matches !== true) {
-              return yield* Effect.fail(
-                fail("confirm", "metadata-mismatch", observation.registrationOperationId),
-              );
-            }
-            yield* recordReceiptIn(transaction, observation);
-            yield* transaction.execute({
-              label: "data-registration.attempt.confirm",
-              text: "UPDATE data_registration_signing_attempts SET state='confirmed',failure_code=NULL,failure_evidence_ref=NULL,terminal_at=clock_timestamp(),updated_at=clock_timestamp() WHERE submission_attempt_id=$1 AND state IN ('mined','reconciliation_required')",
-              values: [observation.submissionAttemptId],
-              readonly: false,
-            });
-            yield* appendTransition(
-              transaction,
-              attempt,
-              attempt.state,
-              "confirmed",
-              observation.evidenceRef,
-            );
-            const operationUpdate = yield* transaction.execute({
-              label: "data-registration.operation.confirm",
-              text: `UPDATE data_registration_operations
+        values: [
+          observation.registrationOperationId,
+          observation.ipMetadataUri,
+          observation.ipMetadataHash,
+          observation.nftMetadataUri,
+          observation.nftMetadataHash,
+        ],
+        readonly: false,
+      });
+      if (metadata.rows[0]?.matches !== true) {
+        return yield* Effect.fail(
+          fail("confirm", "metadata-mismatch", observation.registrationOperationId),
+        );
+      }
+      yield* recordReceiptIn(transaction, observation);
+      yield* transaction.execute({
+        label: "data-registration.attempt.confirm",
+        text: "UPDATE data_registration_signing_attempts SET state='confirmed',failure_code=NULL,failure_evidence_ref=NULL,terminal_at=clock_timestamp(),updated_at=clock_timestamp() WHERE submission_attempt_id=$1 AND state IN ('mined','reconciliation_required')",
+        values: [observation.submissionAttemptId],
+        readonly: false,
+      });
+      yield* appendTransition(
+        transaction,
+        attempt,
+        attempt.state,
+        "confirmed",
+        observation.evidenceRef,
+      );
+      const operationUpdate = yield* transaction.execute({
+        label: "data-registration.operation.confirm",
+        text: `UPDATE data_registration_operations
                         SET state='registered',current_attempt_id=$2,registered_ip_id=$3,
                             confirmed_transaction_hash=$4,confirmed_block_number=$5,
                             confirmed_block_hash=$6,confirmed_log_index=$7,confirmed_at=$8,
@@ -1613,35 +1709,47 @@ export function makeDataRegistrationStore(
                             updated_at=clock_timestamp()
                       WHERE registration_operation_id=$1
                         AND state IN ('confirming','reconciliation_required','failed')`,
-              values: [
-                observation.registrationOperationId,
-                observation.submissionAttemptId,
-                observation.registeredIpId,
-                observation.transactionHash,
-                observation.blockNumber.toString(),
-                observation.blockHash,
-                observation.logIndex,
-                observation.observedAt,
-                observation.attachedLicense?.licenseTemplate ?? null,
-                observation.attachedLicense?.licenseTermsId ?? null,
-                observation.attachedLicense?.preset ?? null,
-                observation.attachedLicense?.commercialRevShareBps ?? null,
-                observation.attachedLicense?.attachment.transactionHash ?? null,
-                observation.attachedLicense?.attachment.blockNumber.toString() ?? null,
-                observation.attachedLicense?.attachment.blockHash ?? null,
-                observation.attachedLicense?.attachment.logIndex ?? null,
-              ],
-              readonly: false,
-            });
-            if (operationUpdate.rowCount !== 1) {
-              return yield* Effect.fail(
-                fail("confirm", "stale-state", observation.registrationOperationId),
-              );
-            }
-            const projection = yield* transaction.execute({
-              label: "data-registration.projection.registered",
-              text: "UPDATE media_publication_projections SET data_registration='registered' WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND post_id=$5 AND creation_revision=$6 AND audio_revision=$7 AND analysis_revision=$8 AND decision_revision=$9 AND canonical_audio_sha256=$10",
-              values: [
+        values: [
+          observation.registrationOperationId,
+          observation.submissionAttemptId,
+          observation.registeredIpId,
+          observation.transactionHash,
+          observation.blockNumber.toString(),
+          observation.blockHash,
+          observation.logIndex,
+          observation.observedAt,
+          observation.attachedLicense?.licenseTemplate ?? null,
+          observation.attachedLicense?.licenseTermsId ?? null,
+          observation.attachedLicense?.preset ?? null,
+          observation.attachedLicense?.commercialRevShareBps ?? null,
+          observation.attachedLicense?.attachment.transactionHash ?? null,
+          observation.attachedLicense?.attachment.blockNumber.toString() ?? null,
+          observation.attachedLicense?.attachment.blockHash ?? null,
+          observation.attachedLicense?.attachment.logIndex ?? null,
+        ],
+        readonly: false,
+      });
+      if (operationUpdate.rowCount !== 1) {
+        return yield* Effect.fail(
+          fail("confirm", "stale-state", observation.registrationOperationId),
+        );
+      }
+      const projection = yield* transaction.execute({
+        label: "data-registration.projection.registered",
+        text:
+          operation.mediaKind === "video"
+            ? "UPDATE media_publication_projections SET data_registration='registered' WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND post_id=$5 AND media_kind='video' AND video_revision>0"
+            : "UPDATE media_publication_projections SET data_registration='registered' WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND post_id=$5 AND creation_revision=$6 AND audio_revision=$7 AND analysis_revision=$8 AND decision_revision=$9 AND canonical_audio_sha256=$10",
+        values:
+          operation.mediaKind === "video"
+            ? [
+                operation.communityId,
+                operation.actorUserId,
+                operation.submissionId,
+                operation.mediaOperationId,
+                operation.postId,
+              ]
+            : [
                 operation.communityId,
                 operation.actorUserId,
                 operation.submissionId,
@@ -1653,25 +1761,185 @@ export function makeDataRegistrationStore(
                 operation.publicationDecisionRevision.toString(),
                 operation.canonicalAudioSha256,
               ],
-              readonly: false,
-            });
-            if (projection.rowCount !== 1) {
-              return yield* Effect.fail(
-                fail("confirm", "stale-state", observation.registrationOperationId),
-              );
-            }
-            const result = yield* readOperation(transaction, observation.registrationOperationId);
-            if (result === null) {
-              return yield* Effect.fail(
-                fail("confirm", "invalid-row", observation.registrationOperationId),
-              );
-            }
-            return result;
-          }),
+        readonly: false,
+      });
+      if (projection.rowCount !== 1) {
+        return yield* Effect.fail(
+          fail("confirm", "stale-state", observation.registrationOperationId),
+        );
+      }
+      const result = yield* readOperation(transaction, observation.registrationOperationId);
+      if (result === null) {
+        return yield* Effect.fail(
+          fail("confirm", "invalid-row", observation.registrationOperationId),
+        );
+      }
+      return result;
+    });
+
+  const confirmRegistration: DataRegistrationStore["confirmRegistration"] = (observation) => {
+    if (
+      observation.outcome !== "confirmed" ||
+      observation.receiptObservationId !==
+        deterministicDataRegistrationReceiptId(
+          observation.submissionAttemptId,
+          observation.observationSequence,
+        ) ||
+      !positive(observation.observationSequence) ||
+      !validTransactionHash(observation.transactionHash) ||
+      observation.blockNumber < 0n ||
+      !validTransactionHash(observation.blockHash) ||
+      observation.logIndex < 0 ||
+      observation.confirmations < 1 ||
+      ![
+        observation.registeredIpId,
+        observation.ipMetadataUri,
+        observation.nftMetadataUri,
+        observation.evidenceRef,
+      ].every((value) => validId(value)) ||
+      !validTransactionHash(observation.ipMetadataHash) ||
+      !validTransactionHash(observation.nftMetadataHash) ||
+      !validInstant(observation.observedAt) ||
+      (observation.attachedLicense !== null &&
+        (!validLicense(observation.attachedLicense) ||
+          !validCoordinates(observation.attachedLicense.attachment) ||
+          observation.attachedLicense.attachment.transactionHash !== observation.transactionHash))
+    ) {
+      return Promise.reject(fail("confirm", "invalid-input", observation.registrationOperationId));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          confirmRegistrationIn(transaction, observation),
         );
       }),
     );
   };
+
+  const failRegistrationIn = (
+    transaction: ControlPlaneTransaction,
+    input: Parameters<DataRegistrationStore["failRegistration"]>[0],
+  ) =>
+    Effect.gen(function* () {
+      const operation = yield* readOperation(transaction, input.registrationOperationId, true);
+      if (operation === null) {
+        return yield* Effect.fail(fail("failure", "not-found", input.registrationOperationId));
+      }
+      let attempt: DataRegistrationSigningAttempt | null = null;
+      if (input.submissionAttemptId !== null && input.attemptFailureCode !== null) {
+        attempt = yield* readAttempt(transaction, input.submissionAttemptId, true);
+        if (attempt === null || attempt.registrationOperationId !== input.registrationOperationId) {
+          return yield* Effect.fail(
+            fail("failure", "identity-conflict", input.registrationOperationId),
+          );
+        }
+      }
+      if (operation.state === input.operationState) {
+        const sameOperationFailure =
+          input.operationState === "reconciliation_required" ||
+          (operation.failureCode === input.operationFailureCode &&
+            operation.failureEvidenceRef === input.evidenceRef);
+        const expectedAttemptStates: readonly DataRegistrationAttemptState[] =
+          input.operationState === "reconciliation_required"
+            ? ["reconciliation_required"]
+            : ["failed", "reconciliation_required"];
+        const sameAttemptFailure =
+          attempt === null ||
+          (expectedAttemptStates.includes(attempt.state) &&
+            attempt.failureCode === input.attemptFailureCode &&
+            attempt.failureEvidenceRef === input.evidenceRef);
+        if (!sameOperationFailure || !sameAttemptFailure) {
+          return yield* Effect.fail(
+            fail("failure", "identity-conflict", input.registrationOperationId),
+          );
+        }
+        return operation;
+      }
+      if (attempt !== null && input.attemptFailureCode !== null) {
+        if (["failed", "reconciliation_required"].includes(attempt.state)) {
+          if (
+            attempt.failureCode !== input.attemptFailureCode ||
+            attempt.failureEvidenceRef !== input.evidenceRef
+          ) {
+            return yield* Effect.fail(
+              fail("failure", "identity-conflict", input.registrationOperationId),
+            );
+          }
+        } else {
+          const nextAttemptState: DataRegistrationAttemptState =
+            input.operationState === "reconciliation_required" ||
+            ["prepared", "broadcast", "mined", "confirmed"].includes(attempt.state)
+              ? "reconciliation_required"
+              : "failed";
+          yield* transaction.execute({
+            label: "data-registration.attempt.fail",
+            text: "UPDATE data_registration_signing_attempts SET state=$2,failure_code=$3,failure_evidence_ref=$4,terminal_at=clock_timestamp(),updated_at=clock_timestamp() WHERE submission_attempt_id=$1",
+            values: [
+              attempt.submissionAttemptId,
+              nextAttemptState,
+              input.attemptFailureCode,
+              input.evidenceRef,
+            ],
+            readonly: false,
+          });
+          yield* appendTransition(
+            transaction,
+            attempt,
+            attempt.state,
+            nextAttemptState,
+            input.evidenceRef,
+          );
+        }
+      }
+      const targetFailed = input.operationState === "failed";
+      const updated = yield* transaction.execute({
+        label: "data-registration.operation.fail",
+        text: `UPDATE data_registration_operations
+                        SET state=$2,registered_ip_id=NULL,confirmed_transaction_hash=NULL,
+                            confirmed_block_number=NULL,confirmed_block_hash=NULL,
+                            confirmed_log_index=NULL,confirmed_at=NULL,
+                            attached_license_template=NULL,attached_license_terms_id=NULL,
+                            attached_license_preset=NULL,attached_commercial_rev_share_bps=NULL,
+                            terms_attachment_transaction_hash=NULL,
+                            terms_attachment_block_number=NULL,terms_attachment_block_hash=NULL,
+                            terms_attachment_log_index=NULL,
+                            failure_code=$3,failure_evidence_ref=$4,updated_at=clock_timestamp()
+                      WHERE registration_operation_id=$1`,
+        values: [
+          input.registrationOperationId,
+          input.operationState,
+          targetFailed ? input.operationFailureCode : null,
+          targetFailed ? input.evidenceRef : null,
+        ],
+        readonly: false,
+      });
+      if (updated.rowCount !== 1) {
+        return yield* Effect.fail(fail("failure", "stale-state", input.registrationOperationId));
+      }
+      const projectedState = targetFailed ? "failed" : "pending";
+      const projection = yield* transaction.execute({
+        label: "data-registration.projection.failure",
+        text: "UPDATE media_publication_projections SET data_registration=$2 WHERE community_id=$1 AND actor_user_id=$3 AND submission_id=$4 AND operation_id=$5 AND post_id=$6",
+        values: [
+          operation.communityId,
+          projectedState,
+          operation.actorUserId,
+          operation.submissionId,
+          operation.mediaOperationId,
+          operation.postId,
+        ],
+        readonly: false,
+      });
+      if (projection.rowCount !== 1) {
+        return yield* Effect.fail(fail("failure", "stale-state", input.registrationOperationId));
+      }
+      const result = yield* readOperation(transaction, input.registrationOperationId);
+      if (result === null) {
+        return yield* Effect.fail(fail("failure", "invalid-row", input.registrationOperationId));
+      }
+      return result;
+    });
 
   const failRegistration: DataRegistrationStore["failRegistration"] = (input) => {
     if (
@@ -1687,6 +1955,152 @@ export function makeDataRegistrationStore(
     return run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) => failRegistrationIn(transaction, input));
+      }),
+    );
+  };
+
+  const reconcileTerminalWorkflow: DataRegistrationStore["reconcileTerminalWorkflow"] = (
+    registrationOperationId,
+    expectedWorkflowRevision,
+  ) => {
+    if (!validId(registrationOperationId) || expectedWorkflowRevision < 1n) {
+      return Promise.reject(fail("read", "invalid-input", registrationOperationId));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const operation = yield* readOperation(transaction, registrationOperationId, true);
+            // The creation/workflow revision is the completion fence: evidence
+            // loaded under a moved authority is never applied to the new one.
+            if (operation === null || operation.workflowRevision !== expectedWorkflowRevision) {
+              return "stale" as const;
+            }
+            // A row that already reached the registered end state (possibly
+            // through a concurrent live completion) is a reconciled replay.
+            if (operation.state === "registered") return "reconciled" as const;
+            if (operation.state === "failed") {
+              return operation.failureCode === "receipt_reverted"
+                ? ("reverted" as const)
+                : ("stale" as const);
+            }
+            if (operation.state === "reconciliation_required") return "escalated" as const;
+            // Only a reserved attempt can carry transaction identity; nothing
+            // else has submitted an effect to reconcile.
+            if (
+              operation.state !== "signing" &&
+              operation.state !== "broadcast" &&
+              operation.state !== "confirming"
+            ) {
+              return "unavailable" as const;
+            }
+            const attempt =
+              operation.currentAttemptId === null
+                ? null
+                : yield* readAttempt(transaction, operation.currentAttemptId, true);
+            if (attempt === null || attempt.transactionHash === null) {
+              return "unavailable" as const;
+            }
+            const receipts = yield* readAttemptReceipts(transaction, attempt.submissionAttemptId);
+            // Only observations of this attempt's exact transaction are its
+            // evidence; anything else proves nothing about this submission.
+            const matching = receipts.filter(
+              (receipt) => receipt.transactionHash === attempt.transactionHash,
+            );
+            if (matching.length === 0) return "unavailable" as const;
+            const confirmed = matching.find((receipt) => receipt.outcome === "confirmed");
+            if (confirmed !== undefined) {
+              const confirmation = confirmationFromObservation(confirmed);
+              // A song completes only with the terms it attached; an
+              // observation recorded before that evidence was persisted stays
+              // escalation-only. Never invent terms and never resubmit.
+              if (
+                confirmation === null ||
+                (operation.mediaKind === "song") !== (confirmation.attachedLicense !== null)
+              ) {
+                yield* failRegistrationIn(transaction, {
+                  registrationOperationId,
+                  submissionAttemptId: attempt.submissionAttemptId,
+                  operationState: "reconciliation_required",
+                  operationFailureCode: "invalid_receipt",
+                  attemptFailureCode: "invalid_receipt",
+                  evidenceRef: confirmed.evidenceRef,
+                });
+                return "escalated" as const;
+              }
+              // A confirmed receipt observed while the attempt is still
+              // broadcast advances the same mined/confirming edge the live
+              // workflow would, then completes through the confirmation fence.
+              if (attempt.state === "broadcast") {
+                yield* markMinedFrom(transaction, attempt, confirmed.evidenceRef);
+              }
+              yield* confirmRegistrationIn(transaction, confirmation);
+              return "reconciled" as const;
+            }
+            const reverted = matching.find((receipt) => receipt.outcome === "reverted");
+            if (reverted !== undefined) {
+              yield* failRegistrationIn(transaction, {
+                registrationOperationId,
+                submissionAttemptId: attempt.submissionAttemptId,
+                operationState: "failed",
+                operationFailureCode: "receipt_reverted",
+                attemptFailureCode: "receipt_reverted",
+                evidenceRef: reverted.evidenceRef,
+              });
+              return "reverted" as const;
+            }
+            const orphaned = matching.find((receipt) => receipt.outcome === "orphaned");
+            if (orphaned !== undefined) {
+              yield* failRegistrationIn(transaction, {
+                registrationOperationId,
+                submissionAttemptId: attempt.submissionAttemptId,
+                operationState: "reconciliation_required",
+                operationFailureCode: "chain_reorganization",
+                attemptFailureCode: "chain_reorganization",
+                evidenceRef: orphaned.evidenceRef,
+              });
+              return "escalated" as const;
+            }
+            // In-flight or absent receipt evidence proves no completion and
+            // never authorizes a replacement submission.
+            return "pending" as const;
+          }),
+        );
+      }),
+    );
+  };
+
+  const resumeReconciliation: DataRegistrationStore["resumeReconciliation"] = (input) => {
+    if (
+      !validId(input.registrationOperationId) ||
+      !validId(input.operatorPrincipalId) ||
+      !validId(input.idempotencyKey) ||
+      !validId(input.evidenceRef) ||
+      !["receipt_inconclusive", "terms_evidence_unavailable"].includes(input.reasonCode) ||
+      input.expectedWorkflowRevision < 1n
+    ) {
+      return Promise.reject(fail("read", "invalid-input", input.registrationOperationId));
+    }
+    return run(
+      Effect.gen(function* () {
+        const requestHash = yield* Effect.promise(() =>
+          sha256Hex(
+            new TextEncoder().encode(
+              JSON.stringify([
+                "data-registration-operator-resume-v1",
+                input.registrationOperationId,
+                input.operatorPrincipalId,
+                input.expectedWorkflowRevision.toString(),
+                input.reasonCode,
+                input.idempotencyKey,
+                input.evidenceRef,
+              ]),
+            ),
+          ),
+        );
+        const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             const operation = yield* readOperation(
@@ -1695,132 +2109,139 @@ export function makeDataRegistrationStore(
               true,
             );
             if (operation === null) {
-              return yield* Effect.fail(
-                fail("failure", "not-found", input.registrationOperationId),
-              );
+              return yield* Effect.fail(fail("read", "not-found", input.registrationOperationId));
             }
-            let attempt: DataRegistrationSigningAttempt | null = null;
-            if (input.submissionAttemptId !== null && input.attemptFailureCode !== null) {
-              attempt = yield* readAttempt(transaction, input.submissionAttemptId, true);
-              if (
-                attempt === null ||
-                attempt.registrationOperationId !== input.registrationOperationId
-              ) {
-                return yield* Effect.fail(
-                  fail("failure", "identity-conflict", input.registrationOperationId),
-                );
-              }
-            }
-            if (operation.state === input.operationState) {
-              const sameOperationFailure =
-                input.operationState === "reconciliation_required" ||
-                (operation.failureCode === input.operationFailureCode &&
-                  operation.failureEvidenceRef === input.evidenceRef);
-              const expectedAttemptStates: readonly DataRegistrationAttemptState[] =
-                input.operationState === "reconciliation_required"
-                  ? ["reconciliation_required"]
-                  : ["failed", "reconciliation_required"];
-              const sameAttemptFailure =
-                attempt === null ||
-                (expectedAttemptStates.includes(attempt.state) &&
-                  attempt.failureCode === input.attemptFailureCode &&
-                  attempt.failureEvidenceRef === input.evidenceRef);
-              if (!sameOperationFailure || !sameAttemptFailure) {
-                return yield* Effect.fail(
-                  fail("failure", "identity-conflict", input.registrationOperationId),
-                );
-              }
-              return operation;
-            }
-            if (attempt !== null && input.attemptFailureCode !== null) {
-              if (["failed", "reconciliation_required"].includes(attempt.state)) {
-                if (
-                  attempt.failureCode !== input.attemptFailureCode ||
-                  attempt.failureEvidenceRef !== input.evidenceRef
-                ) {
-                  return yield* Effect.fail(
-                    fail("failure", "identity-conflict", input.registrationOperationId),
-                  );
-                }
-              } else {
-                const nextAttemptState: DataRegistrationAttemptState =
-                  input.operationState === "reconciliation_required" ||
-                  ["prepared", "broadcast", "mined", "confirmed"].includes(attempt.state)
-                    ? "reconciliation_required"
-                    : "failed";
-                yield* transaction.execute({
-                  label: "data-registration.attempt.fail",
-                  text: "UPDATE data_registration_signing_attempts SET state=$2,failure_code=$3,failure_evidence_ref=$4,terminal_at=clock_timestamp(),updated_at=clock_timestamp() WHERE submission_attempt_id=$1",
-                  values: [
-                    attempt.submissionAttemptId,
-                    nextAttemptState,
-                    input.attemptFailureCode,
-                    input.evidenceRef,
-                  ],
-                  readonly: false,
-                });
-                yield* appendTransition(
-                  transaction,
-                  attempt,
-                  attempt.state,
-                  nextAttemptState,
-                  input.evidenceRef,
-                );
-              }
-            }
-            const targetFailed = input.operationState === "failed";
-            const updated = yield* transaction.execute({
-              label: "data-registration.operation.fail",
-              text: `UPDATE data_registration_operations
-                        SET state=$2,registered_ip_id=NULL,confirmed_transaction_hash=NULL,
-                            confirmed_block_number=NULL,confirmed_block_hash=NULL,
-                            confirmed_log_index=NULL,confirmed_at=NULL,
-                            attached_license_template=NULL,attached_license_terms_id=NULL,
-                            attached_license_preset=NULL,attached_commercial_rev_share_bps=NULL,
-                            terms_attachment_transaction_hash=NULL,
-                            terms_attachment_block_number=NULL,terms_attachment_block_hash=NULL,
-                            terms_attachment_log_index=NULL,
-                            failure_code=$3,failure_evidence_ref=$4,updated_at=clock_timestamp()
-                      WHERE registration_operation_id=$1`,
-              values: [
-                input.registrationOperationId,
-                input.operationState,
-                targetFailed ? input.operationFailureCode : null,
-                targetFailed ? input.evidenceRef : null,
-              ],
-              readonly: false,
+            const prior = yield* transaction.execute<Row>({
+              label: "data-registration.operator-resume.replay",
+              text: "SELECT request_hash,resulting_workflow_revision,resumed_attempt_id,outbox_id FROM data_operator_resume_actions WHERE registration_operation_id=$1 AND idempotency_key=$2",
+              values: [input.registrationOperationId, input.idempotencyKey],
+              readonly: true,
             });
-            if (updated.rowCount !== 1) {
-              return yield* Effect.fail(
-                fail("failure", "stale-state", input.registrationOperationId),
-              );
+            if (prior.rows.length === 1 && prior.rows[0] !== undefined) {
+              if (prior.rows[0].request_hash !== requestHash) {
+                return yield* Effect.fail(
+                  fail("read", "identity-conflict", input.registrationOperationId),
+                );
+              }
+              const outbox = yield* readOutboxIn(transaction, text(prior.rows[0], "outbox_id"));
+              return {
+                kind: "replay" as const,
+                registrationOperationId: operation.registrationOperationId,
+                workflowRevision: bigint(prior.rows[0], "resulting_workflow_revision"),
+                attemptId: text(prior.rows[0], "resumed_attempt_id"),
+                outbox,
+              };
             }
-            const projectedState = targetFailed ? "failed" : "pending";
-            const projection = yield* transaction.execute({
-              label: "data-registration.projection.failure",
-              text: "UPDATE media_publication_projections SET data_registration=$2 WHERE community_id=$1 AND actor_user_id=$3 AND submission_id=$4 AND operation_id=$5 AND post_id=$6",
+            if (prior.rows.length !== 0) {
+              return yield* Effect.fail(fail("read", "invalid-row", input.registrationOperationId));
+            }
+            if (
+              operation.workflowRevision !== input.expectedWorkflowRevision ||
+              operation.state !== "reconciliation_required" ||
+              operation.currentAttemptId === null
+            ) {
+              return yield* Effect.fail(fail("read", "stale-state", input.registrationOperationId));
+            }
+            const attempt = yield* readAttempt(transaction, operation.currentAttemptId, true);
+            if (
+              attempt === null ||
+              attempt.state !== "reconciliation_required" ||
+              attempt.transactionHash === null
+            ) {
+              return yield* Effect.fail(fail("read", "stale-state", input.registrationOperationId));
+            }
+            const workflowRevision = operation.workflowRevision + 1n;
+            const workflowInstanceId = deterministicDataRegistrationWorkflowId(
+              operation.registrationOperationId,
+              workflowRevision,
+            );
+            const outboxId = deterministicDataRegistrationOutboxId(
+              operation.registrationOperationId,
+              workflowRevision,
+            );
+            yield* transaction.execute({
+              label: "data-registration.operator-resume.audit",
+              text: "INSERT INTO data_operator_resume_actions (registration_operation_id,community_id,actor_user_id,submission_id,operator_principal_id,idempotency_key,request_hash,reason_code,evidence_ref,expected_workflow_revision,resulting_workflow_revision,resumed_attempt_id,outbox_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
               values: [
+                operation.registrationOperationId,
                 operation.communityId,
-                projectedState,
                 operation.actorUserId,
                 operation.submissionId,
-                operation.mediaOperationId,
-                operation.postId,
+                input.operatorPrincipalId,
+                input.idempotencyKey,
+                requestHash,
+                input.reasonCode,
+                input.evidenceRef,
+                operation.workflowRevision.toString(),
+                workflowRevision.toString(),
+                attempt.submissionAttemptId,
+                outboxId,
               ],
               readonly: false,
             });
-            if (projection.rowCount !== 1) {
-              return yield* Effect.fail(
-                fail("failure", "stale-state", input.registrationOperationId),
-              );
+            const resumedAttempt = yield* transaction.execute({
+              label: "data-registration.operator-resume.attempt",
+              text: "UPDATE data_registration_signing_attempts SET state='broadcast',failure_code=NULL,failure_evidence_ref=NULL,terminal_at=NULL,updated_at=clock_timestamp() WHERE submission_attempt_id=$1 AND state='reconciliation_required'",
+              values: [attempt.submissionAttemptId],
+              readonly: false,
+            });
+            if (resumedAttempt.rowCount !== 1) {
+              return yield* Effect.fail(fail("read", "stale-state", input.registrationOperationId));
             }
-            const result = yield* readOperation(transaction, input.registrationOperationId);
-            if (result === null) {
-              return yield* Effect.fail(
-                fail("failure", "invalid-row", input.registrationOperationId),
-              );
+            yield* appendTransition(
+              transaction,
+              attempt,
+              "reconciliation_required",
+              "broadcast",
+              input.evidenceRef,
+            );
+            const resumedState = yield* transaction.execute({
+              label: "data-registration.operator-resume.state",
+              text: "UPDATE data_registration_operations SET state='broadcast',updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND workflow_revision=$2 AND state='reconciliation_required'",
+              values: [operation.registrationOperationId, operation.workflowRevision.toString()],
+              readonly: false,
+            });
+            if (resumedState.rowCount !== 1) {
+              return yield* Effect.fail(fail("read", "stale-state", input.registrationOperationId));
             }
-            return result;
+            const bumped = yield* transaction.execute({
+              label: "data-registration.operator-resume.revision",
+              text: "UPDATE data_registration_operations SET workflow_revision=$2,workflow_instance_id=$3,updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND workflow_revision=$4 AND state='broadcast'",
+              values: [
+                operation.registrationOperationId,
+                workflowRevision.toString(),
+                workflowInstanceId,
+                operation.workflowRevision.toString(),
+              ],
+              readonly: false,
+            });
+            if (bumped.rowCount !== 1) {
+              return yield* Effect.fail(fail("read", "stale-state", input.registrationOperationId));
+            }
+            yield* transaction.execute({
+              label: "data-registration.operator-resume.outbox",
+              text: "INSERT INTO data_registration_outbox (outbox_id,registration_operation_id,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,'workflow_replacement',$5,$6::jsonb)",
+              values: [
+                outboxId,
+                operation.registrationOperationId,
+                workflowRevision.toString(),
+                workflowInstanceId,
+                `data-registration-workflow-replacement:${operation.registrationOperationId}:r${workflowRevision}`,
+                JSON.stringify({
+                  operation_id: operation.registrationOperationId,
+                  outbox_id: outboxId,
+                }),
+              ],
+              readonly: false,
+            });
+            const outbox = yield* readOutboxIn(transaction, outboxId);
+            return {
+              kind: "resumed" as const,
+              registrationOperationId: operation.registrationOperationId,
+              workflowRevision,
+              attemptId: attempt.submissionAttemptId,
+              outbox,
+            };
           }),
         );
       }),
@@ -2347,6 +2768,8 @@ export function makeDataRegistrationStore(
     confirmRegistration,
     failRegistration,
     replaceMissingWorkflow,
+    reconcileTerminalWorkflow,
+    resumeReconciliation,
     getOutbox,
     listEligibleOutbox,
     claimOutbox,
