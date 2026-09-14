@@ -78,7 +78,7 @@ export async function verifyStagingRuntimeIdentity(
   ) SELECT count(*)::int AS count,
     coalesce(bool_or(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls
       OR left(rolname,3)='pg_' OR pg_catalog.has_database_privilege(oid,current_database(),'CREATE')),true) AS elevated,
-    ARRAY(SELECT rolname FROM roles) AS names,
+    coalesce(array_agg(rolname::text ORDER BY rolname), ARRAY[]::text[]) AS names,
     EXISTS(SELECT 1 FROM roles r JOIN pg_catalog.pg_shdepend d ON d.refobjid=r.oid
       WHERE d.refclassid='pg_catalog.pg_authid'::regclass AND d.deptype='o'
       AND d.dbid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())) AS owns
@@ -87,7 +87,16 @@ export async function verifyStagingRuntimeIdentity(
   );
   const row = result.rows[0];
   if (!row || row.count < 1 || row.elevated || row.owns) throw new Error("reset_runtime_elevated");
-  return row.names as string[];
+  // `ARRAY(SELECT rolname ...)` is `name[]`, and the driver returns that as a
+  // raw string. Spreading the string produced one-character role names, so no
+  // grantee ever matched and preparation revoked nothing while the SQL-side
+  // effective-denial verifier still refused (rehearsal r9, 2026-09-13). The
+  // query casts to text[] and this refuses anything that is not a real string
+  // array rather than casting one into existence.
+  const names: unknown = row.names;
+  if (!Array.isArray(names) || names.length < 1 || names.some((name) => typeof name !== "string"))
+    throw new Error("reset_runtime_identity_unproven");
+  return names as string[];
 }
 
 export async function verifyApprovedStagingRuntime(

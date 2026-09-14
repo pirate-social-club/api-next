@@ -100,6 +100,88 @@ normal claims and operational phase counts, and creates no session readiness
 or activation evidence. The runtime role has no direct write path to the
 identity table; the SECURITY DEFINER probe owns it.
 
+## Staging post-migration entry point
+
+The staging ceremony's migration owner is the reset lane's executor. Once the
+single sequence has left the ledger at the reviewed endpoint
+`0172_hns_cutover_evidence_consistency.sql`, the HNS post-migration steps are a
+delegated entry point, `scripts/staging-hns-post-migration-entry.ts`. It
+applies no migrations and refuses unless the ledger ends exactly at the
+endpoint with matching checksums, so a failed reset replay cannot reach it.
+
+The reset orchestrator calls `runHnsStagingPostMigration` in process after the
+removal batch; it binds the real ports with
+`makeHnsStagingPostMigrationPorts`, passing the connection strings for the
+migrator `CONTROL_PLANE_POSTGRES_ADMIN_URL`, the runtime
+`CONTROL_PLANE_POSTGRES_RUNTIME_URL` and the separately authorized operator
+`CONTROL_PLANE_POSTGRES_OPERATOR_URL`, plus the provider-verified target
+binding from `collectStagingProviderBinding`. That one-line delegation is
+agreed with the reset lane and lands on its branch or after its merge;
+migration ownership stays there and `staging-persona-phased-reset.ts` is not
+modified.
+
+The results are named and separate: target and ledger, identities, grants,
+privilege matrix, bundle, probe, service, schema compatibility, service
+identity, executor progress. The grants are EXECUTE on the six-argument
+`run_hns_lifecycle_readiness_cutover_probe_v1` for the runtime identity, and no
+direct INSERT, UPDATE or DELETE on `hns_lifecycle_service_identity` for the
+runtime identity, the operator identity or PUBLIC. The effective matrix is read
+back with `has_function_privilege` and `has_table_privilege`, so PUBLIC and
+inherited authority count, and any deviation refuses. The bundle and
+`deployment-manifest.json` are staged under a fresh attempt identifier; the
+explicitly named `pirate-hns-authority-provisioner-staging.service` is the only
+unit the path starts, and schema compatibility, the measured running identity
+and executor progress are verified against that exact attempt.
+
+Refusal recovery for the staging path:
+
+- `migration_endpoint_missing` — the reset sequence has not reached the
+  reviewed endpoint; complete or restore the reset first, never edit the
+  ledger.
+- `checksum_mismatch`, `migration_missing`, `migration_not_pinned`,
+  `migration_endpoint_exceeded` — the ledger no longer matches the reviewed
+  chain; stop and reconcile the reset, do not resume past it.
+- `runtime_migrator_conflict`, `runtime_operator_conflict` and the role
+  mismatch refusals — the derived identities are wrong or conflated; fix the
+  credential delivery rather than mapping around the guard.
+- `probe_execute_missing` — the reviewed EXECUTE grant did not take effect;
+  `identity_write_allowed` — an effective write remains, including one
+  inherited through a role membership; resolve it before retrying.
+- `artifact_mismatch`, `attempt_mismatch`, `probe_absent` and `lease_conflict`
+  — the probe's own recorded outcomes; they are reported immediately and name
+  what the service observed.
+- A refusal after the service starts carries a `service_disposition` of
+  `started_unverified` and a resumable recovery receipt: stop the unit, confirm
+  the previous attempt is no longer running, then re-run so a fresh attempt and
+  probe are seeded. Never reuse an attempt identifier.
+
+The two migration modes are different and must not be described as one. A
+fresh reset replays the chain one migration per transaction through the phased
+reset, and a failed replay enters the reset workflow's full-restore recovery.
+An in-place cutover applies `0168` in its own transaction and `0169` through
+`0172` as one atomic batch because `runPostgresMigrations` wraps each call in
+a single transaction. The entry point runs only against a terminal ledger and
+keeps `probe_job_id` and the lease fence bound to the exact attempt.
+
+The standalone CLI form, for an operator after the reset lane's binding lands:
+
+```bash
+CONTROL_PLANE_POSTGRES_ADMIN_URL=... \
+CONTROL_PLANE_POSTGRES_RUNTIME_URL=... \
+CONTROL_PLANE_POSTGRES_OPERATOR_URL=... \
+bun scripts/staging-hns-post-migration-entry.ts \
+  --bundle <staged bundle path> \
+  --stage-directory /srv/pirate-hns-authority-provisioner-staging/current \
+  --executor-id <executor id> \
+  --runtime-role <runtime role> \
+  --operator-role <operator role> \
+  --migrator-role <migrator role>
+```
+
+Everything in this section is executable only under the staging
+authorizations; it does not authorize a reset, a service start or a
+deployment.
+
 Use the maximum seven-day readiness lifetime in production. Activation records
 the initial DNS health lease from this observation; it does not replace the
 existing append-only successor ceremony that renews health after activation.

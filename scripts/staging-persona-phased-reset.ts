@@ -13,6 +13,7 @@ import {
 import { snapshotOutsideResetCatalog } from "./staging-persona-outside-catalog";
 import { type RemovalBatchBudget, removeStagingRootBatch } from "./staging-persona-phased-removal";
 import { replayStagingMigrationBatch } from "./staging-persona-phased-replay";
+import type { AdmissionStage } from "./staging-persona-prepare-reset.ts";
 import { inspectStagingRemovalPlan } from "./staging-persona-removal-plan";
 import {
   denyReplayedRuntimeGrants,
@@ -61,6 +62,14 @@ type PhasedAdmission = Readonly<{
   grantPolicy: ResetGrantPolicy;
   removalBudget: RemovalBatchBudget;
   replayBudget: { maxLockRows: number; maxClusterLockRows: number; statementTimeoutMs: number };
+  /** Observation hook for the admission window only, so a caller can name the
+   * failing step in a structured refusal. It runs no work and changes no
+   * decision; `admitted` fires only after the first committed batch and its
+   * observation callback have completed. */
+  onAdmissionStage?(stage: AdmissionStage): void;
+  /** Authorized diagnostic only: every removal precheck runs, then the first
+   * destructive statement is refused so a clean window does not reconstruct. */
+  diagnosticStopBeforeFirstBatch?: boolean;
   // Test/rehearsal observation or failure injection; never a resumption hook.
   afterBatch?(phase: "removing" | "replaying", count: number): Promise<void>;
 }>;
@@ -75,18 +84,23 @@ export async function reconstructStagingInPhases(
   admission: PhasedAdmission,
 ) {
   const plan = validateStagingResetArtifacts(artifacts);
+  const stage = (next: AdmissionStage) => admission.onAdmissionStage?.(next);
+  stage("marker");
   await assertResetMarkerAbsent(admission.markerDirectory);
+  stage("policy");
   reconcileResetGrants({
     before: [],
     replay: [],
     reviewed: admission.reviewedGrants,
     policy: admission.grantPolicy,
   });
+  stage("reference");
   if (
     !/^[a-f0-9]{64}$/.test(admission.baselineDigest) ||
     !/^[a-f0-9]{64}$/.test(admission.defaultsDigest)
   )
     throw new Error("reset_reference_digest_invalid");
+  stage("budget");
   if (
     [...Object.values(admission.removalBudget), ...Object.values(admission.replayBudget)].some(
       (n) => !Number.isSafeInteger(n) || n < 1,
@@ -97,15 +111,21 @@ export async function reconstructStagingInPhases(
     throw new Error("reset_common_cluster_budget_required");
   // This orchestrator owns COMMIT. Refuse a caller-owned transaction rather
   // than accepting PostgreSQL's nested-BEGIN warning and committing its work.
+  stage("connection");
   const first = (await admin.query("SELECT pg_catalog.pg_current_xact_id()::text AS id")).rows[0]
     .id;
   const second = (await admin.query("SELECT pg_catalog.pg_current_xact_id()::text AS id")).rows[0]
     .id;
   if (first === second) throw new Error("reset_fresh_idle_connection_required");
+  stage("fence_recovery");
   await admission.assertFenceAndRecovery();
+  stage("baseline");
   await admission.assertBaselineReference(plan.sourceSha, admission.baselineDigest);
+  stage("schema_authority");
   await assertInplaceSchemaAuthority(admin, admission.role, admission.schemaOid);
+  stage("runtime_identity");
   await verifyStagingRuntimeIdentity(admin, admission.runtimeRole);
+  stage("grants");
   const approved = await compileApprovedStagingPrivileges(admin, admission.runtimeRole);
   const normalize = (facts: readonly ResetGrant[]) =>
     facts.map((fact) => JSON.stringify(fact)).sort();
@@ -118,6 +138,7 @@ export async function reconstructStagingInPhases(
       JSON.stringify(normalize(admission.grantPolicy.forbidden))
   )
     throw new Error("reset_approved_privilege_manifest_mismatch");
+  stage("replication");
   const replicated = (
     await admin.query(`SELECT EXISTS (
     SELECT 1 FROM pg_catalog.pg_publication_rel p JOIN pg_catalog.pg_class c ON c.oid=p.prrelid
@@ -131,13 +152,16 @@ export async function reconstructStagingInPhases(
   ) AS present`)
   ).rows[0].present;
   if (replicated) throw new Error("reset_replication_membership_requires_disposition");
+  stage("marker_create");
   const marker = await createResetMarker(admission.markerDirectory, {
     sourceSha: plan.sourceSha,
     recoveryDigest: admission.recoveryDigest,
     targetAndFenceDigest: admission.targetAndFenceDigest,
     validUntilMs: admission.validUntilMs,
   });
+  stage("inventory");
   let batches = 0;
+  let firstBatchObserved = false;
   let maxOwnLocks = 0;
   let maxClusterLocks = 0;
   let maxClosureObjects = 0;
@@ -224,6 +248,7 @@ export async function reconstructStagingInPhases(
       if ((await snapshotOutsideResetCatalog(admin)).sha256 !== original.outside)
         throw new Error("reset_outside_catalog_changed_restore_required");
     };
+    stage("first_batch");
     await marker.advance("removing", batches);
     for (;;) {
       const result = await transaction(async (transactionId) => {
@@ -231,6 +256,7 @@ export async function reconstructStagingInPhases(
           transactionId,
           schemaOid: admission.schemaOid,
           budget: admission.removalBudget,
+          stopBeforeApply: admission.diagnosticStopBeforeFirstBatch === true,
         });
         return result;
       });
@@ -238,6 +264,10 @@ export async function reconstructStagingInPhases(
       maxClosureObjects = Math.max(maxClosureObjects, result.closureObjects);
       await marker.advance("removing", ++batches);
       await admission.afterBatch?.("removing", batches);
+      if (!firstBatchObserved) {
+        firstBatchObserved = true;
+        stage("admitted");
+      }
     }
     // The fence/marker holds while batches commit. Detect any out-of-scope
     // change before replay could hide it; every failure requires full restore.
@@ -286,6 +316,10 @@ export async function reconstructStagingInPhases(
         throw new Error("reset_nonempty_evidence");
       return { counts, evidenceDigest: digest, ledgerCount: ledger.length };
     };
+    // Defensive backstop: a removal root list that was already empty would
+    // otherwise reach replay without the per-batch stop firing.
+    if (admission.diagnosticStopBeforeFirstBatch === true)
+      throw new Error("diagnostic_stop_before_first_apply");
     await marker.advance("replaying", batches);
     for (let completed = 0; completed < plan.migrations.length; completed++) {
       await transaction(async (transactionId) => {
@@ -302,6 +336,10 @@ export async function reconstructStagingInPhases(
       });
       await marker.advance("replaying", ++batches);
       await admission.afterBatch?.("replaying", batches);
+      if (!firstBatchObserved) {
+        firstBatchObserved = true;
+        stage("admitted");
+      }
     }
     await marker.advance("verifying", batches);
     const readCompletion = () =>

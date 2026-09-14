@@ -4,18 +4,30 @@ import { promisify } from "node:util";
 import { Client } from "pg";
 import { normalizePostgresConnectionString } from "./postgres-migrations";
 import { observeInplaceInventory } from "./staging-persona-inplace-inventory";
+import {
+  allowlistedReason,
+  describeRehearsalFailure,
+  StructuredRefusal,
+  structuredFailureCategory,
+  structuredSqlState,
+} from "./staging-persona-rehearsal-failure.ts";
+import {
+  assertRehearsalBranchIdentity,
+  rehearsalTarget,
+} from "./staging-persona-rehearsal-target.ts";
 
 const execute = promisify(execFile);
 const databaseId = "mvydkmmwh5x4";
 const sourceId = "syu03e00w3ux";
-const branchId = "abkmnvey02z5";
-const branchName = "persona-reset-rehearsal-r5-20260906";
+// The branch is bound after creation, not written in here, and it is read when
+// a run needs it rather than when this module is imported: importing must not
+// require a target. See staging-persona-rehearsal-target.ts.
 const base = "organizations/{org}/databases/pirate-staging";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
 /** Credential-bearing result: private to the collector, never output. */
-function restoredConnection(raw: string, host: string) {
+function restoredConnection(raw: string, host: string, branchId: string) {
   const url = new URL(raw);
   const username = decodeURIComponent(url.username);
   const entries = [...url.searchParams];
@@ -103,36 +115,39 @@ async function provider(path: string) {
 
 /** Trusted in-process access to the fixed isolated branch, never a caller URL.
  * This establishes identity, not reset authority. Credentials stay private.
+ * The verified operator connection string is passed to the callback so a
+ * caller that needs the ordinary connection-string APIs (the migration runner)
+ * uses the same verified branch rather than re-deriving a target.
  */
 export async function withProviderRehearsalOperator<T>(
-  use: (client: Client, operator: string, runtime: string) => Promise<T>,
+  use: (client: Client, operator: string, runtime: string, connectionString: string) => Promise<T>,
 ): Promise<T> {
   let client: Client | undefined;
   let phase = "target";
   try {
+    const target = rehearsalTarget();
+    const branchName = target.branchName;
     const database = await provider(base);
     const branch = await provider(`${base}/branches/${branchName}`);
+    // The access binding is provisioned separately from the branch, so its
+    // absence is a missing setup step rather than a wrong target. Reporting
+    // both as "target" sent the 2026-09-09 r6 exercise looking for a binding
+    // mistake when the branch was correct and simply had no default role.
+    phase = "access_binding";
     const access = await provider(`${base}/branches/${branchName}/roles/default`);
-    if (
-      database.id !== databaseId ||
-      database.kind !== "postgresql" ||
-      branch.id !== branchId ||
-      branch.name !== branchName ||
-      branch.ready !== true ||
-      branch.state !== "ready" ||
-      branch.restored_from_branch?.id !== sourceId ||
-      access.branch?.id !== branchId ||
-      access.default !== true ||
-      typeof access.access_host_url !== "string"
-    )
-      throw new Error();
+    phase = "target";
+    assertRehearsalBranchIdentity(target, databaseId, sourceId, { database, branch, access });
     let runtimeRole: string | undefined;
     for (const [kind, key] of [
       ["runtime", "CONTROL_PLANE_POSTGRES_RUNTIME_URL"],
       ["operator", "CONTROL_PLANE_POSTGRES_ADMIN_URL"],
-    ]) {
+    ] as const) {
       phase = `${kind}_identity`;
-      const resolved = restoredConnection(process.env[key] ?? "", access.access_host_url);
+      const resolved = restoredConnection(
+        process.env[key] ?? "",
+        access.access_host_url,
+        target.branchId,
+      );
       client = new Client({
         connectionString: resolved.connectionString,
         connectionTimeoutMillis: 10_000,
@@ -153,17 +168,44 @@ export async function withProviderRehearsalOperator<T>(
       else {
         if (!runtimeRole || runtimeRole === resolved.role) throw new Error();
         phase = "operation";
-        return await use(client, resolved.role, runtimeRole);
+        return await use(client, resolved.role, runtimeRole, resolved.connectionString);
       }
       await client.end();
       client = undefined;
     }
     throw new Error();
-  } catch {
-    throw new Error(`provider_rehearsal_unproven:${phase}`);
+  } catch (error) {
+    throw providerRehearsalRefusal(error, phase);
   } finally {
     await client?.end().catch(() => undefined);
   }
+}
+
+/** The boundary refusal keeps the sanitized reason and only a fixed structured
+ * category. An already structured refusal passes through untouched, so nested
+ * boundaries do not flatten a named stage or its category. */
+export function providerRehearsalRefusal(error: unknown, phase: string): StructuredRefusal {
+  if (error instanceof StructuredRefusal) return error;
+  return new StructuredRefusal(sanitizeProviderRehearsalFailure(error, phase), {
+    category: structuredFailureCategory(error),
+    sqlstate: structuredSqlState(error),
+  });
+}
+
+/** Keeps a reason that already names its cause instead of flattening it.
+ *
+ * This wrapper converts anything it catches into its own phase failure, which
+ * is right for a driver error or an unexpected throw: those must not escape.
+ * But a preparation refusal has already been sanitized and says which
+ * prerequisite failed, and replacing it with `provider_rehearsal_unproven:
+ * operation` discards exactly the part an operator needs. The allowlist decides
+ * again here rather than trusting the inner layer, so the redaction rule stays
+ * in one place and an unrecognised message still becomes the phase failure. */
+export function sanitizeProviderRehearsalFailure(error: unknown, phase: string): string {
+  const message = error instanceof Error ? error.message : null;
+  return (
+    (message === null ? null : allowlistedReason(message)) ?? `provider_rehearsal_unproven:${phase}`
+  );
 }
 
 /** Fixed isolated branch only. This neither fences nor invokes reconstruction. */
@@ -173,7 +215,7 @@ export async function inspectProviderRehearsal() {
     const data = await fingerprintRehearsalData(client);
     return {
       observed_at: new Date().toISOString(),
-      branch_id: branchId,
+      branch_id: rehearsalTarget().branchId,
       source_branch_id: sourceId,
       inventory: {
         ...inventory,
@@ -195,8 +237,13 @@ if (import.meta.main) {
   try {
     if (Bun.argv.length !== 3 || Bun.argv[2] !== "--read-only") throw new Error();
     console.log(JSON.stringify(await inspectProviderRehearsal()));
-  } catch {
-    console.error("provider_rehearsal_unproven");
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        outcome: "provider_rehearsal_unproven",
+        ...describeRehearsalFailure(error),
+      }),
+    );
     process.exitCode = 1;
   }
 }
