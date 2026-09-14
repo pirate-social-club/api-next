@@ -381,6 +381,49 @@ describe("contracts-generated HTTP worker", () => {
     ).toBe(401);
   });
 
+  it("requires the existing session's CSRF proof for browser session exchange", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      sessionExchange: sessionServices,
+    });
+    const body = JSON.stringify({
+      proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+    });
+    const exchange = (headers: Record<string, string>) =>
+      app.request("https://worker.test/auth/session/exchange", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://solid.test",
+          ...headers,
+        },
+        body,
+      });
+
+    expect(
+      (
+        await exchange({
+          cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await exchange({
+          cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+          "x-csrf-token": "wrong-value",
+        })
+      ).status,
+    ).toBe(401);
+
+    const accepted = await exchange({
+      cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+      "x-csrf-token": "csrf-value",
+    });
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("set-cookie")).toContain("__Host-pirate_session=");
+  });
+
   it("requires exact Origin and double-submit CSRF for cookie-authenticated writes", async () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
@@ -526,6 +569,23 @@ describe("contracts-generated HTTP worker", () => {
 
   it("clears the host-only session and CSRF cookies exactly on logout", async () => {
     const app = createHttpWorker({ config: { corsOrigin: "https://solid.test" } });
+    const missingCsrf = await app.request("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: "__Host-pirate_session=token; __Host-pirate_csrf=csrf",
+        origin: "https://solid.test",
+      },
+    });
+    expect(missingCsrf.status).toBe(401);
+    const mismatchedCsrf = await app.request("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: "__Host-pirate_session=token; __Host-pirate_csrf=csrf",
+        origin: "https://solid.test",
+        "x-csrf-token": "wrong-csrf",
+      },
+    });
+    expect(mismatchedCsrf.status).toBe(401);
     const wrongOrigin = await app.request("https://worker.test/auth/session/logout", {
       method: "POST",
       headers: {
