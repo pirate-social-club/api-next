@@ -8,14 +8,20 @@ import {
 import type { NationalityPolicy } from "@pirate/domain";
 import { Effect } from "effect";
 
-/** Deterministic local provider adapters with the real generic start service
+/** Nationality and age use these deterministic local document provider adapters with the real generic start service
  * and PostgreSQL reservation/finalization store. No external proof is claimed.
  */
 export async function startNationalityFixture(
   store: VerificationSessionStartStore,
   intents: VerificationIntentResolver,
-  policy: NationalityPolicy,
+  policy: Pick<NationalityPolicy, "provider_bindings">,
   input: Readonly<{ actor_id: string; intent_id: string; provider_id: "self.pass" | "zkpassport" }>,
+  claims: readonly (
+    | "nationality.allowed"
+    | "age.minimum"
+    | "credential.subject_unique"
+    | "document.valid"
+  )[] = ["nationality.allowed"],
 ) {
   const adapters: VerificationProviderAdapter[] = policy.provider_bindings.map((binding) => ({
     manifest: {
@@ -27,8 +33,11 @@ export async function startNationalityFixture(
       protocol_versions: [binding.protocol_version],
       environments: [binding.environment],
       supported_methods: ["document"],
-      claim_ids: ["nationality.allowed"],
-      claim_capabilities: [{ claim_id: "nationality.allowed", request_modes: ["dynamic"] }],
+      claim_ids: claims,
+      claim_capabilities: claims.map((claim_id) => ({
+        claim_id,
+        request_modes: ["dynamic"] as const,
+      })),
       presentation_kinds: ["redirect"],
       assurance_levels: ["document_zk"],
       subject_key_scope_semantics: "issuer_rp_scope",
@@ -41,7 +50,7 @@ export async function startNationalityFixture(
       }),
     start: (start) => {
       const { verification_purpose: _purpose, ...sessionFields } = start;
-      const id = `proof-nationality-start_${crypto.randomUUID()}`;
+      const id = `proof-document-start_${crypto.randomUUID()}`;
       return Effect.succeed({
         session: {
           ...sessionFields,

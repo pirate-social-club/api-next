@@ -70,6 +70,12 @@ export type NationalityProviderBindingInput = Readonly<{
 export function nationalityAuthoringProviderBindings(
   input: NationalityProviderBindingInput,
 ): readonly [NationalityAuthoringProviderBinding, NationalityAuthoringProviderBinding] {
+  return documentProviderBindings(input);
+}
+
+export function documentProviderBindings(
+  input: NationalityProviderBindingInput,
+): readonly [NationalityAuthoringProviderBinding, NationalityAuthoringProviderBinding] {
   return [
     {
       provider_id: "self.pass",

@@ -2,6 +2,15 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/use-cases/age-verification": new URL(
+    "../../packages/application/src/use-cases/age-verification.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/account-age-verification": new URL(
+    "../../packages/platform-cf/src/account-age-verification.ts",
+    import.meta.url,
+  ).pathname,
+
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,

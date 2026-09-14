@@ -46,59 +46,10 @@ export const makeControlPlaneAgeAccessRepository = () => ({
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "age-access.capability",
-        text: `SELECT current_account_age_capability_v1($1) AS capability,
-                      evidence.provider_id, evidence.policy_reference,
-                      evidence.evidence_expires_at
+        text: `SELECT CASE WHEN evidence.provider_id IS NULL THEN 'general' ELSE 'adult_18' END AS capability,
+                      evidence.provider_id, evidence.policy_reference, evidence.evidence_expires_at
                  FROM (SELECT 1) AS singleton
-                 LEFT JOIN LATERAL (
-                   SELECT receipt.provider_id,
-                          concat(receipt.provider_configuration_ref, '@',
-                                 receipt.provider_configuration_version) AS policy_reference,
-                          LEAST(assertion.expires_at, receipt.expires_at) AS evidence_expires_at
-                     FROM assertions AS assertion
-                     JOIN evidence_receipts AS receipt
-                       ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
-                      AND receipt.user_id = assertion.user_id
-                     JOIN proof_sessions AS session
-                       ON session.proof_session_id = receipt.proof_session_id
-                      AND session.actor_id = assertion.user_id
-                      AND session.status = 'completed'
-                      AND session.completed_at = session.terminal_at
-                      AND session.intent_id = 'platform.document.age-18'
-                     JOIN assertion_bindings AS binding
-                       ON binding.binding_group_id = assertion.binding_group_id
-                      AND binding.user_id = assertion.user_id
-                      AND binding.binding_mode = 'same_subject'
-                      AND binding.subject_key_id = assertion.subject_key_id
-                     JOIN active_subject_key_bindings AS active_binding
-                       ON active_binding.subject_key_id = assertion.subject_key_id
-                      AND active_binding.user_id = assertion.user_id
-                      AND active_binding.binding_event_id = binding.subject_binding_event_id
-                      AND active_binding.binding_epoch = binding.subject_binding_epoch
-                    WHERE assertion.user_id = $1
-                      AND assertion.claim_id = 'age.minimum'
-                      AND assertion.assurance = 'document_zk'
-                      AND receipt.provider_id IN ('self.pass', 'self.enterprise', 'zkpassport')
-                      AND receipt.subject_key_id = assertion.subject_key_id
-                      AND assertion.assertion_value->>'minimum_age' ~ '^(0|[1-9][0-9]*)$'
-                      AND (assertion.assertion_value->>'minimum_age')::numeric >= 18
-                      AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
-                      AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
-                      AND NOT EXISTS (
-                        SELECT 1 FROM LATERAL (
-                          SELECT event.outcome
-                            FROM assertion_revalidation_events AS event
-                           WHERE event.assertion_id = assertion.assertion_id
-                             AND event.user_id = assertion.user_id
-                        ORDER BY event.observed_at DESC, event.created_at DESC,
-                                 event.assertion_revalidation_event_id DESC
-                           LIMIT 1
-                        ) AS latest
-                        WHERE latest.outcome <> 'accepted'
-                      )
-                 ORDER BY assertion.observed_at DESC, assertion.assertion_id DESC
-                    LIMIT 1
-                 ) AS evidence ON current_account_age_capability_v1($1) = 'adult_18'`,
+                 LEFT JOIN LATERAL current_account_age_evidence_v2($1) AS evidence ON TRUE`,
         values: [input.accountId],
         readonly: true,
       });
@@ -114,6 +65,16 @@ export const makeControlPlaneAgeAccessRepository = () => ({
         provider !== "self.pass" &&
         provider !== "self.enterprise" &&
         provider !== "zkpassport"
+      ) {
+        return yield* failure("capability");
+      }
+      if (
+        capability === "adult_18" &&
+        (provider === null ||
+          text(row, "policy_reference") === null ||
+          (row.evidence_expires_at !== null &&
+            (!(row.evidence_expires_at instanceof Date) ||
+              !Number.isFinite(row.evidence_expires_at.getTime()))))
       ) {
         return yield* failure("capability");
       }

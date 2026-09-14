@@ -51,6 +51,8 @@ import {
   NotFound,
   ProviderUnavailable,
 } from "@pirate/contracts";
+import { compileAccountAgeVerificationPolicy } from "@pirate/domain";
+import { makeControlPlaneAccountAgeVerification } from "@pirate/platform-cf/account-age-verification";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { makeCommentThreadStore } from "@pirate/platform-cf/comment-thread-repository";
@@ -192,6 +194,7 @@ import {
   makeStaticVerificationIntentResolver,
 } from "@pirate/platform-cf/verification-intent-resolver";
 import {
+  documentProviderBindings,
   makePlatformVerificationProviderRegistry,
   validVeryOauthOptions,
   validVeryWebOptions,
@@ -1028,6 +1031,30 @@ export async function createProductionHttpWorker(
       callback_credential_headers: callbackCredentialHeaderNames,
     }),
   );
+  const ageProvidersReady =
+    selfPassOrigin !== undefined &&
+    ["self.pass", "zkpassport"].every((provider) =>
+      verificationRegistry.list().some((manifest) => manifest.provider_id === provider),
+    ) &&
+    !(
+      config.API_NEXT_ENV === "production" &&
+      (config.SELF_PASS_MOCK_PASSPORT || config.ZKPASSPORT_DEV_MODE)
+    );
+  const accountAgeVerification = makeControlPlaneAccountAgeVerification(
+    controlPlane,
+    ageProvidersReady && selfPassOrigin !== undefined
+      ? compileAccountAgeVerificationPolicy(
+          documentProviderBindings({
+            environment: config.API_NEXT_ENV,
+            self_pass: {
+              callback_origin: selfPassOrigin,
+              mock_passport: config.SELF_PASS_MOCK_PASSPORT,
+            },
+            zkpassport: { domain: config.ZKPASSPORT_DOMAIN, dev_mode: config.ZKPASSPORT_DEV_MODE },
+          }),
+        )
+      : null,
+  );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
     makeControlPlaneCommunityCreationIntentResolver(
@@ -1037,6 +1064,7 @@ export async function createProductionHttpWorker(
     ),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneHandleNationalityIntentResolver(controlPlane),
+    accountAgeVerification.intents,
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
   ]);
   const verificationHandlers = makeVerificationHandlers({
@@ -1062,6 +1090,7 @@ export async function createProductionHttpWorker(
     identityStore,
     moderationStore,
     ageAccessStore,
+    ageVerificationStore: accountAgeVerification.store,
   });
   const communityCreationHandlers = makeCommunityCreationHandlers({
     communityCreationStore,

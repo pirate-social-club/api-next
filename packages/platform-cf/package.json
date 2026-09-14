@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./account-age-verification": "./src/account-age-verification.ts",
     "./karaoke-reset-caller": "./src/karaoke-reset-caller.ts",
     ".": "./src/index.ts",
     "./cloudflare-access-jwt": "./src/cloudflare-access-jwt.ts",

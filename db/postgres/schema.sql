@@ -2826,9 +2826,18 @@ $$;
 
 CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURNS text
     LANGUAGE sql STABLE
+    AS $$
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM current_account_age_evidence_v2(target_account_id))
+    THEN 'adult_18' ELSE 'general' END;
+$$;
+
+CREATE FUNCTION current_account_age_evidence_v2(target_account_id text) RETURNS TABLE(provider_id text, policy_reference text, evidence_expires_at timestamp with time zone)
+    LANGUAGE sql STABLE
     AS $_$
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
+    SELECT receipt.provider_id,
+           concat(receipt.provider_configuration_ref, '@', receipt.provider_configuration_version),
+           LEAST(assertion.expires_at, receipt.expires_at,
+                 credential_witness.expires_at, document_witness.expires_at)
       FROM assertions AS assertion
       JOIN evidence_receipts AS receipt
         ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
@@ -2838,7 +2847,31 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
        AND session.actor_id = assertion.user_id
        AND session.status = 'completed'
        AND session.completed_at = session.terminal_at
-       AND session.intent_id = 'platform.document.age-18'
+       AND (session.intent_id = 'platform.document.age-18' OR EXISTS (
+         SELECT 1
+           FROM age_verification_ceremony_attempts AS attempt
+           JOIN age_verification_requirement_states AS state
+             ON state.action_kind = attempt.action_kind AND state.intent_id = attempt.intent_id
+            AND state.requirement_kind = attempt.requirement_kind
+            AND state.actor_id = attempt.actor_id AND state.generation = attempt.generation
+            AND state.current_ceremony_intent_id = attempt.ceremony_intent_id
+            AND state.current_provider_id = attempt.provider_id
+            AND state.current_provider_binding_hash = attempt.provider_binding_hash
+            AND state.requirement_hash = attempt.requirement_hash
+            AND state.status IN ('pending', 'satisfied')
+           JOIN account_age_verification_current AS current
+             ON current.account_id = attempt.actor_id AND current.intent_id = attempt.intent_id
+          WHERE attempt.ceremony_intent_id = session.intent_id
+            AND attempt.actor_id = session.actor_id AND attempt.action_kind = 'adult_view'
+            AND attempt.requirement_kind = 'age_18'
+            AND attempt.provider_id = session.provider_id
+            AND attempt.provider_configuration_kind = session.provider_configuration_kind
+            AND attempt.provider_configuration_ref = session.provider_configuration_ref
+            AND attempt.provider_configuration_version = session.provider_configuration_version
+            AND session.started_at >= attempt.reserved_at
+            AND session.completed_at < attempt.expires_at
+            AND session.completed_at < session.expires_at
+       ))
        AND session.method = 'document'
        AND session.scope_kind = 'issuer_rp_scope'
        AND session.issuer_rp_scope = 'pirate-social'
@@ -2855,18 +2888,8 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
        AND active_binding.user_id = assertion.user_id
        AND active_binding.binding_event_id = binding.subject_binding_event_id
        AND active_binding.binding_epoch = binding.subject_binding_epoch
-     WHERE assertion.user_id = target_account_id
-       AND assertion.claim_id = 'age.minimum'
-       AND assertion.assurance = 'document_zk'
-       AND receipt.provider_id IN ('self.pass', 'self.enterprise', 'zkpassport')
-       AND receipt.subject_key_id = assertion.subject_key_id
-       AND assertion.assertion_value ? 'minimum_age'
-       AND assertion.assertion_value->>'minimum_age' ~ '^(0|[1-9][0-9]*)$'
-       AND (assertion.assertion_value->>'minimum_age')::NUMERIC >= 18
-       AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
-       AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
-       AND EXISTS (
-         SELECT 1
+      JOIN LATERAL (
+         SELECT LEAST(credential.expires_at, credential_receipt.expires_at) AS expires_at
            FROM assertions AS credential
            JOIN evidence_receipts AS credential_receipt
              ON credential_receipt.evidence_receipt_id = credential.evidence_receipt_id
@@ -2881,9 +2904,13 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
             AND credential.assurance = 'document_zk'
             AND (credential.expires_at IS NULL OR credential.expires_at > clock_timestamp())
             AND (credential_receipt.expires_at IS NULL OR credential_receipt.expires_at > clock_timestamp())
-       )
-       AND EXISTS (
-         SELECT 1
+            AND credential.observed_at <= clock_timestamp()
+            AND credential_receipt.observed_at <= clock_timestamp()
+          ORDER BY LEAST(credential.expires_at, credential_receipt.expires_at) DESC NULLS FIRST, credential.assertion_id DESC
+          LIMIT 1
+      ) AS credential_witness ON TRUE
+      JOIN LATERAL (
+         SELECT LEAST(document.expires_at, document_receipt.expires_at) AS expires_at
            FROM assertions AS document
            JOIN evidence_receipts AS document_receipt
              ON document_receipt.evidence_receipt_id = document.evidence_receipt_id
@@ -2898,7 +2925,22 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
             AND document.assurance = 'document_zk'
             AND (document.expires_at IS NULL OR document.expires_at > clock_timestamp())
             AND (document_receipt.expires_at IS NULL OR document_receipt.expires_at > clock_timestamp())
-       )
+            AND document.observed_at <= clock_timestamp()
+            AND document_receipt.observed_at <= clock_timestamp()
+          ORDER BY LEAST(document.expires_at, document_receipt.expires_at) DESC NULLS FIRST, document.assertion_id DESC
+          LIMIT 1
+      ) AS document_witness ON TRUE
+     WHERE assertion.user_id = target_account_id
+       AND assertion.claim_id = 'age.minimum'
+       AND assertion.assurance = 'document_zk'
+       AND receipt.provider_id IN ('self.pass', 'self.enterprise', 'zkpassport')
+       AND receipt.subject_key_id = assertion.subject_key_id
+       AND assertion.assertion_value ? 'minimum_age'
+       AND assertion.assertion_value->>'minimum_age' ~ '^(0|[1-9][0-9]*)$'
+       AND (assertion.assertion_value->>'minimum_age')::NUMERIC >= 18
+       AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
+       AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
+
        AND NOT EXISTS (
          SELECT 1
            FROM LATERAL (
@@ -2928,7 +2970,11 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
             AND sibling.binding_group_id = assertion.binding_group_id
             AND latest.outcome <> 'accepted'
        )
-  ) THEN 'adult_18' ELSE 'general' END;
+
+       AND assertion.observed_at <= clock_timestamp()
+       AND receipt.observed_at <= clock_timestamp()
+     ORDER BY assertion.observed_at DESC, assertion.assertion_id DESC
+     LIMIT 1;
 $_$;
 
 CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text, input_namespace_authority_reference text, input_namespace_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, database_now timestamp with time zone) RETURNS TABLE(canonical_root text, display_root text, namespace_authority_current boolean, dns_zone_current boolean, dns_delegation_current boolean)
@@ -4919,6 +4965,26 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_age_verification_requirement_state_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN
+    IF NEW.action_kind <> OLD.action_kind
+      OR NEW.intent_id <> OLD.intent_id
+      OR NEW.requirement_kind <> OLD.requirement_kind
+      OR NEW.actor_id <> OLD.actor_id
+      OR NEW.requirement_hash <> OLD.requirement_hash
+      OR NEW.accepted_provider_ids <> OLD.accepted_provider_ids THEN
+      RAISE EXCEPTION 'age verification requirement identity is immutable';
+    END IF;
+    IF OLD.status = 'satisfied' AND NEW.status <> 'satisfied' THEN
+      RAISE EXCEPTION 'satisfied age verification requirements cannot regress';
+    END IF;
+    IF NEW.generation < OLD.generation THEN
+      RAISE EXCEPTION 'age verification requirement generations never decrease';
+    END IF;
+    RETURN NEW;
+  END; $$;
 
 CREATE FUNCTION guard_asset_bonus_leg_asset() RETURNS trigger
     LANGUAGE plpgsql
@@ -14740,6 +14806,12 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_age_verification_ceremony_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN
+    RAISE EXCEPTION 'age verification ceremony attempts are append-only evidence';
+  END; $$;
+
 CREATE FUNCTION reject_community_commerce_immutable_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -16245,6 +16317,54 @@ BEGIN
     PERFORM require_active_membership_follow_pair_v1(NEW.community_id, NEW.user_id);
   END IF;
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_age_verification_ceremony_attempt_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  state_record age_verification_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO state_record
+    FROM age_verification_requirement_states
+   WHERE action_kind = NEW.action_kind
+     AND intent_id = NEW.intent_id
+     AND requirement_kind = NEW.requirement_kind
+   FOR UPDATE;
+
+  IF NOT FOUND
+    OR state_record.actor_id <> NEW.actor_id
+    OR state_record.requirement_hash <> NEW.requirement_hash
+    OR NOT EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements_text(state_record.accepted_provider_ids) AS accepted
+          WHERE accepted.value = NEW.provider_id
+       )
+    OR NEW.generation <> state_record.generation + 1
+    OR state_record.status NOT IN ('unmet', 'failed', 'expired', 'pending') THEN
+    RAISE EXCEPTION 'age verification ceremony reservation does not match the current requirement state';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_age_verification_requirement_state_providers() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  accepted text[];
+BEGIN
+  SELECT array_agg(value ORDER BY value)::text[]
+    INTO accepted
+    FROM jsonb_array_elements_text(NEW.accepted_provider_ids);
+
+  IF accepted IS DISTINCT FROM ARRAY['self.pass', 'zkpassport']::text[] THEN
+    RAISE EXCEPTION 'age verification requirements accept exactly Self and ZKPassport';
+  END IF;
+
+  RETURN NEW;
 END;
 $$;
 
@@ -21959,6 +22079,14 @@ BEGIN
 END;
 $$;
 
+CREATE TABLE account_age_verification_current (
+    account_id text NOT NULL,
+    intent_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_age_verification_current_check CHECK ((updated_at >= created_at))
+);
+
 CREATE TABLE account_aliases (
     source_user_id text NOT NULL,
     canonical_user_id text NOT NULL,
@@ -22122,6 +22250,61 @@ CREATE TABLE activity_registry (
     CONSTRAINT activity_registry_state_shape CHECK ((((status = 'active'::text) AND (producer_version IS NOT NULL) AND (current_policy_version_id IS NOT NULL)) OR ((status = 'reserved'::text) AND (producer_version IS NULL) AND (current_policy_version_id IS NULL)))),
     CONSTRAINT activity_registry_status_check CHECK ((status = ANY (ARRAY['active'::text, 'reserved'::text]))),
     CONSTRAINT activity_registry_time_order CHECK ((updated_at >= created_at))
+);
+
+CREATE TABLE age_verification_ceremony_attempts (
+    ceremony_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    action_kind text NOT NULL,
+    intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    generation bigint NOT NULL,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    reservation_request_hash text NOT NULL,
+    reservation_request jsonb NOT NULL,
+    reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT age_verification_ceremony_attempts_action_kind_check CHECK ((action_kind = ANY (ARRAY['adult_view'::text]))),
+    CONSTRAINT age_verification_ceremony_attempts_generation_check CHECK ((generation > 0)),
+    CONSTRAINT age_verification_ceremony_attempts_hash_shape_check CHECK (((requirement_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (reservation_request_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT age_verification_ceremony_attempts_identifiers_not_blank CHECK (((btrim(ceremony_intent_id) <> ''::text) AND (ceremony_intent_id = btrim(ceremony_intent_id)) AND (btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
+    CONSTRAINT age_verification_ceremony_attempts_provider_configuration_kind_ CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT age_verification_ceremony_attempts_requirement_kind_check CHECK ((requirement_kind = 'age_18'::text)),
+    CONSTRAINT age_verification_ceremony_attempts_reservation_request_check CHECK ((jsonb_typeof(reservation_request) = 'object'::text))
+);
+
+CREATE TABLE age_verification_requirement_states (
+    action_kind text NOT NULL,
+    intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    actor_id text NOT NULL,
+    status text NOT NULL,
+    requirement_hash text NOT NULL,
+    accepted_provider_ids jsonb NOT NULL,
+    generation bigint DEFAULT 0 NOT NULL,
+    current_ceremony_intent_id text,
+    current_provider_id text,
+    current_provider_binding_hash text,
+    current_provider_configuration_kind text,
+    current_provider_configuration_ref text,
+    current_provider_configuration_version text,
+    satisfied_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT age_verification_requirement_states_accepted_providers_shape CHECK (((jsonb_typeof(accepted_provider_ids) = 'array'::text) AND (jsonb_array_length(accepted_provider_ids) = 2))),
+    CONSTRAINT age_verification_requirement_states_action_kind_check CHECK ((action_kind = ANY (ARRAY['adult_view'::text]))),
+    CONSTRAINT age_verification_requirement_states_generation_check CHECK ((generation >= 0)),
+    CONSTRAINT age_verification_requirement_states_hash_shape_check CHECK (((requirement_hash ~ '^[0-9a-f]{64}$'::text) AND ((current_provider_binding_hash IS NULL) OR (current_provider_binding_hash ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT age_verification_requirement_states_progress_shape CHECK ((((status = 'unmet'::text) AND (generation = 0) AND (current_ceremony_intent_id IS NULL) AND (current_provider_id IS NULL) AND (current_provider_binding_hash IS NULL) AND (current_provider_configuration_kind IS NULL) AND (current_provider_configuration_ref IS NULL) AND (current_provider_configuration_version IS NULL) AND (satisfied_at IS NULL)) OR ((status = ANY (ARRAY['pending'::text, 'failed'::text, 'expired'::text])) AND (generation > 0) AND (btrim(current_ceremony_intent_id) <> ''::text) AND (current_ceremony_intent_id = btrim(current_ceremony_intent_id)) AND (btrim(current_provider_id) <> ''::text) AND (current_provider_binding_hash IS NOT NULL) AND (current_provider_configuration_kind IS NOT NULL) AND (current_provider_configuration_ref IS NOT NULL) AND (current_provider_configuration_version IS NOT NULL) AND (satisfied_at IS NULL)) OR ((status = 'satisfied'::text) AND (generation > 0) AND (btrim(current_ceremony_intent_id) <> ''::text) AND (current_provider_id IS NOT NULL) AND (satisfied_at IS NOT NULL)))),
+    CONSTRAINT age_verification_requirement_states_requirement_kind_check CHECK ((requirement_kind = 'age_18'::text)),
+    CONSTRAINT age_verification_requirement_states_status_check CHECK ((status = ANY (ARRAY['unmet'::text, 'pending'::text, 'failed'::text, 'expired'::text, 'satisfied'::text]))),
+    CONSTRAINT age_verification_requirement_states_time_order CHECK ((updated_at >= created_at))
 );
 
 CREATE TABLE assertion_bindings (
@@ -31129,6 +31312,12 @@ INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-ope
 
 INSERT INTO text_moderation_policy_current VALUES (true, 'text-moderation-policy-openai-omni-2024-09-26-v1', '2000-01-01 00:00:00+00');
 
+ALTER TABLE ONLY account_age_verification_current
+    ADD CONSTRAINT account_age_verification_current_intent_id_key UNIQUE (intent_id);
+
+ALTER TABLE ONLY account_age_verification_current
+    ADD CONSTRAINT account_age_verification_current_pkey PRIMARY KEY (account_id);
+
 ALTER TABLE ONLY account_aliases
     ADD CONSTRAINT account_aliases_pkey PRIMARY KEY (source_user_id);
 
@@ -31185,6 +31374,27 @@ ALTER TABLE ONLY activity_qualifications
 
 ALTER TABLE ONLY activity_registry
     ADD CONSTRAINT activity_registry_pkey PRIMARY KEY (activity_key);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_actor_ceremony_unique UNIQUE (actor_id, ceremony_intent_id);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_generation_unique UNIQUE (action_kind, intent_id, requirement_kind, generation);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_identity_unique UNIQUE (actor_id, action_kind, intent_id, requirement_kind, generation, ceremony_intent_id);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_pkey PRIMARY KEY (ceremony_intent_id);
+
+ALTER TABLE ONLY age_verification_requirement_states
+    ADD CONSTRAINT age_verification_requirement_states_actor_generation_unique UNIQUE (actor_id, action_kind, intent_id, requirement_kind, generation);
+
+ALTER TABLE ONLY age_verification_requirement_states
+    ADD CONSTRAINT age_verification_requirement_states_actor_intent_unique UNIQUE (actor_id, intent_id);
+
+ALTER TABLE ONLY age_verification_requirement_states
+    ADD CONSTRAINT age_verification_requirement_states_pkey PRIMARY KEY (action_kind, intent_id, requirement_kind);
 
 ALTER TABLE ONLY assertion_bindings
     ADD CONSTRAINT assertion_bindings_id_user_unique UNIQUE (binding_group_id, user_id);
@@ -34028,6 +34238,14 @@ CREATE TRIGGER activity_qualifications_project_megapot_share AFTER INSERT ON act
 
 CREATE TRIGGER activity_registry_change_guard BEFORE DELETE OR UPDATE ON activity_registry FOR EACH ROW EXECUTE FUNCTION guard_activity_registry_change();
 
+CREATE TRIGGER age_verification_ceremony_attempt_append_only BEFORE DELETE OR UPDATE ON age_verification_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_age_verification_ceremony_mutation();
+
+CREATE TRIGGER age_verification_ceremony_attempt_insert_guard BEFORE INSERT ON age_verification_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_age_verification_ceremony_attempt_insert();
+
+CREATE TRIGGER age_verification_requirement_state_provider_guard BEFORE INSERT OR UPDATE ON age_verification_requirement_states FOR EACH ROW EXECUTE FUNCTION validate_age_verification_requirement_state_providers();
+
+CREATE TRIGGER age_verification_requirement_state_update_guard BEFORE UPDATE ON age_verification_requirement_states FOR EACH ROW EXECUTE FUNCTION guard_age_verification_requirement_state_update();
+
 CREATE TRIGGER assertion_bindings_append_only BEFORE DELETE OR UPDATE ON assertion_bindings FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER assertion_revalidation_events_append_only BEFORE DELETE OR UPDATE ON assertion_revalidation_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
@@ -35079,6 +35297,9 @@ CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPD
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
+
+ALTER TABLE ONLY account_age_verification_current
+    ADD CONSTRAINT account_age_verification_current_account_id_intent_id_fkey FOREIGN KEY (account_id, intent_id) REFERENCES age_verification_requirement_states(actor_id, intent_id);
 
 ALTER TABLE ONLY account_language_preferences
     ADD CONSTRAINT account_language_preferences_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);

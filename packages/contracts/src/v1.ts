@@ -5,6 +5,7 @@ import {
   MinimumAgeAttestationV1,
   PutMyMinimumAgeAttestation,
 } from "./age-access.ts";
+import { GetMyAgeVerification } from "./age-verification.ts";
 import { Auth } from "./auth.ts";
 import { ContentRatingV1 } from "./community-moderation-policy.ts";
 import {
@@ -2398,6 +2399,7 @@ export const v1Registry = {
   SessionExchange,
   RegisterIdentity,
   SessionLogout,
+  GetMyAgeVerification,
   GetMyAgeCapability,
   PutMyMinimumAgeAttestation,
   GetCurrentUser,

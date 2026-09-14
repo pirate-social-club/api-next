@@ -1,0 +1,13 @@
+# Renewable account age verification
+
+This checkpoint adds authenticated account age authority and renewable, provider-selectable child ceremonies. Migration 0183 adds account-scoped generation-fenced attempts and current pointers. The existing current_account_age_capability_v1 delegates to one complete evidence witness, so expiry/provider metadata and guarded reads agree. Historical catalog evidence remains usable. Nationality evidence never proves age, and no membership, follow or handle grant is created.
+
+The document ceremony store and provider binding schema are shared with nationality; the frozen nationality hashes and behavior remain unchanged. The 15-minute deadline bounds an unfinished ceremony only. Nationality’s owner-approved 365-day reuse policy is not an age lifetime.
+
+The full static check passed over 179 migrations with baseline freshness and client verification. The full unit run passed 4,161 tests across 598 files, and Node passed 20. All five workerd configurations passed 82, 74, 2, 10 and 15 tests under one serial test:workerd command. These component commands were separate; this is not a claimed single successful bun run test invocation.
+
+Eight PostgreSQL proofs passed: authority replay, both real generic starts with deterministic local adapters, switch/stale/foreign refusal, complete-witness expiry, revoked and expired evidence renewal, underage and nationality-only refusal, ownership recovery, historical catalog reuse and configuration drift. The preceding run passed the four nationality ceremony and 14 curated community regressions, but failed three age cases before their assertions because of a fixture SQL parameter cast. A subsequent fixture run found a duplicate evidence hash; unique fixture hashes and actual elapsed expiry corrected it. The retained first run is regression evidence, not an all-green run. Each database used a task-owned capped PostgreSQL 17 container over a Unix socket; cleanup completed.
+
+Client 0.78.0 adds GET /me/age-verification without changing the existing age capability or content-free lock wire. Its immutable artifact and release ledger are committed alongside the implementation. The full PostgreSQL partitions, trusted remote secret-boundary gate, browser integration and real-document staging acceptance remain outstanding. No deployment, feature enablement or push occurred.
+
+The compressed logs are UTF-8 text after ANSI removal and replacement of local checkout prefixes. Read with gzip -dc. SHA256SUMS authenticates these retained files; source-manifest.json pins the tested source and generated artifact.

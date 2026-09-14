@@ -120,6 +120,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-gates-v2-nationality-suite-complete\n",
   },
   {
+    name: "renewable account age verification",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_ACCOUNT_AGE_VERIFICATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-account-age-verification-suite-complete",
+    contents: "api-next-control-plane-postgres-account-age-verification-suite-complete\n",
+  },
+  {
     name: "nationality ceremony store",
     path:
       process.env.CONTROL_PLANE_POSTGRES_NATIONALITY_CEREMONY_TEST_SENTINEL ??

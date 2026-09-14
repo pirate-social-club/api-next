@@ -331,6 +331,14 @@ const GATES_V2_EXPORTS = {
     "NationalityEvaluatorInput",
     "evaluateNationality",
   ],
+  "./account-age-verification-policy.ts": [
+    "ACCOUNT_AGE_18_REQUIREMENTS",
+    "ACCOUNT_AGE_18_REQUIREMENT_HASH",
+    "compileAccountAgeVerificationPolicy",
+    "ageVerificationReservationHash",
+    "AccountAgeVerificationPolicy",
+  ],
+  "./document-provider-binding.ts": ["documentProviderBindingHash"],
   "./nationality-policy.ts": [
     "NationalityPolicy",
     "NationalityPolicyCompilation",

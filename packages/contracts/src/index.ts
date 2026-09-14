@@ -1,4 +1,5 @@
 export * from "./age-access.ts";
+export * from "./age-verification.ts";
 export * from "./auth.ts";
 export * from "./codegen.ts";
 export * from "./comment-thread.ts";

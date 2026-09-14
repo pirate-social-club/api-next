@@ -1,3 +1,11 @@
+export {
+  ACCOUNT_AGE_18_REQUIREMENT_HASH,
+  ACCOUNT_AGE_18_REQUIREMENTS,
+  type AccountAgeVerificationPolicy,
+  ageVerificationReservationHash,
+  compileAccountAgeVerificationPolicy,
+} from "./account-age-verification-policy.ts";
+export { documentProviderBindingHash } from "./document-provider-binding.ts";
 export type {
   CuratedAge18Evaluation,
   CuratedAge18EvaluatorInput,

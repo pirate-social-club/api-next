@@ -8,6 +8,7 @@ SELECT pg_catalog.set_config(
 );
 
 TRUNCATE TABLE
+  "account_age_verification_current",
   "account_aliases",
   "account_language_preferences",
   "account_minimum_age_attestations",
@@ -19,6 +20,8 @@ TRUNCATE TABLE
   "active_subject_key_bindings",
   "activity_qualifications",
   "activity_registry",
+  "age_verification_ceremony_attempts",
+  "age_verification_requirement_states",
   "assertion_bindings",
   "assertion_revalidation_events",
   "assertions",

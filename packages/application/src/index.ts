@@ -52,6 +52,7 @@ export * from "./study-v2-service.ts";
 export * from "./text-moderation-runtime.ts";
 export * from "./use-cases/account-erasure-orchestration.ts";
 export * from "./use-cases/age-access.ts";
+export * from "./use-cases/age-verification.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";
 export * from "./use-cases/community/get-canonical-community-route.ts";
 export * from "./use-cases/community/list-my-community-memberships.ts";
