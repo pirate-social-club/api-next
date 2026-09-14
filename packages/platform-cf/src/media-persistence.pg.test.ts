@@ -58,7 +58,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 60;
+const testCount = 61;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4521,6 +4521,86 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         (await admin.query("SELECT * FROM media_operator_reprocess_actions")).rows,
       ).toHaveLength(1);
       expect((await admin.query("SELECT * FROM media_processing_attempts")).rows).toHaveLength(0);
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
+  test("resumes publication after the decision commit response is lost", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, true);
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      let loseResponse = true;
+      const interrupted: MediaProcessingStore = {
+        ...store,
+        commitDecision: async (authority, committedDecision) => {
+          const result = await store.commitDecision(authority, committedDecision);
+          if (loseResponse) {
+            loseResponse = false;
+            throw new Error("decision response lost");
+          }
+          return result;
+        },
+      };
+      const providers = new Proxy({} as MediaProcessingProviders, {
+        get: () => {
+          throw new Error("persisted analysis must avoid provider calls");
+        },
+      });
+      const payload = {
+        outboxId: "media_pg_analysis_outbox",
+        submissionId: submission,
+        operationId: operation,
+        workflowRevision: 1,
+      };
+      const options = {
+        enabled: true,
+        workerId: "decision-response-loss-worker",
+        now: Date.now,
+        policyRevision: "fixture-v1",
+        transformAdapterRevision: "fixture-v1",
+        metadataAdapterRevision: "fixture-v1",
+        classifierTimeoutMs: 10_000,
+        transformRuntimeMs: 60_000,
+        maximumSampleBytes: 1_000_000,
+      };
+
+      await expect(
+        Effect.runPromise(
+          runMediaProcessingWorkflow(payload, "analysis_launch", {
+            store: interrupted,
+            providers,
+            options,
+          }),
+        ),
+      ).rejects.toThrow("decision response lost");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM media_publication_decisions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ count: 1 }]);
+      expect((await admin.query("SELECT * FROM media_publication_projections")).rows).toHaveLength(
+        0,
+      );
+
+      expect(
+        await Effect.runPromise(
+          runMediaProcessingWorkflow(payload, "analysis_launch", { store, providers, options }),
+        ),
+      ).toEqual({ outcome: "published_without_alignment" });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM media_publication_decisions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ count: 1 }]);
+      expect((await admin.query("SELECT * FROM media_publication_projections")).rows).toHaveLength(
+        1,
+      );
     });
     completedTestCount += 1;
   }, 60_000);
