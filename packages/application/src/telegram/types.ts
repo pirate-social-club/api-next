@@ -162,6 +162,7 @@ export interface TelegramApi {
     delivery: DeliveryRecord,
     operation: "send" | "edit" | "delete",
     audio?: Uint8Array,
+    photo?: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }>,
   ): Promise<TelegramDispatchOutcome>;
   downloadVoice(token: string, fileId: string): Promise<Uint8Array>;
 }
@@ -312,7 +313,23 @@ export interface TelegramStore {
     fence: InboxFence,
   ): Promise<boolean>;
   cleanup(): Promise<void>;
+  publicationPoster(
+    post: Readonly<{ id: string; communityId: string }>,
+  ): Promise<TelegramPublicationPoster | null>;
 }
+
+/**
+ * Authorized storage identity for a publication poster. It carries no locator
+ * that a caller may fetch directly; the owning bucket reader validates the
+ * sealed object against these hashes before any Telegram transfer.
+ */
+export type TelegramPublicationPoster = Readonly<{
+  artifactRef: string;
+  key: string;
+  sha256: string;
+  sourceSha256: string;
+  policyRevision: string;
+}>;
 
 export interface TelegramServices {
   store: TelegramStore;
@@ -326,6 +343,8 @@ export interface TelegramServices {
     work: { kind: "inbox" | "delivery"; id: string },
     options?: { delaySeconds?: number },
   ) => Promise<void>;
+  /** Reads the sealed poster bytes for an authorized identity, or null. */
+  posterBytes?: (poster: TelegramPublicationPoster) => Promise<Uint8Array | null>;
 }
 
 export function integrationView(record: IntegrationRecord): TelegramIntegration {

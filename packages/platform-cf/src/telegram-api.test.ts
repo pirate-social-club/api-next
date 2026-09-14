@@ -187,3 +187,19 @@ test("delete permission rejection and transport uncertainty never confirm absenc
     ),
   ).toEqual({ kind: "uncertain", code: "acknowledgement_unavailable" });
 });
+
+test("an authorized poster transfers as a captioned photo", async () => {
+  const f = fixture(() => Response.json({ ok: true, result: { message_id: 20 } }));
+  expect(
+    await f.api.dispatch(token, delivery, "send", undefined, {
+      bytes: new Uint8Array([1, 2, 3]),
+      contentType: "image/jpeg",
+    }),
+  ).toEqual({ kind: "confirmed", messageId: 20 });
+  expect(String(f.urls[0])).toContain("/sendPhoto");
+  const form = f.requests[0]?.body as FormData;
+  expect(form).toBeInstanceOf(FormData);
+  expect(form.get("caption")).toBe("Public post");
+  expect(form.get("photo")).toBeInstanceOf(Blob);
+  expect(form.get("text")).toBeNull();
+});

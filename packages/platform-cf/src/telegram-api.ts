@@ -40,7 +40,7 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
         throw new TelegramFailure({ reason: "unavailable" });
       }
     },
-    async dispatch(token, delivery, operation, audio): Promise<TelegramDispatchOutcome> {
+    async dispatch(token, delivery, operation, audio, photo): Promise<TelegramDispatchOutcome> {
       const message = delivery.desired;
       const payload: Record<string, unknown> = { chat_id: delivery.chatId };
       let method: string;
@@ -72,6 +72,12 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
             payload.media = { type: message.kind, media: message.media, caption: message.text };
           }
           payload.reply_markup ??= { inline_keyboard: [] };
+        } else if (photo) {
+          // The authorized sealed poster transfers as a photo with the text as
+          // its caption; a later edit updates that caption through
+          // editMessageText.
+          method = "sendPhoto";
+          if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
         } else {
           const methods = {
             text: "sendMessage",
@@ -91,12 +97,19 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
         }
       }
       let body: Record<string, unknown> | FormData = payload;
-      if (audio) {
+      if (audio || photo) {
         const form = new FormData();
         for (const [key, value] of Object.entries(payload))
-          if (key !== "voice")
+          if (key !== "voice" && key !== "photo")
             form.set(key, typeof value === "string" ? value : JSON.stringify(value));
-        form.set("voice", new Blob([new Uint8Array(audio)], { type: "audio/mpeg" }), "reply.mp3");
+        if (audio)
+          form.set("voice", new Blob([new Uint8Array(audio)], { type: "audio/mpeg" }), "reply.mp3");
+        if (photo)
+          form.set(
+            "photo",
+            new Blob([new Uint8Array(photo.bytes)], { type: photo.contentType }),
+            "poster.jpg",
+          );
         body = form;
       }
       try {

@@ -220,6 +220,28 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
     );
     return;
   }
-  const outcome = await services.api.dispatch(credentials.token, delivery, decision, audio);
+  let photo: { bytes: Uint8Array; contentType: "image/jpeg" } | undefined;
+  if (
+    delivery.kind === "publication" &&
+    delivery.postId &&
+    decision === "send" &&
+    services.posterBytes
+  ) {
+    try {
+      // Eligibility and the sealed identity are re-resolved at dispatch, and
+      // the bucket reader validates the object before transfer. Any miss
+      // degrades to the text publication instead of failing it.
+      const poster = await services.store.publicationPoster({
+        id: delivery.postId,
+        communityId: delivery.communityId,
+      });
+      const bytes = poster === null ? null : await services.posterBytes(poster);
+      if (bytes !== null && bytes.byteLength > 0 && bytes.byteLength <= 5_242_880)
+        photo = { bytes, contentType: "image/jpeg" };
+    } catch {
+      /* Poster transfer is optional; the text publication stands. */
+    }
+  }
+  const outcome = await services.api.dispatch(credentials.token, delivery, decision, audio, photo);
   await services.store.finishDelivery(delivery, outcome, decision);
 }

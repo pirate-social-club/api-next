@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { processTelegramInbox } from "./chat.ts";
-import { acceptTelegramUpdate, processTelegramDelivery } from "./delivery.ts";
+import { acceptTelegramUpdate, processTelegramDelivery, telegramPublication } from "./delivery.ts";
 import { getTelegramSettings, setAssistantCredential } from "./settings.ts";
 import {
   DEFAULT_ASSISTANT_POLICY,
@@ -1175,4 +1175,124 @@ test("an oversized audio attachment is refused before download", async () => {
   expect(replies).toEqual([
     "Audio input is unavailable. Send a voice note or a text message instead.",
   ]);
+});
+
+test("a publication send attaches the authorized poster when bytes are available", async () => {
+  const post = {
+    id: "post",
+    communityId: "community",
+    title: "Public",
+    body: "Body",
+    kind: "video",
+    url: "https://pirate.example.invalid/post",
+    studyUrl: null,
+    karaokeUrl: null,
+    media: null,
+    rewardText: null,
+  };
+  const delivery: DeliveryRecord = {
+    id: "publication-delivery",
+    communityId: "community",
+    botEpoch: "epoch",
+    chatId: "-10001",
+    kind: "publication",
+    postId: "post",
+    state: "pending",
+    desired: telegramPublication(post),
+    desiredHash: `hash:${JSON.stringify(telegramPublication(post))}`,
+    confirmed: null,
+    confirmedHash: null,
+    messageId: null,
+    attempt: "attempt",
+    attemptCount: 1,
+    lastError: null,
+    createdAt: "2026-09-08T00:00:00Z",
+  };
+  const dispatched: unknown[] = [];
+  const service = services({
+    claimDelivery: async () => delivery,
+    integration: async () => ({ ...integration, channelId: "-10001" }),
+    publicPosts: async () => [post],
+    publicationPoster: async () => ({
+      artifactRef: "media://derived/key/poster.jpg",
+      key: "video-analysis/op/v1/c1/a1/poster.jpg",
+      sha256: "a",
+      sourceSha256: "b",
+      policyRevision: "1",
+    }),
+    finishDelivery: async () => {},
+  });
+  service.vault.open = async () => JSON.stringify({ token: "123:fixture", secret: "s" });
+  service.posterBytes = async () => new Uint8Array([9, 9]);
+  service.api = {
+    dispatch: async (
+      _token: string,
+      _delivery: DeliveryRecord,
+      _operation: "send" | "edit" | "delete",
+      _audio: Uint8Array | undefined,
+      photo: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }> | undefined,
+    ) => {
+      dispatched.push(photo);
+      return { kind: "confirmed", messageId: 5 };
+    },
+  } as unknown as TelegramServices["api"];
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched).toEqual([{ bytes: new Uint8Array([9, 9]), contentType: "image/jpeg" }]);
+});
+
+test("a publication send without poster bytes stays text", async () => {
+  const post = {
+    id: "post",
+    communityId: "community",
+    title: "Public",
+    body: "Body",
+    kind: "video",
+    url: "https://pirate.example.invalid/post",
+    studyUrl: null,
+    karaokeUrl: null,
+    media: null,
+    rewardText: null,
+  };
+  const delivery: DeliveryRecord = {
+    id: "publication-delivery",
+    communityId: "community",
+    botEpoch: "epoch",
+    chatId: "-10001",
+    kind: "publication",
+    postId: "post",
+    state: "pending",
+    desired: telegramPublication(post),
+    desiredHash: `hash:${JSON.stringify(telegramPublication(post))}`,
+    confirmed: null,
+    confirmedHash: null,
+    messageId: null,
+    attempt: "attempt",
+    attemptCount: 1,
+    lastError: null,
+    createdAt: "2026-09-08T00:00:00Z",
+  };
+  const dispatched: unknown[] = [];
+  const service = services({
+    claimDelivery: async () => delivery,
+    integration: async () => ({ ...integration, channelId: "-10001" }),
+    publicPosts: async () => [post],
+    publicationPoster: async () => null,
+    finishDelivery: async () => {},
+  });
+  service.vault.open = async () => JSON.stringify({ token: "123:fixture", secret: "s" });
+  service.posterBytes = async () => new Uint8Array([9, 9]);
+  service.api = {
+    dispatch: async (
+      _token: string,
+      _delivery: DeliveryRecord,
+      _operation: "send" | "edit" | "delete",
+      _audio: Uint8Array | undefined,
+      photo: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }> | undefined,
+    ) => {
+      dispatched.push(photo);
+      return { kind: "confirmed", messageId: 5 };
+    },
+  } as unknown as TelegramServices["api"];
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched).toEqual([undefined]);
 });
