@@ -433,11 +433,15 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
-      - name: Prove reset shape against PostgreSQL 18.6
+      - name: Prove reset shape and disposable reconstruction against PostgreSQL 18.6
         env:
           CONTROL_PLANE_POSTGRES18_SHAPE_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES18_SHAPE_TEST_REQUIRED: "1"
-        run: bun test scripts/staging-persona-schema-shape.pg18.test.ts
+          CONTROL_PLANE_POSTGRES18_DISPOSABLE_RESET_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        run: >-
+          bun test
+          scripts/staging-persona-schema-shape.pg18.test.ts
+          scripts/staging-persona-disposable-reset.pg.test.ts
 
   postgres17:
     runs-on: ubuntu-latest

@@ -16,6 +16,11 @@ import {
 import { compileApprovedStagingPrivileges } from "./staging-persona-approved-privileges.ts";
 import { collectStagingCloudflareProducers } from "./staging-persona-cloudflare-producers.ts";
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
+import {
+  withPlanetScaleDatabaseCreate,
+  writeDisposableCapabilityRecovery,
+} from "./staging-persona-disposable-capability.ts";
+import { reconstructDisposableStaging } from "./staging-persona-disposable-reset.ts";
 import { readResetGrantCatalog } from "./staging-persona-grant-catalog.ts";
 import { collectStagingIngressFence } from "./staging-persona-ingress-collector.ts";
 import { allowlistedReason } from "./staging-persona-rehearsal-failure.ts";
@@ -330,6 +335,9 @@ export async function measureStagingLiveAdmission(input: {
    * only so disposable-PostgreSQL fixtures, which cannot rename their database,
    * can exercise this exact admission path. Live callers never pass it. */
   readonly expectedDatabase?: string;
+  readonly withDatabaseCreate?: Parameters<
+    typeof reconstructDisposableStaging
+  >[2]["withDatabaseCreate"];
 }) {
   const plan = validateStagingResetArtifacts(loadStagingResetArtifacts());
   const target = (
@@ -419,6 +427,9 @@ export async function measureStagingLiveAdmission(input: {
       assertLiveBaselineReference(input.configuration, sourceSha, digest);
     },
     assertFreshFence,
+    ...(input.withDatabaseCreate === undefined
+      ? {}
+      : { withDatabaseCreate: input.withDatabaseCreate }),
   } as const;
 }
 
@@ -559,6 +570,7 @@ export interface StagingLiveLaunchDependencies {
   readonly makeIngressRefence: typeof makeLiveIngressRefence;
   readonly makeVerifier: typeof makeSolidServingVerifier;
   readonly makeApplier: typeof makeLiveStagingUpgradeApplier;
+  readonly reset: typeof reconstructDisposableStaging;
 }
 
 export async function runStagingResetReleaseLive(
@@ -579,6 +591,13 @@ export async function runStagingResetReleaseLive(
     JSON.parse(await Bun.file(configPath).text()) as unknown,
   );
   if (!configuration.executionAuthorized) throw new Error("staging_live_execution_unauthorized");
+  if (
+    configuration.version !== "staging-disposable-release-live-v1" ||
+    configuration.disposable === undefined
+  ) {
+    throw new Error("staging_disposable_release_required");
+  }
+  const disposable = configuration.disposable;
   const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
   const assertCheckouts = options.dependencies?.assertCheckouts ?? assertLiveStagingCheckouts;
   assertCheckouts(repositoryRoot);
@@ -590,6 +609,7 @@ export async function runStagingResetReleaseLive(
   const makeIngressRefence = options.dependencies?.makeIngressRefence ?? makeLiveIngressRefence;
   const makeVerifier = options.dependencies?.makeVerifier ?? makeSolidServingVerifier;
   const makeApplier = options.dependencies?.makeApplier ?? makeLiveStagingUpgradeApplier;
+  const reset = options.dependencies?.reset ?? reconstructDisposableStaging;
   const checkouts = STAGING_LIVE_RELEASE.checkouts;
   const solidInput = configuration.deploymentInputs.find(
     (input) => input.worker === checkouts.solid.worker,
@@ -633,7 +653,26 @@ export async function runStagingResetReleaseLive(
         operatorRole,
         runtimeRole,
         fences,
+        withDatabaseCreate: ({ database, ownerRole, execute }) => {
+          if (database !== "postgres" || ownerRole !== operatorRole) {
+            throw new Error("staging_disposable_target_changed");
+          }
+          return withPlanetScaleDatabaseCreate({
+            ownerRole,
+            roleName: disposable.roleName,
+            accessHost: new URL(connectionString).hostname,
+            branchId: disposable.branchId,
+            execute,
+            recordRecovery: (evidence) =>
+              writeDisposableCapabilityRecovery(configuration.markerDirectory, evidence),
+          });
+        },
       });
+      const databaseCreate = admission.withDatabaseCreate;
+      if (databaseCreate === undefined) {
+        throw new Error("staging_disposable_capability_unbound");
+      }
+      const disposableAdmission = { ...admission, withDatabaseCreate: databaseCreate };
       const surfaces = makeSurfaces(configuration, {
         accountId: CLOUDFLARE_ACCOUNT_ID,
         apiToken,
@@ -652,7 +691,8 @@ export async function runStagingResetReleaseLive(
         configuration,
         database: admin,
         artifacts: loadStagingResetArtifacts(),
-        admission,
+        admission: disposableAdmission,
+        reset,
         surfaces,
         refence,
         // The composition requires an object with `apply`. A bare function

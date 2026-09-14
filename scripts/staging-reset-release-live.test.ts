@@ -56,11 +56,17 @@ const plan = {
   reviewedGrantDigest: "d".repeat(64),
   surfaceOrder: ["versions", "database", "ingress", "producers"],
 };
+const disposable = {
+  mode: "drop_schema_recreate",
+  roleName: "api-next-disposable-reset-fixture",
+  branchId: "syu03e00w3ux",
+  roleTtlMinutes: 30,
+};
 
 const configuration = (overrides: { markerDirectory?: string } = {}) => ({
-  version: "staging-reset-release-live-v1",
+  version: "staging-disposable-release-live-v1",
   executionAuthorized: false,
-  approvedPlanDigest: reconciliationDigest(JSON.stringify(plan)),
+  approvedPlanDigest: reconciliationDigest(JSON.stringify({ plan, disposable })),
   plan,
   deploymentInputs: [
     {
@@ -100,11 +106,14 @@ const configuration = (overrides: { markerDirectory?: string } = {}) => ({
     removal: { maxOwnLockRows: 1_000, maxClusterLockRows: 1_200, maxClosureObjects: 800 },
     replay: { maxLockRows: 1_000, maxClusterLockRows: 1_200, statementTimeoutMs: 120_000 },
   },
+  disposable,
 });
 
 test("the reviewed live configuration binds the plan, checkouts and versions", () => {
   const validated = validateStagingResetReleaseLiveConfiguration(configuration());
-  expect(validated.approvedPlanDigest).toBe(reconciliationDigest(JSON.stringify(plan)));
+  expect(validated.approvedPlanDigest).toBe(
+    reconciliationDigest(JSON.stringify({ plan, disposable })),
+  );
   expect(validated.deploymentInputs).toHaveLength(2);
   expect(validated.plan.surfaceOrder).toEqual(["versions", "database", "ingress", "producers"]);
 });
@@ -178,9 +187,21 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
   expect(() =>
     validateStagingResetReleaseLiveConfiguration({
       ...base,
+      disposable: { ...disposable, roleName: "api-next-disposable-reset-changed" },
+    }),
+  ).toThrow("staging_live_release_plan_changed");
+  expect(() =>
+    validateStagingResetReleaseLiveConfiguration({
+      ...base,
       plan: { ...plan, surfaceOrder: ["versions", "ingress", "database", "producers"] },
       approvedPlanDigest: reconciliationDigest(
-        JSON.stringify({ ...plan, surfaceOrder: ["versions", "ingress", "database", "producers"] }),
+        JSON.stringify({
+          plan: {
+            ...plan,
+            surfaceOrder: ["versions", "ingress", "database", "producers"],
+          },
+          disposable,
+        }),
       ),
     }),
   ).toThrow("staging_live_release_order_changed");
@@ -194,7 +215,7 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
     validateStagingResetReleaseLiveConfiguration({
       ...base,
       plan: changedQueues,
-      approvedPlanDigest: reconciliationDigest(JSON.stringify(changedQueues)),
+      approvedPlanDigest: reconciliationDigest(JSON.stringify({ plan: changedQueues, disposable })),
     }),
   ).toThrow("staging_live_release_queue_set_changed");
   const changedServing = { ...plan, servingWorkers: plan.servingWorkers.slice(0, 3) };
@@ -202,7 +223,9 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
     validateStagingResetReleaseLiveConfiguration({
       ...base,
       plan: changedServing,
-      approvedPlanDigest: reconciliationDigest(JSON.stringify(changedServing)),
+      approvedPlanDigest: reconciliationDigest(
+        JSON.stringify({ plan: changedServing, disposable }),
+      ),
     }),
   ).toThrow("staging_live_release_serving_set_changed");
 });

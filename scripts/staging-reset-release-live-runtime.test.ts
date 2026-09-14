@@ -424,6 +424,7 @@ async function launcherHarness() {
       fetch: acceptanceFetch as unknown as typeof globalThis.fetch,
       refenceIngress: async () => {},
       dependencies: {
+        reset: async () => makeReset() as never,
         assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
         measureAdmission: fakeAdmission(directory),
         makeSurfaces: (() => fakeSurfaces()) as never,
@@ -520,6 +521,7 @@ test("an acceptance failure after ingress opens re-fences through the production
         connect: () => clients.shift() as Client,
         fetch,
         dependencies: {
+          reset: async () => makeReset() as never,
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
           measureAdmission: fakeAdmission(directory),
           makeSurfaces: (() => fakeSurfaces()) as never,
@@ -610,6 +612,7 @@ test("a stalled probe records ingress failure and the database re-fence still ru
         connect: () => clients.shift() as Client,
         fetch,
         dependencies: {
+          reset: async () => makeReset() as never,
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
           measureAdmission: fakeAdmission(directory),
           makeSurfaces: (() => fakeSurfaces()) as never,

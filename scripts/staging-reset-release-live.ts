@@ -32,6 +32,10 @@ import {
 import type { RefencedOutcomes, StagingRefence } from "./staging-reset-release-executor.ts";
 import {
   reconstructAndReleaseStaging,
+  type StagingResetAdmission,
+  type StagingResetArtifacts,
+  type StagingResetCompletion,
+  type StagingResetDatabase,
   StagingResetRunUnresolved,
   StagingUpgradeFailedRestoreRequired,
 } from "./staging-reset-release-runtime.ts";
@@ -103,9 +107,10 @@ const DeploymentInput = Schema.Struct({
 
 /** The owner-held live-window inputs. Shape validation is not approval: every
  * cross-binding below must match the reviewed plan and the reviewed checkouts,
- * and the recorded owner approval must name this exact plan digest. */
+ * and the recorded owner approval must name the digest of the release plan and
+ * destructive reset mode together. */
 export const StagingResetReleaseLiveConfiguration = Schema.Struct({
-  version: Schema.Literal("staging-reset-release-live-v1"),
+  version: Schema.Literals(["staging-reset-release-live-v1", "staging-disposable-release-live-v1"]),
   executionAuthorized: Schema.Boolean,
   approvedPlanDigest: ReconciliationDigest,
   plan: KaraokeReleasePlan,
@@ -147,6 +152,14 @@ export const StagingResetReleaseLiveConfiguration = Schema.Struct({
   markerDirectory: Schema.String.check(Schema.isMinLength(1)),
   validUntilMs: Schema.Int.check(Schema.isGreaterThan(0)),
   budgets: Schema.Struct({ removal: Budget, replay: ReplayBudget }),
+  disposable: Schema.optional(
+    Schema.Struct({
+      mode: Schema.Literal("drop_schema_recreate"),
+      roleName: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u)),
+      branchId: Schema.Literal("syu03e00w3ux"),
+      roleTtlMinutes: Schema.Literal(30),
+    }),
+  ),
 });
 export type StagingResetReleaseLiveConfiguration = typeof StagingResetReleaseLiveConfiguration.Type;
 
@@ -156,7 +169,17 @@ export type StagingResetReleaseLiveConfiguration = typeof StagingResetReleaseLiv
  * checkouts with the exact version IDs pinned in the plan. */
 export function validateStagingResetReleaseLiveConfiguration(value: unknown) {
   const config = decodeReconciliation(StagingResetReleaseLiveConfiguration, value);
-  if (config.approvedPlanDigest !== reconciliationDigest(JSON.stringify(config.plan)))
+  if (
+    (config.version === "staging-reset-release-live-v1" && config.disposable !== undefined) ||
+    (config.version === "staging-disposable-release-live-v1" && config.disposable === undefined)
+  ) {
+    throw new Error("staging_live_reset_mode_unreviewed");
+  }
+  const approvedMaterial =
+    config.version === "staging-disposable-release-live-v1"
+      ? { plan: config.plan, disposable: config.disposable }
+      : config.plan;
+  if (config.approvedPlanDigest !== reconciliationDigest(JSON.stringify(approvedMaterial)))
     throw new Error("staging_live_release_plan_changed");
   if (
     JSON.stringify(config.plan.surfaceOrder) !== JSON.stringify(STAGING_LIVE_RELEASE.surfaceOrder)
@@ -401,11 +424,18 @@ export function makeLiveRecoveryReceipt(markerDirectory: string) {
  * the release plan cannot carry: the plan activates only the four producer
  * workers, and the application Worker is verified here, after ingress opens
  * and before the acceptance read that gates producer release. */
-export async function runLiveStagingResetReleaseComposition(input: {
+export async function runLiveStagingResetReleaseComposition<
+  Admission extends StagingResetAdmission,
+>(input: {
   readonly configuration: StagingResetReleaseLiveConfiguration;
-  readonly database: Parameters<typeof reconstructAndReleaseStaging>[0]["database"];
-  readonly artifacts: Parameters<typeof reconstructAndReleaseStaging>[0]["artifacts"];
-  readonly admission: Parameters<typeof reconstructAndReleaseStaging>[0]["admission"];
+  readonly database: StagingResetDatabase;
+  readonly artifacts: StagingResetArtifacts;
+  readonly admission: Admission;
+  readonly reset?: (
+    database: StagingResetDatabase,
+    artifacts: StagingResetArtifacts,
+    admission: Admission,
+  ) => Promise<StagingResetCompletion>;
   readonly surfaces: KaraokeReleaseSurfaces;
   readonly refence: StagingRefence;
   readonly upgrade: { apply: () => Promise<StagingUpgradeReceipt> };
@@ -435,6 +465,7 @@ export async function runLiveStagingResetReleaseComposition(input: {
       database: input.database,
       artifacts: input.artifacts,
       admission: input.admission,
+      ...(input.reset === undefined ? {} : { reset: input.reset }),
       release: {
         plan: configuration.plan,
         surfaces: input.surfaces,
@@ -497,6 +528,12 @@ export async function verifyLiveStagingRelease() {
   if (!path) throw new Error("staging_live_configuration_missing");
   const raw = JSON.parse(await Bun.file(path).text()) as unknown;
   const configuration = validateStagingResetReleaseLiveConfiguration(raw);
+  if (
+    configuration.version !== "staging-disposable-release-live-v1" ||
+    configuration.disposable === undefined
+  ) {
+    throw new Error("staging_disposable_release_required");
+  }
   const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
   const checkouts = assertLiveStagingCheckouts(repositoryRoot);
   return {
@@ -513,6 +550,8 @@ export async function verifyLiveStagingRelease() {
     reviewed_checkouts: checkouts,
     execution_authorized: configuration.executionAuthorized,
     upgrade_source_sha: loadStagingUpgradeArtifacts().sourceSha,
+    reset_mode: configuration.disposable.mode,
+    temporary_role_name: configuration.disposable.roleName,
     database_connected: false,
     provider_contacted: false,
   };

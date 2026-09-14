@@ -37,10 +37,17 @@ export const plan = {
   surfaceOrder: ["versions", "database", "ingress", "producers"],
 };
 
+const disposable = {
+  mode: "drop_schema_recreate",
+  roleName: "api-next-disposable-reset-fixture",
+  branchId: "syu03e00w3ux",
+  roleTtlMinutes: 30,
+} as const;
+
 export const configuration = (markerDirectory: string) => ({
-  version: "staging-reset-release-live-v1",
+  version: "staging-disposable-release-live-v1",
   executionAuthorized: true,
-  approvedPlanDigest: reconciliationDigest(JSON.stringify(plan)),
+  approvedPlanDigest: reconciliationDigest(JSON.stringify({ plan, disposable })),
   plan,
   deploymentInputs: [
     {
@@ -80,6 +87,7 @@ export const configuration = (markerDirectory: string) => ({
     removal: { maxOwnLockRows: 1_000, maxClusterLockRows: 1_200, maxClosureObjects: 800 },
     replay: { maxLockRows: 1_000, maxClusterLockRows: 1_200, statementTimeoutMs: 120_000 },
   },
+  disposable,
 });
 
 export function fakeClient(role: string, ends: string[], name: string): Client {
@@ -97,7 +105,7 @@ export function fakeClient(role: string, ends: string[], name: string): Client {
 }
 
 export function fakeAdmission(directory: string) {
-  return (async (input: { admin: Client }) => ({
+  return (async (input: { admin: Client; withDatabaseCreate?: unknown }) => ({
     markerDirectory: directory,
     recoveryDigest: "7".repeat(64),
     targetAndFenceDigest: "6".repeat(64),
@@ -123,6 +131,7 @@ export function fakeAdmission(directory: string) {
     async assertFenceAndRecovery() {},
     async assertBaselineReference() {},
     async assertFreshFence() {},
+    withDatabaseCreate: input.withDatabaseCreate,
     admin: input.admin,
   })) as never;
 }
