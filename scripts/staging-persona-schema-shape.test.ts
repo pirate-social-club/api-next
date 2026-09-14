@@ -9,6 +9,7 @@ type CatalogOptions = Readonly<{
   notNullName?: string;
   nullable?: boolean;
   ordinaryConstraint?: string;
+  domainNotNull?: boolean;
 }>;
 
 function catalog(options: CatalogOptions): Pick<Client, "query"> {
@@ -50,9 +51,22 @@ function catalog(options: CatalogOptions): Pick<Client, "query"> {
       }
       if (sql.includes("pg_catalog.pg_constraint")) {
         return {
-          rows: options.ordinaryConstraint
-            ? [{ relname: "example", contype: "c", definition: options.ordinaryConstraint }]
-            : [],
+          rows: [
+            ...(options.ordinaryConstraint
+              ? [{ relname: "example", contype: "c", definition: options.ordinaryConstraint }]
+              : []),
+            ...(options.domainNotNull
+              ? [
+                  {
+                    relname: null,
+                    conname: "shape_domain_not_null",
+                    contype: "n",
+                    convalidated: true,
+                    definition: "NOT NULL VALUE",
+                  },
+                ]
+              : []),
+          ],
         } as never;
       }
       return { rows: [] } as never;
@@ -98,6 +112,13 @@ describe("reset schema shape", () => {
     const constrained = await readResetSchemaShape(
       catalog({ major: 18, ordinaryConstraint: "CHECK ((value > 0))" }),
     );
+
+    expect(constrained.sha256).not.toBe(original.sha256);
+  });
+
+  test("retains domain NOT NULL constraints in the digest", async () => {
+    const original = await readResetSchemaShape(catalog({ major: 18 }));
+    const constrained = await readResetSchemaShape(catalog({ major: 18, domainNotNull: true }));
 
     expect(constrained.sha256).not.toBe(original.sha256);
   });

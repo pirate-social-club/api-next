@@ -108,7 +108,8 @@ export async function readResetSchemaShape(admin: Pick<Client, "query">) {
     `SELECT r.relname,c.conname,c.contype,c.condeferrable,c.condeferred,c.convalidated,
       pg_catalog.pg_get_constraintdef(c.oid) AS definition FROM pg_catalog.pg_constraint c
       LEFT JOIN pg_catalog.pg_class r ON r.oid=c.conrelid WHERE c.connamespace='api_next'::regnamespace
-      AND coalesce(r.relname,'')<>'schema_migrations' AND c.contype<>'n'`,
+      AND coalesce(r.relname,'')<>'schema_migrations'
+      AND (c.contype<>'n' OR c.conrelid=0)`,
     `SELECT r.relname,pg_catalog.pg_get_indexdef(i.indexrelid) AS definition,
       i.indisvalid,i.indisready,i.indisclustered,i.indisreplident
       FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class r ON r.oid=i.indrelid
