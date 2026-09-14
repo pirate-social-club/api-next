@@ -145,6 +145,7 @@ TRUNCATE TABLE
   "data_registration_artifacts",
   "data_registration_attempt_transitions",
   "data_registration_command_replays",
+  "data_registration_metadata_snapshots",
   "data_registration_operations",
   "data_registration_outbox",
   "data_registration_parent_references",

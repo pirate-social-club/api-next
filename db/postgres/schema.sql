@@ -7275,6 +7275,46 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_data_metadata_artifact_snapshot() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE pinned bytea;
+BEGIN
+  IF NEW.artifact_kind NOT IN ('ip_metadata','nft_metadata') THEN RETURN NEW; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('data-metadata:' || NEW.registration_operation_id,0));
+  SELECT CASE NEW.artifact_kind WHEN 'ip_metadata' THEN ip_metadata_bytes ELSE nft_metadata_bytes END
+    INTO pinned FROM data_registration_metadata_snapshots
+    WHERE registration_operation_id=NEW.registration_operation_id;
+  IF pinned IS NOT NULL AND (NEW.canonical_sha256<>encode(sha256(pinned),'hex') OR NEW.byte_length<>octet_length(pinned)) THEN
+    RAISE EXCEPTION 'DATA metadata artifact conflicts with pinned preparation' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_metadata_snapshot() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'DATA metadata preparation is immutable' USING ERRCODE='23514';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('data-metadata:' || NEW.registration_operation_id,0));
+  IF EXISTS (
+    SELECT 1 FROM data_registration_artifacts a
+    WHERE a.registration_operation_id=NEW.registration_operation_id
+      AND a.artifact_kind IN ('ip_metadata','nft_metadata')
+      AND (a.canonical_sha256<>encode(sha256(CASE a.artifact_kind
+           WHEN 'ip_metadata' THEN NEW.ip_metadata_bytes ELSE NEW.nft_metadata_bytes END),'hex')
+        OR a.byte_length<>octet_length(CASE a.artifact_kind
+           WHEN 'ip_metadata' THEN NEW.ip_metadata_bytes ELSE NEW.nft_metadata_bytes END))
+  ) THEN
+    RAISE EXCEPTION 'DATA metadata preparation conflicts with retained artifact' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_data_registration_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -25114,6 +25154,21 @@ CREATE TABLE data_registration_command_replays (
     CONSTRAINT data_registration_replay_response_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))
 );
 
+CREATE TABLE data_registration_metadata_snapshots (
+    registration_operation_id text NOT NULL,
+    schema_revision text NOT NULL,
+    ip_metadata_bytes bytea NOT NULL,
+    nft_metadata_bytes bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_metadata_snapshots_check CHECK ((NOT (((convert_from(ip_metadata_bytes, 'UTF8'::name))::jsonb ->> 'schema_version'::text) IS DISTINCT FROM schema_revision))),
+    CONSTRAINT data_registration_metadata_snapshots_check1 CHECK ((NOT (((convert_from(nft_metadata_bytes, 'UTF8'::name))::jsonb ->> 'schema_version'::text) IS DISTINCT FROM schema_revision))),
+    CONSTRAINT data_registration_metadata_snapshots_ip_metadata_bytes_check CHECK ((octet_length(ip_metadata_bytes) > 0)),
+    CONSTRAINT data_registration_metadata_snapshots_ip_metadata_bytes_check1 CHECK ((jsonb_typeof((convert_from(ip_metadata_bytes, 'UTF8'::name))::jsonb) = 'object'::text)),
+    CONSTRAINT data_registration_metadata_snapshots_nft_metadata_bytes_check CHECK ((octet_length(nft_metadata_bytes) > 0)),
+    CONSTRAINT data_registration_metadata_snapshots_nft_metadata_bytes_check1 CHECK ((jsonb_typeof((convert_from(nft_metadata_bytes, 'UTF8'::name))::jsonb) = 'object'::text)),
+    CONSTRAINT data_registration_metadata_snapshots_schema_revision_check CHECK ((schema_revision = ANY (ARRAY['pirate-data-metadata-v1'::text, 'pirate-data-metadata-v2'::text])))
+);
+
 CREATE TABLE data_registration_operations (
     registration_operation_id text NOT NULL,
     community_id text NOT NULL,
@@ -32152,6 +32207,9 @@ ALTER TABLE ONLY data_registration_attempt_transitions
 ALTER TABLE ONLY data_registration_command_replays
     ADD CONSTRAINT data_registration_command_replays_pkey PRIMARY KEY (endpoint_template, idempotency_key);
 
+ALTER TABLE ONLY data_registration_metadata_snapshots
+    ADD CONSTRAINT data_registration_metadata_snapshots_pkey PRIMARY KEY (registration_operation_id);
+
 ALTER TABLE ONLY data_registration_operations
     ADD CONSTRAINT data_registration_operations_chain_id_asset_id_registration_key UNIQUE (chain_id, asset_id, registration_revision);
 
@@ -34558,6 +34616,10 @@ CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDAT
 
 CREATE TRIGGER dance_upload_reservations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_upload_reservations FOR EACH ROW EXECUTE FUNCTION guard_dance_upload_reservation();
 
+CREATE TRIGGER data_metadata_artifact_snapshot_guard BEFORE INSERT OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_metadata_artifact_snapshot();
+
+CREATE TRIGGER data_metadata_snapshot_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_metadata_snapshots FOR EACH ROW EXECUTE FUNCTION guard_data_metadata_snapshot();
+
 CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
@@ -36170,6 +36232,9 @@ ALTER TABLE ONLY data_registration_attempt_transitions
 
 ALTER TABLE ONLY data_registration_command_replays
     ADD CONSTRAINT data_registration_command_replay_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
+
+ALTER TABLE ONLY data_registration_metadata_snapshots
+    ADD CONSTRAINT data_registration_metadata_snaps_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
 
 ALTER TABLE ONLY data_registration_operations
     ADD CONSTRAINT data_registration_operations_community_id_actor_user_id_po_fkey FOREIGN KEY (community_id, actor_user_id, post_id) REFERENCES media_publication_projections(community_id, actor_user_id, post_id);

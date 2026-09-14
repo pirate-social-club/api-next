@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type DataRegistrationArtifact,
   deterministicDataRegistrationArtifactId,
   deterministicDataRegistrationAttemptId,
   deterministicDataRegistrationOperationId,
@@ -13,6 +14,10 @@ import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import {
+  type MetadataDocuments,
+  makePostgresMetadataSnapshotResolver,
+} from "./data/metadata-snapshot.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -1107,6 +1112,163 @@ suite("DATA registration persistence", () => {
         },
       });
       expect(created.kind).toBe("created");
+    });
+  });
+});
+
+async function metadataOperation(admin: Client, connection: string) {
+  const media = await seedPublishedSong(admin);
+  const runtime = makeDirectPostgresControlPlaneLayer(connection);
+  const store = makeDataRegistrationStore(runtime);
+  const id = deterministicDataRegistrationOperationId(1315n, media.postId, 1n);
+  const responseSnapshotBytes = new TextEncoder().encode("{}");
+  await store.createOperation({
+    registrationOperationId: id,
+    communityId: media.communityId,
+    actorUserId: media.accountId,
+    submissionId: media.submissionId,
+    mediaOperationId: media.mediaOperationId,
+    postId: media.postId,
+    assetId: media.postId,
+    chainId: 1315n,
+    registrationRevision: 1n,
+    publicationCreationRevision: 2n,
+    publicationAudioRevision: 1n,
+    publicationAnalysisRevision: 1n,
+    publicationDecisionRevision: 1n,
+    canonicalAudioSha256: hash("a"),
+    workflowRevision: 1n,
+    workflowInstanceId: deterministicDataRegistrationWorkflowId(id, 1n),
+    outboxId: deterministicDataRegistrationOutboxId(id, 1n),
+    outboxEffectIdentity: `${id}:launch:r1`,
+    endpointTemplate: "/internal/data-registration/operations",
+    idempotencyKey: `${id}:create`,
+    requestHash: hash("2"),
+    responseSnapshotBytes,
+    responseSnapshotSha256: await sha256Hex(responseSnapshotBytes),
+  });
+  return { id, store, resolve: makePostgresMetadataSnapshotResolver(runtime) };
+}
+const metadataDocuments = (rating: "general" | "adult_18", legacy = false): MetadataDocuments => ({
+  schemaRevision: legacy ? "pirate-data-metadata-v1" : "pirate-data-metadata-v2",
+  ipMetadata: JSON.stringify({
+    schema_version: legacy ? "pirate-data-metadata-v1" : "pirate-data-metadata-v2",
+    ...(legacy ? {} : { content_rating: rating }),
+  }),
+  nftMetadata: JSON.stringify({
+    schema_version: legacy ? "pirate-data-metadata-v1" : "pirate-data-metadata-v2",
+    attributes: legacy ? [] : [{ trait_type: "Content rating", value: rating }],
+  }),
+});
+
+suite("DATA metadata preparation snapshots", () => {
+  test("pins a whole pair under concurrent preparation and prevents artifact or snapshot drift", async () => {
+    await withSchema(async (admin, connection) => {
+      const { id, store, resolve } = await metadataOperation(admin, connection);
+      const general = metadataDocuments("general");
+      const adult = metadataDocuments("adult_18");
+      const legacy = metadataDocuments("general", true);
+      const [first, second] = await Promise.all([
+        resolve({ operationId: id, current: general, legacy }),
+        resolve({ operationId: id, current: adult, legacy }),
+      ]);
+      expect(first).toEqual(second);
+      expect(await resolve({ operationId: id, current: adult, legacy })).toEqual(first);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM data_registration_metadata_snapshots"))
+          .rows[0].n,
+      ).toBe(1);
+      await expect(
+        admin.query(
+          "UPDATE data_registration_metadata_snapshots SET ip_metadata_bytes=convert_to($1,'UTF8') WHERE registration_operation_id=$2",
+          [adult.ipMetadata, id],
+        ),
+      ).rejects.toThrow("immutable");
+      await expect(
+        admin.query(
+          "DELETE FROM data_registration_metadata_snapshots WHERE registration_operation_id=$1",
+          [id],
+        ),
+      ).rejects.toThrow("immutable");
+      const bytes = new TextEncoder().encode(first.ipMetadata);
+      const artifact: DataRegistrationArtifact = {
+        artifactId: deterministicDataRegistrationArtifactId(id, "ip_metadata"),
+        registrationOperationId: id,
+        artifactKind: "ip_metadata" as const,
+        sourceRef: `data-registration://canonical/${id}/ip_metadata`,
+        mediaType: "application/json",
+        byteLength: BigInt(bytes.length),
+        canonicalSha256: await sha256Hex(bytes),
+        canonicalizationRevision: "rfc8785-jcs-v1",
+      };
+      await expect(
+        store.recordArtifact({ ...artifact, canonicalSha256: hash("f") }),
+      ).rejects.toThrow();
+      expect(await store.recordArtifact(artifact)).toBe("created");
+      expect(await store.recordArtifact(artifact)).toBe("replay");
+    });
+  });
+
+  test("retains v1 bytes when only one legacy document has already been recorded", async () => {
+    await withSchema(async (admin, connection) => {
+      const { id, store, resolve } = await metadataOperation(admin, connection);
+      const legacy = metadataDocuments("general", true);
+      const bytes = new TextEncoder().encode(legacy.ipMetadata);
+      await store.recordArtifact({
+        artifactId: deterministicDataRegistrationArtifactId(id, "ip_metadata"),
+        registrationOperationId: id,
+        artifactKind: "ip_metadata",
+        sourceRef: `data-registration://canonical/${id}/ip_metadata`,
+        mediaType: "application/json",
+        byteLength: BigInt(bytes.length),
+        canonicalSha256: await sha256Hex(bytes),
+        canonicalizationRevision: "rfc8785-jcs-v1",
+      });
+      expect(
+        await resolve({ operationId: id, current: metadataDocuments("adult_18"), legacy }),
+      ).toEqual(legacy);
+      expect(
+        await resolve({
+          operationId: id,
+          current: metadataDocuments("general"),
+          legacy: metadataDocuments("adult_18"),
+        }),
+      ).toEqual(legacy);
+    });
+  });
+
+  test("refuses to replace a retained artifact that neither encoder can reproduce", async () => {
+    await withSchema(async (admin, connection) => {
+      const { id, store, resolve } = await metadataOperation(admin, connection);
+      await store.recordArtifact({
+        artifactId: deterministicDataRegistrationArtifactId(id, "ip_metadata"),
+        registrationOperationId: id,
+        artifactKind: "ip_metadata",
+        sourceRef: `data-registration://canonical/${id}/ip_metadata`,
+        mediaType: "application/json",
+        byteLength: 1n,
+        canonicalSha256: hash("e"),
+        canonicalizationRevision: "rfc8785-jcs-v1",
+      });
+      await expect(
+        resolve({
+          operationId: id,
+          current: metadataDocuments("adult_18"),
+          legacy: metadataDocuments("general", true),
+        }),
+      ).rejects.toThrow("cannot be reconstructed");
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM data_registration_metadata_snapshots"))
+          .rows[0].n,
+      ).toBe(0);
+      expect(
+        (
+          await admin.query(
+            "SELECT canonical_sha256 FROM data_registration_artifacts WHERE registration_operation_id=$1",
+            [id],
+          )
+        ).rows[0].canonical_sha256,
+      ).toBe(hash("e"));
     });
   });
 });

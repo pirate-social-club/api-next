@@ -160,6 +160,9 @@ const chain = (
   spgNftContract: `0x${string}` = "0x3333333333333333333333333333333333333333",
 ) => {
   const authority: DataRegistrationArtifactAuthorityReader = {
+    resolveMetadata: async () => {
+      throw new Error("chain adapter must not prepare metadata");
+    },
     read: async () => authorityValue,
     listPins: async () => [pin("ip_metadata", "b"), pin("nft_metadata", "c")],
   };
