@@ -23,7 +23,7 @@ import type { VideoWorkflowServices } from "../../../packages/application/src/vi
 import {
   type CloudflareWorkflowStepDo,
   isExplicitlyEnabled,
-  PROCESSING_WORKFLOW_STEP_OPTIONS,
+  SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleMediaProcessingQueueBatch } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 
@@ -163,7 +163,7 @@ export type MediaProcessingWorkflowEvent = Readonly<{
 }>;
 
 export interface MediaProcessingWorkflowStep
-  extends CloudflareWorkflowStepDo<typeof PROCESSING_WORKFLOW_STEP_OPTIONS> {
+  extends CloudflareWorkflowStepDo<typeof SONG_PIPELINE_WORKFLOW_STEP_OPTIONS> {
   readonly waitForEvent: <T>(
     name: string,
     options: Readonly<{ readonly type: string; readonly timeout: string }>,
@@ -195,7 +195,7 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
         result: MediaProcessingWorkflowResult;
       }> = await step.do(
         `media-processing-${sequence}-${eventType ?? "launch"}`,
-        PROCESSING_WORKFLOW_STEP_OPTIONS,
+        SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
         async () => {
           const resolvedEventType =
             eventType ??
