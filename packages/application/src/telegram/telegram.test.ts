@@ -1410,3 +1410,93 @@ test("a poster replacement without bytes retries instead of confirming a caption
     retryAfter: 60,
   });
 });
+
+const videoSourceIdentity = {
+  physicalKey: "immutable/operation-1/video/1",
+  canonicalSha256: "c".repeat(64),
+  rights: "original" as const,
+};
+
+function videoPublicationFixture(state: "pending" | "delivered", messageId: number | null) {
+  const dispatched: { photo: unknown; video: unknown }[] = [];
+  const finishes: unknown[][] = [];
+  const videoMessage = {
+    ...telegramPublication(publicationPost),
+    kind: "video" as const,
+    media: videoSourceIdentity.physicalKey,
+  };
+  const delivery: DeliveryRecord = {
+    id: "publication-delivery",
+    communityId: "community",
+    botEpoch: "epoch",
+    chatId: "-10001",
+    kind: "publication",
+    postId: "post",
+    state,
+    desired: videoMessage,
+    desiredHash: `hash:${JSON.stringify(videoMessage)}`,
+    confirmed: state === "delivered" ? telegramPublication(publicationPost) : null,
+    confirmedHash: state === "delivered" ? `hash:${JSON.stringify(telegramPublication(publicationPost))}` : null,
+    messageId,
+    attempt: "attempt",
+    attemptCount: 1,
+    lastError: null,
+    createdAt: "2026-09-08T00:00:00Z",
+  };
+  const service = services({
+    claimDelivery: async () => delivery,
+    integration: async () => ({ ...integration, channelId: "-10001" }),
+    publicPosts: async () => [publicationPost],
+    publicationVideo: async () => videoSourceIdentity,
+    publicationPoster: async () => publicationPosterIdentity,
+    finishDelivery: async (...args) => {
+      finishes.push(args);
+    },
+  });
+  service.vault.open = async () => JSON.stringify({ token: "123:fixture", secret: "s" });
+  service.api = {
+    dispatch: async (_token: string, _delivery: DeliveryRecord, _operation: "send" | "edit" | "delete", _audio: Uint8Array | undefined, photo: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }> | undefined, video: Readonly<{ bytes: Uint8Array; contentType: "video/mp4" }> | undefined) => {
+      dispatched.push({ photo, video });
+      return { kind: "confirmed" as const, messageId: 41 };
+    },
+  } as unknown as TelegramServices["api"];
+  return { service, dispatched, finishes };
+}
+
+test("a video publication transfers the accepted source", async () => {
+  const { service, dispatched, finishes } = videoPublicationFixture("pending", null);
+  service.videoSourceBytes = async () => ({ bytes: new Uint8Array([1, 2, 3]), contentType: "video/mp4" });
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched).toEqual([{ photo: undefined, video: { bytes: new Uint8Array([1, 2, 3]), contentType: "video/mp4" } }]);
+  expect(finishes[0]?.[3]).toBeUndefined();
+});
+
+test("a video publication falls back to the poster and records it", async () => {
+  const { service, dispatched, finishes } = videoPublicationFixture("pending", null);
+  service.videoSourceBytes = async () => null;
+  service.posterBytes = async () => new Uint8Array([7]);
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched[0]?.video).toBeUndefined();
+  expect(dispatched[0]?.photo).toEqual({ bytes: new Uint8Array([7]), contentType: "image/jpeg" });
+  const override = finishes[0]?.[3] as { message: { kind: string } };
+  expect(override.message.kind).toBe("photo");
+});
+
+test("a video publication with no media records the text fallback", async () => {
+  const { service, dispatched, finishes } = videoPublicationFixture("pending", null);
+  service.videoSourceBytes = async () => null;
+  service.posterBytes = async () => null;
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched[0]).toEqual({ photo: undefined, video: undefined });
+  const override = finishes[0]?.[3] as { message: { kind: string; media: string | null } };
+  expect(override.message.kind).toBe("text");
+  expect(override.message.media).toBeNull();
+});
+
+test("a video replacement edits the media with the new source", async () => {
+  const { service, dispatched, finishes } = videoPublicationFixture("delivered", 41);
+  service.videoSourceBytes = async () => ({ bytes: new Uint8Array([9]), contentType: "video/mp4" });
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched[0]?.video).toEqual({ bytes: new Uint8Array([9]), contentType: "video/mp4" });
+  expect(finishes[0]?.[3]).toBeUndefined();
+});
