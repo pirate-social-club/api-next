@@ -1,0 +1,15 @@
+Running as unit: run-r5afa4419401743f188fa37496203f026.scope; invocation ID: d9c4a92548ba46df9b70bbe209ef7b95
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/community-creation-nationality-flow.pg.test.ts:
+(pass) Postgres 17 community creation nationality flow > reuses accepted account evidence for a composed commit [2011.41ms]
+(pass) Postgres 17 community creation nationality flow > issues, switches, completes, and commits the creator nationality ceremony [2758.38ms]
+(pass) Postgres 17 community creation nationality flow > rolls back the terminal commit when the creator lacks accepted evidence [2733.21ms]
+(pass) Postgres 17 community creation nationality flow > requires fresh proof when the allowlist changes and fences the old ceremony [2056.21ms]
+(pass) Postgres 17 community creation nationality flow > keeps Palm-only creation commit-ready and fails closed without authoring [1910.48ms]
+
+ 5 pass
+ 0 fail
+ 50 expect() calls
+Ran 5 tests across 1 file. [11.76s]
+Verified 1 fresh task-owned completion sentinels.
