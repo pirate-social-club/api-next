@@ -420,6 +420,80 @@ describe("DATA registration Workflow interpreter", () => {
     );
   });
 
+  test("fails durably when the gateway pin attempt budget is exhausted", async () => {
+    const state = harness();
+    const canonical = ARTIFACTS[0];
+    if (canonical === undefined) throw new Error("canonical fixture missing");
+    await state.dependencies.store.recordPinVerification({
+      pinVerificationId: `${canonical.artifact.artifactId}:pin:filebase:1`,
+      registrationOperationId: OPERATION_ID,
+      artifactId: canonical.artifact.artifactId,
+      artifactKind: canonical.artifact.artifactKind,
+      role: "primary",
+      providerId: "filebase",
+      attemptNumber: 1,
+      outcome: "verified",
+      cid: `bafy${canonical.artifact.artifactKind}`,
+      canonicalSha256: canonical.artifact.canonicalSha256,
+      byteLength: canonical.artifact.byteLength,
+      evidenceRef: "evidence://filebase/canonical_audio",
+      verifiedAt: "2026-08-27T00:00:00.000Z",
+    });
+    for (let attemptNumber = 1; attemptNumber <= 10; attemptNumber += 1) {
+      await state.dependencies.store.recordPinVerification({
+        pinVerificationId: `${canonical.artifact.artifactId}:gateway:ipfs.io:${attemptNumber}`,
+        registrationOperationId: OPERATION_ID,
+        artifactId: canonical.artifact.artifactId,
+        artifactKind: canonical.artifact.artifactKind,
+        role: "independent_gateway",
+        providerId: "ipfs.io",
+        attemptNumber,
+        outcome: "failed",
+        cid: null,
+        canonicalSha256: null,
+        byteLength: null,
+        evidenceRef: `evidence://ipfs.io/canonical_audio/${attemptNumber}`,
+        verifiedAt: null,
+      });
+    }
+    state.calls.length = 0;
+
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "failed",
+    });
+    expect(state.operation()).toMatchObject({
+      state: "failed",
+      failureCode: "pin_verification_failed",
+      failureEvidenceRef: "data-registration://pin-attempt-budget-exhausted",
+    });
+    expect(state.calls).toEqual([
+      "artifact:canonical_audio",
+      "provider-pin:canonical_audio",
+      "fail:failed",
+    ]);
+  });
+
+  test("lets a pin persistence outage retry instead of relabeling it", async () => {
+    const state = harness();
+    const persistenceError = new Error("pin store unavailable");
+    const dependencies: DataRegistrationWorkflowDependencies = {
+      ...state.dependencies,
+      store: {
+        ...state.dependencies.store,
+        recordPinVerification: async () => {
+          throw persistenceError;
+        },
+      },
+    };
+
+    await expect(advanceDataRegistrationWorkflow(payload, dependencies)).rejects.toBe(
+      persistenceError,
+    );
+    expect(state.operation()).toMatchObject({ state: "pending", failureCode: null });
+    expect(state.calls).not.toContain("fail:failed");
+    expect(state.calls).not.toContain("fail:reconciliation_required");
+  });
+
   test("converges a fast-confirmed broadcast through the mined fence", async () => {
     const state = harness();
     await advanceDataRegistrationWorkflow(payload, state.dependencies);
