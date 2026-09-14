@@ -1,4 +1,5 @@
 export const reusablePostgresTestSuites = [
+  "packages/platform-cf/src/content-rating-reconciliation.pg.test.ts",
   "packages/platform-cf/src/telegram-store.pg.test.ts",
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",

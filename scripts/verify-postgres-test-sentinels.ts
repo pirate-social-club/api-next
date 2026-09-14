@@ -8,6 +8,13 @@ export type PostgresSentinel = {
 
 export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
   {
+    name: "rating reconciliation",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_RATING_RECONCILIATION_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-rating-reconciliation-suite-complete",
+    contents: "api-next-control-plane-postgres-rating-reconciliation-suite-complete\n",
+  },
+  {
     name: "handle nationality checkout",
     path:
       process.env.CONTROL_PLANE_POSTGRES_HANDLE_NATIONALITY_CHECKOUT_SENTINEL ??
