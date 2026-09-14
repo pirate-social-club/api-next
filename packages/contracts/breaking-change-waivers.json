@@ -1,3 +1,134 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-offerings: enum value added: \"curated_nationality_v1\"",
+        "response GET /communities/{communityId}/handle-offerings: type changed from object to undefined",
+        "response GET /communities/{communityId}/handle-offerings: type changed from string to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "get_communitiesCommunityIdHandleOfferings",
+      "reason": "Spec 012 handle qualification clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-sales-management/offerings: enum value added: \"curated_nationality_v1\"",
+        "response GET /communities/{communityId}/handle-sales-management/offerings: type changed from object to undefined",
+        "response GET /communities/{communityId}/handle-sales-management/offerings: type changed from string to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "get_communitiesCommunityIdHandleSalesManagementOfferings",
+      "reason": "Spec 012 handle qualification clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/join-eligibility: enum value added: \"human_identity\"",
+        "response GET /communities/{communityId}/join-eligibility: enum value added: \"wait\"",
+        "response GET /communities/{communityId}/join-eligibility: response/request property removed: wallet_score_status",
+        "response GET /communities/{communityId}/join-eligibility: type changed from object to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "get_communitiesCommunityIdJoinEligibility",
+      "reason": "Spec 006 nationality gate clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response GET /community-creation-intents/{intentId}: enum value added: \"nationality\"",
+        "response GET /community-creation-intents/{intentId}: enum value added: \"wait\"",
+        "response GET /community-creation-intents/{intentId}: type changed from null to object"
+      ],
+      "kind": "clean-break",
+      "operationId": "get_communityCreationIntentsIntentId",
+      "reason": "Spec 006 nationality gate clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response PATCH /community-creation-intents/{intentId}: enum value added: \"nationality\"",
+        "response PATCH /community-creation-intents/{intentId}: enum value added: \"wait\"",
+        "response PATCH /community-creation-intents/{intentId}: type changed from string to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "patch_communityCreationIntentsIntentId",
+      "reason": "Spec 006 nationality gate clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/handle-offerings status 201: enum value added: \"curated_nationality_v1\"",
+        "response POST /communities/{communityId}/handle-offerings status 201: type changed from object to undefined",
+        "response POST /communities/{communityId}/handle-offerings status 201: type changed from string to undefined",
+        "response POST /communities/{communityId}/handle-offerings: enum value added: \"curated_nationality_v1\"",
+        "response POST /communities/{communityId}/handle-offerings: type changed from object to undefined",
+        "response POST /communities/{communityId}/handle-offerings: type changed from string to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communitiesCommunityIdHandleOfferings",
+      "reason": "Spec 012 handle qualification clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions status 201: enum value added: \"curated_nationality_v1\"",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions status 201: type changed from object to undefined",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions status 201: type changed from string to undefined",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: enum value added: \"curated_nationality_v1\"",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: type changed from object to undefined",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: type changed from string to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communitiesCommunityIdHandleOfferingsOfferingIdRevisions",
+      "reason": "Spec 012 handle qualification clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response POST /community-creation-intents status 201: enum value added: \"nationality\"",
+        "response POST /community-creation-intents status 201: enum value added: \"wait\"",
+        "response POST /community-creation-intents status 201: type changed from string to undefined",
+        "response POST /community-creation-intents: enum value added: \"nationality\"",
+        "response POST /community-creation-intents: enum value added: \"wait\"",
+        "response POST /community-creation-intents: type changed from string to undefined"
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communityCreationIntents",
+      "reason": "Spec 006 nationality gate clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response POST /community-creation-intents/{intentId}/commit status 201: enum value added: \"nationality\"",
+        "response POST /community-creation-intents/{intentId}/commit status 201: enum value added: \"wait\"",
+        "response POST /community-creation-intents/{intentId}/commit status 201: type changed from null to object",
+        "response POST /community-creation-intents/{intentId}/commit: enum value added: \"nationality\"",
+        "response POST /community-creation-intents/{intentId}/commit: enum value added: \"wait\"",
+        "response POST /community-creation-intents/{intentId}/commit: type changed from null to object"
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communityCreationIntentsIntentIdCommit",
+      "reason": "Spec 006 nationality gate clean break with released api-client 0.79.0"
+    },
+    {
+      "baselineSha": "b5b98344152a1096617204bfe3046a2237f6ffe7",
+      "expectedViolations": [
+        "response POST /handle-quotes status 201: enum value added: \"nationality_required\"",
+        "response POST /handle-quotes status 201: enum value added: \"quoted\"",
+        "response POST /handle-quotes status 201: response/request property removed: offering_id",
+        "response POST /handle-quotes status 201: response/request property removed: owner_persona_id",
+        "response POST /handle-quotes status 201: response/request property removed: reason",
+        "response POST /handle-quotes: enum value added: \"nationality_required\"",
+        "response POST /handle-quotes: enum value added: \"quoted\"",
+        "response POST /handle-quotes: response/request property removed: offering_id",
+        "response POST /handle-quotes: response/request property removed: owner_persona_id",
+        "response POST /handle-quotes: response/request property removed: reason"
+      ],
+      "kind": "clean-break",
+      "operationId": "post_handleQuotes",
+      "reason": "Spec 012 handle qualification clean break with released api-client 0.79.0"
+    }
+  ]
 }
