@@ -18,7 +18,10 @@ import type {
   MediaProcessingStore,
 } from "../../application/src/media/processing-contracts.ts";
 import { runMediaProcessingWorkflow } from "../../application/src/media/processing-workflow.ts";
-import { bindMediaReference } from "../../application/src/media/submission-service.ts";
+import {
+  bindMediaReference,
+  type MediaSubmissionServices,
+} from "../../application/src/media/submission-service.ts";
 import type {
   MediaTransformProbeInput,
   MediaTransformService,
@@ -1919,6 +1922,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         personaStore: {
           findOwned: () => Effect.die("unused media moderation persona lookup"),
         },
+        runEffect: (effect, signal) =>
+          Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
         presigner: {
           presign: () => Effect.die("unused media moderation presigner"),
         },
@@ -2634,9 +2639,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const unused = async (): Promise<never> => {
         throw new Error("reference must not upload");
       };
-      const services = {
+      const services: MediaSubmissionServices = {
         store: makeMediaUploadStore(runtime),
         personaStore: makeControlPlanePersonaStore(runtime),
+        runEffect: (effect, signal) =>
+          Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
         referenceResolver: {
           resolve: async (request: Parameters<typeof resolver.resolve>[0]) => {
             resolutions += 1;

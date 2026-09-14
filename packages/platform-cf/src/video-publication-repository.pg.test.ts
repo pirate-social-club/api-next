@@ -572,7 +572,11 @@ suite("video publication PostgreSQL", () => {
       };
       const services: VideoPublicationServices = {
         store,
-        personaServices: { personaStore: makeControlPlanePersonaStore(layer) },
+        personaServices: {
+          personaStore: makeControlPlanePersonaStore(layer),
+          runEffect: (effect, signal) =>
+            Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
+        },
         nowIso: () => now,
         randomUuid: () => crypto.randomUUID(),
         sealer: { inspect: unused, seal: unused },

@@ -131,6 +131,8 @@ function servicesWith(input: {
           accountId === actor.userId && personaId === persona.persona_id ? persona : null,
         ),
     },
+    runEffect: (effect, signal) =>
+      Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
     presigner: input.presigner ?? {
       presign: () => Effect.die(new Error("unexpected presign")),
     },
@@ -166,6 +168,112 @@ const source = {
 };
 
 describe("media submission service upload orchestration", () => {
+  test("interrupts a pending persona lookup with the request boundary", async () => {
+    let beginLookup!: () => void;
+    const lookupBegan = new Promise<void>((resolve) => {
+      beginLookup = resolve;
+    });
+    let interrupted = false;
+    let presigns = 0;
+    const services: MediaSubmissionServices = {
+      ...servicesWith({
+        store: storeWith({}),
+        presigner: {
+          presign: () => {
+            presigns += 1;
+            return Effect.die(new Error("must not presign after interruption"));
+          },
+        },
+      }),
+      personaStore: {
+        findOwned: () =>
+          Effect.sync(beginLookup).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                interrupted = true;
+              }),
+            ),
+          ),
+      },
+    };
+    const controller = new AbortController();
+    const reservation = reserveMediaUpload(
+      {
+        communityId: "media_community",
+        actor,
+        body: {
+          persona_id: persona.persona_id,
+          idempotency_key: "interrupted-persona-key",
+          track: "song",
+          slot: "primary_audio",
+          expected_content_type: "audio/mpeg",
+          expected_size_bytes: 4,
+        },
+        signal: controller.signal,
+      },
+      services,
+    );
+
+    await lookupBegan;
+    controller.abort();
+    await expect(reservation).rejects.toBeInstanceOf(InternalError);
+    expect(interrupted).toBe(true);
+    expect(presigns).toBe(0);
+  });
+
+  test("interrupts pending upload presigning with the request boundary", async () => {
+    let beginPresign!: () => void;
+    const presignBegan = new Promise<void>((resolve) => {
+      beginPresign = resolve;
+    });
+    let interrupted = false;
+    let writes = 0;
+    const services = servicesWith({
+      store: storeWith({
+        replayReservation: async () => ({ kind: "none" }),
+        reserve: async () => {
+          writes += 1;
+          throw new Error("must not persist after interruption");
+        },
+      }),
+      presigner: {
+        presign: () =>
+          Effect.sync(beginPresign).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                interrupted = true;
+              }),
+            ),
+          ),
+      },
+    });
+    const controller = new AbortController();
+    const reservation = reserveMediaUpload(
+      {
+        communityId: "media_community",
+        actor,
+        body: {
+          persona_id: persona.persona_id,
+          idempotency_key: "interrupted-presign-key",
+          track: "song",
+          slot: "primary_audio",
+          expected_content_type: "audio/mpeg",
+          expected_size_bytes: 4,
+        },
+        signal: controller.signal,
+      },
+      services,
+    );
+
+    await presignBegan;
+    controller.abort();
+    await expect(reservation).rejects.toBeInstanceOf(InternalError);
+    expect(interrupted).toBe(true);
+    expect(writes).toBe(0);
+  });
+
   test("lets a human owner reach the ledger-backed moderation lookup without global scopes", async () => {
     let lookupActor: unknown = null;
     const services = servicesWith({

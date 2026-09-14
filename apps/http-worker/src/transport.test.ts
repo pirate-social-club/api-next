@@ -698,7 +698,7 @@ describe("contracts-generated HTTP worker", () => {
     expect(voteHandlerCalled).toBe(false);
   });
 
-  it("passes only decoded request data to handlers and authorizers", async () => {
+  it("passes only decoded request data and its lifetime to handlers and authorizers", async () => {
     let received: unknown;
     const app = createHttpWorker({
       handlers: {
@@ -714,7 +714,20 @@ describe("contracts-generated HTTP worker", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(received).toEqual({ body: undefined, params: undefined, query: {}, principal: null });
+    expect(received).toMatchObject({
+      body: undefined,
+      params: undefined,
+      query: {},
+      principal: null,
+    });
+    expect((received as DecodedRequest).signal).toBeInstanceOf(AbortSignal);
+    expect(Object.keys(received as object).sort()).toEqual([
+      "body",
+      "params",
+      "principal",
+      "query",
+      "signal",
+    ]);
     expect(JSON.stringify(await response.json())).not.toContain("must-not-cross-boundary");
   });
 

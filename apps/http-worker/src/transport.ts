@@ -66,6 +66,8 @@ export interface DecodedRequest {
   readonly params: unknown;
   readonly query: unknown;
   readonly principal: Principal | null;
+  /** Follows the lifetime of the incoming request. */
+  readonly signal?: AbortSignal;
   /** Trusted Cloudflare edge address, present only when CF-Connecting-IP exists. */
   readonly edgeClientIp?: string;
 }
@@ -946,6 +948,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           const edgeClientIp = context.req.header("CF-Connecting-IP");
           const requestWithEdgeIp = {
             ...input,
+            signal: context.req.raw.signal,
             ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
           };
           if (

@@ -96,6 +96,8 @@ function servicesWith(input: {
     multipart: input.multipart ?? multipartWith(),
     sealer: input.sealer ?? { inspect: unused, seal: unused },
     personaServices: {
+      runEffect: (effect, signal) =>
+        Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
       personaStore: {
         findOwned: ({ accountId, personaId }) =>
           Effect.succeed(
