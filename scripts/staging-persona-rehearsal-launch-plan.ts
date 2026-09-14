@@ -25,6 +25,7 @@ import {
   SUPERVISOR,
   waitForBranch,
 } from "./staging-persona-rehearsal-launch-runtime";
+import { REHEARSAL_SUPERVISOR_TIMEOUT_MS } from "./staging-persona-rehearsal-timing";
 
 /** Lifecycle plan for one bounded provider rehearsal. All process, clock,
  * filesystem and provider calls arrive through `LaunchRuntime`, so every
@@ -36,7 +37,7 @@ import {
  */
 
 const HOUR_MS = 60 * 60_000;
-const SUPERVISOR_DEADLINE_MS = 135 * 60_000;
+const SUPERVISOR_DEADLINE_MS = REHEARSAL_SUPERVISOR_TIMEOUT_MS;
 const READINESS_DEADLINE_MS = 8 * 60_000;
 const CLEANUP_TIMEOUT_MS = 120_000;
 

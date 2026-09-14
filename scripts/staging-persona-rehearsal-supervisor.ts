@@ -3,6 +3,7 @@ import {
   providerDiagnosticEnvironment,
   resolveDiagnosticIntent,
 } from "./staging-persona-diagnostic-mode.ts";
+import { REHEARSAL_PROCESS_TIMEOUT_MS } from "./staging-persona-rehearsal-timing.ts";
 
 const Completion = Schema.Struct({
   event: Schema.Literal("staging_rehearsal_completed"),
@@ -97,7 +98,7 @@ if (import.meta.main) {
       },
     );
     await superviseRehearsalProcess(child, intent.mode === "--execute" ? "execute" : "dry-run", {
-      timeoutMs: 2 * 60 * 60 * 1_000,
+      timeoutMs: REHEARSAL_PROCESS_TIMEOUT_MS,
       report: (stream, bytes) => {
         process[stream].write(bytes);
       },
