@@ -77,6 +77,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(1);
     expect(observed).toEqual([2]);
@@ -109,6 +110,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 1,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(0);
 
@@ -135,6 +137,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(0);
   });
@@ -162,6 +165,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 1,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
   });
 
@@ -193,6 +197,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 1,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(0);
   });
@@ -237,6 +242,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(1);
   });
@@ -276,6 +282,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(1);
   });
@@ -317,9 +324,49 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 1,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(1);
     expect(observed).toContain("workflow_lookup_failed");
+  });
+
+  test("isolates a failed terminal reconciliation and replaces the next row", async () => {
+    const failing = candidate({ operationId: "operation-failing" });
+    const healthy = candidate({ operationId: "operation-healthy" });
+    let replacementWrites = 0;
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [failing, healthy],
+          loadAuthority: async (_submissionId: string, operationId: string) =>
+            operationId === failing.operationId ? failing : healthy,
+          reconcileTerminalWorkflow: async () => {
+            throw new Error("database unavailable");
+          },
+          replaceMissingWorkflow: async () => {
+            replacementWrites += 1;
+            return "committed";
+          },
+        },
+        workflow: {
+          get: async (instanceId: string) =>
+            instanceId.includes("operation-failing") ? "finished" : "missing",
+        },
+      }),
+    ).toEqual({
+      inspected: 2,
+      present: 0,
+      finished: 1,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
+      replaced: 1,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+      recoveryFailed: 1,
+    });
+    expect(replacementWrites).toBe(1);
   });
 
   test("escalates a finished instance even when its replacement budget is spent", async () => {
@@ -351,6 +398,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(0);
     expect(observed).toContain("workflow_terminal");
@@ -385,6 +433,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(0);
     expect(observed).toContain("workflow_terminal");
@@ -443,6 +492,7 @@ describe("media Workflow missing-instance sweep", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacementWrites).toBe(0);
   });

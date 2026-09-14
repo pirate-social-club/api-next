@@ -22,6 +22,7 @@ describe("media scheduled maintenance", () => {
           stale: 0,
           limitReached: 0,
           lookupFailed: 0,
+          recoveryFailed: 0,
         };
       },
     });
@@ -40,6 +41,7 @@ describe("media scheduled maintenance", () => {
         stale: 0,
         limitReached: 0,
         lookupFailed: 0,
+        recoveryFailed: 0,
       },
     });
   });
