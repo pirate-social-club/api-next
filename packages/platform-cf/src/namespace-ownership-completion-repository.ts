@@ -14,7 +14,7 @@ import {
 } from "@pirate/application";
 import { ProviderConfigurationRef, Sha256Hex } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
-import { advanceCommunityCreationNamespaceVerificationInTransaction } from "./community-creation-repository.ts";
+import { advanceCommunityCreationNamespaceVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
