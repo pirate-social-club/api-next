@@ -36,6 +36,10 @@ export const MEGAPOT_V2_RPC_MAX_RESPONSE_BYTES = 512 * 1024;
 
 type JsonObject = Readonly<Record<string, unknown>>;
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+type RequestPacingClock = Readonly<{
+  nowMs: () => number;
+  sleep: (milliseconds: number) => Promise<void>;
+}>;
 
 export class MegapotV2RpcFailed extends Error {
   readonly _tag = "MegapotV2RpcFailed";
@@ -92,6 +96,8 @@ export type MegapotV2RpcClientOptions = Readonly<{
   reuseSuccessfulAttestation?: boolean;
   /** Optional provider-throttle guard; zero or absent preserves immediate request starts. */
   minimumRequestIntervalMs?: number;
+  /** Deterministic test seam for the request-start scheduler. */
+  requestPacingClock?: RequestPacingClock;
 }>;
 
 export type MegapotV2FeeQuote = Readonly<{
@@ -280,39 +286,60 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     throw new MegapotV2RpcFailed("invalid-config");
   }
   const fetcher = options.fetcher ?? fetch;
+  const requestPacingClock =
+    options.requestPacingClock ??
+    ({
+      nowMs: () => performance.now(),
+      sleep: (milliseconds) =>
+        new Promise<void>((resolve) => setTimeout(resolve, Math.ceil(milliseconds))),
+    } satisfies RequestPacingClock);
   let requestSequence = 0;
   let previousRequestStart = Promise.resolve();
   let lastRequestStartedAt = Number.NEGATIVE_INFINITY;
 
-  const waitForRequestStart = (): Promise<void> => {
-    if (minimumRequestIntervalMs === 0) return Promise.resolve();
-    const scheduled = previousRequestStart.then(async () => {
-      const targetStart = lastRequestStartedAt + minimumRequestIntervalMs;
-      let remaining = targetStart - performance.now();
-      while (remaining > 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, Math.ceil(remaining)));
-        remaining = targetStart - performance.now();
-      }
-      lastRequestStartedAt = performance.now();
+  const startRequest = async (start: () => Promise<Response>): Promise<Response> => {
+    if (minimumRequestIntervalMs === 0) return start();
+    const predecessor = previousRequestStart;
+    let releaseStart!: () => void;
+    previousRequestStart = new Promise<void>((resolve) => {
+      releaseStart = resolve;
     });
-    previousRequestStart = scheduled.catch(() => undefined);
-    return scheduled;
+    let startAttempted = false;
+    try {
+      await predecessor;
+      const targetStart = lastRequestStartedAt + minimumRequestIntervalMs;
+      let remaining = targetStart - requestPacingClock.nowMs();
+      while (remaining > 0) {
+        await requestPacingClock.sleep(remaining);
+        remaining = targetStart - requestPacingClock.nowMs();
+      }
+      startAttempted = true;
+      return start();
+    } finally {
+      try {
+        if (startAttempted) lastRequestStartedAt = requestPacingClock.nowMs();
+      } finally {
+        releaseStart();
+      }
+    }
   };
 
   const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
-    await waitForRequestStart();
     requestSequence += 1;
     const id = `megapot:${requestSequence}:${method}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       let response: Response;
       try {
-        response = await fetcher(options.rpcUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-          signal: controller.signal,
+        response = await startRequest(() => {
+          timer = setTimeout(() => controller.abort(), timeoutMs);
+          return fetcher(options.rpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+            signal: controller.signal,
+          });
         });
       } catch {
         throw new MegapotV2RpcFailed(controller.signal.aborted ? "timeout" : "unavailable");
@@ -337,7 +364,7 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       if (!("result" in envelope)) throw new MegapotV2RpcFailed("invalid-response");
       return envelope.result;
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
 
