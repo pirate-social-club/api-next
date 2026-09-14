@@ -30,6 +30,7 @@ import {
   assertRestoredFromApprovedBackup,
   rehearsalTarget,
 } from "./staging-persona-rehearsal-target.ts";
+import { REHEARSAL_VALIDITY_MS } from "./staging-persona-rehearsal-timing.ts";
 import { createReleaseMarker } from "./staging-persona-reset-marker.ts";
 import {
   assertStagingResetLedger,
@@ -85,9 +86,11 @@ export async function rehearseProviderReset(execute: boolean, diagnostic = false
   // The bound branch must be one this backup actually restored, not merely a
   // branch that agrees about its source.
   assertRestoredFromApprovedBackup(boundTarget, backup);
-  // About 700 initial roots at measured 6–7 seconds per committed batch,
-  // plus 119 replay batches, can exceed one hour. Never extend during a run.
-  const validUntilMs = Date.now() + 2 * 3_600_000;
+  // r16 completed 627 removal batches at roughly 9–10 seconds each before its
+  // two-hour deadline. The reviewed workload covers 808 removal roots plus
+  // replay, so the complete run needs the larger predeclared budget. Never
+  // extend this validity during a run.
+  const validUntilMs = Date.now() + REHEARSAL_VALIDITY_MS;
   // The owner-authorized diagnostic run only: capture the raw failure chain
   // owner-only and refuse the first destructive statement so a clean window
   // stays diagnostic. Absent the flag both behaviors are exactly as before.

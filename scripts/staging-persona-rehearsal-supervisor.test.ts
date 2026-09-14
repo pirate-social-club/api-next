@@ -4,6 +4,13 @@ import {
   resolveDiagnosticIntent,
 } from "./staging-persona-diagnostic-mode.ts";
 import { superviseRehearsalProcess } from "./staging-persona-rehearsal-supervisor.ts";
+import {
+  REHEARSAL_BRANCH_LIFETIME_MS,
+  REHEARSAL_CLEANUP_MARGIN_MS,
+  REHEARSAL_PROCESS_TIMEOUT_MS,
+  REHEARSAL_SUPERVISOR_TIMEOUT_MS,
+  REHEARSAL_VALIDITY_MS,
+} from "./staging-persona-rehearsal-timing.ts";
 
 const completed =
   'console.log(JSON.stringify({event:"staging_rehearsal_completed",mode:"dry-run"}));';
@@ -53,4 +60,14 @@ test("the supervisor reasserts diagnostic intent after secret injection", () => 
   expect(() => resolveDiagnosticIntent("--dry-run", "--diagnostic")).toThrow(
     "rehearsal_diagnostic_mode_invalid",
   );
+});
+
+test("the measured provider workload has a bounded process and cleanup window", () => {
+  expect(REHEARSAL_PROCESS_TIMEOUT_MS).toBe(225 * 60_000);
+  expect(REHEARSAL_VALIDITY_MS).toBe(240 * 60_000);
+  expect(REHEARSAL_SUPERVISOR_TIMEOUT_MS).toBe(REHEARSAL_VALIDITY_MS);
+  expect(REHEARSAL_CLEANUP_MARGIN_MS).toBe(15 * 60_000);
+  expect(REHEARSAL_BRANCH_LIFETIME_MS).toBe(360 * 60_000);
+  expect(REHEARSAL_PROCESS_TIMEOUT_MS).toBeLessThan(REHEARSAL_VALIDITY_MS);
+  expect(REHEARSAL_VALIDITY_MS).toBeLessThan(REHEARSAL_BRANCH_LIFETIME_MS);
 });
