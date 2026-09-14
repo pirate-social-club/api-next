@@ -115,6 +115,8 @@ export type CreationHumanIdentityRequirementProgressV2 = Schema.Schema.Type<
 export const CreationNationalityRequirementProgressV2 = Schema.Struct({
   ...creationRequirementProgressFields,
   requirement: Schema.Literal("nationality"),
+  provider_id: Schema.Literals(["self.pass", "zkpassport"]),
+  accepted_provider_ids: Schema.Tuple([Schema.Literal("self.pass"), Schema.Literal("zkpassport")]),
 }).check(Schema.makeFilter((progress) => validProgress(progress)));
 export type CreationNationalityRequirementProgressV2 = Schema.Schema.Type<
   typeof CreationNationalityRequirementProgressV2

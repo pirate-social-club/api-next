@@ -92,7 +92,10 @@ function nationalityProgress(document: CommunityCreationIntentDocument) {
   if (!("creation_contract_version" in document)) {
     throw new Error("expected an optional-route intent");
   }
-  return document.requirements.nationality;
+  const progress = document.requirements.nationality;
+  if (progress !== undefined)
+    expect(progress.accepted_provider_ids).toEqual(["self.pass", "zkpassport"]);
+  return progress;
 }
 
 function quoteIdentifier(value: string): string {

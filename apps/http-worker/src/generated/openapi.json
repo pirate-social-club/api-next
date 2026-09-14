@@ -9796,7 +9796,11 @@
                                   "type": "string"
                                 },
                                 "provider_id": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "enum": [
+                                    "self.pass",
+                                    "zkpassport"
+                                  ]
                                 },
                                 "generation": {
                                   "type": "integer"
@@ -9820,6 +9824,25 @@
                                       "type": "null"
                                     }
                                   ]
+                                },
+                                "accepted_provider_ids": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "self.pass"
+                                      ]
+                                    },
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "zkpassport"
+                                      ]
+                                    }
+                                  ],
+                                  "maxItems": 2,
+                                  "minItems": 2
                                 }
                               },
                               "required": [
@@ -9829,7 +9852,8 @@
                                 "provider_id",
                                 "generation",
                                 "ceremony_intent_id",
-                                "satisfied_at"
+                                "satisfied_at",
+                                "accepted_provider_ids"
                               ],
                               "additionalProperties": false
                             },
@@ -10683,7 +10707,11 @@
                                   "type": "string"
                                 },
                                 "provider_id": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "enum": [
+                                    "self.pass",
+                                    "zkpassport"
+                                  ]
                                 },
                                 "generation": {
                                   "type": "integer"
@@ -10707,6 +10735,25 @@
                                       "type": "null"
                                     }
                                   ]
+                                },
+                                "accepted_provider_ids": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "self.pass"
+                                      ]
+                                    },
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "zkpassport"
+                                      ]
+                                    }
+                                  ],
+                                  "maxItems": 2,
+                                  "minItems": 2
                                 }
                               },
                               "required": [
@@ -10716,7 +10763,8 @@
                                 "provider_id",
                                 "generation",
                                 "ceremony_intent_id",
-                                "satisfied_at"
+                                "satisfied_at",
+                                "accepted_provider_ids"
                               ],
                               "additionalProperties": false
                             },
@@ -11506,7 +11554,11 @@
                                       "type": "string"
                                     },
                                     "provider_id": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "enum": [
+                                        "self.pass",
+                                        "zkpassport"
+                                      ]
                                     },
                                     "generation": {
                                       "type": "integer"
@@ -11516,6 +11568,25 @@
                                     },
                                     "satisfied_at": {
                                       "$ref": "#/$defs/Union_3"
+                                    },
+                                    "accepted_provider_ids": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "self.pass"
+                                          ]
+                                        },
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "zkpassport"
+                                          ]
+                                        }
+                                      ],
+                                      "maxItems": 2,
+                                      "minItems": 2
                                     }
                                   },
                                   "required": [
@@ -11525,7 +11596,8 @@
                                     "provider_id",
                                     "generation",
                                     "ceremony_intent_id",
-                                    "satisfied_at"
+                                    "satisfied_at",
+                                    "accepted_provider_ids"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -13717,7 +13789,11 @@
                                   "type": "string"
                                 },
                                 "provider_id": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "enum": [
+                                    "self.pass",
+                                    "zkpassport"
+                                  ]
                                 },
                                 "generation": {
                                   "type": "integer"
@@ -13741,6 +13817,25 @@
                                       "type": "null"
                                     }
                                   ]
+                                },
+                                "accepted_provider_ids": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "self.pass"
+                                      ]
+                                    },
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "zkpassport"
+                                      ]
+                                    }
+                                  ],
+                                  "maxItems": 2,
+                                  "minItems": 2
                                 }
                               },
                               "required": [
@@ -13750,7 +13845,8 @@
                                 "provider_id",
                                 "generation",
                                 "ceremony_intent_id",
-                                "satisfied_at"
+                                "satisfied_at",
+                                "accepted_provider_ids"
                               ],
                               "additionalProperties": false
                             },
@@ -14622,7 +14718,11 @@
                                       "type": "string"
                                     },
                                     "provider_id": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "enum": [
+                                        "self.pass",
+                                        "zkpassport"
+                                      ]
                                     },
                                     "generation": {
                                       "type": "integer"
@@ -14632,6 +14732,25 @@
                                     },
                                     "satisfied_at": {
                                       "$ref": "#/$defs/Union_3"
+                                    },
+                                    "accepted_provider_ids": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "self.pass"
+                                          ]
+                                        },
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "zkpassport"
+                                          ]
+                                        }
+                                      ],
+                                      "maxItems": 2,
+                                      "minItems": 2
                                     }
                                   },
                                   "required": [
@@ -14641,7 +14760,8 @@
                                     "provider_id",
                                     "generation",
                                     "ceremony_intent_id",
-                                    "satisfied_at"
+                                    "satisfied_at",
+                                    "accepted_provider_ids"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -15938,7 +16058,11 @@
                                       "type": "string"
                                     },
                                     "provider_id": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "enum": [
+                                        "self.pass",
+                                        "zkpassport"
+                                      ]
                                     },
                                     "generation": {
                                       "type": "integer"
@@ -15948,6 +16072,25 @@
                                     },
                                     "satisfied_at": {
                                       "$ref": "#/$defs/Union_3"
+                                    },
+                                    "accepted_provider_ids": {
+                                      "type": "array",
+                                      "prefixItems": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "self.pass"
+                                          ]
+                                        },
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "zkpassport"
+                                          ]
+                                        }
+                                      ],
+                                      "maxItems": 2,
+                                      "minItems": 2
                                     }
                                   },
                                   "required": [
@@ -15957,7 +16100,8 @@
                                     "provider_id",
                                     "generation",
                                     "ceremony_intent_id",
-                                    "satisfied_at"
+                                    "satisfied_at",
+                                    "accepted_provider_ids"
                                   ],
                                   "additionalProperties": false
                                 },

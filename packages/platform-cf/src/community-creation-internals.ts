@@ -148,10 +148,11 @@ function requirementFromValue(
 }
 
 type CreationNationalityProgress = Readonly<{
+  readonly accepted_provider_ids: readonly ["self.pass", "zkpassport"];
   readonly requirement: "nationality";
   readonly status: "pending" | "satisfied";
   readonly requirement_hash: string;
-  readonly provider_id: string;
+  readonly provider_id: "self.pass" | "zkpassport";
   readonly generation: number;
   readonly ceremony_intent_id: string;
   readonly satisfied_at: string | null;
@@ -166,6 +167,14 @@ function nationalityRequirementFromValue(value: unknown): CreationNationalityPro
   const record = jsonValue(value);
   if (record === null || typeof record !== "object" || Array.isArray(record)) return null;
   const row = record as Row;
+  const accepted = jsonValue(row.accepted_provider_ids);
+  if (
+    !Array.isArray(accepted) ||
+    accepted.length !== 2 ||
+    accepted[0] !== "self.pass" ||
+    accepted[1] !== "zkpassport"
+  )
+    return null;
   const status = asString(row.status);
   if (status !== "pending" && status !== "satisfied") return null;
   const generation = asPositiveInteger(row.generation);
@@ -177,8 +186,7 @@ function nationalityRequirementFromValue(value: unknown): CreationNationalityPro
     generation === null ||
     requirementHash === null ||
     !SHA256_HEX.test(requirementHash) ||
-    providerId === null ||
-    providerId.length === 0 ||
+    (providerId !== "self.pass" && providerId !== "zkpassport") ||
     ceremonyIntentId === null ||
     (row.satisfied_at !== null && satisfiedAt === null)
   ) {
@@ -186,6 +194,7 @@ function nationalityRequirementFromValue(value: unknown): CreationNationalityPro
   }
   return {
     requirement: "nationality",
+    accepted_provider_ids: ["self.pass", "zkpassport"],
     status,
     requirement_hash: requirementHash,
     provider_id: providerId,
@@ -508,6 +517,7 @@ function routeV1ProjectionColumns(intentAlias: string): string {
               'status', state.status,
               'requirement_hash', state.requirement_hash,
               'provider_id', state.current_provider_id,
+              'accepted_provider_ids', state.accepted_provider_ids,
               'generation', state.generation,
               'current_ceremony_intent_id', state.current_ceremony_intent_id,
               'satisfied_at', state.satisfied_at
