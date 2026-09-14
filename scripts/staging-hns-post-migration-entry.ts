@@ -114,32 +114,61 @@ export function verifyStagingMigrationLedger(input: {
 }): Readonly<{ readonly applied: number }> {
   const endpoint = input.endpoint ?? HNS_READINESS_CUTOVER_ENDPOINT;
   const step: HnsStagingPostMigrationStep = "target_and_ledger";
-  const ledger = [...input.ledger].sort((left, right) =>
-    left.version < right.version ? -1 : left.version > right.version ? 1 : 0,
-  );
-  const pinnedByVersion = new Map(input.pinned.map((migration) => [migration.version, migration]));
-  const ledgerByVersion = new Map(ledger.map((row) => [row.version, row]));
-  if (!pinnedByVersion.has(endpoint) || !ledgerByVersion.has(endpoint)) {
+  const validateOrder = (
+    rows: readonly HnsStagingMigration[],
+    duplicateReason: string,
+    orderReason: string,
+  ) => {
+    const seen = new Set<string>();
+    let previous: string | undefined;
+    for (const row of rows) {
+      if (seen.has(row.version)) throw refused(step, duplicateReason, { version: row.version });
+      if (previous !== undefined && row.version <= previous) {
+        throw refused(step, orderReason, { previous, version: row.version });
+      }
+      seen.add(row.version);
+      previous = row.version;
+    }
+  };
+  validateOrder(input.pinned, "migration_pinned_chain_invalid", "migration_pinned_chain_invalid");
+  if (
+    !input.pinned.some((migration) => migration.version === endpoint) ||
+    !input.ledger.some((migration) => migration.version === endpoint)
+  ) {
     throw refused(step, "migration_endpoint_missing", {
       expected: endpoint,
-      actual: ledger.at(-1)?.version ?? null,
+      actual: input.ledger.at(-1)?.version ?? null,
     });
   }
-  for (const migration of input.pinned) {
-    const applied = ledgerByVersion.get(migration.version);
-    if (applied === undefined) {
-      throw refused(step, "migration_missing", { version: migration.version });
-    }
-    if (applied.checksum !== migration.checksum) {
-      throw refused(step, "checksum_mismatch", { version: migration.version });
-    }
+  const pinnedVersions = new Set(input.pinned.map((migration) => migration.version));
+  for (const migration of input.ledger) {
+    if (!pinnedVersions.has(migration.version))
+      throw refused(step, "migration_not_pinned", { version: migration.version });
   }
-  for (const row of ledger) {
-    if (!pinnedByVersion.has(row.version)) {
-      throw refused(step, "migration_not_pinned", { version: row.version });
+  validateOrder(input.ledger, "migration_duplicate", "migration_order_mismatch");
+  const length = Math.max(input.pinned.length, input.ledger.length);
+  for (let index = 0; index < length; index += 1) {
+    const expected = input.pinned[index];
+    const applied = input.ledger[index];
+    if (expected === undefined && applied !== undefined)
+      throw refused(step, "migration_not_pinned", { version: applied.version });
+    if (expected !== undefined && applied === undefined)
+      throw refused(step, "migration_missing", { version: expected.version });
+    if (expected === undefined || applied === undefined) continue;
+    if (applied.version !== expected.version) {
+      if (!input.ledger.some((migration) => migration.version === expected.version))
+        throw refused(step, "migration_missing", { version: expected.version });
+      if (!input.pinned.some((migration) => migration.version === applied.version))
+        throw refused(step, "migration_not_pinned", { version: applied.version });
+      throw refused(step, "migration_order_mismatch", {
+        expected: expected.version,
+        version: applied.version,
+      });
     }
+    if (applied.checksum !== expected.checksum)
+      throw refused(step, "checksum_mismatch", { version: expected.version });
   }
-  return { applied: ledger.length };
+  return { applied: input.ledger.length };
 }
 
 /** The reviewed effective privilege matrix: the runtime identity executes the
