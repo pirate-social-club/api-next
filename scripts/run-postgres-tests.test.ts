@@ -174,9 +174,10 @@ describe("PostgreSQL test discovery", () => {
     expect(recovery).toContain("permissions:\n      contents: read");
     expect(workflow).toContain("CONTROL_PLANE_POSTGRES_TEST_PARTITION: audited-general-shard");
     expect(workflow).toContain(
-      "needs: [postgres17-namespace, postgres17-recovery, postgres17-general]",
+      "needs: [postgres17-namespace, postgres17-recovery, postgres17-general, postgres18-shape]",
     );
     expect(workflow).toContain('[[ "$RECOVERY_RESULT" == "success" ]]');
+    expect(workflow).toContain('[[ "$PG18_SHAPE_RESULT" == "success" ]]');
   });
 
   test("pins the song-video sentinel uploads to the shards that own the suites", async () => {
