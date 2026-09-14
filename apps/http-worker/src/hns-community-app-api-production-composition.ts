@@ -22,7 +22,7 @@ import {
 } from "./hns-community-app-api-composition.ts";
 import { HNS_COMMUNITY_APP_API_MAX_BODY_BYTES } from "./hns-community-app-api-transport.ts";
 
-export { HNS_FORWARDER_V3_KEY_REGISTRY_MAX_BYTES, HNS_FORWARDER_V3_KEY_REGISTRY_SCHEMA };
+export { HNS_FORWARDER_V3_KEY_REGISTRY_SCHEMA };
 
 type ProductionConfig = Pick<
   HttpWorkerConfigValue,

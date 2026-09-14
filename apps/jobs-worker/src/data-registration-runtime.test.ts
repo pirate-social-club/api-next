@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import type { DataRegistrationStore } from "@pirate/application/data/registration-persistence";
 import {
   consumeDataRegistrationQueueMessage,
   type DataRegistrationWorkflowLauncher,
 } from "@pirate/application/data/registration-workflow-queue";
+import { Effect, Layer } from "effect";
 import {
   type DataRegistrationWorkflowCandidate,
+  listDataRegistrationSweepCandidates,
   recoverDataRegistrationWorkflowCandidates,
 } from "./data-registration-runtime";
 
@@ -17,6 +20,62 @@ const candidate: DataRegistrationWorkflowCandidate = {
 };
 
 describe("DATA registration scheduled recovery", () => {
+  test("reconciles finished instances at any budget and never replaces indeterminate ones", async () => {
+    const outcomes = [
+      "reconciled",
+      "reverted",
+      "escalated",
+      "pending",
+      "unavailable",
+      "stale",
+    ] as const;
+    for (const revision of ["1", "4"]) {
+      for (const outcome of outcomes) {
+        let replacements = 0;
+        const fences: (readonly [string, bigint])[] = [];
+        const result = await recoverDataRegistrationWorkflowCandidates(
+          [{ ...candidate, workflow_revision: revision }],
+          {
+            workflow: { get: async () => "finished", create: async () => "created" },
+            store: {
+              replaceMissingWorkflow: async () => {
+                replacements += 1;
+                throw new Error("unexpected replacement");
+              },
+              reconcileTerminalWorkflow: async (operationId: string, expected: bigint) => {
+                fences.push([operationId, expected]);
+                return outcome;
+              },
+            } as unknown as DataRegistrationStore,
+          },
+        );
+        expect(replacements).toBe(0);
+        expect(fences).toEqual([[candidate.registration_operation_id, BigInt(revision)]]);
+        expect(result.finished).toBe(1);
+        expect(result.replaced).toBe(0);
+        if (outcome === "stale") {
+          expect(result.stale).toBe(1);
+        } else {
+          expect(result[outcome]).toBe(1);
+        }
+      }
+    }
+
+    let writes = 0;
+    const indeterminate = await recoverDataRegistrationWorkflowCandidates([candidate], {
+      workflow: { get: async () => "indeterminate", create: async () => "created" },
+      store: {
+        reconcileTerminalWorkflow: async () => {
+          writes += 1;
+          throw new Error("an indeterminate instance must not be reconciled");
+        },
+      } as unknown as DataRegistrationStore,
+    });
+    expect(writes).toBe(0);
+    expect(indeterminate.replaced).toBe(0);
+    expect(indeterminate.indeterminate).toBe(1);
+  });
+
   test("replaces one exhausted current launch and converges concurrent sweeps", async () => {
     let revision = 1n;
     let replacements = 0;
@@ -89,8 +148,36 @@ describe("DATA registration scheduled recovery", () => {
       workflow,
     });
 
-    expect(first).toEqual({ inspected: 1, present: 0, replaced: 1, stale: 0, limitReached: 0 });
-    expect(second).toEqual({ inspected: 1, present: 0, replaced: 0, stale: 1, limitReached: 0 });
+    expect(first).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
+      inspected: 1,
+      present: 0,
+      replaced: 1,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+    expect(second).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
+      inspected: 1,
+      present: 0,
+      replaced: 0,
+      stale: 1,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
     expect(replacements).toBe(1);
 
     expect(
@@ -111,7 +198,54 @@ describe("DATA registration scheduled recovery", () => {
         create: async () => "already_exists",
       },
     });
-    expect(result).toEqual({ inspected: 1, present: 1, replaced: 0, stale: 0, limitReached: 0 });
+    expect(result).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
+      inspected: 1,
+      present: 1,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+  });
+
+  test("isolates a DATA status-lookup failure and continues", async () => {
+    const failing = {
+      ...candidate,
+      registration_operation_id: "operation-failing",
+      workflow_instance_id: "data-registration-workflow:operation-failing:r1",
+    };
+    const result = await recoverDataRegistrationWorkflowCandidates([failing, candidate], {
+      store: {} as DataRegistrationStore,
+      workflow: {
+        get: async (instanceId: string) => {
+          if (instanceId.includes("operation-failing")) throw new Error("workflow api down");
+          return "present" as const;
+        },
+        create: async () => "already_exists" as const,
+      },
+    });
+    expect(result).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
+      inspected: 2,
+      present: 1,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 1,
+    });
   });
 
   test("stops after three replacement revisions", async () => {
@@ -129,7 +263,83 @@ describe("DATA registration scheduled recovery", () => {
         },
       },
     );
-    expect(result).toEqual({ inspected: 1, present: 0, replaced: 0, stale: 0, limitReached: 1 });
-    expect(reads).toBe(0);
+    expect(result).toEqual({
+      finished: 0,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
+      inspected: 1,
+      present: 0,
+      replaced: 0,
+      stale: 0,
+      limitReached: 1,
+      lookupFailed: 0,
+    });
+    // The ceiling limits writes, not inspection of terminal state.
+    expect(reads).toBe(1);
+  });
+
+  test("advances and wraps the DATA inspection cursor across ticks", async () => {
+    const candidates = {
+      a: {
+        registration_operation_id: "operation-a",
+        workflow_revision: "1",
+        workflow_instance_id: "data-registration-workflow:operation-a:r1",
+        launch_state: "delivered" as const,
+        updated_at: "2026-01-01 00:00:00.000001+00",
+      },
+      b: {
+        registration_operation_id: "operation-b",
+        workflow_revision: "1",
+        workflow_instance_id: "data-registration-workflow:operation-b:r1",
+        launch_state: "delivered" as const,
+        updated_at: "2026-01-01 00:00:00.000002+00",
+      },
+    };
+    let cursor: { last_updated_at: string; last_identifier: string } | undefined;
+    const statements: string[] = [];
+    const service = {
+      execute: (statement: ControlPlaneStatement) => {
+        statements.push(statement.label);
+        if (statement.label === "data-registration.workflow-cursor") {
+          return Effect.succeed({
+            rows: cursor === undefined ? [] : [{ ...cursor }],
+            rowCount: cursor === undefined ? 0 : 1,
+          });
+        }
+        if (statement.label === "data-registration.workflow.sweep-candidates") {
+          const after = statement.values[0] as string | undefined;
+          const rows =
+            after === undefined
+              ? [candidates.a]
+              : after < candidates.b.updated_at
+                ? [candidates.b]
+                : [];
+          return Effect.succeed({ rows, rowCount: rows.length });
+        }
+        if (statement.label === "data-registration.workflow-cursor.advance") {
+          cursor = {
+            last_updated_at: statement.values[0] as string,
+            last_identifier: statement.values[1] as string,
+          };
+          return Effect.succeed({ rows: [], rowCount: 1 });
+        }
+        throw new Error(`unexpected statement ${statement.label}`);
+      },
+      withTransaction: (use: (tx: unknown) => unknown) => use(service),
+    };
+    const runtime = Layer.succeed(ControlPlaneDb, service as unknown as ControlPlaneDb["Service"]);
+    const first = await listDataRegistrationSweepCandidates(runtime);
+    const second = await listDataRegistrationSweepCandidates(runtime);
+    const third = await listDataRegistrationSweepCandidates(runtime);
+    expect(first.map((entry) => entry.registration_operation_id)).toEqual(["operation-a"]);
+    expect(second.map((entry) => entry.registration_operation_id)).toEqual(["operation-b"]);
+    expect(third.map((entry) => entry.registration_operation_id)).toEqual(["operation-a"]);
+    expect(
+      statements.filter((label) => label === "data-registration.workflow-cursor.advance"),
+    ).toHaveLength(3);
   });
 });

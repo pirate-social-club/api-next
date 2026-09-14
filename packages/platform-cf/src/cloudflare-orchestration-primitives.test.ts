@@ -5,7 +5,9 @@ import {
   classifyWorkflowCreateBatch,
   cloudflareDigestWorkflowId,
   isExplicitlyEnabled,
+  isFinishedWorkflowStatus,
   isPresentWorkflowStatus,
+  isWorkflowInstanceMissingError,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
 } from "./cloudflare-orchestration-primitives.ts";
 
@@ -55,6 +57,23 @@ describe("Cloudflare orchestration primitives", () => {
     expect(["complete", "errored", "terminated", "unknown"].some(isPresentWorkflowStatus)).toBe(
       false,
     );
+  });
+
+  test("classifies terminal Workflow states as finished, not success and not missing", () => {
+    expect(["complete", "errored", "terminated"].every(isFinishedWorkflowStatus)).toBe(true);
+    expect(["queued", "running", "waiting", "unknown"].some(isFinishedWorkflowStatus)).toBe(false);
+  });
+
+  test("recognizes only the installed runtime's missing-instance error", () => {
+    // Verified against the installed runtime (workerd 1.20260811.1 through a
+    // local Workflows binding): an unknown instance id surfaces as
+    // Error("instance.not_found"); no typed error is exposed.
+    expect(isWorkflowInstanceMissingError(new Error("instance.not_found"))).toBe(true);
+    expect(isWorkflowInstanceMissingError(new Error("instance.not_found "))).toBe(true);
+    expect(isWorkflowInstanceMissingError(new Error("control plane unavailable"))).toBe(false);
+    expect(isWorkflowInstanceMissingError(new Error("instance.not_found_x"))).toBe(false);
+    expect(isWorkflowInstanceMissingError("instance.not_found")).toBe(false);
+    expect(isWorkflowInstanceMissingError(undefined)).toBe(false);
   });
 
   test("maps createBatch cardinality and rejects impossible counts", () => {

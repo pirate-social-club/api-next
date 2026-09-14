@@ -4,7 +4,10 @@ import {
 } from "@pirate/application/namespace-ownership";
 import type { HnsActivationCurrentViewConfigValue } from "@pirate/platform-cf/config";
 import { makeControlPlaneHnsActivationCurrentViewIdentityRead } from "@pirate/platform-cf/hns-activation-current-view-repository";
-import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
+import {
+  type HsdFetch,
+  makeHsdRootResourceObserver,
+} from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Effect, Redacted } from "effect";
 import type { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 
@@ -22,26 +25,34 @@ type ControlPlaneRuntime = Parameters<
  * HnsActivationCurrentViewConfig), and constructing the observer performs no
  * I/O. The identity read runs in its own database scope, released before the
  * observer's network read.
+ *
+ * The private HSD read travels through a Cloudflare VPC service binding,
+ * whose fetch must be invoked on the binding object; the caller passes
+ * `binding.fetch.bind(binding)` and the default remains global fetch.
  */
 export function makeProductionHnsActivationCurrentView(
   controlPlane: ControlPlaneRuntime,
   configuration: HnsActivationCurrentViewConfigValue,
+  fetcher?: HsdFetch,
 ): ActivationCurrentView {
   if (!configuration.enabled) {
     return () => Effect.succeed({ kind: "unavailable", classification: "disabled" });
   }
   let observer: ReturnType<typeof makeHsdRootResourceObserver>;
   try {
-    observer = makeHsdRootResourceObserver({
-      rpc_url: configuration.HNS_AUTHORITY_HSD_RPC_URL,
-      authorization: Redacted.value(configuration.HNS_AUTHORITY_HSD_AUTHORIZATION),
-      chain_network: configuration.HNS_AUTHORITY_CHAIN_NETWORK,
-      genesis_block_hash: configuration.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
-      tree_interval_blocks: configuration.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
-      safe_minimum_confirmations: configuration.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
-      maximum_tip_age_seconds: configuration.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
-      maximum_future_tip_seconds: configuration.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
-    });
+    observer = makeHsdRootResourceObserver(
+      {
+        rpc_url: configuration.HNS_AUTHORITY_HSD_RPC_URL,
+        authorization: Redacted.value(configuration.HNS_AUTHORITY_HSD_AUTHORIZATION),
+        chain_network: configuration.HNS_AUTHORITY_CHAIN_NETWORK,
+        genesis_block_hash: configuration.HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH,
+        tree_interval_blocks: configuration.HNS_AUTHORITY_TREE_INTERVAL_BLOCKS,
+        safe_minimum_confirmations: configuration.HNS_AUTHORITY_SAFE_CONFIRMATIONS,
+        maximum_tip_age_seconds: configuration.HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS,
+        maximum_future_tip_seconds: configuration.HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS,
+      },
+      fetcher,
+    );
   } catch {
     throw new Error("HNS activation current-view configuration is invalid");
   }

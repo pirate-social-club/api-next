@@ -9,7 +9,9 @@ export type DataRegistrationQueueDisposition =
   | Readonly<{ disposition: "dlq" }>;
 
 export interface DataRegistrationWorkflowLauncher {
-  readonly get: (instanceId: string) => Promise<"present" | "missing">;
+  readonly get: (
+    instanceId: string,
+  ) => Promise<"present" | "missing" | "finished" | "indeterminate">;
   readonly create: (
     instanceId: string,
     payload: DataRegistrationWorkflowPayload,
@@ -114,14 +116,13 @@ export async function replaceLostDataRegistrationWorkflow(
   registrationOperationId: string,
   expectedWorkflowRevision: bigint,
   dependencies: Pick<DataRegistrationQueueDependencies, "store" | "workflow">,
-): Promise<"present" | "replacement_enqueued"> {
+): Promise<"present" | "finished" | "indeterminate" | "replacement_enqueued"> {
   const operation = await dependencies.store.getOperation(registrationOperationId);
   if (operation === null || operation.workflowRevision !== expectedWorkflowRevision) {
     throw new Error("workflow authority changed");
   }
-  if ((await dependencies.workflow.get(operation.workflowInstanceId)) === "present") {
-    return "present";
-  }
+  const status = await dependencies.workflow.get(operation.workflowInstanceId);
+  if (status !== "missing") return status;
   await dependencies.store.replaceMissingWorkflow(
     registrationOperationId,
     expectedWorkflowRevision,

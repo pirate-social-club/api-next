@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import {
   ELEVENLABS_STUDY_BATCH_ENDPOINT,
   makeElevenLabsStudyBatchTranscriber,
@@ -60,6 +60,57 @@ describe("Study spoken-audio adapters", () => {
         }),
       ),
     ).rejects.toMatchObject({ reason: "rate-limited" });
+  });
+
+  test("fails a stalled response body at the deadline and releases the stream", async () => {
+    let cancelled = false;
+    const stalled = new ReadableStream<Uint8Array>({
+      start() {},
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const transcriber = makeElevenLabsStudyBatchTranscriber({
+      apiKey: "fixture-key",
+      timeoutMs: 15,
+      fetch: async () =>
+        new Response(stalled, {
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    await expect(
+      Effect.runPromise(
+        transcriber.transcribe({
+          audio: new Uint8Array([1]),
+          contentType: "audio/webm",
+          languageHint: null,
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "timeout" });
+    expect(cancelled).toBe(true);
+  });
+
+  test("aborts the in-flight request when the caller interrupts", async () => {
+    const signals: AbortSignal[] = [];
+    const transcriber = makeElevenLabsStudyBatchTranscriber({
+      apiKey: "fixture-key",
+      timeoutMs: 10_000,
+      fetch: (_url, init) =>
+        new Promise<Response>(() => {
+          signals.push(init.signal as AbortSignal);
+        }),
+    });
+    const fiber = Effect.runFork(
+      transcriber.transcribe({
+        audio: new Uint8Array([1]),
+        contentType: "audio/webm",
+        languageHint: null,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   test("makes archival failure data instead of a grading failure", async () => {

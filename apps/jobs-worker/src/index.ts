@@ -72,51 +72,20 @@ import {
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
+// Runtime boundary: the entrypoint exports only the default handler, the cron
+// lock class, and functions. Plain constants stay in their own modules because
+// workerd rejects them here as runtime handlers.
+export { makeHnsRootHealthRenewalJob } from "./hns-root-health-renewal";
 export {
-  HNS_ROOT_HEALTH_HEARTBEAT_FRESHNESS_SECONDS,
-  HNS_ROOT_HEALTH_RENEW_WHEN_REMAINING_SECONDS,
-  HNS_ROOT_HEALTH_RENEWAL_BATCH_LIMIT,
-  HNS_ROOT_HEALTH_RENEWAL_JOB,
-  HNS_ROOT_HEALTH_RENEWAL_LANE,
-  HNS_ROOT_HEALTH_RENEWAL_READS,
-  HNS_ROOT_HEALTH_RENEWAL_SCHEDULE,
-  HNS_ROOT_HEALTH_RENEWAL_TIMEOUT,
-  HNS_ROOT_HEALTH_RENEWAL_WRITES,
-  makeHnsRootHealthRenewalJob,
-} from "./hns-root-health-renewal";
-export {
-  HNS_ROUTE_EXPIRY_BATCH_LIMIT,
-  HNS_ROUTE_EXPIRY_PRINCIPAL_ID,
-  HNS_ROUTE_JOB_TIMEOUT_MS,
-  HNS_ROUTE_PROVIDER_BUDGET_MARGIN_MS,
-  HNS_ROUTE_RECOVERY_BACKOFF_SECONDS,
-  HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
-  HNS_ROUTE_REVALIDATION_JOB,
-  HNS_ROUTE_REVALIDATION_LANE,
-  HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
-  HNS_ROUTE_REVALIDATION_SCHEDULE,
-  HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
-  HNS_ROUTE_REVALIDATION_TIMEOUT,
   type HnsRouteRevalidationBindings,
   type HnsRouteRevalidationComposition,
   type HnsRouteRevalidationForce,
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
-export {
-  KARAOKE_FINALIZATION_RECOVERY_JOB,
-  KARAOKE_FINALIZATION_RECOVERY_LANE,
-  KARAOKE_FINALIZATION_RECOVERY_READS,
-  KARAOKE_FINALIZATION_RECOVERY_SCHEDULE,
-  KARAOKE_FINALIZATION_RECOVERY_TIMEOUT,
-  makeKaraokeFinalizationRecoveryJob,
-} from "./karaoke-finalization-recovery";
+export { makeKaraokeFinalizationRecoveryJob } from "./karaoke-finalization-recovery";
 export { karaokeFinalizationRecoveryAlerts } from "./karaoke-finalization-recovery-alerts";
 export {
-  MEGAPOT_REWARDS_CYCLE_JOB,
-  MEGAPOT_REWARDS_CYCLE_LANE,
-  MEGAPOT_REWARDS_CYCLE_SCHEDULE,
-  MEGAPOT_REWARDS_CYCLE_TIMEOUT,
   type MegapotRewardsCycleSummary,
   type MegapotRewardsJobOptions,
   type MegapotRewardsRuntime,
@@ -125,7 +94,6 @@ export {
 } from "./megapot-rewards";
 export {
   buildJobRegistry,
-  defaultRetrySchedule,
   groupDueJobsByLane,
   isScheduleDue,
   JobContext,
@@ -138,24 +106,10 @@ export {
   type TableKey,
 } from "./registry";
 export {
-  COMMUNITY_CATALOG_INTEGRITY_JOB,
-  COMMUNITY_CATALOG_INTEGRITY_LANE,
-  COMMUNITY_CATALOG_INTEGRITY_SCHEDULE,
-  COMMUNITY_CATALOG_INTEGRITY_SQL,
-  COMMUNITY_CATALOG_INTEGRITY_TIMEOUT,
-  COMMUNITY_CATALOG_READS,
   type CommunityCatalogIntegrityJobOptions,
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
-export {
-  makeStudySpokenAnswerRecoveryJob,
-  STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
-  STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
-  STUDY_SPOKEN_ANSWER_RECOVERY_READS,
-  STUDY_SPOKEN_ANSWER_RECOVERY_SCHEDULE,
-  STUDY_SPOKEN_ANSWER_RECOVERY_TIMEOUT,
-  STUDY_SPOKEN_ANSWER_RECOVERY_WRITES,
-} from "./study-spoken-answer-recovery";
+export { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 import {
   consumeTelegramWork,

@@ -20,10 +20,32 @@ import {
 let fixtureDirectory = "";
 let fixtureBytes = new Uint8Array();
 let fixtureSha256 = "";
+const ffmpegRequired = process.env.SONG_VIDEO_FFMPEG_REQUIRED === "1";
 const localFixtureToolsAvailable = Bun.which("ffmpeg") !== null && Bun.which("ffprobe") !== null;
+const ffmpegVersion = localFixtureToolsAvailable
+  ? Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
+const ffprobeVersion = localFixtureToolsAvailable
+  ? Bun.spawnSync(["ffprobe", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
+const localFixturePinned =
+  ffmpegVersion !== null &&
+  ffmpegVersion.exitCode === 0 &&
+  ffprobeVersion !== null &&
+  ffprobeVersion.exitCode === 0 &&
+  new TextDecoder().decode(ffmpegVersion.stdout).startsWith("ffmpeg version 6.1.1") &&
+  new TextDecoder().decode(ffprobeVersion.stdout).startsWith("ffprobe version 6.1.1");
+if (ffmpegRequired && !localFixturePinned) {
+  throw new Error("SONG_VIDEO_FFMPEG_REQUIRED=1 requires pinned FFmpeg and ffprobe 6.1.1 on PATH");
+}
+const sentinelPath =
+  process.env.VIDEO_ANALYSIS_FFMPEG_TEST_SENTINEL ??
+  "/tmp/api-next-video-analysis-ffmpeg-suite-complete";
+const sentinelContents = "api-next-video-analysis-ffmpeg-suite-complete\n";
+let completedTestCount = 0;
 
 beforeAll(async () => {
-  if (!localFixtureToolsAvailable) return;
+  if (!localFixturePinned) return;
   fixtureDirectory = await mkdtemp(join(tmpdir(), "pirate-trusted-video-fixture-"));
   const fixturePath = join(fixtureDirectory, "trusted-original-audio.mp4");
   const process = Bun.spawn(
@@ -69,6 +91,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (fixtureDirectory !== "") await rm(fixtureDirectory, { recursive: true, force: true });
+  if (completedTestCount === 2) await Bun.write(sentinelPath, sentinelContents);
 });
 
 function source(): VideoAnalysisSource {
@@ -125,7 +148,7 @@ function makeEngineHarness() {
   return { artifacts, engine };
 }
 
-const localFixtureSuite = localFixtureToolsAvailable ? describe : describe.skip;
+const localFixtureSuite = localFixturePinned ? describe : describe.skip;
 
 localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
   test("probes, hashes, extracts AAC, and emits the three required JPEG roles", async () => {
@@ -195,6 +218,7 @@ localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
         .filter(([key]) => key.endsWith(".jpg"))
         .every(([, bytes]) => bytes.byteLength <= VIDEO_POSTER_POLICY_V1.maxBytesPerFrame),
     ).toBe(true);
+    completedTestCount += 1;
   });
 
   test("rejects a URL-shaped source and caller-selected policy before starting FFmpeg", async () => {
@@ -232,5 +256,6 @@ localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
       ),
     ).rejects.toBeInstanceOf(MediaTransformRequestInvalid);
     expect(reads).toBe(0);
+    completedTestCount += 1;
   });
 });

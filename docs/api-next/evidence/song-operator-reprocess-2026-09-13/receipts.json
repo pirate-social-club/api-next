@@ -1,0 +1,68 @@
+{
+  "baseHead": "67cbc57c3f6e6c480acdf18c970ae923f1bdfd19",
+  "state": "Historical pre-916a499c receipts; implementation preserved in WIP checkpoints, not publication-ready",
+  "logSha256": {
+    "/tmp/song-recovery-check-final.log": "65c2a9d61386a57d3e8772004ec1ea7da00f21d1f6470518e6a2fa413fb424ba",
+    "/tmp/song-recovery-full-pg.log": "7a58d00fe7d0d6564e50f0401ebfeb1712e5964844d2dc25c51661b9f37fa930",
+    "/tmp/song-recovery-test-final.log": "3e05f15314c6775c9689eef58cd8410f0393199a4bf701c58bd021f62d43aa77",
+    "/tmp/song-recovery-timeout-verification.log": "099b83cd80eb30787cf8fb8ec442c54a728e129f6670f62ba669195fa80b6c46"
+  },
+  "check": "Passed before the final CI shard-pin correction; test began through the guarded && chain.",
+  "postgres": "56 tests, 0 failures, 935 expects, 110.17 seconds; completion sentinel written. The subsequently added CLI test passed separately: 1 test, 14 expects. Final file contains 57 tests and still requires a combined run.",
+  "focusedTimeoutRecheck": "2 tests passed, 11 filtered, 205 expects; 65.06 seconds. No unrelated test source changed.",
+  "fullTest": "Incomplete. Two 15-second simulation timeouts and one stale CI sentinel shard assertion occurred. The owned scope was stopped (exit 143) after timeout cleanup caused an asynchronous error. Node/workerd phases did not run.",
+  "ciPin": "Render-host sentinel moved from shard 3 to computed shard 1. Focused discovery rerun reached a 5-second timeout under host memory pressure; clean verification remains owed.",
+  "resources": "No RTK. One heavy job at a time, scoped memory/CPU. Host reached about 630 MiB available with swap full. Owned test scope finished or stopped, and song-recovery-operator-pg was stopped. No other lane process was stopped.",
+  "authority": "User selected the operator-only CLI using existing database-admin access. No browser endpoint, live execution, deployment, or paid provider calls were authorized or performed.",
+  "dataPreventionCheckpoint": {
+    "baseHead": "6915ae65b1644e2d2d32100bcf524e0a915aef97",
+    "testFirst": "New adapter and sweep assertions failed before the behavior change (8 pass, 2 fail).",
+    "focused": "14 tests, 0 failures, 63 assertions, exit 0 across DATA adapter, queue and scheduled recovery suites; 1.52 seconds. Biome clean on six touched files.",
+    "scope": "Finished and indeterminate statuses never cause replacement, including the second presence read and exhausted budget. This is prevention only; submitted transaction and receipt reconciliation remains unimplemented.",
+    "resources": "512 MiB memory, zero swap and one CPU scope. No database or provider call. Other-lane test PIDs 710711 and 711623 remained live; no broad gates launched."
+  },
+  "finalIntegratedRecovery": {
+    "codeHead": "2c174aa06a8197c6c2b00c22bcc0de596fb27f8c",
+    "implementationCommit": "bf6e226d",
+    "dataReconciliation": "Store and sweep resolve a finished Workflow from its exact transaction identity and receipt observations. Reverted fails receipt_reverted; confirmed escalates to reconciliation_required because receipt rows do not carry a song's attached terms and video projection completion is not receipt-only admissible; pending and unavailable leave the row untouched and never authorize a replacement; a moved workflow revision is stale. Replay and concurrent recovery commit exactly one transition.",
+    "migrationAllocation": "0176 media_workflow_terminal_escalation, 0177 media_operator_reprocess_actions, 0178 media_operator_reprocess_transition, after the recheck found origin/main and the HNS entry lane at 0172 and the nationality and telegram lanes at 0175. The manifest suite passes 5/5.",
+    "migrationsApplied": "0001-0178 applied to a fresh PostgreSQL 17.11 database with exit 0; current version 0178_media_operator_reprocess_transition.sql.",
+    "postgres": {
+      "mediaPersistence": "60 tests, 0 failures, 1001 expect calls, exit 0 in 107.71 s",
+      "dataRegistration": "6 tests, 0 failures, 104 expect calls, exit 0 in 19.87 s"
+    },
+    "failureProvenance": "The first database contact failed all seven operator tests because the 0178 guard required the replacement sequence to advance while the same function required the budget reset to zero. The corrected guard was verified by the clean 60-test run. The published pending-alignment fixture also moved to a non-zero replacement sequence because zero-sequence launches now require an operator audit.",
+    "ciPins": "Both song-video sentinel uploads recomputed to shard 3; a hosted CI run remains the only verification and no publication occurred.",
+    "gatesOnFinalHead": "bun run check exit 0 and bun run test:unit 4,043 tests, 0 failures, 25,122 expect calls; final post-docs gate receipts are recorded in the workspace task record.",
+    "logSha256": {
+      "/tmp/opencode/final-media-pg.log": "0a59aff4a7d9d92dad725dd3fefa77e8e95fb95eef1f1686bc7d19fb86e8ec36",
+      "/tmp/opencode/final-data-pg.log": "a45da3ba401e9e97414e1424d0ffc5b49468bc2b71a2d1c4dd7e4486c83096a6",
+      "/tmp/opencode/final-migrations.log": "ad8b4897ded0927d2c3b6f53b88036fd0d83396f88eafcd10a33e211aa917bb1"
+    },
+    "authority": "Local implementation, database and gate work only. No publication, deployment, live migration, key rotation or paid provider call."
+  },
+  "confirmedRecovery": {
+    "codeHead": "824cdab5",
+    "implementationCommit": "9cfb0a4d",
+    "resolution": "Confirmed DATA evidence now completes registration. Migration 0179 persists a song's attached terms with its confirmed receipt observation, makes the publication projection guard and the store's confirmation projection update media-kind aware, and adds the data_operator_resume_actions audit. A legacy confirmed observation without terms still escalates, and the new operator resume command (database-admin authority, preview default, append-only audit, replayable) returns the exact attempt to observation under a fresh workflow revision and pending launch without another submission.",
+    "migrationAllocation": "0179 data_registration_confirmed_recovery, after the recheck held the prior allocation at 0176-0178 and the first free number at 0179. Manifest and baseline checks pass.",
+    "postgres": {
+      "dataRegistration": "10 tests, 0 failures, 135 expect calls, exit 0 in 62.64 s",
+      "mediaPersistence": "60 tests, 0 failures, 1001 expect calls, exit 0 in 179.79 s"
+    },
+    "gates": {
+      "check": "bun run check exit 0 at 824cdab5",
+      "test": "bun run test exit 0: test:unit 4,045 tests, 0 failures; test:node 20 tests; test:workerd 14/82, 22/74, 1/2, 7/10, 4/15 across its five pools",
+      "baseline": "bun run check:baseline:fresh exit 0"
+    },
+    "ciPins": "Both song-video sentinel uploads recomputed to shard 2; a hosted CI run remains the only verification and no publication occurred.",
+    "logSha256": {
+      "/tmp/opencode/v2-data-pg4.log": "7e9c41a358465ca13014fb3f428f01e0f9ea7632c533b9cd90467a29aa81053f",
+      "/tmp/opencode/v2-media-pg3.log": "2db9e8799b16faf8ed4c8e4dfbc8340bb880b12d3c956f8ba0c7955ed7be10c1",
+      "/tmp/opencode/v2-full-test2.log": "d6573101f214252c0c700f34f4cf0bd1c2b80985e14893f5715bc21803dfda69",
+      "/tmp/opencode/v2-check4.log": "e0c70f2812561a02e6e9d1ee2290105cf6b19bfa9cf39a7342a7758703f819f4",
+      "/tmp/opencode/v2-baseline-fresh3.log": "9252f63f3784254673d68bb9d4ac575e648945719fbd0d530d4a3b4f3d16ba8b"
+    },
+    "authority": "Local implementation, database and gate work only. No publication, deployment, live migration, key rotation or paid provider call. The CI shard pins remain unverified until a hosted run."
+  }
+}

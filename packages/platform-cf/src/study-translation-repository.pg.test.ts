@@ -573,7 +573,10 @@ suite("Study translation generation", () => {
         attempt_state: "retryable",
         feedback: { kind: "none" },
       });
-      expect(firstMiss.session.lesson.current?.session_item_id).not.toBe(firstItemId);
+      // A retryable miss keeps the current item: the offered immediate retry
+      // targets the card the session still holds, at its next attempt number.
+      expect(firstMiss.session.lesson.current?.session_item_id).toBe(firstItemId);
+      expect(firstMiss.session.lesson.current?.presentation_number).toBe(2);
 
       let currentSession = firstMiss.session;
       const requestHashes = ["7", "8", "9", "a"];

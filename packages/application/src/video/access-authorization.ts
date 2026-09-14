@@ -37,7 +37,8 @@ export const authorizeVideoAccess = Effect.fn("authorizeVideoAccess")(function* 
     result.post.community !== location.communityId ||
     result.post.post_type !== "video" ||
     result.post.status !== "published" ||
-    result.video?.soundtrack.kind !== "original_audio"
+    result.video === undefined ||
+    result.video === null
   )
     return yield* new NotFound({ message: "Video not found" });
   const allowed = yield* services

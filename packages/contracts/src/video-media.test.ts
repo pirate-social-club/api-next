@@ -69,10 +69,53 @@ describe("phase-one video media contracts", () => {
       intent: "song_reference",
       song_post_id: "song-1",
       selected_from: { kind: "feed", origin_post_id: "video-origin-1" },
+      audio_revision: 1,
+      clip_start_samples: 0,
+      clip_duration_samples: 30 * 48_000,
     } as const;
     expect(decode(ReserveVideoUploadV1, songReference)).toEqual(songReference);
     expect(() =>
       decode(ReserveVideoUploadV1, { ...songReference, selected_from: undefined }),
+    ).toThrow();
+  });
+
+  test("a song-reference reservation must freeze a revision and an integer interval", () => {
+    const songReference = {
+      ...reserveOriginal,
+      intent: "song_reference",
+      song_post_id: "song-1",
+      selected_from: { kind: "library" },
+      audio_revision: 2,
+      clip_start_samples: 96_000,
+      clip_duration_samples: 45 * 48_000,
+    } as const;
+    expect(decode(ReserveVideoUploadV1, songReference)).toEqual(songReference);
+    // Each frozen value is required: an interval cannot be left for later.
+    for (const field of [
+      "audio_revision",
+      "clip_start_samples",
+      "clip_duration_samples",
+    ] as const) {
+      const { [field]: _omitted, ...missing } = songReference;
+      expect(() => decode(ReserveVideoUploadV1, missing)).toThrow();
+    }
+    // Samples are integers; a fractional or negative offset is refused at the boundary.
+    expect(() =>
+      decode(ReserveVideoUploadV1, { ...songReference, clip_start_samples: 0.5 }),
+    ).toThrow();
+    expect(() =>
+      decode(ReserveVideoUploadV1, { ...songReference, clip_start_samples: -1 }),
+    ).toThrow();
+    expect(() =>
+      decode(ReserveVideoUploadV1, { ...songReference, clip_duration_samples: 0 }),
+    ).toThrow();
+    // Original audio still rejects every song field rather than ignoring it.
+    expect(() =>
+      decode(ReserveVideoUploadV1, {
+        ...reserveOriginal,
+        audio_revision: 1,
+        clip_start_samples: 0,
+      }),
     ).toThrow();
   });
 

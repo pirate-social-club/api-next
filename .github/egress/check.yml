@@ -1,4 +1,9 @@
 # Observed with Iron Proxy 0.41.0 on 2026-08-30. GitHub and codeload
 # destinations are covered by the pinned action's built-in GitHub rules.
+# The Docker Hub endpoints serve the digest-pinned FFmpeg 6.1.1 layer recorded
+# in infra/cloudflare/song-video-render-host/pinned-ffmpeg.env.
 domains:
   - registry.npmjs.org
+  - auth.docker.io
+  - registry-1.docker.io
+  - production.cloudfront.docker.com

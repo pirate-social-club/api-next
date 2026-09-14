@@ -6,14 +6,22 @@ import {
   encodeHnsAuthorityInventory,
   encodeHnsRootImportNameProofResultV1,
   encodeHnsRootImportReadinessResultV1,
+  encodeHnsRootReadinessObservationRequestV1,
   HNS_AUTHORITY_INVENTORY_VERSION,
   HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
   HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
   type HnsRootImportActivationRecord,
   type HnsRootImportStartRecord,
   hnsAuthorityCapabilitySetDigest,
+  hnsRootImportLifecycleDeadlinePatchV1,
+  hnsRootImportLifecycleStateFromRowV1,
 } from "@pirate/application/namespace-ownership";
-import { canonicalJson } from "@pirate/domain";
+import {
+  canonicalJson,
+  decideHnsRootImportLifecycleV1,
+  HNS_ROOT_IMPORT_POLICY_V1,
+  type HnsRootImportLifecycleEventV1,
+} from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -1048,106 +1056,17 @@ suite("Postgres 17 HNS root-import repository", () => {
           session: { status: "observing", revision: 4 },
         });
 
-        const firstClaim = await admin.query<{
-          lease_fence: string;
-          request_sha256: string;
-        }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
-          "authority-executor",
-          60,
-        ]);
-        const pending = await admin.query<{
-          outcome: string;
-          root_import_session_id: string;
-          session_revision: string;
-        }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
-          "observation-root-import",
-          "authority-executor",
-          Number(firstClaim.rows[0]?.lease_fence),
-          firstClaim.rows[0]?.request_sha256,
-          "retry",
-          null,
-          null,
-          "owner_update_pending",
-        ]);
-        expect(pending.rows).toEqual([
-          {
-            outcome: "retry",
-            root_import_session_id: "root-import-session",
-            session_revision: "4",
-          },
-        ]);
-        await admin.query(
-          "UPDATE hns_root_import_observation_jobs SET attempt_count=19 WHERE observation_job_id=$1",
-          ["observation-root-import"],
-        );
-        const claim = await admin.query<{
-          lease_fence: string;
-          request_sha256: string;
-        }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
-          "authority-executor",
-          60,
-        ]);
-        expect(claim.rows).toHaveLength(1);
-        expect(
-          (
-            await admin.query<{ attempt_count: number }>(
-              "SELECT attempt_count FROM hns_root_import_observation_jobs WHERE observation_job_id=$1",
-              ["observation-root-import"],
-            )
-          ).rows[0]?.attempt_count,
-        ).toBe(20);
-        const readiness = await makeReadinessArtifact({
-          validForSeconds: inventoryRenewal ? 5 : 3600,
-          ownershipResultHash,
-          publishPlanSha256: sha256(provisioned.planBytes),
-          provisionResultSha256: sha256(provisioned.resultBytes),
+        // The single readiness path: preparation, current and safe evidence
+        // advance through the real lifecycle reducer, jobs and writers, and
+        // the atomic readiness writer accepts the result and completes the
+        // readiness job in one statement.
+        const ready = await driveLifecycleToReady(admin, provisioned, {
+          readinessValidForSeconds: inventoryRenewal ? 5 : 3600,
         });
-        const finalized = await admin.query<{
-          outcome: string;
-          session_revision: string;
-        }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
-          "observation-root-import",
-          "authority-executor",
-          Number(claim.rows[0]?.lease_fence),
-          claim.rows[0]?.request_sha256,
-          "ready",
-          Buffer.from(readiness.result_bytes),
-          readiness.result_sha256,
-          null,
-        ]);
-        expect(finalized.rows).toMatchObject([{ outcome: "ready", session_revision: "5" }]);
-
-        // This harness exercises the legacy readiness writer; the fixture
-        // brings the operation's lifecycle row to the ready state the
-        // production runner would have produced and supplies the current-view
-        // binding the activation gate revalidates.
-        await admin.query(
-          `UPDATE hns_root_import_lifecycle
-              SET phase='ready', readiness_observed_at=clock_timestamp()
-            WHERE root_import_session_id='root-import-session'`,
-        );
-        // The exposure step records the plan's encoded-resource digest; this
-        // fixture drives the legacy readiness writer, so it writes the digest
-        // the production exposure transaction would have persisted.
-        const lifecyclePlan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
-          encoded_resource_sha256: string;
-        };
-        await admin.query(
-          `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256=$1
-            WHERE root_import_session_id='root-import-session'`,
-          [lifecyclePlan.encoded_resource_sha256],
-        );
-        const lifecycleState = await admin.query<{
-          revision: string;
-          generation: string;
-          plan_encoded_resource_sha256: string;
-        }>(
-          `SELECT revision, generation, plan_encoded_resource_sha256 FROM hns_root_import_lifecycle
-            WHERE root_import_session_id='root-import-session'`,
-        );
-        const lifecycleRevision = Number(lifecycleState.rows[0]?.revision);
-        const lifecycleGeneration = Number(lifecycleState.rows[0]?.generation);
-        const lifecyclePlanDigest = String(lifecycleState.rows[0]?.plan_encoded_resource_sha256);
+        const readiness = ready.readiness;
+        const lifecycleRevision = ready.lifecycleRevision;
+        const lifecycleGeneration = ready.lifecycleGeneration;
+        const lifecyclePlanDigest = ready.lifecyclePlanDigest;
 
         const activationInput = {
           actor_id: provisioned.record.actor_id,
@@ -1259,6 +1178,25 @@ suite("Postgres 17 HNS root-import repository", () => {
           return;
         }
 
+        // The retired client observation job is still queued after the real
+        // lifecycle path accepted evidence. Give it the removal migration's
+        // named disposition for an existing operation crossing the cutover;
+        // renewal must succeed without it ever reaching completed.
+        const clientObservation = await admin.query<{ observation_job_id: string; state: string }>(
+          `SELECT observation_job_id, state FROM hns_root_import_observation_jobs
+            WHERE root_import_session_id='root-import-session'`,
+        );
+        expect(clientObservation.rows).toMatchObject([
+          { observation_job_id: "observation-root-import", state: "queued" },
+        ]);
+        await admin.query(
+          `UPDATE hns_root_import_observation_jobs
+              SET state='failed', failure_code='readiness_single_owner_cutover',
+                  completed_at=clock_timestamp(), updated_at=clock_timestamp()
+            WHERE observation_job_id=$1`,
+          [clientObservation.rows[0]?.observation_job_id],
+        );
+
         const scheduled = await admin.query<{
           eligible_roots: number;
           enqueued_roots: number;
@@ -1297,6 +1235,34 @@ suite("Postgres 17 HNS root-import repository", () => {
             session_revision: "6",
           },
         ]);
+        // Re-delivering the same accepted envelope and result replays.
+        expect(
+          (
+            await admin.query(
+              "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)",
+              [
+                renewalClaim.rows[0]?.observation_job_id,
+                "authority-executor",
+                Number(renewalClaim.rows[0]?.lease_fence),
+                renewalClaim.rows[0]?.request_sha256,
+                Buffer.from(renewalReadiness.result_bytes),
+                renewalReadiness.result_sha256,
+              ],
+            )
+          ).rows[0]?.outcome,
+        ).toBe("replayed");
+        // The retired job stays in its named cutover disposition throughout.
+        expect(
+          (
+            await admin.query<{ state: string; failure_code: string }>(
+              `SELECT state, failure_code FROM hns_root_import_observation_jobs
+                WHERE observation_job_id='observation-root-import'`,
+            )
+          ).rows[0],
+        ).toMatchObject({
+          state: "failed",
+          failure_code: "readiness_single_owner_cutover",
+        });
         expect(
           (
             await admin.query<{ health_generation: string }>(
@@ -1353,7 +1319,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         ).toEqual({ kind: "not_found" });
       });
     },
-    20_000,
+    60_000,
   );
 
   test("atomically commits a community attachment before activating its HNS services", async () => {
@@ -1563,18 +1529,37 @@ suite("Postgres 17 HNS root-import repository", () => {
         ],
       );
       expect(observation.rows[0]?.outcome).toBe("observing");
-      const claim = await admin.query<{ lease_fence: string; request_sha256: string }>(
-        "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-        ["authority-executor", 60],
+      // The zone-mutation lock admits the rightful holder of the client
+      // observation job. The observation claim is not a readiness route after
+      // the cutover, so this fixture leases the client job directly to
+      // exercise the lock against the real session state, then returns it to
+      // the queue before the lifecycle claim runs.
+      const observationJob = await admin.query<{ observation_job_id: string }>(
+        `SELECT observation_job_id FROM hns_root_import_sessions
+          WHERE root_import_session_id=$1`,
+        ["root-import-session"],
+      );
+      const observationJobId = observationJob.rows[0]?.observation_job_id;
+      if (observationJobId === undefined || observationJobId === null) {
+        throw new Error("client observation job missing");
+      }
+      await admin.query(
+        `UPDATE hns_root_import_observation_jobs
+            SET state='leased', attempt_count=1, lease_fence=1,
+                leased_by='authority-executor',
+                lease_expires_at=clock_timestamp() + interval '10 minutes',
+                updated_at=clock_timestamp()
+          WHERE observation_job_id=$1`,
+        [observationJobId],
       );
       expect(
         (
           await admin.query(
             `SELECT lock_hns_root_zone_mutation_v1(
               'newroot','pirate-verification=challenge',false,
-              'community-observation','wrong-executor',$1
+              $1,'wrong-executor',1
             ) AS admitted`,
-            [claim.rows[0]?.lease_fence],
+            [observationJobId],
           )
         ).rows,
       ).toEqual([{ admitted: false }]);
@@ -1583,60 +1568,24 @@ suite("Postgres 17 HNS root-import repository", () => {
           await admin.query(
             `SELECT lock_hns_root_zone_mutation_v1(
               'newroot','pirate-verification=challenge',false,
-              'community-observation','authority-executor',$1
+              $1,'authority-executor',1
             ) AS admitted`,
-            [claim.rows[0]?.lease_fence],
+            [observationJobId],
           )
         ).rows,
       ).toEqual([{ admitted: true }]);
-      const readiness = await makeReadinessArtifact({
-        ownershipResultHash: provisioned.ownershipResultHash,
-        publishPlanSha256: sha256(provisioned.planBytes),
-        provisionResultSha256: sha256(provisioned.resultBytes),
-      });
       await admin.query(
-        "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)",
-        [
-          "community-observation",
-          "authority-executor",
-          Number(claim.rows[0]?.lease_fence),
-          claim.rows[0]?.request_sha256,
-          "ready",
-          Buffer.from(readiness.result_bytes),
-          readiness.result_sha256,
-          null,
-        ],
+        `UPDATE hns_root_import_observation_jobs
+            SET state='queued', leased_by=NULL, lease_expires_at=NULL,
+                lease_fence=0, updated_at=clock_timestamp()
+          WHERE observation_job_id=$1`,
+        [observationJobId],
       );
-      // This harness exercises the legacy readiness writer; the fixture brings
-      // the operation's lifecycle row to ready and supplies the current-view
-      // binding the activation gate revalidates.
-      await admin.query(
-        `UPDATE hns_root_import_lifecycle
-            SET phase='ready', readiness_observed_at=clock_timestamp()
-          WHERE root_import_session_id='root-import-session'`,
-      );
-      // The exposure step records the plan's encoded-resource digest; this
-      // fixture drives the legacy readiness writer, so it writes the digest
-      // the production exposure transaction would have persisted.
-      const lifecyclePlan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
-        encoded_resource_sha256: string;
-      };
-      await admin.query(
-        `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256=$1
-          WHERE root_import_session_id='root-import-session'`,
-        [lifecyclePlan.encoded_resource_sha256],
-      );
-      const lifecycleState = await admin.query<{
-        revision: string;
-        generation: string;
-        plan_encoded_resource_sha256: string;
-      }>(
-        `SELECT revision, generation, plan_encoded_resource_sha256 FROM hns_root_import_lifecycle
-          WHERE root_import_session_id='root-import-session'`,
-      );
-      const lifecycleRevision = Number(lifecycleState.rows[0]?.revision);
-      const lifecycleGeneration = Number(lifecycleState.rows[0]?.generation);
-      const lifecyclePlanDigest = String(lifecycleState.rows[0]?.plan_encoded_resource_sha256);
+      const ready = await driveLifecycleToReady(admin, provisioned);
+      const readiness = ready.readiness;
+      const lifecycleRevision = ready.lifecycleRevision;
+      const lifecycleGeneration = ready.lifecycleGeneration;
+      const lifecyclePlanDigest = ready.lifecyclePlanDigest;
 
       const activationRecord = {
         input: {
@@ -1819,12 +1768,291 @@ suite("Postgres 17 HNS root-import repository", () => {
     readonly lifecyclePlanDigest: string;
   }>;
 
+  const FIXTURE_SESSION = "root-import-session";
+
+  async function lifecycleFixtureRow(admin: Client) {
+    const state = await admin.query<{
+      phase: string;
+      revision: string;
+      generation: string;
+      plan_encoded_resource_sha256: string | null;
+    }>(
+      `SELECT phase, revision, generation, plan_encoded_resource_sha256
+         FROM hns_root_import_lifecycle
+        WHERE root_import_session_id=$1`,
+      [FIXTURE_SESSION],
+    );
+    const row = state.rows[0];
+    if (row === undefined) throw new Error("root-import lifecycle row missing");
+    return row;
+  }
+
+  /**
+   * Commits one lifecycle event through the same pure reducer and SQL decision
+   * writer the provisioner's executor uses. The claimed job's identity and
+   * fence are the decision's provenance, so the observation recorder can bind
+   * its summary to the decision that accepted it.
+   */
+  async function commitLifecycleFixtureEvent(
+    admin: Client,
+    event: HnsRootImportLifecycleEventV1,
+    job?: Readonly<{ readonly lifecycle_job_id: string; readonly lease_fence: string }>,
+  ): Promise<void> {
+    const loaded = await admin.query<Record<string, unknown>>(
+      `SELECT phase, revision, generation, plan_exposed_at, publication_deadline_at,
+              first_current_observation_at, finality_deadline_at, readiness_observed_at,
+              pending_reason, next_check_at, observation_count,
+              consecutive_operational_failures, last_useful_error, last_useful_error_at,
+              terminal_decided_at
+         FROM hns_root_import_lifecycle
+        WHERE root_import_session_id=$1
+        FOR UPDATE`,
+      [FIXTURE_SESSION],
+    );
+    const row = loaded.rows[0];
+    if (row === undefined) throw new Error("root-import lifecycle row missing");
+    const applied = await admin.query<{ readonly event_id: string }>(
+      "SELECT event_id FROM hns_root_import_lifecycle_history WHERE root_import_session_id=$1",
+      [FIXTURE_SESSION],
+    );
+    const state = hnsRootImportLifecycleStateFromRowV1(
+      row,
+      applied.rows.map((entry) => entry.event_id),
+    );
+    const decision = decideHnsRootImportLifecycleV1(
+      state,
+      event,
+      HNS_ROOT_IMPORT_POLICY_V1,
+      Date.now(),
+    );
+    if (decision.outcome.kind !== "transition") {
+      throw new Error(
+        `fixture lifecycle event ${event.event} was ${decision.outcome.kind}: ${decision.outcome.reason}`,
+      );
+    }
+    const next = decision.next_state;
+    await admin.query(
+      `SELECT * FROM commit_hns_root_import_lifecycle_decision_v1(
+         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::bigint,$11::bigint)`,
+      [
+        FIXTURE_SESSION,
+        state.revision,
+        event.event_id,
+        event.event,
+        decision.outcome.kind,
+        decision.outcome.reason,
+        next === null ? null : next.phase,
+        next === null ? "{}" : hnsRootImportLifecycleDeadlinePatchV1(next, state),
+        JSON.stringify(
+          decision.requested_work.map((work) => ({
+            kind: work.kind,
+            due_at: new Date(work.due_at_epoch_ms).toISOString(),
+          })),
+        ),
+        job?.lifecycle_job_id ?? null,
+        job?.lease_fence ?? null,
+      ],
+    );
+  }
+
+  async function queueLifecycleFixtureJob(admin: Client, kind: string): Promise<void> {
+    await admin.query(
+      `INSERT INTO hns_root_import_lifecycle_jobs (
+         root_import_session_id, job_kind, due_at, generation
+       )
+       SELECT lifecycle.root_import_session_id, $1,
+              clock_timestamp() - interval '1 second', lifecycle.generation
+         FROM hns_root_import_lifecycle AS lifecycle
+        WHERE lifecycle.root_import_session_id=$2
+          AND NOT EXISTS (
+            SELECT 1 FROM hns_root_import_lifecycle_jobs AS pending
+             WHERE pending.root_import_session_id=lifecycle.root_import_session_id
+               AND pending.job_kind=$1 AND pending.state IN ('queued','leased')
+          )`,
+      [kind, FIXTURE_SESSION],
+    );
+  }
+
+  async function makeNextLifecycleFixtureJobDue(admin: Client, kind: string): Promise<boolean> {
+    const updated = await admin.query(
+      `UPDATE hns_root_import_lifecycle_jobs
+          SET due_at=clock_timestamp() - interval '1 second'
+        WHERE root_import_session_id=$1 AND job_kind=$2 AND state='queued'`,
+      [FIXTURE_SESSION, kind],
+    );
+    return (updated.rowCount ?? 0) > 0;
+  }
+
+  async function runLifecycleFixtureObservation(
+    admin: Client,
+    input: Readonly<{
+      readonly event: HnsRootImportLifecycleEventV1;
+      readonly job_kind: "observe_current" | "observe_safe";
+      readonly view: "current" | "safe";
+      readonly resource_sha256: string;
+      readonly update_inclusion_height: number | null;
+      readonly commitment_height: number | null;
+    }>,
+  ): Promise<void> {
+    const claimed = await admin.query<Record<string, unknown>>(
+      "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+      ["lifecycle-executor", 60],
+    );
+    const job = claimed.rows[0];
+    if (job === undefined || job.job_kind !== input.job_kind) {
+      throw new Error(`expected a ${input.job_kind} lifecycle job`);
+    }
+    const jobId = String(job.lifecycle_job_id);
+    const fence = String(job.lease_fence);
+    await commitLifecycleFixtureEvent(admin, input.event, {
+      lifecycle_job_id: jobId,
+      lease_fence: fence,
+    });
+    const recorded = await admin.query<{ outcome: string }>(
+      `SELECT record_hns_root_import_lifecycle_observation_v1(
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) AS outcome`,
+      [
+        FIXTURE_SESSION,
+        jobId,
+        "lifecycle-executor",
+        fence,
+        input.view,
+        input.resource_sha256,
+        100,
+        input.update_inclusion_height,
+        input.commitment_height,
+        new Date(),
+        input.event.event_id,
+        3600,
+      ],
+    );
+    expect(recorded.rows[0]?.outcome).toBe("recorded");
+    const finalized = await admin.query<{ outcome: string }>(
+      "SELECT * FROM finalize_hns_root_import_lifecycle_job_v1($1,$2,$3,$4,$5)",
+      [jobId, "lifecycle-executor", fence, "completed", null],
+    );
+    expect(finalized.rows[0]?.outcome).toBe("completed");
+  }
+
+  /**
+   * Drives preparation, the qualifying current observation and the qualifying
+   * safe observation through the real reducer, job and SQL writer, then
+   * accepts readiness through the one atomic readiness writer. The old fixture
+   * accepted readiness through the removed legacy finalizer and edited the
+   * ready phase directly; this path cannot produce a ready operation without
+   * the lifecycle transitions the production runner performs.
+   */
+  async function driveLifecycleToReady(
+    admin: Client,
+    provisioned: ProvisionedRootImport,
+    options: Readonly<{ readonly readinessValidForSeconds?: number }> = {},
+  ): Promise<
+    Readonly<{
+      readiness: ReadinessArtifact;
+      lifecycleRevision: number;
+      lifecycleGeneration: number;
+      lifecyclePlanDigest: string;
+    }>
+  > {
+    const plan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
+      encoded_resource_sha256: string;
+    };
+    const digestOutcome = await admin.query<{ result: string }>(
+      "SELECT set_hns_root_import_lifecycle_plan_digest_v1($1,$2) AS result",
+      [FIXTURE_SESSION, plan.encoded_resource_sha256],
+    );
+    if (digestOutcome.rows[0]?.result !== "set") {
+      throw new Error("lifecycle plan digest was not set");
+    }
+    await commitLifecycleFixtureEvent(admin, {
+      event: "preparation_completed",
+      event_id: "fixture:preparation_completed",
+      occurred_at_epoch_ms: Date.now(),
+    });
+    await queueLifecycleFixtureJob(admin, "observe_current");
+    await runLifecycleFixtureObservation(admin, {
+      event: {
+        event: "current_observation",
+        event_id: "fixture:current_observation",
+        occurred_at_epoch_ms: Date.now(),
+        qualifying: true,
+        mismatch: false,
+        resource_sha256: plan.encoded_resource_sha256,
+      },
+      job_kind: "observe_current",
+      view: "current",
+      resource_sha256: plan.encoded_resource_sha256,
+      update_inclusion_height: 90,
+      commitment_height: null,
+    });
+    if (!(await makeNextLifecycleFixtureJobDue(admin, "observe_safe"))) {
+      await queueLifecycleFixtureJob(admin, "observe_safe");
+    }
+    await runLifecycleFixtureObservation(admin, {
+      event: {
+        event: "safe_observation",
+        event_id: "fixture:safe_observation",
+        occurred_at_epoch_ms: Date.now(),
+        qualifying: true,
+        bracket_observed_at_epoch_ms: Date.now(),
+      },
+      job_kind: "observe_safe",
+      view: "safe",
+      resource_sha256: plan.encoded_resource_sha256,
+      update_inclusion_height: 90,
+      commitment_height: 80,
+    });
+    if (!(await makeNextLifecycleFixtureJobDue(admin, "observe_readiness"))) {
+      await queueLifecycleFixtureJob(admin, "observe_readiness");
+    }
+    const readiness = await makeReadinessArtifact({
+      ownershipResultHash: provisioned.ownershipResultHash,
+      publishPlanSha256: sha256(provisioned.planBytes),
+      provisionResultSha256: sha256(provisioned.resultBytes),
+      ...(options.readinessValidForSeconds === undefined
+        ? {}
+        : { validForSeconds: options.readinessValidForSeconds }),
+    });
+    const claimed = await admin.query<Record<string, unknown>>(
+      "SELECT * FROM claim_hns_root_import_lifecycle_job_v1($1,$2)",
+      ["readiness-executor", 60],
+    );
+    const job = claimed.rows[0];
+    if (job === undefined || job.job_kind !== "observe_readiness") {
+      throw new Error("expected an observe_readiness lifecycle job");
+    }
+    const state = await lifecycleFixtureRow(admin);
+    const accepted = await admin.query<{ outcome: string }>(
+      `SELECT * FROM commit_hns_root_import_readiness_v1($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        FIXTURE_SESSION,
+        job.lifecycle_job_id,
+        "readiness-executor",
+        job.lease_fence,
+        Number(state.revision),
+        readiness.result_bytes,
+        readiness.result_sha256,
+      ],
+    );
+    if (accepted.rows[0]?.outcome !== "ready") {
+      throw new Error(`readiness was not accepted: ${accepted.rows[0]?.outcome}`);
+    }
+    const after = await lifecycleFixtureRow(admin);
+    // The client observation job is intentionally left in whatever cutover
+    // disposition it holds. Renewal derives its request envelope from retained
+    // session and lifecycle evidence and must not depend on this retired job
+    // reaching a completed state.
+    return {
+      readiness,
+      lifecycleRevision: Number(after.revision),
+      lifecycleGeneration: Number(after.generation),
+      lifecyclePlanDigest: String(after.plan_encoded_resource_sha256),
+    };
+  }
+
   /**
    * Brings one creation-path operation to the ready state the activation gate
-   * accepts: the legacy readiness writer persists the session result and the
-   * lifecycle row is brought to ready the way the production performer would,
-   * with the plan's encoded-resource digest recorded. The readiness handover
-   * that makes that performer live is a later deliverable.
+   * accepts through the real lifecycle and readiness writers.
    */
   async function prepareReadyActivation(
     store: ReturnType<typeof makeControlPlaneHnsRootImportStore>,
@@ -1858,52 +2086,13 @@ suite("Postgres 17 HNS root-import repository", () => {
       ),
     );
     expect(observation).toMatchObject({ kind: "observing" });
-    const claim = await admin.query<{ lease_fence: string; request_sha256: string }>(
-      "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
-      ["authority-executor", 60],
-    );
-    const readiness = await makeReadinessArtifact({
-      ownershipResultHash: provisioned.ownershipResultHash,
-      publishPlanSha256: sha256(provisioned.planBytes),
-      provisionResultSha256: sha256(provisioned.resultBytes),
-    });
-    const finalized = await admin.query<{ outcome: string; session_revision: string }>(
-      "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)",
-      [
-        "observation-root-import",
-        "authority-executor",
-        Number(claim.rows[0]?.lease_fence),
-        claim.rows[0]?.request_sha256,
-        "ready",
-        Buffer.from(readiness.result_bytes),
-        readiness.result_sha256,
-        null,
-      ],
-    );
-    expect(finalized.rows).toMatchObject([{ outcome: "ready", session_revision: "5" }]);
-    await admin.query(
-      `UPDATE hns_root_import_lifecycle
-          SET phase='ready', readiness_observed_at=clock_timestamp()
-        WHERE root_import_session_id='root-import-session'`,
-    );
-    const plan = JSON.parse(new TextDecoder().decode(provisioned.planBytes)) as {
-      encoded_resource_sha256: string;
-    };
-    await admin.query(
-      `UPDATE hns_root_import_lifecycle SET plan_encoded_resource_sha256=$1
-        WHERE root_import_session_id='root-import-session'`,
-      [plan.encoded_resource_sha256],
-    );
-    const lifecycle = await admin.query<{ revision: string; generation: string }>(
-      `SELECT revision, generation FROM hns_root_import_lifecycle
-        WHERE root_import_session_id='root-import-session'`,
-    );
+    const ready = await driveLifecycleToReady(admin, provisioned);
     return {
       provisioned,
-      readiness,
-      lifecycleRevision: Number(lifecycle.rows[0]?.revision),
-      lifecycleGeneration: Number(lifecycle.rows[0]?.generation),
-      lifecyclePlanDigest: plan.encoded_resource_sha256,
+      readiness: ready.readiness,
+      lifecycleRevision: ready.lifecycleRevision,
+      lifecycleGeneration: ready.lifecycleGeneration,
+      lifecyclePlanDigest: ready.lifecyclePlanDigest,
     };
   }
 
@@ -2041,6 +2230,371 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 30_000);
 
+  test("the renewal request encoding matches the TypeScript canonical contract byte for byte", async () => {
+    await withSchema(async (_connection, admin) => {
+      const cases = [
+        { namespace: "namespace-plain", challenge: "pirate-verification=plain" },
+        { namespace: 'namespace-"quoted"', challenge: 'pirate-verification=quote"slash\\' },
+        { namespace: "namespace-über-日本", challenge: "pirate-verification=unicode-✓" },
+      ] as const;
+      for (const [index, sample] of cases.entries()) {
+        const session = `encode-probe-${index}`;
+        const planBytes = Buffer.from(`{"probe":${index}}`);
+        const planSha = sha256(planBytes);
+        const evidenceSha = "a".repeat(64);
+        await admin.query("BEGIN");
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query(
+          `INSERT INTO hns_root_import_sessions (
+             root_import_session_id, actor_id, namespace_session_id, ownership_generation,
+             ownership_expected_revision, root_label, challenge_txt_value, status, revision,
+             start_idempotency_key, start_request_sha256, provision_job_id,
+             provision_authorization_kind, provision_authorization_sha256,
+             provision_idempotency_key, provision_poll_request_sha256,
+             publish_plan_bytes, publish_plan_sha256, ownership_result_sha256,
+             observation_job_id, observation_idempotency_key, observation_request_sha256,
+             origin_kind, creation_intent_id, ceremony_intent_id, created_at, expires_at
+           ) VALUES ($1,'encode-actor',$2,1,1,$7,$3,'observing',3,
+             'start-'||$1,$4,'provision-'||$1,'namespace_ownership',$4,
+             'idem-'||$1,$4,$5,$6,$4,'observation-'||$1,'obs-idem-'||$1,$4,
+             'creation_intent','intent-'||$1,'ceremony-'||$1, clock_timestamp(),
+             date_trunc('microseconds', clock_timestamp() + interval '30 days'))`,
+          [
+            session,
+            sample.namespace,
+            sample.challenge,
+            evidenceSha,
+            planBytes,
+            planSha,
+            `encodeprobe${index}`,
+          ],
+        );
+        await admin.query(
+          `INSERT INTO hns_authority_provision_jobs (
+             provision_job_id, root_import_session_id, operation_kind,
+             request_bytes, request_sha256, state, attempt_count, lease_fence,
+             publish_plan_bytes, publish_plan_sha256, result_bytes, result_sha256, completed_at
+           ) VALUES ('provision-'||$1,$1,'provision_root_v1',$2,$3,'completed',0,0,
+             $4,$5,$2,$3,clock_timestamp())`,
+          [session, planBytes, planSha, planBytes, planSha],
+        );
+        await admin.query("COMMIT");
+        const encoded = await admin.query<{ request_bytes: Buffer; request_sha256: string }>(
+          "SELECT request_bytes, request_sha256 FROM encode_hns_root_readiness_observation_request_v1($1)",
+          [session],
+        );
+        const stored = await admin.query<{ expires_at: Date; publish_plan_sha256: string }>(
+          "SELECT expires_at, publish_plan_sha256 FROM hns_root_import_sessions WHERE root_import_session_id=$1",
+          [session],
+        );
+        const storedRow = stored.rows[0];
+        if (storedRow === undefined) throw new Error("encoded session row missing");
+        // The TypeScript side of the byte-for-byte comparison is the shared
+        // application builder, so this test pins the SQL encoder to the one
+        // builder every caller uses.
+        const expected = encodeHnsRootReadinessObservationRequestV1({
+          root_import_session_id: session,
+          namespace_session_id: sample.namespace,
+          root_label: `encodeprobe${index}`,
+          challenge_txt_value: sample.challenge,
+          ownership_result_sha256: evidenceSha,
+          publish_plan_sha256: storedRow.publish_plan_sha256,
+          provision_result_sha256: planSha,
+          expires_at: storedRow.expires_at.toISOString(),
+        });
+        const bytes = encoded.rows[0]?.request_bytes;
+        if (!(bytes instanceof Uint8Array)) throw new Error("request bytes missing");
+        expect(Buffer.from(bytes).toString("utf8")).toBe(Buffer.from(expected).toString("utf8"));
+        expect(encoded.rows[0]?.request_sha256).toBe(sha256(Buffer.from(expected)));
+      }
+    });
+  }, 30_000);
+
+  test("renewal refuses a broken plan binding by name and never replays a null digest", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+      const replacement = Buffer.from('{"replacement":true}');
+      const replacementSha = sha256(replacement);
+      await admin.query(
+        `UPDATE hns_authority_provision_jobs
+            SET publish_plan_bytes=$1, publish_plan_sha256=$2,
+                updated_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        [replacement, replacementSha],
+      );
+      await admin.query("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+      const claim = await admin.query(
+        "SELECT * FROM claim_hns_root_health_renewal_job_v1('authority-executor',60)",
+      );
+      expect(claim.rows).toHaveLength(0);
+      // A repairable plan-binding failure is a delayed disposition with a
+      // persisted due time, not a terminal job that permanently occupies the
+      // generation.
+      expect(
+        (
+          await admin.query<{ state: string; failure_code: string; waiting: boolean }>(
+            `SELECT state, failure_code, next_attempt_at > clock_timestamp() AS waiting
+               FROM hns_root_health_renewal_jobs ORDER BY created_at DESC LIMIT 1`,
+          )
+        ).rows[0],
+      ).toMatchObject({ state: "delayed", failure_code: "plan_binding_mismatch", waiting: true });
+
+      // Pre-0170 completed renewals carry no derived request digest; a
+      // re-delivery is a deliberate conflict, never a replay.
+      await admin.query(
+        `UPDATE hns_root_health_renewal_jobs
+            SET state='completed', leased_by=NULL, lease_expires_at=NULL,
+                result_bytes='legacy-result'::bytea,
+                result_sha256=encode(sha256('legacy-result'::bytea),'hex'),
+                request_bytes=NULL, request_sha256=NULL, next_attempt_at=NULL,
+                completed_at=clock_timestamp(), failure_code=NULL
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const legacy = await admin.query<{ renewal_job_id: string }>(
+        "SELECT renewal_job_id FROM hns_root_health_renewal_jobs ORDER BY created_at DESC LIMIT 1",
+      );
+      const replayed = await admin.query<{ outcome: string }>(
+        `SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,'authority-executor',1,'${"0".repeat(64)}','ready',$2,encode(sha256($2),'hex'),NULL)`,
+        [legacy.rows[0]?.renewal_job_id, Buffer.from("legacy-result")],
+      );
+      expect(replayed.rows[0]?.outcome).toBe("conflict");
+      expect(
+        (
+          await admin.query<{ state: string }>(
+            "SELECT state FROM hns_root_health_renewal_jobs WHERE renewal_job_id=$1",
+            [legacy.rows[0]?.renewal_job_id],
+          )
+        ).rows[0]?.state,
+      ).toBe("completed");
+    });
+  }, 30_000);
+
+  test("recoverable renewal evidence failures retry in place once the evidence is restored", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+
+      const schedule = () =>
+        admin.query<{ eligible_roots: number; enqueued_roots: number }>(
+          "SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)",
+        );
+      const claim = async () =>
+        (
+          await admin.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)",
+            ["authority-executor", 60],
+          )
+        ).rows[0];
+      const latestJob = async () =>
+        (
+          await admin.query<{
+            renewal_job_id: string;
+            state: string;
+            failure_code: string | null;
+            next_attempt_at: Date | null;
+            waiting: boolean;
+          }>(
+            `SELECT renewal_job_id, state, failure_code, next_attempt_at,
+                    next_attempt_at > clock_timestamp() AS waiting
+               FROM hns_root_health_renewal_jobs
+              ORDER BY created_at DESC, renewal_job_id DESC LIMIT 1`,
+          )
+        ).rows[0];
+      // The test clock boundary: the job is delayed with a persisted due time
+      // and the test moves it due rather than resetting the job.
+      const due = () =>
+        admin.query(
+          "UPDATE hns_root_health_renewal_jobs SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE state='delayed'",
+        );
+      const finish = async (job: Record<string, unknown>) => {
+        const result = await makeReadinessArtifact({
+          ownershipResultHash: ready.provisioned.ownershipResultHash,
+          publishPlanSha256: sha256(ready.provisioned.planBytes),
+          provisionResultSha256: sha256(ready.provisioned.resultBytes),
+        });
+        return (
+          await admin.query<{ outcome: string }>(
+            "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)",
+            [
+              job.observation_job_id,
+              "authority-executor",
+              Number(job.lease_fence),
+              job.request_sha256,
+              Buffer.from(result.result_bytes),
+              result.result_sha256,
+            ],
+          )
+        ).rows[0]?.outcome;
+      };
+      const expectDelayedRefusal = async (reason: string) => {
+        expect(await claim()).toBeUndefined();
+        const job = await latestJob();
+        expect(job).toMatchObject({ state: "delayed", failure_code: reason, waiting: true });
+        expect(job?.next_attempt_at).not.toBeNull();
+        // Duplicate suppression while not due: neither the scheduler nor a
+        // direct claim creates or leases replacement work.
+        expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 0 });
+        expect(await claim()).toBeUndefined();
+      };
+      const recover = async () => {
+        await due();
+        expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+        const job = await claim();
+        expect(job).toBeDefined();
+        expect(await finish(job as Record<string, unknown>)).toBe("ready");
+      };
+
+      // Cycle one: a mismatched retained plan binding.
+      expect((await schedule()).rows[0]).toMatchObject({ eligible_roots: 1, enqueued_roots: 1 });
+      // Repeated scheduling is deduplicated by the deterministic job identity.
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 0 });
+      const replacement = Buffer.from('{"replacement":true}');
+      await admin.query(
+        `UPDATE hns_authority_provision_jobs
+            SET publish_plan_bytes=$1, publish_plan_sha256=$2, updated_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        [replacement, sha256(replacement)],
+      );
+      await expectDelayedRefusal("plan_binding_mismatch");
+      await admin.query(
+        `UPDATE hns_authority_provision_jobs
+            SET publish_plan_bytes=$1, publish_plan_sha256=$2, updated_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        [ready.provisioned.planBytes, sha256(ready.provisioned.planBytes)],
+      );
+      await recover();
+
+      // Cycle two: a missing retained plan binding (the provision record is
+      // removed, then restored with its authoritative bytes).
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+      const provisionRow = (
+        await admin.query<{ job: Record<string, unknown> }>(
+          `SELECT to_jsonb(job) AS job FROM hns_authority_provision_jobs AS job
+            WHERE root_import_session_id='root-import-session' AND state='completed'`,
+        )
+      ).rows[0]?.job;
+      if (provisionRow === undefined) throw new Error("provision row missing");
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        "DELETE FROM hns_authority_provision_jobs WHERE root_import_session_id='root-import-session'",
+      );
+      await admin.query("COMMIT");
+      await expectDelayedRefusal("plan_binding_missing");
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `INSERT INTO hns_authority_provision_jobs
+         SELECT (jsonb_populate_record(NULL::hns_authority_provision_jobs, $1::jsonb)).*`,
+        [JSON.stringify(provisionRow)],
+      );
+      await admin.query("COMMIT");
+      await recover();
+
+      // Cycle three: missing accepted readiness. The retention trigger derives
+      // acceptance from the observation, so the fixture models an inherited
+      // inconsistent row and restores acceptance under the same maintenance
+      // boundary rather than touching the renewal job.
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle SET readiness_accepted_at=NULL
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      await admin.query("COMMIT");
+      await expectDelayedRefusal("readiness_evidence_missing");
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle SET readiness_accepted_at=clock_timestamp()
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      await admin.query("COMMIT");
+      await recover();
+
+      // Obsolete work stays terminal: a queued job for a superseded health
+      // generation is refused at claim time and never retried, while the new
+      // health generation still schedules its own successor.
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+      await admin.query(`INSERT INTO hns_dns_zone_health_observations
+        SELECT (jsonb_populate_record(NULL::hns_dns_zone_health_observations,
+          to_jsonb(health)||jsonb_build_object('health_generation',5))).*
+        FROM hns_dns_zone_health_observations AS health WHERE health_generation=4`);
+      expect(await claim()).toBeUndefined();
+      expect(await latestJob()).toMatchObject({
+        state: "terminal",
+        failure_code: "generation_superseded",
+      });
+      expect(await claim()).toBeUndefined();
+      expect((await schedule()).rows[0]).toMatchObject({ enqueued_roots: 1 });
+    });
+  }, 60_000);
+
+  test("renewal continues after a manual lifecycle generation bump, not real adoption", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const ready = await prepareReadyActivation(store, admin);
+      await seedCommittedCommunityRoute(admin);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecordFor(ready)))),
+      ).toMatchObject({ kind: "activated", response: { status: "activated" } });
+      // This fixture writes the lifecycle generation column directly to prove
+      // renewal is anchored to retained evidence and the DNS generation. It
+      // does not exercise real adoption of an activated root; the
+      // operator-authorized recovery and adoption command owns that path and
+      // is exercised by its own suites.
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle
+            SET generation=generation+1
+          WHERE root_import_session_id='root-import-session'`,
+      );
+      const scheduled = await admin.query<{ eligible_roots: number; enqueued_roots: number }>(
+        "SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)",
+      );
+      expect(scheduled.rows).toMatchObject([{ eligible_roots: 1, enqueued_roots: 1 }]);
+      const claim = await admin.query<{
+        observation_job_id: string;
+        operation_kind: string;
+        request_sha256: string;
+        lease_fence: string;
+      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
+      expect(claim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
+      const result = await makeReadinessArtifact({
+        ownershipResultHash: ready.provisioned.ownershipResultHash,
+        publishPlanSha256: sha256(ready.provisioned.planBytes),
+        provisionResultSha256: sha256(ready.provisioned.resultBytes),
+      });
+      const finalized = await admin.query<{ outcome: string }>(
+        "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'ready',$5,$6,NULL)",
+        [
+          claim.rows[0]?.observation_job_id,
+          "authority-executor",
+          Number(claim.rows[0]?.lease_fence),
+          claim.rows[0]?.request_sha256,
+          Buffer.from(result.result_bytes),
+          result.result_sha256,
+        ],
+      );
+      expect(finalized.rows[0]?.outcome).toBe("ready");
+    });
+  }, 30_000);
+
   test("survives and reuses a stale-readiness hold without duplicating refresh work", async () => {
     await withSchema(async (connection, admin) => {
       const store = makeControlPlaneHnsRootImportStore(
@@ -2064,7 +2618,7 @@ suite("Postgres 17 HNS root-import repository", () => {
       const refreshJobs = await admin.query<{ count: number }>(
         `SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs
           WHERE root_import_session_id='root-import-session'
-            AND job_kind='observe_readiness'`,
+            AND job_kind='observe_readiness' AND state IN ('queued','leased')`,
       );
       expect(refreshJobs.rows[0]?.count).toBe(1);
       // A repeated stale command reuses the pending hold rather than
@@ -2077,7 +2631,7 @@ suite("Postgres 17 HNS root-import repository", () => {
           await admin.query<{ count: number }>(
             `SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs
               WHERE root_import_session_id='root-import-session'
-                AND job_kind='observe_readiness'`,
+                AND job_kind='observe_readiness' AND state IN ('queued','leased')`,
           )
         ).rows[0]?.count,
       ).toBe(1);
@@ -2116,12 +2670,6 @@ suite("Postgres 17 HNS root-import repository", () => {
       );
       const ready = await prepareReadyActivation(store, admin);
       await seedCommittedCommunityRoute(admin);
-      await admin.query(
-        `UPDATE hns_root_import_execution_ownership
-            SET enabled=TRUE, enabled_at=clock_timestamp(), evidence_ref='refresh-test',
-                updated_at=clock_timestamp()
-          WHERE responsibility='readiness'`,
-      );
       await admin.query(
         `INSERT INTO hns_root_import_lifecycle_jobs (root_import_session_id, job_kind, due_at)
           VALUES ('root-import-session','observe_readiness',clock_timestamp() - interval '1 second')`,

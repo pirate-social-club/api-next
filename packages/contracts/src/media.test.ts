@@ -488,6 +488,22 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toMatchObject({ action: "approve" });
     expect(decode(PostProcessingPhase, "publish")).toBe("publish");
     expect(decode(MediaPostSubmissionV1, published)).toEqual(published);
+    const failed = {
+      submission_id: published.submission_id,
+      author_persona: published.author_persona,
+      href: published.href,
+      track: "song",
+      creation_revision: 2,
+      audio_revision: 1,
+      lyrics_state: published.lyrics_state,
+      status: "processing_failed",
+      reason_code: "workflow_terminal_unconverged",
+      updated_at: published.updated_at,
+      retry_count: 0,
+      retryable: false,
+    };
+    expect(decode(MediaPostSubmissionV1, failed)).toEqual(failed);
+
     expect(decode(SealUploadResultV1, { outcome: "source_missing" })).toEqual({
       outcome: "source_missing",
     });

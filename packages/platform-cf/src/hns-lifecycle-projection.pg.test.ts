@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "./hns-community-root-import-repository.ts";
+import { readHnsLifecycleOperationalSnapshotV1 } from "./hns-root-import-lifecycle-observability.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 /**
@@ -340,6 +341,58 @@ suite("the emitted lifecycle is the persisted lifecycle on PostgreSQL 17", () =>
         expect((lifecycle.observation as Record<string, unknown>).resource_sha256).toBe(
           "3".repeat(64),
         );
+      });
+    },
+    BUDGET_MS,
+  );
+
+  test(
+    "the operational snapshot excludes synthetic rows and reports overdue work and failures",
+    async () => {
+      await withSchema(async (connection, admin) => {
+        await seed(admin, { lifecycle: true });
+        // A synthetic probe row must never appear as an operation, even though
+        // it is a real lifecycle row with an overdue job.
+        await admin.query(
+          `INSERT INTO hns_root_import_lifecycle (
+             root_import_session_id, root_label, phase, revision, generation,
+             first_current_observation_at, finality_deadline_at,
+             policy_name, policy_digest, synthetic
+           ) VALUES ('probe-row','probe','checking_authority',1,1,
+             clock_timestamp() - interval '2 hours',
+             clock_timestamp() + interval '22 hours',
+             'hns_root_import_lifecycle_v1','probe',TRUE)`,
+        );
+        await admin.query(
+          `INSERT INTO hns_root_import_lifecycle_jobs (
+             root_import_session_id, job_kind, due_at, generation
+           ) VALUES ('projection-session','observe_readiness',
+             clock_timestamp() - interval '300 seconds', 1)`,
+        );
+        await admin.query(
+          `UPDATE hns_root_import_lifecycle
+              SET consecutive_operational_failures = 3,
+                  last_useful_error = 'provider failed at https://user:secret@hsd.example/rpc',
+                  last_useful_error_at = clock_timestamp() - interval '120 seconds',
+                  updated_at = clock_timestamp() - interval '600 seconds'
+            WHERE root_import_session_id = 'projection-session'`,
+        );
+        const snapshot = await readHnsLifecycleOperationalSnapshotV1((text, values) =>
+          values === undefined ? admin.query(text) : admin.query(text, [...values]),
+        );
+        const phases = new Map(snapshot.phase_counts.map((entry) => [entry.phase, entry.count]));
+        expect(phases.get("waiting_safe_commitment")).toBe(1);
+        expect(phases.has("checking_authority")).toBe(false);
+        expect(snapshot.oldest_pending_age_seconds).toBeGreaterThanOrEqual(599);
+        expect(snapshot.overdue_lifecycle_jobs).toBe(1);
+        expect(snapshot.oldest_overdue_seconds).toBeGreaterThanOrEqual(299);
+        expect(snapshot.operations_with_failures).toBe(1);
+        expect(snapshot.max_consecutive_failures).toBe(3);
+        expect(snapshot.correlation).toHaveLength(1);
+        expect(snapshot.correlation[0]?.root_import_session_id).toBe("projection-session");
+        expect(snapshot.correlation[0]?.last_useful_error).toContain("<redacted>");
+        expect(JSON.stringify(snapshot)).not.toContain("secret");
+        expect(Number.isFinite(Date.parse(snapshot.sampled_at))).toBe(true);
       });
     },
     BUDGET_MS,

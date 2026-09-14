@@ -3,6 +3,7 @@ import type { IpfsGatewayVerifier } from "@pirate/application/data/ipfs-live-ver
 import { pinAndVerifyIpfsArtifact } from "@pirate/application/data/ipfs-live-verification";
 import type { IpfsPinningService } from "@pirate/application/data/ipfs-pinning";
 import {
+  type DataLicensePreset,
   type DataRegistrationArtifact,
   type DataRegistrationOperation,
   type DataRegistrationPinVerification,
@@ -13,10 +14,13 @@ import type {
   DataRegistrationPinResult,
   DataRegistrationPreparedArtifact,
 } from "@pirate/application/data/registration-workflow";
-import { canonicalJson } from "@pirate/domain";
+import { canonicalJson, VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
 import { Effect, type Layer, Predicate } from "effect";
 
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
+// Spec 008 requires DATA to admit every permitted original-video source. This
+// does not choose U.6's separate song-video master ceiling or enable rendering.
+export const DATA_REGISTRATION_MAX_SOURCE_BYTES = VIDEO_INGEST_POLICY_V1.maxBytes;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const ADDRESS = /^0x[0-9a-f]{40}$/u;
 
@@ -33,9 +37,25 @@ type DataRegistrationArtifactAuthorityCommon = Readonly<{
   projectedAt: string;
   contentRating: "general" | "adult_18";
   royaltyAllocations: readonly DataRegistrationRoyaltyAllocation[];
+  creatorAddress: string;
+}>;
+
+/** Recognition evidence for media whose soundtrack was not supplied by Pirate. */
+type DataRegistrationRecognitionProvenance = Readonly<{
   acrDecision: string;
   acrPolicyRevision: string;
-  creatorAddress: string;
+}>;
+
+/** The parent a derivative registers against, from its recorded resolution. */
+export type DataRegistrationParentAuthority = Readonly<{
+  assetId: string;
+  registrationOperationId: string;
+  relationship: "references_song";
+  ipId: string;
+  licenseTemplate: string;
+  licenseTermsId: string;
+  preset: DataLicensePreset;
+  commercialRevShareBps: number | null;
 }>;
 
 type DataRegistrationSongArtifactAuthority = DataRegistrationArtifactAuthorityCommon &
@@ -54,12 +74,14 @@ type DataRegistrationSongArtifactAuthority = DataRegistrationArtifactAuthorityCo
 
 export type DataRegistrationArtifactAuthority =
   | (DataRegistrationSongArtifactAuthority &
+      DataRegistrationRecognitionProvenance &
       Readonly<{
         mediaKind: "song";
         rightsBasis: "original" | "derivative";
         licensePreset: "non-commercial" | "commercial-use" | "commercial-remix";
       }>)
   | (DataRegistrationArtifactAuthorityCommon &
+      DataRegistrationRecognitionProvenance &
       Readonly<{
         mediaKind: "video";
         rightsBasis: "original";
@@ -72,7 +94,38 @@ export type DataRegistrationArtifactAuthority =
         posterArtifactRef: string;
         posterSha256: string;
         originalSoundId: string;
+      }>)
+  | (DataRegistrationArtifactAuthorityCommon &
+      Readonly<{
+        mediaKind: "video";
+        rightsBasis: "derivative";
+        licensePreset: null;
+        caption: string | null;
+        /** The accepted master, addressed by its sealed object version. */
+        master: Readonly<{
+          objectKey: string;
+          objectVersion: string;
+          mediaType: "video/mp4";
+          byteLength: bigint;
+          sha256: string;
+        }>;
+        posterArtifactRef: string;
+        posterSha256: string;
+        parent: DataRegistrationParentAuthority;
+        ownerPolicy: Readonly<{ revision: bigint; hash: string }>;
       }>);
+
+/**
+ * Reads an accepted song-video master by the exact object version sealed for
+ * it, as a stream: a master may be far larger than a Worker can hold.
+ */
+export type DataRegistrationMasterSource = Readonly<{
+  open: (
+    objectKey: string,
+    objectVersion: string,
+    signal: AbortSignal,
+  ) => Promise<AsyncIterable<Uint8Array> | null>;
+}>;
 
 export interface DataRegistrationArtifactAuthorityReader {
   readonly read: (
@@ -166,6 +219,129 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
       run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
+          if (operation.mediaKind === "video" && operation.rightsBasis === "derivative") {
+            // Spec 008 section 3A: the registered artifact is the accepted master,
+            // and the parent is read only from the recorded resolution.
+            const publication = yield* db.execute<Row>({
+              label: "data-registration.artifacts.song-reference-authority",
+              text: `SELECT p.post_id,p.projected_at,p.caption,p.poster_artifact_ref,
+                            m.verified_object_key,m.verified_object_version,m.master_sha256,
+                            m.master_byte_length,poster.canonical_sha256 AS poster_sha256,
+                            rights.rights_basis,rights.royalty_allocations,post.content_rating,
+                            wallet.address AS creator_address,
+                            reference.parent_asset_id,reference.parent_registration_operation_id,
+                            reference.relationship,reference.owner_policy_revision,
+                            reference.owner_policy_hash,resolution.parent_ip_id,
+                            resolution.license_template,resolution.license_terms_id,
+                            resolution.license_preset,resolution.commercial_rev_share_bps
+                       FROM media_publication_projections p
+                       JOIN media_song_video_accepted_masters accepted
+                         ON accepted.plan_id=p.song_video_plan_id
+                        AND accepted.master_revision_id=p.song_video_master_revision_id
+                       JOIN media_song_video_masters m
+                         ON m.master_revision_id=accepted.master_revision_id
+                        AND m.plan_id=accepted.plan_id
+                        AND m.verified_object_key=p.video_asset_ref
+                        AND m.master_sha256=p.canonical_video_sha256
+                       JOIN media_video_derived_artifacts poster
+                         ON poster.submission_id=p.submission_id
+                        AND poster.video_revision=p.video_revision
+                        AND poster.artifact_kind='poster'
+                        AND poster.artifact_ref=p.poster_artifact_ref
+                       JOIN media_video_rights rights ON rights.submission_id=p.submission_id
+                       JOIN posts post
+                         ON post.community_id=p.community_id AND post.post_id=p.post_id
+                       JOIN persona_wallet_assignments wallet
+                         ON wallet.persona_id=p.author_persona_id
+                        AND wallet.chain_account_kind='evm' AND wallet.status='active'
+                       JOIN data_registration_parent_references reference
+                         ON reference.registration_operation_id=$6
+                       JOIN data_registration_parent_resolutions resolution
+                         ON resolution.registration_operation_id=reference.registration_operation_id
+                        AND resolution.parent_registration_operation_id=
+                            reference.parent_registration_operation_id
+                      WHERE p.community_id=$1 AND p.actor_user_id=$2 AND p.submission_id=$3
+                        AND p.operation_id=$4 AND p.post_id=$5 AND p.media_kind='video'`,
+              values: [
+                operation.communityId,
+                operation.actorUserId,
+                operation.submissionId,
+                operation.mediaOperationId,
+                operation.postId,
+                operation.registrationOperationId,
+              ],
+              readonly: true,
+            });
+            if (publication.rows.length !== 1 || publication.rows[0] === undefined) {
+              throw new Error("DATA publication authority missing");
+            }
+            const row = publication.rows[0];
+            const creatorAddress = text(row, "creator_address").toLowerCase();
+            const masterSha256 = text(row, "master_sha256");
+            const posterSha256 = text(row, "poster_sha256");
+            const contentRating = text(row, "content_rating");
+            const preset = text(row, "license_preset");
+            const share =
+              row.commercial_rev_share_bps === null
+                ? null
+                : integer(row.commercial_rev_share_bps, 0, 10_000);
+            const parentIpId = text(row, "parent_ip_id");
+            const licenseTemplate = text(row, "license_template");
+            const licenseTermsId = text(row, "license_terms_id");
+            const policyHash = text(row, "owner_policy_hash");
+            if (
+              text(row, "rights_basis") !== "derivative" ||
+              text(row, "relationship") !== "references_song" ||
+              !ADDRESS.test(creatorAddress) ||
+              !SHA256.test(masterSha256) ||
+              !SHA256.test(posterSha256) ||
+              !SHA256.test(policyHash) ||
+              !ADDRESS.test(parentIpId) ||
+              !ADDRESS.test(licenseTemplate) ||
+              !/^[1-9][0-9]{0,77}$/u.test(licenseTermsId) ||
+              !["non-commercial", "commercial-use", "commercial-remix"].includes(preset) ||
+              (preset === "commercial-remix") !== (share !== null) ||
+              !["general", "adult_18"].includes(contentRating)
+            ) {
+              throw new Error("invalid DATA artifact authority");
+            }
+            return {
+              postId: text(row, "post_id"),
+              projectedAt: instant(row, "projected_at"),
+              contentRating: contentRating as "general" | "adult_18",
+              mediaKind: "video" as const,
+              rightsBasis: "derivative" as const,
+              licensePreset: null,
+              caption: nullableText(row, "caption"),
+              master: {
+                objectKey: text(row, "verified_object_key"),
+                objectVersion: text(row, "verified_object_version"),
+                mediaType: "video/mp4" as const,
+                byteLength: positiveBigint(row.master_byte_length),
+                sha256: masterSha256,
+              },
+              posterArtifactRef: text(row, "poster_artifact_ref"),
+              posterSha256,
+              parent: {
+                assetId: text(row, "parent_asset_id"),
+                registrationOperationId: text(row, "parent_registration_operation_id"),
+                relationship: "references_song" as const,
+                ipId: parentIpId,
+                licenseTemplate,
+                licenseTermsId,
+                preset: preset as DataLicensePreset,
+                commercialRevShareBps: share,
+              },
+              ownerPolicy: {
+                revision: positiveBigint(row.owner_policy_revision),
+                hash: policyHash,
+              },
+              royaltyAllocations: parseVideoAllocations(row.royalty_allocations).map(
+                (allocation) => ({ ...allocation, address: creatorAddress }),
+              ),
+              creatorAddress,
+            };
+          }
           if (operation.mediaKind === "video") {
             const publication = yield* db.execute<Row>({
               label: "data-registration.artifacts.video-authority",
@@ -576,9 +752,50 @@ const bucketArtifact = (
   };
 };
 
+/** The accepted master as the canonical video artifact of a song-reference registration. */
+const masterArtifact = (
+  operation: DataRegistrationOperation,
+  master: Extract<
+    DataRegistrationArtifactAuthority,
+    { mediaKind: "video"; rightsBasis: "derivative" }
+  >["master"],
+  source: DataRegistrationMasterSource,
+): DataRegistrationPreparedArtifact => {
+  const artifact: DataRegistrationArtifact = {
+    artifactId: deterministicDataRegistrationArtifactId(
+      operation.registrationOperationId,
+      "canonical_video",
+    ),
+    registrationOperationId: operation.registrationOperationId,
+    artifactKind: "canonical_video",
+    sourceRef: `${master.objectKey}@${master.objectVersion}`,
+    mediaType: master.mediaType,
+    byteLength: master.byteLength,
+    canonicalSha256: master.sha256,
+    canonicalizationRevision: null,
+  };
+  return {
+    artifact,
+    filename: "canonical-video.mp4",
+    contentType: master.mediaType,
+    open: async function* (signal) {
+      const stream = await source.open(master.objectKey, master.objectVersion, signal);
+      if (stream === null) throw new Error("song video master version missing");
+      // Pinning verifies length and digest against the artifact; the sealed
+      // version is read, never whatever the key holds now.
+      for await (const part of stream) {
+        if (signal.aborted) throw new DOMException("cancelled", "AbortError");
+        yield part;
+      }
+    },
+  };
+};
+
 export type DataRegistrationArtifactPipelineOptions = Readonly<{
   authority: DataRegistrationArtifactAuthorityReader;
   immutableOriginals: R2Bucket;
+  /** Required only to register song-reference videos; absent, they fail closed. */
+  songVideoMasters?: DataRegistrationMasterSource;
   pinning: IpfsPinningService;
   gateway: IpfsGatewayVerifier;
   publicOrigin: string;
@@ -687,6 +904,122 @@ export function makeDataRegistrationArtifactPipeline(
   return {
     prepare: async (operation) => {
       const authority = await options.authority.read(operation);
+      if (authority.mediaKind === "video" && authority.rightsBasis === "derivative") {
+        if (
+          operation.mediaKind !== "video" ||
+          operation.rightsBasis !== "derivative" ||
+          authority.postId !== operation.postId ||
+          authority.master.sha256 !== operation.canonicalAudioSha256
+        ) {
+          throw new Error("song-reference DATA publication authority mismatch");
+        }
+        if (options.songVideoMasters === undefined) {
+          throw new Error("song-reference DATA registration has no master source");
+        }
+        const posterHead = await options.immutableOriginals.head(
+          objectKey(authority.posterArtifactRef),
+        );
+        if (
+          posterHead === null ||
+          posterHead.size <= 0 ||
+          posterHead.httpMetadata?.contentType !== "image/jpeg"
+        ) {
+          throw new Error("poster object mismatch");
+        }
+        const video = masterArtifact(operation, authority.master, options.songVideoMasters);
+        const poster = bucketArtifact(
+          operation,
+          {
+            kind: "poster",
+            sourceRef: authority.posterArtifactRef,
+            mediaType: "image/jpeg",
+            byteLength: BigInt(posterHead.size),
+            canonicalSha256: authority.posterSha256,
+            filename: "poster.jpg",
+          },
+          options.immutableOriginals,
+        );
+        const pins = await options.authority.listPins(operation.registrationOperationId);
+        const verifiedCid = (artifact: DataRegistrationArtifact): string | null =>
+          pins.find(
+            (pin) =>
+              pin.artifactId === artifact.artifactId &&
+              pin.role === "primary" &&
+              pin.providerId === "filebase" &&
+              pin.outcome === "verified" &&
+              pin.cid !== null &&
+              pin.canonicalSha256 === artifact.canonicalSha256 &&
+              pin.byteLength === artifact.byteLength,
+          )?.cid ?? null;
+        const videoCid = verifiedCid(video.artifact);
+        const posterCid = verifiedCid(poster.artifact);
+        if (videoCid === null || posterCid === null) return [video, poster];
+        const creators = authority.royaltyAllocations.map((allocation) => ({
+          name: allocation.recipientId,
+          address: allocation.address,
+          contributionPercent: allocation.shareBps / 100,
+        }));
+        const mediaUrl = `ipfs://${videoCid}`;
+        const image = `ipfs://${posterCid}`;
+        const common = {
+          schema_version: "pirate-data-metadata-v1",
+          title: "Pirate video",
+          createdAt: authority.projectedAt,
+          creators,
+          external_url: new URL(
+            `/posts/${encodeURIComponent(authority.postId)}`,
+            options.publicOrigin,
+          ).toString(),
+        } as const;
+        const ipMetadata = await memoryArtifact(operation, "ip_metadata", {
+          ...common,
+          description: authority.caption ?? "Public video published on Pirate.",
+          mediaUrl,
+          mediaHash: `0x${authority.master.sha256}`,
+          mediaType: authority.master.mediaType,
+          media_byte_length: Number(authority.master.byteLength),
+          image,
+          imageHash: `0x${authority.posterSha256}`,
+          content_rating: authority.contentRating,
+          rights: {
+            basis: "derivative",
+            offered_license: null,
+            beneficiaries: authority.royaltyAllocations.map(({ recipientId, shareBps }) => ({
+              recipient_id: recipientId,
+              share_bps: shareBps,
+            })),
+            parent: {
+              asset_id: authority.parent.assetId,
+              ip_id: authority.parent.ipId,
+              relationship: authority.parent.relationship,
+              consumed_license: {
+                license_template: authority.parent.licenseTemplate,
+                license_terms_id: authority.parent.licenseTermsId,
+                preset: authority.parent.preset,
+                commercial_rev_share_bps: authority.parent.commercialRevShareBps,
+              },
+            },
+            owner_policy: {
+              revision: Number(authority.ownerPolicy.revision),
+              hash: authority.ownerPolicy.hash,
+            },
+          },
+        });
+        const nftMetadata = await memoryArtifact(operation, "nft_metadata", {
+          ...common,
+          name: "Pirate video",
+          description: authority.caption ?? "Pirate public video IP Asset.",
+          animation_url: mediaUrl,
+          image,
+          attributes: [
+            { trait_type: "Media kind", value: "video" },
+            { trait_type: "Rights basis", value: "derivative" },
+            { trait_type: "Relationship", value: "references_song" },
+            { trait_type: "Content rating", value: authority.contentRating },
+          ],
+        });
+        return [video, poster, ipMetadata, nftMetadata];
+      }
       if (authority.mediaKind === "video") {
         if (
           operation.mediaKind !== "video" ||

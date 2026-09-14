@@ -1,3 +1,4 @@
+import { isMediaTerminalSubmissionStatus } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import type {
   MediaProcessingAuthority,
   MediaProcessingObserver,
@@ -9,27 +10,29 @@ import { songWorkflowReplacementLimitReached } from "./song-workflow-recovery-po
 export type MediaWorkflowSweepResult = Readonly<{
   readonly inspected: number;
   readonly present: number;
+  readonly finished: number;
+  readonly reconciled: number;
+  readonly escalated: number;
+  readonly indeterminate: number;
   readonly replaced: number;
   readonly stale: number;
   readonly limitReached: number;
+  readonly lookupFailed: number;
 }>;
 
 export type MediaWorkflowSweepDependencies = Readonly<{
   readonly store: Pick<
     MediaProcessingStore,
     "listWorkflowCandidates" | "loadAuthority" | "replaceMissingWorkflow"
-  >;
+  > &
+    Pick<MediaProcessingStore, "reconcileTerminalWorkflow">;
   readonly workflow: Pick<MediaProcessingWorkflowLauncher, "get">;
   readonly observe?: MediaProcessingObserver;
 }>;
 
-const terminalStatuses: ReadonlySet<MediaProcessingAuthority["status"]> = new Set([
-  "published",
-  "blocked",
-  "processing_failed",
-  "abandoned",
-]);
-
+// Published songs are not terminal for recovery: the shared candidate policy
+// lists them while their exact alignment is still pending, so the sweep must
+// inspect them and emit the replacement that routes back into alignment.
 const workflowInstanceId = (authority: MediaProcessingAuthority): string =>
   `media-${authority.operationId}-r${authority.workflowRevision}`;
 
@@ -41,16 +44,73 @@ export async function sweepMissingMediaWorkflows(
   dependencies: MediaWorkflowSweepDependencies,
 ): Promise<MediaWorkflowSweepResult> {
   const candidates = await dependencies.store.listWorkflowCandidates();
-  const result = { inspected: 0, present: 0, replaced: 0, stale: 0, limitReached: 0 };
+  const result = {
+    inspected: 0,
+    present: 0,
+    finished: 0,
+    reconciled: 0,
+    escalated: 0,
+    indeterminate: 0,
+    replaced: 0,
+    stale: 0,
+    limitReached: 0,
+    lookupFailed: 0,
+  };
   for (const candidate of candidates) {
-    if (candidate.workflowRevision < 1 || terminalStatuses.has(candidate.status)) continue;
+    if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
+      continue;
     result.inspected += 1;
-    if (songWorkflowReplacementLimitReached(candidate.workflowRevision)) {
-      result.limitReached += 1;
+    let workflowStatus: "present" | "finished" | "indeterminate" | "missing";
+    try {
+      workflowStatus = await dependencies.workflow.get(workflowInstanceId(candidate));
+    } catch {
+      result.lookupFailed += 1;
+      dependencies.observe?.({
+        event: "workflow_lookup_failed",
+        operationId: candidate.operationId,
+        submissionId: candidate.submissionId,
+        workflowRevision: candidate.workflowRevision,
+      });
       continue;
     }
-    if ((await dependencies.workflow.get(workflowInstanceId(candidate))) === "present") {
+    if (workflowStatus === "present") {
       result.present += 1;
+      continue;
+    }
+    // An existing instance with an unrecognized status proves no absence and
+    // never grounds for replacement; leave the durable row untouched.
+    if (workflowStatus === "indeterminate") {
+      result.indeterminate += 1;
+      continue;
+    }
+    // A finished instance is not proof of success and never grounds for a
+    // blind replacement. The persisted operation row stays authoritative: the
+    // normal convergence path reconciles it from persisted state, and this
+    // sweep only reports the unreconciled row.
+    if (workflowStatus === "finished") {
+      const authority = await dependencies.store.loadAuthority(
+        candidate.submissionId,
+        candidate.operationId,
+      );
+      if (
+        authority === null ||
+        authority.workflowRevision !== candidate.workflowRevision ||
+        isMediaTerminalSubmissionStatus(authority.status)
+      ) {
+        result.stale += 1;
+        continue;
+      }
+      result.finished += 1;
+      const disposition = await dependencies.store.reconcileTerminalWorkflow(authority);
+      if (disposition === "reconciled") result.reconciled += 1;
+      else if (disposition === "escalated") result.escalated += 1;
+      else result.stale += 1;
+      dependencies.observe?.({
+        event: "workflow_terminal",
+        operationId: authority.operationId,
+        submissionId: authority.submissionId,
+        workflowRevision: authority.workflowRevision,
+      });
       continue;
     }
 
@@ -61,9 +121,15 @@ export async function sweepMissingMediaWorkflows(
     if (
       authority === null ||
       authority.workflowRevision !== candidate.workflowRevision ||
-      terminalStatuses.has(authority.status)
+      isMediaTerminalSubmissionStatus(authority.status)
     ) {
       result.stale += 1;
+      continue;
+    }
+    // The ceiling limits replacement writes, not terminal reconciliation or
+    // escalation. A spent budget must still reach its operator resolution.
+    if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
+      result.limitReached += 1;
       continue;
     }
     const committed = await dependencies.store.replaceMissingWorkflow(authority);

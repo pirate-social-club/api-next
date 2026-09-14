@@ -82,6 +82,7 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
       decision: null,
       boundReferenceAssetId: null,
       postId: null,
+      replacementSequence: 0,
       publishedLyricsRevision: null,
     }),
   } as Pick<

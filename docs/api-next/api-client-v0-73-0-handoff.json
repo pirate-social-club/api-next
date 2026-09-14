@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.73.0",
+  "sourceBranch": "fix/song-workflow-recovery-hardening",
+  "wireContract": "Adds workflow_terminal_unconverged to the song processing_failed reason codes. Video contracts and operator browser permissions are unchanged. Strict older decoders reject the new reason; the Solid consumer must adopt this artifact before the paired release exposes it. Operator recovery uses a database-admin CLI, not a new HTTP endpoint.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.73.0.tgz",
+    "sha256": "26f0d0135399b2a8627d48a529ef49e76e91282d555e33166f65d19acb85e1b9"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.73.0",
+    "sourceIdentifier": "api-next-contracts@79cce9f785a1b539ad9c1b522a1cea4d55a95c76a726c24568d16cc71d82514e",
+    "openapiSha256": "79cce9f785a1b539ad9c1b522a1cea4d55a95c76a726c24568d16cc71d82514e",
+    "clientSha256": "d724eab7f099ba802e1546b403e14f857e92935fc8b86216d3688b7ccc887213"
+  },
+  "verification": {
+    "status": "Prepared locally from the recovery lane. No remote publication or deployment. Full final gates and Solid adoption remain to be recorded."
+  }
+}

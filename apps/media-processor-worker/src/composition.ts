@@ -6,7 +6,10 @@ import type {
   MediaTransformVideoProbeInput,
 } from "@pirate/application/media/transform";
 import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
-import { isExplicitlyEnabled } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
+import {
+  isExplicitlyEnabled,
+  isWorkflowInstanceMissingError,
+} from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -32,7 +35,10 @@ import {
   makeOpenAiTextModerationProvider,
   type OpenAiModerationTransport,
 } from "@pirate/platform-cf/openai-text-moderation";
-import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import {
+  CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+  makeHyperdriveControlPlaneLayer,
+} from "@pirate/platform-cf/postgres";
 import {
   makeQencodeMediaTransform,
   makeQencodeTaskTransport,
@@ -44,6 +50,8 @@ import {
 import { makeSongSourceAcrCloudCatalog } from "@pirate/platform-cf/song-source-acrcloud-catalog";
 import { makeSongSourceRecordingR2Reader } from "@pirate/platform-cf/song-source-recording-r2";
 import { makeSongSourceRecordingRepository } from "@pirate/platform-cf/song-source-recording-repository";
+import { makeR2SongVideoOutputStore } from "@pirate/platform-cf/song-video-master-store";
+import { makeWorkerSongVideoRenderServices } from "@pirate/platform-cf/song-video-worker-render";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import {
   makeConfiguredVideoAnalysisWorkflowLauncher,
@@ -322,8 +330,6 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
   };
 }
 
-const workflowIsNeverMissingByThrownError = (): boolean => false;
-
 function videoTransform(
   env: MediaProcessorRuntimeEnv,
   runtime: ReturnType<typeof makeHyperdriveControlPlaneLayer>,
@@ -378,7 +384,7 @@ export function makeMediaProcessorComposition(
   });
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     workflowBinding,
-    workflowIsNeverMissingByThrownError,
+    isWorkflowInstanceMissingError,
   );
   const enabled = isExplicitlyEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
@@ -505,6 +511,20 @@ export function makeMediaProcessorComposition(
             analysisProviders: videoProviders,
             transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
             transformAttempts: videoAnalysisRepository,
+            songRender: makeWorkerSongVideoRenderServices({
+              connect: async () => {
+                const { Client } = await import("pg");
+                const client = new Client({
+                  connectionString: controlPlane.connectionString,
+                });
+                await client.connect();
+                return client;
+              },
+              output: makeR2SongVideoOutputStore(
+                requiredBinding(env.MEDIA_IMMUTABLE_ORIGINALS, "MEDIA_IMMUTABLE_ORIGINALS"),
+              ),
+              transactionSearchPath: CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+            }),
           },
           videoAnalysis: {
             launcher: makeConfiguredVideoAnalysisWorkflowLauncher(

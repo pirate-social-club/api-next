@@ -6,6 +6,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { getVideoPlaybackAccess } from "../../application/src/video/playback-access.ts";
 import {
   acceptTrustedVideoAnalysis,
   createVideoSubmission,
@@ -16,10 +17,13 @@ import {
   type VideoPublicationServices,
 } from "../../application/src/video/publication.ts";
 import { dispatchVideoPublicationWakeups } from "../../application/src/video/publication-wakeup.ts";
+import { consumeVideoStreamIngest } from "../../application/src/video/stream-ingest.ts";
+import { consumeVideoThumbnail } from "../../application/src/video/thumbnail-enrichment.ts";
 import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
 import {
   attachVideoDecision,
   decideOriginalAudioVideo,
+  type OriginalAudioTrustedAnalysis,
   publishOriginalVideo,
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
@@ -31,7 +35,9 @@ import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
+import { makeVideoPlaybackAuthority } from "./video-playback-authority.ts";
 import { makeVideoPosterAuthority } from "./video-poster-authority.ts";
+import { streamVideoPoster } from "./video-poster-stream.ts";
 import {
   actor,
   audioSha256,
@@ -50,6 +56,9 @@ import { makeControlPlaneVideoPublicationStore } from "./video-publication-repos
 import { makeVideoPublicationWakeupStore } from "./video-publication-wakeup-repository.ts";
 import { makeVideoSealedSourceVerifier } from "./video-sealed-source-verifier.ts";
 import { makeControlPlaneVideoStageFactStore } from "./video-stage-fact-repository.ts";
+import { makeVideoStreamIngestStore } from "./video-stream-ingest-repository.ts";
+import { makeVideoThumbnailStore } from "./video-thumbnail-repository.ts";
+import { makeVideoThumbnailVerifier } from "./video-thumbnail-verifier.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -830,7 +839,7 @@ suite("video publication PostgreSQL", () => {
         ...fixtureAnalysis,
         frames: { ...fixtureAnalysis.frames, extracted: posterFrames },
       };
-      const analysis: VideoTrustedAnalysis = {
+      const analysis: OriginalAudioTrustedAnalysis = {
         ...baseAnalysis,
         mediaSafety: "review_required",
         audio: {
@@ -1134,6 +1143,224 @@ suite("video publication PostgreSQL", () => {
       });
     });
   });
+  test("a publication-only retry plays and serves its poster on the decision, approvals and safety evidence it rests on", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, layer, finalized } = await finalizedFixture(connection);
+      const services = {
+        store,
+        nowIso: () => new Date().toISOString(),
+        randomUuid: () => crypto.randomUUID(),
+      };
+      // Decided at creation revision 1, held for safety review, approved by a
+      // moderator: the approval belongs to revision 1.
+      const fixtureAnalysis = trustedAnalysis();
+      const frames = fixtureAnalysis.frames.extracted.map((frame) => ({
+        ...frame,
+        artifactRef: `media://derived/video-analysis/${operationId}/v1/c1/a1/${frame.role}.jpg`,
+      })) as unknown as VideoTrustedAnalysis["frames"]["extracted"];
+      const analysis: OriginalAudioTrustedAnalysis = {
+        ...fixtureAnalysis,
+        frames: { ...fixtureAnalysis.frames, extracted: frames },
+        mediaSafety: "review_required",
+      };
+      const decision = decideOriginalAudioVideo({
+        state: finalized.state,
+        analysis,
+        canonicalCaptionSha256: null,
+        decidedAt: "2026-09-10T00:02:00.000Z",
+      });
+      const held = await store.commitAnalysisDecision({
+        submission: finalized.state,
+        analysis,
+        decision,
+        nextState: attachVideoDecision(finalized.state, analysis, decision),
+      });
+      expect(held.state.status).toBe("manual_review");
+      await store.moderate({
+        submission: held.state,
+        actor: { kind: "user", userId: actor },
+        expectedCreationRevision: 1,
+        action: { kind: "approve", hold: "safety", evidenceRef: null },
+        endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+        idempotencyKey: "retry-approve-safety",
+        requestHash: "8".repeat(64),
+        responseBytes,
+        responseSha256,
+      });
+      // Membership lapses before the commit, so nothing publishes.
+      await admin.query(
+        "UPDATE community_memberships SET status='left',left_at=clock_timestamp() WHERE community_id=$1 AND user_id=$2",
+        [community, actor],
+      );
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "processing_failed",
+        reason_code: "membership_required",
+      });
+      await admin.query(
+        "UPDATE community_memberships SET status='member',left_at=NULL WHERE community_id=$1 AND user_id=$2",
+        [community, actor],
+      );
+      const failed = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (failed === null) throw new Error("missing failed submission");
+      expect(
+        await store.retryTechnical({
+          submission: failed.state,
+          endpointTemplate: "/media-post-submissions/:submissionId/retry",
+          idempotencyKey: "publication-retry",
+          requestHash: "a".repeat(64),
+          responseBytes,
+          responseSha256,
+        }),
+      ).toEqual({ kind: "none" });
+      const published = await acceptTrustedVideoAnalysis({ submissionId, analysis }, services);
+      if (published.status !== "published") throw new Error("retry did not publish");
+      const postId = published.published_resource.post_id;
+      // Published at revision 2, on the decision of revision 1.
+      const anchor = await admin.query(
+        "SELECT creation_revision::int AS created, decision_revision::int AS decided FROM media_publication_projections WHERE post_id=$1",
+        [postId],
+      );
+      expect(anchor.rows[0]).toEqual({ created: 2, decided: 1 });
+      const contentStore = makeControlPlaneContentStore(layer);
+      const authorizePublication = makeVideoPublicationAuthorization(layer);
+      const access = () =>
+        Effect.runPromise(authorizePublication({ postId, communityId: community }));
+      // The moderator's approval at revision 1 still authorizes the video.
+      expect(await access()).toBe(true);
+
+      // Playback: Stream encodes the sealed original, then a viewer is signed in.
+      const providerVideoId = "0123456789abcdef0123456789abcdef";
+      expect(
+        await consumeVideoStreamIngest(`video-enrichment:${operationId}:stream`, {
+          store: makeVideoStreamIngestStore(layer, { leaseOwner: "retry-test", leaseMs: 60_000 }),
+          transport: {
+            copy: async (input) => {
+              expect(input.sealedSourceRef).toBe(`media://immutable/${operationId}/video/1`);
+              expect(input.identity.sourceSha256).toBe(videoSha256);
+            },
+            observe: async (identity) => [
+              {
+                providerVideoId,
+                creator: identity.creator,
+                sourceSha256: identity.sourceSha256,
+                encoding: "ready",
+                requireSignedURLs: true,
+                downloadsEnabled: false,
+              },
+            ],
+          },
+          nowMs: () => Date.now(),
+          deadlines: (now) => ({
+            acceptanceDeadlineMs: now + 600_000,
+            encodingDeadlineMs: now + 3_600_000,
+          }),
+        }),
+      ).toBe("ready");
+      const playback = await Effect.runPromise(
+        getVideoPlaybackAccess(
+          { postId, trustedSource: "retry-test" },
+          {
+            contentStore,
+            authorizePublication,
+            resolveApprovedPlayback: makeVideoPlaybackAuthority(layer),
+            customerHost: "customer-retry123.cloudflarestream.com",
+            nowMs: Effect.sync(() => Date.now()),
+            limit: () => Effect.succeed({ allowed: true, retryAfterSeconds: 0 }),
+            sign: () => Effect.succeed("header.payload.signature"),
+          },
+        ),
+      );
+      expect(playback.playback_url).toBe(
+        "https://customer-retry123.cloudflarestream.com/header.payload.signature/manifest/video.m3u8",
+      );
+
+      // Poster: sealed under revision 1's analysis, verified, then served.
+      const posterKey = `video-analysis/${operationId}/v1/c1/a1/poster.jpg`;
+      const posterBytes = new TextEncoder().encode("sealed poster jpeg");
+      const posterObject = {
+        key: posterKey,
+        size: posterBytes.byteLength,
+        httpEtag: '"poster-etag"',
+        httpMetadata: { contentType: "image/jpeg" },
+        customMetadata: {
+          sha256: frames[0].sha256,
+          sourceSha256: videoSha256,
+          policyRevision: "1",
+        },
+      };
+      const resolveArtifact = makeVideoPosterAuthority(layer);
+      expect(
+        await consumeVideoThumbnail(`video-enrichment:${operationId}:thumbnail`, {
+          store: makeVideoThumbnailStore(layer, { leaseMs: 60_000 }),
+          verify: makeVideoThumbnailVerifier({
+            resolveArtifact,
+            bucket: { head: async (key) => (key === posterKey ? posterObject : null) },
+          }),
+        }),
+      ).toBe("ready");
+      const poster = await Effect.runPromise(
+        streamVideoPoster(
+          { postId },
+          {
+            contentStore,
+            authorizePublication,
+            resolveArtifact,
+            bucket: {
+              get: async (key) =>
+                key === posterKey
+                  ? { ...posterObject, body: new Response(posterBytes).body as ReadableStream }
+                  : null,
+            },
+          },
+        ),
+      );
+      expect(poster.status).toBe(200);
+      expect(poster.headers.get("ETag")).toBe('"poster-etag"');
+      expect(new Uint8Array(await poster.arrayBuffer())).toEqual(posterBytes);
+
+      // Safety evidence and holds are read from the decision's revision up to
+      // the publication's: a platform hold or open hold at either denies.
+      for (const revision of [1, 2]) {
+        const safetyRef = `evidence_${String(revision).repeat(64)}`;
+        const requestId = `retry-platform-hold-${revision}`;
+        await admin.query(
+          `INSERT INTO media_video_safety_evidence
+            (submission_id,video_revision,creation_revision,request_id,input_sha256,evidence_ref,evidence_snapshot,platform_held)
+           VALUES ($1,1,$2,$3,$4,$5,$6::jsonb,true)`,
+          [
+            submissionId,
+            revision,
+            requestId,
+            "b".repeat(64),
+            safetyRef,
+            JSON.stringify({
+              requestId,
+              inputDigest: "b".repeat(64),
+              platformHeld: true,
+              fact: {
+                evidenceRef: safetyRef,
+                mediaSafety: "blocked",
+                minorSafetyEvidenceRef: null,
+              },
+            }),
+          ],
+        );
+        expect(await access()).toBe(false);
+        await admin.query(
+          "DELETE FROM media_video_safety_evidence WHERE submission_id=$1 AND creation_revision=$2",
+          [submissionId, revision],
+        );
+        expect(await access()).toBe(true);
+      }
+      await admin.query(
+        `INSERT INTO media_video_review_holds (submission_id,creation_revision,hold_kind,reason_codes)
+         VALUES ($1,2,'safety','["media_review_required"]'::jsonb)`,
+        [submissionId],
+      );
+      expect(await access()).toBe(false);
+    });
+  }, 120_000);
+
   test("attempt reconciliation atomically fences technical and poster retries and their projection", async () => {
     await fixture(async (admin, connection) => {
       const { store, finalized } = await finalizedFixture(connection);

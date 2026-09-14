@@ -37,6 +37,22 @@ const dataWorkflow = (status: string): CloudflareDataRegistrationWorkflowBinding
   createBatch: async () => [],
 });
 
+// A terminal status is not absence; the ceiling alert only fires for a
+// genuinely missing instance, which the runtime reports as this error.
+const missingMediaWorkflow = (): CloudflareMediaWorkflowBinding => ({
+  get: async () => {
+    throw new Error("instance.not_found");
+  },
+  createBatch: async () => [],
+});
+
+const missingDataWorkflow = (): CloudflareDataRegistrationWorkflowBinding => ({
+  get: async () => {
+    throw new Error("instance.not_found");
+  },
+  createBatch: async () => [],
+});
+
 describe("song pipeline terminal alert collectors", () => {
   test("emits each authoritative terminal condition with redacted correlation", async () => {
     const statements: ControlPlaneStatement[] = [];
@@ -98,7 +114,7 @@ describe("song pipeline terminal alert collectors", () => {
         collectSongPipelineTerminalAlerts(
           controlPlane,
           { media: true, data: true },
-          { media: mediaWorkflow("errored"), data: dataWorkflow("errored") },
+          { media: missingMediaWorkflow(), data: missingDataWorkflow() },
         ),
       ),
     );
@@ -246,7 +262,7 @@ describe("song pipeline terminal alert collectors", () => {
             collectSongPipelineTerminalAlerts(
               controlPlane,
               { media: false, data: true },
-              { data: dataWorkflow("errored") },
+              { data: missingDataWorkflow() },
             ),
           ),
         ),

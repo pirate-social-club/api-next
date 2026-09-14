@@ -40,6 +40,7 @@ const operation: DataRegistrationOperation = {
   confirmedAt: null,
   failureCode: null,
   failureEvidenceRef: null,
+  attachedLicense: null,
 };
 
 const authority: DataRegistrationArtifactAuthority = {
@@ -150,6 +151,165 @@ const verifiedPin = (
   cid: `bafy${kind}`,
   canonicalSha256: hash,
   byteLength: bytes,
+});
+
+const derivativeOperation: DataRegistrationOperation = {
+  ...operation,
+  canonicalAudioSha256: "e".repeat(64),
+  mediaKind: "video",
+  rightsBasis: "derivative",
+};
+
+const MASTER_BYTES = new Uint8Array([1, 2, 3, 4, 5]);
+
+const derivativeAuthority: DataRegistrationArtifactAuthority = {
+  postId: operation.postId,
+  projectedAt: "2026-09-11T00:00:00.000Z",
+  contentRating: "adult_18",
+  mediaKind: "video",
+  rightsBasis: "derivative",
+  licensePreset: null,
+  caption: null,
+  master: {
+    objectKey: "media://immutable/song-video-masters/song-video-plan:submission-1/g1",
+    objectVersion: "v7",
+    mediaType: "video/mp4",
+    byteLength: 5n,
+    sha256: "e".repeat(64),
+  },
+  posterArtifactRef: "media://derived/media-operation-1/poster",
+  posterSha256: "d".repeat(64),
+  parent: {
+    assetId: "song-post-1",
+    registrationOperationId: "data-registration:1315:song-post-1:1",
+    relationship: "references_song",
+    ipId: "0x5555555555555555555555555555555555555555",
+    licenseTemplate: "0x2e896b0b2fdb7457499b56aaaa4ae55bcb4cd316",
+    licenseTermsId: "1894",
+    preset: "commercial-remix",
+    commercialRevShareBps: 500,
+  },
+  ownerPolicy: { revision: 3n, hash: "f".repeat(64) },
+  royaltyAllocations: [
+    {
+      recipientId: "persona-1",
+      address: "0x1111111111111111111111111111111111111111",
+      shareBps: 10_000,
+    },
+  ],
+  creatorAddress: "0x1111111111111111111111111111111111111111",
+};
+
+describe("DATA registration artifacts of a song-reference video", () => {
+  const opened: string[] = [];
+  const masters = {
+    open: async (objectKey: string, objectVersion: string) => {
+      opened.push(`${objectKey}@${objectVersion}`);
+      return (async function* () {
+        yield MASTER_BYTES.slice(0, 2);
+        yield MASTER_BYTES.slice(2);
+      })();
+    },
+  };
+
+  test("registers the accepted master and names the resolved parent in its metadata", async () => {
+    let pins: readonly DataRegistrationPinVerification[] = [];
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: { read: async () => derivativeAuthority, listPins: async () => pins },
+      immutableOriginals: videoBucket,
+      songVideoMasters: masters,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    const first = await pipeline.prepare(derivativeOperation);
+    expect(first.map(({ artifact }) => artifact.artifactKind)).toEqual([
+      "canonical_video",
+      "poster",
+    ]);
+    const [video] = first;
+    if (video === undefined) throw new Error("master artifact missing");
+    expect(video.artifact).toMatchObject({
+      sourceRef: "media://immutable/song-video-masters/song-video-plan:submission-1/g1@v7",
+      mediaType: "video/mp4",
+      byteLength: 5n,
+      canonicalSha256: "e".repeat(64),
+    });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of video.open(new AbortController().signal)) chunks.push(chunk);
+    // The sealed version is what is read, never the key's latest object.
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from(MASTER_BYTES));
+    expect(opened).toEqual([
+      "media://immutable/song-video-masters/song-video-plan:submission-1/g1@v7",
+    ]);
+
+    pins = [
+      verifiedPin("canonical_video", "e".repeat(64), 5n),
+      verifiedPin("poster", "d".repeat(64), 3n),
+    ];
+    const prepared = await pipeline.prepare(derivativeOperation);
+    const ipMetadata = prepared.find(({ artifact }) => artifact.artifactKind === "ip_metadata");
+    const nftMetadata = prepared.find(({ artifact }) => artifact.artifactKind === "nft_metadata");
+    if (ipMetadata === undefined || nftMetadata === undefined) throw new Error("metadata missing");
+    const document = JSON.parse(await collect(ipMetadata.open));
+    expect(document).toMatchObject({
+      mediaUrl: "ipfs://bafycanonical_video",
+      mediaHash: `0x${"e".repeat(64)}`,
+      mediaType: "video/mp4",
+      media_byte_length: 5,
+      image: "ipfs://bafyposter",
+      content_rating: "adult_18",
+      rights: {
+        basis: "derivative",
+        offered_license: null,
+        parent: {
+          asset_id: "song-post-1",
+          ip_id: "0x5555555555555555555555555555555555555555",
+          relationship: "references_song",
+          consumed_license: {
+            license_template: "0x2e896b0b2fdb7457499b56aaaa4ae55bcb4cd316",
+            license_terms_id: "1894",
+            preset: "commercial-remix",
+            commercial_rev_share_bps: 500,
+          },
+        },
+        owner_policy: { revision: 3, hash: "f".repeat(64) },
+      },
+    });
+    // No recognition provenance: the soundtrack is the referenced song itself.
+    expect(document.provenance).toBeUndefined();
+    expect(JSON.parse(await collect(nftMetadata.open)).attributes).toEqual(
+      expect.arrayContaining([
+        { trait_type: "Rights basis", value: "derivative" },
+        { trait_type: "Relationship", value: "references_song" },
+      ]),
+    );
+  });
+
+  test("fails closed without a master source", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: { read: async () => derivativeAuthority, listPins: async () => [] },
+      immutableOriginals: videoBucket,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    await expect(pipeline.prepare(derivativeOperation)).rejects.toThrow("no master source");
+  });
+
+  test("refuses a master other than the one the registration names", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: { read: async () => derivativeAuthority, listPins: async () => [] },
+      immutableOriginals: videoBucket,
+      songVideoMasters: masters,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    await expect(
+      pipeline.prepare({ ...derivativeOperation, canonicalAudioSha256: "a".repeat(64) }),
+    ).rejects.toThrow("authority mismatch");
+  });
 });
 
 describe("DATA registration artifact pipeline", () => {

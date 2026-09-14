@@ -122,6 +122,7 @@ export type MediaProcessingAuthority = Readonly<{
   readonly analysisRevision: number;
   readonly decisionRevision: number;
   readonly workflowRevision: number;
+  readonly replacementSequence: number;
   readonly retryCount: number;
   readonly status:
     | "processing"
@@ -319,6 +320,15 @@ type MediaProcessingAttemptStart =
 
 export type MediaProcessingCommit = "committed" | "replay" | "stale";
 
+export type AlignmentRecoveryRead =
+  | Readonly<{ readonly kind: "pending" }>
+  | Readonly<{
+      readonly kind: "committed";
+      readonly result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
+    }>
+  | Readonly<{ readonly kind: "stale" }>
+  | Readonly<{ readonly kind: "failed" }>;
+
 export interface MediaProcessingStore {
   readonly getOutbox: (outboxId: string) => Promise<MediaProcessingOutboxRecord | null>;
   readonly claimOutbox: (
@@ -373,9 +383,12 @@ export interface MediaProcessingStore {
     authority: MediaProcessingAuthority,
     result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>,
   ) => Promise<MediaProcessingCommit>;
+  readonly readAlignmentRecovery: (
+    authority: MediaProcessingAuthority,
+  ) => Promise<AlignmentRecoveryRead>;
   readonly commitProcessingFailure: (
     authority: MediaProcessingAuthority,
-    reason: "invalid_media" | "probe_failed" | "transform_failed",
+    reason: "invalid_media" | "probe_failed" | "transform_failed" | "workflow_terminal_unconverged",
   ) => Promise<MediaProcessingCommit>;
   readonly commitProviderUnavailableReview: (
     authority: MediaProcessingAuthority,
@@ -384,6 +397,9 @@ export interface MediaProcessingStore {
   readonly replaceMissingWorkflow: (
     authority: MediaProcessingAuthority,
   ) => Promise<MediaProcessingCommit>;
+  readonly reconcileTerminalWorkflow: (
+    authority: MediaProcessingAuthority,
+  ) => Promise<"reconciled" | "escalated" | "stale">;
   readonly listWorkflowCandidates: () => Promise<readonly MediaProcessingAuthority[]>;
   readonly readModerationPolicy: (communityId: string) => Promise<TextModerationPolicySnapshotV2>;
 }
@@ -480,7 +496,9 @@ export type MediaProcessingProviders = Readonly<{
 }>;
 
 export interface MediaProcessingWorkflowLauncher {
-  readonly get: (instanceId: string) => Promise<"present" | "missing">;
+  readonly get: (
+    instanceId: string,
+  ) => Promise<"present" | "finished" | "indeterminate" | "missing">;
   readonly create: (
     instanceId: string,
     payload: MediaProcessingWorkflowPayload,
@@ -504,7 +522,8 @@ export type MediaProcessingObservation = Readonly<{
     | "attempt_replayed"
     | "attempt_completed"
     | "attempt_failed"
-    | "workflow_replaced";
+    | "workflow_replaced"
+    | "workflow_lookup_failed";
   readonly operationId?: string;
   readonly submissionId?: string;
   readonly outboxId?: string;

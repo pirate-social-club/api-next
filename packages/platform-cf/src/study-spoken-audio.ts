@@ -21,11 +21,15 @@ export type StudyBatchFetch = (input: string, init: RequestInit) => Promise<Resp
 const failure = (reason: StudyBatchTranscriptionFailed["reason"]) =>
   new StudyBatchTranscriptionFailed({ reason });
 
-async function readBoundedText(response: Response): Promise<string> {
+async function readBoundedText(response: Response, signal?: AbortSignal): Promise<string> {
   const declared = response.headers.get("content-length");
   if (declared !== null && Number(declared) > MAX_RESPONSE_BYTES) throw failure("invalid-response");
   if (response.body === null) return "";
   const reader = response.body.getReader();
+  const abort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -40,6 +44,7 @@ async function readBoundedText(response: Response): Promise<string> {
       chunks.push(next.value);
     }
   } finally {
+    signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
   const bytes = new Uint8Array(size);
@@ -95,8 +100,10 @@ export function makeElevenLabsStudyBatchTranscriber(
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   return {
     providerRetention,
-    transcribe: ({ audio, contentType, languageHint }) =>
-      Effect.tryPromise({
+    transcribe: ({ audio, contentType, languageHint }) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      return Effect.tryPromise({
         try: async () => {
           if (apiKey.length === 0 || apiKey.trim() !== apiKey) throw failure("misconfigured");
           const form = new FormData();
@@ -107,35 +114,49 @@ export function makeElevenLabsStudyBatchTranscriber(
           form.append("timestamps_granularity", "none");
           if (languageHint !== null)
             form.append("language_code", languageHint.split("-", 1)[0] ?? languageHint);
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), timeoutMs);
-          let response: Response;
           try {
-            response = await fetchImpl(ELEVENLABS_STUDY_BATCH_ENDPOINT, {
-              method: "POST",
-              headers: { "xi-api-key": apiKey },
-              body: form,
-              signal: controller.signal,
-            });
+            let response: Response;
+            try {
+              response = await fetchImpl(ELEVENLABS_STUDY_BATCH_ENDPOINT, {
+                method: "POST",
+                headers: { "xi-api-key": apiKey },
+                body: form,
+                signal: controller.signal,
+              });
+            } catch (error) {
+              if (controller.signal.aborted) throw failure("timeout");
+              throw error;
+            }
+            if (response.status === 429) throw failure("rate-limited");
+            if (!response.ok) throw failure("unavailable");
+            // The deadline stays armed through body consumption and decoding:
+            // a provider that sends headers and stalls its body still fails at
+            // the configured timeout and releases the stream.
+            const text = await readBoundedText(response, controller.signal);
+            try {
+              return decodeTranscript(JSON.parse(text) as unknown);
+            } catch (error) {
+              if (error instanceof StudyBatchTranscriptionFailed) throw error;
+              throw failure("invalid-response");
+            }
           } catch (error) {
             if (controller.signal.aborted) throw failure("timeout");
             throw error;
           } finally {
             clearTimeout(timeout);
           }
-          if (response.status === 429) throw failure("rate-limited");
-          if (!response.ok) throw failure("unavailable");
-          const text = await readBoundedText(response);
-          try {
-            return decodeTranscript(JSON.parse(text) as unknown);
-          } catch (error) {
-            if (error instanceof StudyBatchTranscriptionFailed) throw error;
-            throw failure("invalid-response");
-          }
         },
         catch: (error) =>
           error instanceof StudyBatchTranscriptionFailed ? error : failure("unavailable"),
-      }),
+      }).pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            controller.abort();
+            clearTimeout(timeout);
+          }),
+        ),
+      );
+    },
   };
 }
 

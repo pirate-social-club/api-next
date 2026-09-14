@@ -1,4 +1,8 @@
-import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  type ControlPlaneTransaction,
+} from "@pirate/application";
 import type {
   VideoStreamClaim,
   VideoStreamIngestServices,
@@ -67,6 +71,46 @@ const AUTHORITY = `SELECT o.effect_identity,o.operation_id,o.submission_id,o.pos
     AND i.size_bytes=v.size_bytes AND i.content_type=v.content_type
   WHERE o.effect_identity=$1 AND o.enrichment_kind='stream'`;
 const LOCK = " FOR UPDATE OF o,s,p,r,v,i";
+const SONG_REFERENCE_AUTHORITY = `SELECT o.effect_identity,o.operation_id,o.submission_id,o.post_id,
+  p.creation_revision::text,p.video_revision::text,p.analysis_revision::text,
+  m.verified_object_key AS immutable_ref,m.master_sha256 AS canonical_sha256,
+  m.master_byte_length::text AS size_bytes,'video/mp4' AS content_type,
+  s.claim_fence::text,s.ingest_revision::text,
+  s.state,s.creator_marker,s.source_sha256,s.provider_video_id,s.failure_reason,
+  s.acceptance_deadline_ms::text,s.encoding_deadline_ms::text
+  FROM media_video_enrichment_outbox o
+  JOIN media_video_stream_ingests s ON s.operation_id=o.operation_id
+  JOIN media_publication_projections p ON p.operation_id=o.operation_id
+    AND p.submission_id=o.submission_id AND p.post_id=o.post_id AND p.media_kind='video'
+  JOIN media_video_rights r ON r.submission_id=p.submission_id AND r.rights_basis='derivative'
+  JOIN media_song_video_accepted_masters a ON a.plan_id=p.song_video_plan_id
+    AND a.master_revision_id=p.song_video_master_revision_id
+  JOIN media_song_video_masters m ON m.master_revision_id=a.master_revision_id
+    AND m.plan_id=a.plan_id AND m.verified_object_key=p.video_asset_ref
+    AND m.master_sha256=p.canonical_video_sha256
+  WHERE o.effect_identity=$1 AND o.enrichment_kind='stream'`;
+const SONG_REFERENCE_LOCK = " FOR UPDATE OF o,s,p,r,a,m";
+
+/** The one authority that applies: the sealed original, or the accepted master. */
+const selectAuthority = (
+  tx: Pick<ControlPlaneTransaction, "execute">,
+  input: Readonly<{ label: string; where: string; values: readonly unknown[] }>,
+) =>
+  Effect.gen(function* () {
+    const original = yield* tx.execute({
+      label: input.label,
+      text: `${AUTHORITY}${input.where}${LOCK}`,
+      values: input.values,
+      readonly: false,
+    });
+    if (original.rows.length > 0) return original;
+    return yield* tx.execute({
+      label: `${input.label}-song-reference`,
+      text: `${SONG_REFERENCE_AUTHORITY}${input.where}${SONG_REFERENCE_LOCK}`,
+      values: input.values,
+      readonly: false,
+    });
+  });
 
 const decodeClaim = Effect.fn("decodeVideoStreamClaim")(function* (raw: unknown, owner: string) {
   const row = yield* Effect.try({
@@ -209,12 +253,11 @@ export function makeVideoStreamIngestStore(
     const db = yield* ControlPlaneDb;
     return yield* db.withTransaction(
       Effect.fn("claimVideoStreamIngest.transaction")(function* (tx) {
-        const selected = yield* tx.execute({
+        const selected = yield* selectAuthority(tx, {
           label: "video-ingest.claim-authority",
-          text: `${AUTHORITY}
-        AND (o.state='pending' OR (o.state='running' AND o.lease_expires_at<=clock_timestamp()))${LOCK}`,
+          where: `
+        AND (o.state='pending' OR (o.state='running' AND o.lease_expires_at<=clock_timestamp()))`,
           values: [effectIdentity],
-          readonly: false,
         });
         if (selected.rows.length === 0) return null;
         if (selected.rows.length !== 1)
@@ -246,13 +289,12 @@ export function makeVideoStreamIngestStore(
     const db = yield* ControlPlaneDb;
     return yield* db.withTransaction(
       Effect.fn("transitionVideoStreamIngest.transaction")(function* (tx) {
-        const selected = yield* tx.execute({
+        const selected = yield* selectAuthority(tx, {
           label: "video-ingest.transition-authority",
-          text: `${AUTHORITY}
+          where: `
         AND o.state='running' AND o.lease_owner=$2 AND o.lease_expires_at>clock_timestamp()
-        AND s.claim_fence=$3 AND s.ingest_revision=$4${LOCK}`,
+        AND s.claim_fence=$3 AND s.ingest_revision=$4`,
           values: [input.effectIdentity, input.leaseOwner, input.fence, input.revision],
-          readonly: false,
         });
         if (selected.rows.length === 0) return null;
         if (selected.rows.length !== 1)
