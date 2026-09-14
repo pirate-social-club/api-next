@@ -997,6 +997,140 @@ suite("community moderation authority and policy migration", () => {
       );
       expect(coalesced).toMatchObject({ case_ref: firstReport.case_ref, status: "coalesced" });
 
+      const raised = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: firstReport.case_ref,
+          actor: owner,
+          idempotencyKey: "raise-general-report",
+          expectedCaseRevision: 1,
+          action: "raise_rating_to_adult_18",
+          requestHash: "b".repeat(64),
+        }),
+      );
+      expect(raised).toMatchObject({
+        action: "raise_rating_to_adult_18",
+        target_status: "published",
+      });
+      await expect(
+        admin.query("SELECT content_rating FROM posts WHERE community_id = $1 AND post_id = $2", [
+          "moderation-runtime",
+          postId,
+        ]),
+      ).resolves.toMatchObject({ rows: [{ content_rating: "adult_18" }] });
+
+      const adultReport = await Effect.runPromise(
+        store.reportTarget({
+          targetType: "post",
+          targetId: postId,
+          actor: { kind: "user", userId: "moderation-runtime-member" },
+          idempotencyKey: "adult-report",
+          reasonCode: "misleading",
+          requestHash: "c".repeat(64),
+        }),
+      );
+      await expect(
+        Effect.runPromise(
+          store.actOnCase({
+            caseRef: adultReport.case_ref,
+            actor: owner,
+            idempotencyKey: "adult-dismiss-without-proof",
+            expectedCaseRevision: 1,
+            action: "dismiss_report",
+            requestHash: "d".repeat(64),
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "conflict" });
+      await admin.query(`CREATE OR REPLACE FUNCTION current_account_age_capability_v1(
+          target_account_id TEXT
+        ) RETURNS TEXT LANGUAGE sql STABLE AS $$
+          SELECT CASE WHEN target_account_id = 'moderation-runtime-owner'
+            THEN 'adult_18' ELSE 'general' END
+        $$`);
+      const dismissed = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: adultReport.case_ref,
+          actor: owner,
+          idempotencyKey: "adult-dismiss-with-proof",
+          expectedCaseRevision: 1,
+          action: "dismiss_report",
+          requestHash: "e".repeat(64),
+        }),
+      );
+      expect(dismissed).toMatchObject({ action: "dismiss_report", target_status: "published" });
+      await expect(
+        admin.query("SELECT content_rating FROM posts WHERE community_id = $1 AND post_id = $2", [
+          "moderation-runtime",
+          postId,
+        ]),
+      ).resolves.toMatchObject({ rows: [{ content_rating: "adult_18" }] });
+
+      const restoreReport = await Effect.runPromise(
+        store.reportTarget({
+          targetType: "post",
+          targetId: postId,
+          actor: { kind: "user", userId: "moderation-runtime-member" },
+          idempotencyKey: "adult-restore-report",
+          reasonCode: "spam",
+          requestHash: "f".repeat(64),
+        }),
+      );
+      const hidden = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: restoreReport.case_ref,
+          actor: owner,
+          idempotencyKey: "adult-hide",
+          expectedCaseRevision: 1,
+          action: "hide",
+          requestHash: "0".repeat(64),
+        }),
+      );
+      expect(hidden).toMatchObject({ action: "hide", target_status: "hidden" });
+      const restored = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: restoreReport.case_ref,
+          actor: owner,
+          idempotencyKey: "adult-restore",
+          expectedCaseRevision: 2,
+          action: "restore",
+          requestHash: "1".repeat(64),
+        }),
+      );
+      expect(restored).toMatchObject({ action: "restore", target_status: "published" });
+      await expect(
+        admin.query(
+          `SELECT post.content_rating,
+                  EXISTS (SELECT 1 FROM home_feed_projection AS feed
+                           WHERE feed.community_id = post.community_id
+                             AND feed.post_id = post.post_id) AS in_feed
+             FROM posts AS post
+            WHERE post.community_id = $1 AND post.post_id = $2`,
+          ["moderation-runtime", postId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ content_rating: "adult_18", in_feed: true }] });
+
+      const approvedAdult = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: "moderation-runtime-case-adult",
+          actor: owner,
+          idempotencyKey: "adult-approval-with-proof",
+          expectedCaseRevision: 1,
+          action: "approve_as_adult_18",
+          requestHash: "2".repeat(64),
+        }),
+      );
+      expect(approvedAdult).toMatchObject({
+        action: "approve_as_adult_18",
+        target_status: "published",
+      });
+      await expect(
+        admin.query(
+          `SELECT post.content_rating
+             FROM text_content_submissions AS submission
+             JOIN posts AS post ON post.post_id = submission.published_post_id
+            WHERE submission.submission_id = 'moderation-runtime-adult'`,
+        ),
+      ).resolves.toMatchObject({ rows: [{ content_rating: "adult_18" }] });
+
       const policy = await Effect.runPromise(
         store.getPolicy({ communityId: "moderation-runtime", actor: owner }),
       );
