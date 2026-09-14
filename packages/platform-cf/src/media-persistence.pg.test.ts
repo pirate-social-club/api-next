@@ -4054,33 +4054,24 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           end_ms: index * 100 + 80,
         })),
       };
-      await admin.query(
-        `INSERT INTO media_timed_lyrics_artifacts (
-           artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,
-           audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,
-           artifact_sha256,artifact,author_persona_id,lyrics_revision
-         ) VALUES (
-           'ready-lyrics-artifact',$1,$2,$3,$4,$5,1,1,1,$6,
-           encode(sha256(convert_to($7::jsonb::text,'UTF8')),'hex'),$7::jsonb,$8,1
-         )`,
-        [
-          community,
-          actor,
-          submission,
-          operation,
-          postId,
-          audioSha256,
-          JSON.stringify(timedLyricsArtifact),
-          personaFor(connection),
-        ],
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      const authority = await processing.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing published alignment authority");
+      const artifactDigest = await admin.query<{ sha256: string }>(
+        "SELECT encode(sha256(convert_to($1::jsonb::text,'UTF8')),'hex') AS sha256",
+        [JSON.stringify(timedLyricsArtifact)],
       );
-      await admin.query(
-        `UPDATE media_alignment_projections
-            SET alignment_revision=1,status='ready',current_artifact_ref='ready-lyrics-artifact',
-                current_artifact_revision=1,updated_at=clock_timestamp()
-          WHERE submission_id=$1`,
-        [submission],
-      );
+      const artifactSha256 = artifactDigest.rows[0]?.sha256;
+      if (artifactSha256 === undefined) throw new Error("missing timed lyrics artifact digest");
+      expect(
+        await processing.commitAlignment(authority, {
+          kind: "alignment",
+          status: "ready",
+          artifactRef: "ready-lyrics-artifact",
+          artifactSha256,
+          artifact: timedLyricsArtifact,
+        }),
+      ).toBe("committed");
       const readiness = await makeControlPlaneKaraokeReadinessStore(
         makeDirectPostgresControlPlaneLayer(connection),
       ).get({ communityId: community, postId });
