@@ -846,7 +846,7 @@ suite("Postgres 17 content repository", () => {
           ),
         ),
       ).resolves.toMatchObject({
-        post: { id: "post_parent", body: "parent" },
+        post: { id: "post_parent", body: "parent", age_gate_policy: "18_plus" },
       });
     });
     completedTestCount += 1;

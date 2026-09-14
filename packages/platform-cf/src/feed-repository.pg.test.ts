@@ -233,8 +233,29 @@ suite("Postgres 17 home feed repository", () => {
     completedTestCount += 1;
   });
 
+  test("the authorized feed advertises its current adult floor instead of claiming no age gate", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seedCommunity(admin);
+      await insertProjectedPost(admin, { id: "adult_post" });
+      await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id='adult_post'");
+      await admin.query(`CREATE OR REPLACE FUNCTION current_account_age_capability_v1(target_account_id TEXT)
+        RETURNS TEXT LANGUAGE sql STABLE AS $$ SELECT CASE WHEN target_account_id='usr_member' THEN 'adult_18' ELSE 'general' END $$`);
+      const store = makeControlPlaneFeedStore(makeDirectPostgresControlPlaneLayer(connection));
+      const anonymous = await Effect.runPromise(Effect.scoped(store.listHome({ query: {} })));
+      expect(anonymous.items[0]).toMatchObject({ kind: "age_locked" });
+      const allowed = await Effect.runPromise(
+        Effect.scoped(store.listHome({ query: {}, viewerUserId: "usr_member" })),
+      );
+      expect(allowed.items[0]).toMatchObject({
+        post: { post: { id: "adult_post", age_gate_policy: "18_plus" } },
+      });
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 4) {
+    if (connectionString !== undefined && completedTestCount === 5) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

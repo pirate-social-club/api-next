@@ -161,7 +161,7 @@ suite("Postgres 17 public community threads repository", () => {
         ),
       );
       expect(adultCapable.items[0]).toMatchObject({
-        post: { id: "post_00", body: "post_00" },
+        post: { id: "post_00", body: "post_00", age_gate_policy: "18_plus" },
       });
       expect(
         exact.items.every(

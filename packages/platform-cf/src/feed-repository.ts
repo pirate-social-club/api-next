@@ -296,7 +296,7 @@ const feedItemFromRow = (
         ...(postType === "video" ? { caption: optionalString(row, "video_caption") } : {}),
         analysis_state: "allow",
         content_safety_state: "safe",
-        age_gate_policy: "none",
+        age_gate_policy: stringValue(row, "content_rating") === "adult_18" ? "18_plus" : "none",
         created,
       },
       thread_snapshot: null,
