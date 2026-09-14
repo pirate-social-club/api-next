@@ -3620,7 +3620,12 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("allocates an opaque alias while reconciling an already-published adult song", async () => {
     await withCurrentSchema(async (admin, connection) => {
-      await createThroughDecision(connection, decision, analysis);
+      const contentModeration = analysis.contentModeration;
+      if (contentModeration === undefined) throw new Error("missing fixture moderation");
+      await createThroughDecision(connection, decision, {
+        ...analysis,
+        contentModeration: { ...contentModeration, matchedCategories: ["sexual"] },
+      });
       const historical = (
         await admin.query(
           "SELECT response_snapshot_sha256,event_sequence FROM media_post_submissions WHERE submission_id=$1",
@@ -3633,10 +3638,16 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           [submission],
         ),
       ).rejects.toThrow("media submission authority is immutable");
-      await admin.query(
-        "UPDATE media_post_submissions SET resulting_content_rating='adult_18' WHERE submission_id=$1",
-        [submission],
-      );
+      const proposed = (
+        await admin.query("SELECT content_rating_reconciliation_plan_v1(100) AS plan")
+      ).rows[0].plan;
+      expect(proposed.items).toHaveLength(1);
+      expect(proposed.items[0].outcome).toBe("adult_18");
+      await admin.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await admin.query("SELECT apply_content_rating_reconciliation_v1($1,100)", [
+        proposed.plan_hash,
+      ]);
+      await admin.query("COMMIT");
       expect(
         (
           await admin.query(

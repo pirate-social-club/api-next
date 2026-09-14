@@ -141,6 +141,11 @@ suite("video publication PostgreSQL", () => {
         retryCount: 1,
         analysis: failed.state.analysis,
       });
+      expect(resumed?.state.decision?.effectiveContentRating).toBe("general");
+      await admin.query(
+        "UPDATE media_post_submissions SET resulting_content_rating='adult_18' WHERE submission_id=$1",
+        [submissionId],
+      );
       expect(
         await acceptTrustedVideoAnalysis({ submissionId, analysis: trustedAnalysis() }, services),
       ).toMatchObject({ status: "published" });
@@ -151,6 +156,22 @@ suite("video publication PostgreSQL", () => {
         (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]
           .n,
       ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT p.content_rating,projection.content_rating AS projection_rating,s.resulting_content_rating FROM posts p JOIN media_publication_projections projection USING(community_id,post_id) JOIN media_post_submissions s USING(submission_id) WHERE s.submission_id=$1",
+            [submissionId],
+          )
+        ).rows[0],
+      ).toEqual({
+        content_rating: "adult_18",
+        projection_rating: "adult_18",
+        resulting_content_rating: "adult_18",
+      });
+      expect(
+        (await store.getSubmissionByOperation({ submissionId, operationId }))?.state.decision
+          ?.effectiveContentRating,
+      ).toBe("general");
       expect(
         (await admin.query("SELECT count(*)::int AS n FROM media_video_transform_attempts")).rows[0]
           .n,
@@ -1139,6 +1160,9 @@ suite("video publication PostgreSQL", () => {
         "post-video-publication",
       ]);
       expect(await access()).toBe(false);
+      expect(
+        await makePostgresDataRegistrationArtifactAuthorityReader(layer).read(operation),
+      ).toMatchObject({ contentRating: "adult_18" });
       await expect(
         admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [
           "post-video-publication",

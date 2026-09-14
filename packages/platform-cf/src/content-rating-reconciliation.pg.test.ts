@@ -4,7 +4,21 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  attachVideoDecision,
+  decideOriginalAudioVideo,
+  type OriginalAudioTrustedAnalysis,
+} from "../../domain/src/video-submission.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
+import {
+  community,
+  finalizedFixture,
+  operationId,
+  seedVideoActors,
+  submissionId,
+  trustedAnalysis,
+} from "./video-publication.pg-fixture.ts";
+import { makeVideoSafetyEvidenceStore } from "./video-safety-evidence-repository.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
@@ -151,6 +165,98 @@ suite("retained content rating reconciliation", () => {
       ).toBe("held");
     });
   });
+  test("repairs a bound retained video signal without changing its historical decision", async () => {
+    await fixture(async (admin) => {
+      if (url === undefined) throw new Error("PostgreSQL test URL required");
+      const scoped = new URL(url);
+      scoped.searchParams.set(
+        "options",
+        `-c search_path=${(await admin.query("SELECT current_schema() AS schema")).rows[0].schema}`,
+      );
+      await seedVideoActors(admin);
+      const { store, layer, finalized } = await finalizedFixture(scoped.toString());
+      const original = trustedAnalysis();
+      const evidenceRef = `evidence_${"e".repeat(64)}`;
+      const analysis: OriginalAudioTrustedAnalysis = {
+        ...original,
+        mediaSafety: "review_required",
+        safetyRequest: { ...original.safetyRequest, evidenceRef, minorSafetyEvidenceRef: null },
+      };
+      const request = analysis.safetyRequest;
+      const inputs = analysis.frames.extracted.map((frame, index) => ({
+        role: frame.role,
+        sha256: frame.sha256,
+        outcome: "evaluated",
+        provider: {
+          provider_id: "openai",
+          input_sha256: frame.sha256,
+          matched_categories: index === 0 ? ["sexual"] : [],
+        },
+        resolution: { matched_categories: index === 0 ? ["sexual"] : [] },
+      }));
+      await makeVideoSafetyEvidenceStore(layer).save(
+        {
+          submissionId,
+          operationId,
+          communityId: community,
+          videoRevision: 1,
+          creationRevision: 1,
+          authorDeclaredRating: "general",
+          caption: null,
+          captionSha256: null,
+          frames: analysis.frames.extracted,
+        },
+        {
+          requestId: request.requestId,
+          inputDigest: "d".repeat(64),
+          platformHeld: false,
+          policy: null,
+          inputs,
+          fact: {
+            requestId: request.requestId,
+            evidenceRef,
+            minorSafetyEvidenceRef: null,
+            mediaSafety: "review_required",
+            captionSafety: "not_applicable",
+            automatedRating: "general",
+            policyRevision: "safety-v1",
+            adapterRevision: "video-openai-safety-v1",
+          },
+        },
+      );
+      const decision = decideOriginalAudioVideo({
+        state: finalized.state,
+        analysis,
+        canonicalCaptionSha256: null,
+        decidedAt: "2026-09-14T00:00:00.000Z",
+      });
+      await store.commitAnalysisDecision({
+        submission: finalized.state,
+        analysis,
+        decision,
+        nextState: attachVideoDecision(finalized.state, analysis, decision),
+      });
+      const before = (
+        await admin.query(
+          "SELECT video_state_snapshot,event_sequence,resulting_content_rating FROM media_post_submissions WHERE submission_id=$1",
+          [submissionId],
+        )
+      ).rows[0];
+      expect(before.resulting_content_rating).toBe("general");
+      const proposed = await plan(admin);
+      expect(proposed.items).toHaveLength(1);
+      expect(proposed.items[0]?.outcome).toBe("adult_18");
+      await apply(admin, proposed.plan_hash);
+      const after = (
+        await admin.query(
+          "SELECT video_state_snapshot,event_sequence,resulting_content_rating FROM media_post_submissions WHERE submission_id=$1",
+          [submissionId],
+        )
+      ).rows[0];
+      expect(after).toEqual({ ...before, resulting_content_rating: "adult_18" });
+      expect((await plan(admin)).items).toHaveLength(0);
+    });
+  });
   test("plans without writes, holds unknown content, rejects moderator release and replays without effects", async () => {
     await fixture(async (admin) => {
       await post(admin, "unknown_post");
@@ -237,7 +343,7 @@ suite("retained content rating reconciliation", () => {
     });
   });
   afterAll(async () => {
-    if (url !== undefined && completed === 3)
+    if (url !== undefined && completed === 4)
       await Bun.write(
         sentinel,
         "api-next-control-plane-postgres-rating-reconciliation-suite-complete\n",

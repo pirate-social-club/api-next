@@ -2064,6 +2064,30 @@ function membershipFailure(
   });
 }
 
+// Call only after the publication transaction locks its source submission.
+// A retained decision is immutable; the current floor may have risen since it.
+function currentVideoContentRating(
+  tx: Executor,
+  submissionId: string,
+  decisionRating: "general" | "adult_18",
+  parentRating: "general" | "adult_18" = "general",
+) {
+  return Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: "video-publication.current-rating",
+      text: "SELECT resulting_content_rating FROM media_post_submissions WHERE submission_id=$1 AND media_kind='video'",
+      values: [submissionId],
+      readonly: true,
+    });
+    const rating = result.rows[0]?.resulting_content_rating;
+    if (result.rows.length !== 1 || (rating !== "general" && rating !== "adult_18"))
+      throw new Error("invalid current video rating");
+    return rating === "adult_18" || decisionRating === "adult_18" || parentRating === "adult_18"
+      ? ("adult_18" as const)
+      : ("general" as const);
+  });
+}
+
 function publishTransaction(input: VideoPublishBundle) {
   return Effect.gen(function* () {
     const db = yield* ControlPlaneDb;
@@ -2089,6 +2113,11 @@ function publishTransaction(input: VideoPublishBundle) {
         if (membership !== null) return membership;
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
+        const contentRating = yield* currentVideoContentRating(
+          tx,
+          current.state.submissionId,
+          input.decision.effectiveContentRating,
+        );
         yield* tx.execute({
           label: "video-publication.post-insert",
           text: `INSERT INTO posts
@@ -2106,7 +2135,7 @@ function publishTransaction(input: VideoPublishBundle) {
             current.state.caption,
             `video-publication:${current.state.operationId}`,
             current.state.authorDeclaredRating,
-            input.decision.effectiveContentRating,
+            contentRating,
           ],
           readonly: false,
         });
@@ -2166,9 +2195,9 @@ function publishTransaction(input: VideoPublishBundle) {
              creation_revision,audio_revision,analysis_revision,decision_revision,
              canonical_audio_sha256,title,audio_asset_ref,language_status,
              lyrics_explicitness,media_kind,video_revision,caption,video_asset_ref,
-             poster_artifact_ref,original_sound_id,canonical_video_sha256)
+             poster_artifact_ref,original_sound_id,canonical_video_sha256,content_rating)
             VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,NULL,NULL,NULL,'unavailable','not_applicable',
-                    'video',$9,$10,$11,$12,$13,$14)
+                    'video',$9,$10,$11,$12,$13,$14,$15)
             ON CONFLICT (submission_id) DO NOTHING`,
           values: [
             current.state.submissionId,
@@ -2187,6 +2216,7 @@ function publishTransaction(input: VideoPublishBundle) {
             input.poster.artifactRef,
             input.originalSound.originalSoundId,
             current.state.video.canonicalSha256,
+            contentRating,
           ],
           readonly: false,
         });
@@ -2762,10 +2792,12 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
         // The song's rating is a lower bound at commit, not only at decision: a
         // song that became adult-only while the master rendered makes this
         // video adult-only too. The song's Post is locked above.
-        const contentRating =
-          input.decision.effectiveContentRating === "adult_18" || song.contentRating === "adult_18"
-            ? "adult_18"
-            : "general";
+        const contentRating = yield* currentVideoContentRating(
+          tx,
+          current.state.submissionId,
+          input.decision.effectiveContentRating,
+          song.contentRating,
+        );
         yield* tx.execute({
           label: "video-publication.post-insert",
           text: `INSERT INTO posts
@@ -2851,9 +2883,9 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
              canonical_audio_sha256,title,audio_asset_ref,language_status,
              lyrics_explicitness,media_kind,video_revision,caption,video_asset_ref,
              poster_artifact_ref,original_sound_id,canonical_video_sha256,
-             song_video_plan_id,song_video_master_revision_id)
+             song_video_plan_id,song_video_master_revision_id,content_rating)
             VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,NULL,NULL,NULL,'unavailable','not_applicable',
-                    'video',$9,$10,$11,$12,NULL,$13,$14,$15)
+                    'video',$9,$10,$11,$12,NULL,$13,$14,$15,$16)
             ON CONFLICT (submission_id) DO NOTHING`,
           values: [
             current.state.submissionId,
@@ -2871,6 +2903,7 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             master.masterSha256,
             plan.planId,
             master.masterRevisionId,
+            contentRating,
           ],
           readonly: false,
         });
