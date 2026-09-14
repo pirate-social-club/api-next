@@ -58,7 +58,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 61;
+const testCount = 62;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -1590,6 +1590,122 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows,
       ).toEqual([{ creation_revision: "3" }]);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
+  test("resumes finalize with a fresh key after a retryable hash failure", async () => {
+    await withCurrentSchema(async (_admin, connection) => {
+      expect(
+        await run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            idempotencyKey: "hash-retry-reserve",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/media",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId: reservation,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.createSubmission({
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            idempotencyKey: "hash-retry-create",
+            requestHash,
+            title: "Hash retry song",
+            songType: "original",
+            reservationId: reservation,
+            submissionId: submission,
+            operationId: operation,
+            responseBytes,
+            responseSha256,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.beginFinalize(finalizeFence(connection, "hash-retry-finalize-1", 1)),
+        ),
+      ).toMatchObject({ kind: "begun" });
+      expect(
+        await run(connection, (store) =>
+          store.recordMediaFailure({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/finalize",
+              "hash-retry-finalize-1",
+            ),
+            expectedCreationRevision: 1,
+            failure: {
+              code: "hash_failed",
+              retryable: true,
+              retryCount: 0,
+              lastSafePhase: "finalize",
+              evidenceRef: "media-hash-retry-fixture",
+            },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        await run(connection, (store) =>
+          store.retry({
+            ...command(connection, "/media-post-submissions/:submissionId/retry", "hash-retry"),
+            expectedCreationRevision: 1,
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        await run(connection, (store) =>
+          store.beginFinalize(finalizeFence(connection, "hash-retry-finalize-2", 2)),
+        ),
+      ).toMatchObject({ kind: "resumed", submissionId: submission, operationId: operation });
+      expect(
+        await run(connection, (store) =>
+          store.finalizeSealed({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/finalize",
+              "hash-retry-finalize-2",
+            ),
+            expectedCreationRevision: 2,
+            expectedAudioRevision: 0,
+            reservationId: reservation,
+            immutableObject: {
+              immutableRef: analysis.finalizedAudioRef,
+              destinationRef: "media://immutable/hash-retry",
+              etag: "hash-retry-etag",
+              objectVersion: "hash-retry-version",
+              sizeBytes: audioBytes.byteLength,
+              contentType: "audio/mpeg",
+              canonicalSha256: audioSha256,
+            },
+            outbox: {
+              outboxEventId: "media_pg_hash_retry_outbox",
+              effectIdentity: "media_pg_hash_retry_effect",
+              payload: {
+                kind: "analysis_launch",
+                submission_id: submission,
+                operation_id: operation,
+                audio_revision: 1,
+                analysis_revision: 0,
+                workflow_revision: 1,
+                workflow_instance_id: `media-${operation}-r1`,
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed", submissionId: submission });
     });
     completedTestCount += 1;
   }, 40_000);
