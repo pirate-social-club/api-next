@@ -7,7 +7,7 @@ function sortedUnique(values: readonly string[]): readonly string[] {
 
 export function tableNamesFromPostgresBaseline(source: string): readonly string[] {
   return sortedUnique(
-    [...source.matchAll(/^CREATE TABLE ([a-z][a-z0-9_]*) \(/gmu)].map(
+    [...source.matchAll(/^CREATE (?:TABLE|VIEW) ([a-z][a-z0-9_]*) (?:\(|AS\b)/gmu)].map(
       (match) => match[1] as string,
     ),
   );
