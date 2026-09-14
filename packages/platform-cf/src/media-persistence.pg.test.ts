@@ -6,6 +6,11 @@ import { MODERATION_POLICY_CATEGORIES_V1, NotFound } from "@pirate/contracts";
 import { canonicalTextModerationInput } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { makeMediaUploadHandlers } from "../../../apps/http-worker/src/media-upload-handlers.ts";
+import {
+  dispatchEligibleMediaOutbox,
+  makeMediaOutboxDispatchSource,
+} from "../../../apps/jobs-worker/src/media-outbox-dispatch.ts";
 import { sweepMissingMediaWorkflows } from "../../../apps/jobs-worker/src/media-workflow-sweep.ts";
 import { runOperatorReprocess } from "../../../scripts/media-operator-reprocess.ts";
 import {
@@ -17,6 +22,7 @@ import type {
   MediaProcessingProviders,
   MediaProcessingStore,
 } from "../../application/src/media/processing-contracts.ts";
+import { consumeMediaProcessingQueueMessage } from "../../application/src/media/processing-queue.ts";
 import { runMediaProcessingWorkflow } from "../../application/src/media/processing-workflow.ts";
 import {
   bindMediaReference,
@@ -58,7 +64,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 62;
+const testCount = 63;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -559,6 +565,177 @@ async function expectHostileLyricsProjectionLeakRejected(
 }
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
+  test("launches the Workflow created by an authenticated HTTP song submission", async () => {
+    await withCurrentSchema(async (_admin, connection) => {
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      let reservationId: string | null = null;
+      const services: Parameters<typeof makeMediaUploadApplicationCommands>[0] = {
+        store: makeMediaUploadStore(runtime),
+        personaStore: makeControlPlanePersonaStore(runtime),
+        presigner: {
+          presign: () =>
+            Effect.succeed({
+              url: "https://upload.test/media",
+              requiredHeaders: [{ name: "content-type", value: "audio/mpeg" }] as const,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            }),
+        },
+        sealer: {
+          inspect: async () => {
+            if (reservationId === null) throw new Error("missing HTTP reservation identity");
+            return {
+              outcome: "ready" as const,
+              source: {
+                key: `reservations/${reservationId}/source`,
+                version: "http-source-version",
+                etag: "http-source-etag",
+                size: audioBytes.byteLength,
+                contentType: "audio/mpeg",
+                ownerMarker: null,
+                sourceVersion: null,
+                checksums: {},
+              },
+            };
+          },
+          seal: async (input) => ({
+            result: {
+              outcome: "sealed" as const,
+              immutable_ref: input.immutableRef,
+              destination_ref: `r2://${input.destinationKey}`,
+              etag: "http-destination-etag",
+              version: "http-destination-version",
+              size_bytes: audioBytes.byteLength,
+              canonical_sha256: audioSha256,
+            },
+          }),
+        },
+        nowIso: () => new Date().toISOString(),
+      };
+      const handlers = makeMediaUploadHandlers(makeMediaUploadApplicationCommands(services));
+      const principal = { kind: "user" as const, subject: actor };
+      const request = (body: unknown, params: Readonly<Record<string, string>>) => ({
+        body,
+        params,
+        query: {},
+        principal,
+      });
+
+      const reserved = (await handlers.CreateMediaUploadReservation(
+        request(
+          {
+            persona_id: personaFor(connection),
+            idempotency_key: "http-reserve-key",
+            track: "song",
+            slot: "primary_audio",
+            expected_content_type: "audio/mpeg",
+            expected_size_bytes: audioBytes.byteLength,
+          },
+          { communityId: community },
+        ),
+      )) as { readonly status: number; readonly body: { readonly reservation_id: string } };
+      expect(reserved.status).toBe(201);
+      reservationId = reserved.body.reservation_id;
+
+      const created = (await handlers.CreateMediaPostSubmission(
+        request(
+          {
+            persona_id: personaFor(connection),
+            version: "song-start-input-v1",
+            title: "HTTP composed song",
+            audio_reservation_id: reservationId,
+            song_type: "original",
+            idempotency_key: "http-create-key",
+            author_declared_rating: "adult_18",
+          },
+          { communityId: community },
+        ),
+      )) as {
+        readonly status: number;
+        readonly body: {
+          readonly submission_id: string;
+          readonly creation_revision: number;
+        };
+      };
+      expect(created.status).toBe(201);
+
+      const finalized = (await handlers.FinalizeMediaPostSubmission(
+        request(
+          {
+            persona_id: personaFor(connection),
+            idempotency_key: "http-finalize-key",
+            expected_creation_revision: created.body.creation_revision,
+            reservation_id: reservationId,
+          },
+          { submissionId: created.body.submission_id },
+        ),
+      )) as {
+        readonly status: string;
+        readonly phase: string;
+        readonly audio_revision: number;
+      };
+      expect(finalized).toMatchObject({
+        status: "processing",
+        phase: "analysis",
+        audio_revision: 1,
+      });
+
+      const launches: Array<
+        Readonly<{
+          instanceId: string;
+          payload: Readonly<{
+            outboxId: string;
+            submissionId: string;
+            operationId: string;
+            workflowRevision: number;
+          }>;
+        }>
+      > = [];
+      const processing = makeMediaProcessingStore(runtime);
+      const dispatched = await dispatchEligibleMediaOutbox(makeMediaOutboxDispatchSource(runtime), {
+        send: async (message) => {
+          if ("kind" in message) throw new Error("song launch used the video queue shape");
+          const disposition = await consumeMediaProcessingQueueMessage(message, {
+            store: processing,
+            workerId: "http-composed-consumer",
+            workflow: {
+              get: async () => "missing",
+              create: async (instanceId, payload) => {
+                launches.push({ instanceId, payload });
+                return "created";
+              },
+              notify: async () => {
+                throw new Error("a fresh analysis launch must not notify an existing Workflow");
+              },
+            },
+          });
+          if (disposition.disposition !== "ack") {
+            throw new Error(`HTTP composed launch returned ${disposition.disposition}`);
+          }
+        },
+      });
+
+      expect(dispatched).toEqual({ selected: 1, sent: 1, failed: 0 });
+      expect(launches).toHaveLength(1);
+      const launch = launches[0];
+      if (launch === undefined) throw new Error("missing HTTP composed Workflow launch");
+      expect(launch).toEqual({
+        instanceId: `media-${launch.payload.operationId}-r1`,
+        payload: {
+          outboxId: launch.payload.outboxId,
+          submissionId: created.body.submission_id,
+          operationId: launch.payload.operationId,
+          workflowRevision: 1,
+        },
+      });
+      expect(await processing.getOutbox(launch.payload.outboxId)).toMatchObject({
+        state: "delivered",
+        eventType: "analysis_launch",
+        deliveryAttempts: 1,
+      });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
   for (const stage of [
     "probe",
     "probe_recovery",
