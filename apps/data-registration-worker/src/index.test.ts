@@ -37,7 +37,7 @@ describe("DATA registration Worker posture", () => {
           payload: {
             outboxId: "outbox-1",
             registrationOperationId: "operation-1",
-            workflowRevision: 1n,
+            workflowRevision: "1",
           },
         },
         step,
@@ -72,7 +72,7 @@ describe("DATA registration Worker posture", () => {
           payload: {
             outboxId: "outbox-1",
             registrationOperationId: "operation-1",
-            workflowRevision: 1n,
+            workflowRevision: "1",
           },
         },
         step,

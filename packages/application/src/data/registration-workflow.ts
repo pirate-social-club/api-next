@@ -41,6 +41,44 @@ export type DataRegistrationWorkflowPayload = Readonly<{
   workflowRevision: bigint;
 }>;
 
+export type DataRegistrationWorkflowWirePayload = Readonly<{
+  outboxId: string;
+  registrationOperationId: string;
+  workflowRevision: string;
+}>;
+
+export const encodeDataRegistrationWorkflowPayload = (
+  payload: DataRegistrationWorkflowPayload,
+): DataRegistrationWorkflowWirePayload => ({
+  ...payload,
+  workflowRevision: payload.workflowRevision.toString(10),
+});
+
+export const decodeDataRegistrationWorkflowWirePayload = (
+  input: unknown,
+): DataRegistrationWorkflowPayload | null => {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const payload = input as Readonly<Record<string, unknown>>;
+  if (
+    Object.keys(payload).sort().join(",") !== "outboxId,registrationOperationId,workflowRevision" ||
+    typeof payload.outboxId !== "string" ||
+    typeof payload.registrationOperationId !== "string" ||
+    typeof payload.workflowRevision !== "string" ||
+    payload.workflowRevision.length > 19 ||
+    !/^[1-9][0-9]*$/u.test(payload.workflowRevision)
+  ) {
+    return null;
+  }
+  const decoded = {
+    outboxId: payload.outboxId,
+    registrationOperationId: payload.registrationOperationId,
+    workflowRevision: BigInt(payload.workflowRevision),
+  };
+  return decoded.workflowRevision <= 9_223_372_036_854_775_807n && validPayload(decoded)
+    ? decoded
+    : null;
+};
+
 export type DataRegistrationPreparedArtifact = Readonly<{
   artifact: DataRegistrationArtifact;
   filename: string;

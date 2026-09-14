@@ -22,6 +22,8 @@ import {
   type DataRegistrationPreparedArtifact,
   type DataRegistrationWorkflowDependencies,
   type DataRegistrationWorkflowPayload,
+  decodeDataRegistrationWorkflowWirePayload,
+  encodeDataRegistrationWorkflowPayload,
 } from "./registration-workflow";
 
 const OPERATION_ID = "data-registration:1315:asset-1:1";
@@ -30,6 +32,47 @@ const WORKFLOW_ID = deterministicDataRegistrationWorkflowId(OPERATION_ID, 1n);
 const TRANSACTION_HASH = `0x${"b".repeat(64)}`;
 const CALLDATA = new Uint8Array([0x12, 0x34, 0x56, 0x78, 0xaa]);
 const CALLDATA_HASH = "80a14a107e4724bab764e13dc3b98e044961bea9c078973e3b2956a35a098811";
+
+describe("DATA registration Workflow wire payload", () => {
+  test("round-trips revisions beyond the safe JSON integer range", () => {
+    const payload = {
+      outboxId: "outbox-1",
+      registrationOperationId: OPERATION_ID,
+      workflowRevision: 9_007_199_254_740_993n,
+    };
+
+    const encoded = encodeDataRegistrationWorkflowPayload(payload);
+
+    expect(encoded.workflowRevision).toBe("9007199254740993");
+    expect(JSON.parse(JSON.stringify(encoded))).toEqual(encoded);
+    expect(decodeDataRegistrationWorkflowWirePayload(encoded)).toEqual(payload);
+  });
+
+  test("rejects non-canonical revisions and extra fields", () => {
+    expect(
+      decodeDataRegistrationWorkflowWirePayload({
+        outboxId: "outbox-1",
+        registrationOperationId: OPERATION_ID,
+        workflowRevision: "01",
+      }),
+    ).toBeNull();
+    expect(
+      decodeDataRegistrationWorkflowWirePayload({
+        outboxId: "outbox-1",
+        registrationOperationId: OPERATION_ID,
+        workflowRevision: "1",
+        mediaRef: "must-not-cross-the-boundary",
+      }),
+    ).toBeNull();
+    expect(
+      decodeDataRegistrationWorkflowWirePayload({
+        outboxId: "outbox-1",
+        registrationOperationId: OPERATION_ID,
+        workflowRevision: "9223372036854775808",
+      }),
+    ).toBeNull();
+  });
+});
 
 const operation = (): DataRegistrationOperation => ({
   registrationOperationId: OPERATION_ID,

@@ -1,4 +1,7 @@
-import type { DataRegistrationWorkflowPayload } from "@pirate/application/data/registration-workflow";
+import {
+  type DataRegistrationWorkflowWirePayload,
+  encodeDataRegistrationWorkflowPayload,
+} from "@pirate/application/data/registration-workflow";
 import type {
   DataRegistrationQueueDependencies,
   DataRegistrationQueueDisposition,
@@ -20,7 +23,7 @@ export interface CloudflareDataRegistrationWorkflowBinding {
   readonly createBatch: (
     options: readonly {
       id: string;
-      params: DataRegistrationWorkflowPayload;
+      params: DataRegistrationWorkflowWirePayload;
     }[],
   ) => Promise<readonly unknown[]>;
 }
@@ -61,7 +64,9 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
     get,
     create: async (instanceId, payload) => {
       const providerInstanceId = await cloudflareDataRegistrationWorkflowId(instanceId);
-      const created = await binding.createBatch([{ id: providerInstanceId, params: payload }]);
+      const created = await binding.createBatch([
+        { id: providerInstanceId, params: encodeDataRegistrationWorkflowPayload(payload) },
+      ]);
       return classifyWorkflowCreateBatch(
         created,
         "Workflow createBatch returned an unexpected instance count",

@@ -1,9 +1,12 @@
 import type {
   DataRegistrationWorkflowDependencies,
-  DataRegistrationWorkflowPayload,
   DataRegistrationWorkflowResult,
+  DataRegistrationWorkflowWirePayload,
 } from "../../../packages/application/src/data/registration-workflow.ts";
-import { advanceDataRegistrationWorkflow } from "../../../packages/application/src/data/registration-workflow.ts";
+import {
+  advanceDataRegistrationWorkflow,
+  decodeDataRegistrationWorkflowWirePayload,
+} from "../../../packages/application/src/data/registration-workflow.ts";
 import type { DataRegistrationQueueDependencies } from "../../../packages/application/src/data/registration-workflow-queue.ts";
 import {
   type CloudflareWorkflowStepDo,
@@ -66,7 +69,7 @@ export function makeDataRegistrationWorkflowRunner<Env extends DataRegistrationW
 ) {
   return async (
     env: Env,
-    event: Readonly<{ payload: DataRegistrationWorkflowPayload; instanceId: string }>,
+    event: Readonly<{ payload: DataRegistrationWorkflowWirePayload; instanceId: string }>,
     step: DataRegistrationWorkflowStep,
   ): Promise<DataRegistrationWorkflowResult> => {
     let sequence = 0;
@@ -76,7 +79,10 @@ export function makeDataRegistrationWorkflowRunner<Env extends DataRegistrationW
         SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
         async () => {
           const composition = withPosture(env, resolve(env));
-          return advanceDataRegistrationWorkflow(event.payload, composition.workflow);
+          const payload = decodeDataRegistrationWorkflowWirePayload(event.payload);
+          return payload === null
+            ? { outcome: "failed" as const }
+            : advanceDataRegistrationWorkflow(payload, composition.workflow);
         },
       );
       if (
