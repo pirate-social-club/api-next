@@ -434,6 +434,7 @@ async function launcherHarness() {
           async producers() {},
         })) as never,
         makeVerifier: (() => async () => {}) as never,
+        makeCommunityCreation: (() => async () => {}) as never,
         makeApplier: (() => async () => {
           if (upgradeFails) throw new Error("migration apply failed");
           return stagingUpgradeReceipt({ sourceSha: STAGING_UPGRADE_RELEASE.sourceSha }, applied);
@@ -533,6 +534,9 @@ test("an acceptance failure after ingress opens re-fences through the production
             return { database: async () => {}, producers: async () => {}, ingress: real.ingress };
           }) as never,
           makeVerifier: (() => async () => {}) as never,
+          makeCommunityCreation: (() => async () => {
+            throw new Error("staging_community_creation_failed");
+          }) as never,
           makeApplier: (() => async () =>
             stagingUpgradeReceipt(
               { sourceSha: STAGING_UPGRADE_RELEASE.sourceSha },
@@ -629,6 +633,9 @@ test("a stalled probe records ingress failure and the database re-fence still ru
             };
           }) as never,
           makeVerifier: (() => async () => {}) as never,
+          makeCommunityCreation: (() => async () => {
+            throw new Error("staging_community_creation_failed");
+          }) as never,
           makeApplier: (() => async () =>
             stagingUpgradeReceipt(
               { sourceSha: STAGING_UPGRADE_RELEASE.sourceSha },
@@ -670,6 +677,7 @@ test("a launcher whose reversal cannot be read refuses before any mutation", asy
         }) as unknown as typeof globalThis.fetch,
         dependencies: {
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
+          makeCommunityCreation: (() => async () => {}) as never,
         },
         provider: async () => {
           providerCalls++;
@@ -677,6 +685,35 @@ test("a launcher whose reversal cannot be read refuses before any mutation", asy
         },
       }),
     ).rejects.toThrow("staging_live_ingress_refence_unavailable");
+    expect(providerCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("missing journey credentials refuse before any provider contact", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "live-launcher-credentials-"));
+  const configPath = join(directory, "live-release.json");
+  await writeFile(configPath, JSON.stringify(configuration(directory)));
+  let providerCalls = 0;
+  try {
+    await expect(
+      runStagingResetReleaseLive({
+        env: {
+          STAGING_RESET_RELEASE_LIVE_CONFIG: configPath,
+          CLOUDFLARE_API_TOKEN: "token",
+          CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
+          CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+        },
+        dependencies: {
+          assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
+        },
+        provider: async () => {
+          providerCalls++;
+          return databasePayload;
+        },
+      }),
+    ).rejects.toThrow("staging_community_creation_credentials_missing");
     expect(providerCalls).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -42,6 +42,10 @@ const disposable = {
   roleName: "api-next-disposable-reset-fixture",
   branchId: "syu03e00w3ux",
   roleTtlMinutes: 30,
+  communityCreation: {
+    baseUrl: "https://web-next-staging.pirate.sc",
+    timeoutMs: 600_000,
+  },
 } as const;
 
 export const configuration = (markerDirectory: string) => ({
@@ -73,11 +77,6 @@ export const configuration = (markerDirectory: string) => ({
     producers: {
       schedules: STAGING_PRODUCER_WORKERS.map((worker) => ({ worker, crons: [] })),
     },
-  },
-  acceptance: {
-    apiBaseUrl: "https://api.staging.example",
-    communityId: "community-1",
-    privyAccessToken: "privy-token",
   },
   reset: { baselineDigest: "9".repeat(64), defaultsDigest: "8".repeat(64) },
   recovery: { captureId: "capture1", captureEvidenceDigest: "7".repeat(64) },

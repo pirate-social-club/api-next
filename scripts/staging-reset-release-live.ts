@@ -129,14 +129,16 @@ export const StagingResetReleaseLiveConfiguration = Schema.Struct({
     }),
     producers: Schema.Struct({ schedules: KaraokeReleasedSchedules }),
   }),
-  acceptance: Schema.Struct({
-    apiBaseUrl: Schema.String.check(Schema.isPattern(/^https:\/\/[a-z0-9][a-z0-9.-]*$/u)),
-    communityId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    privyAccessToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
-    expectedPersonaId: Schema.optional(
-      Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    ),
-  }),
+  acceptance: Schema.optional(
+    Schema.Struct({
+      apiBaseUrl: Schema.String.check(Schema.isPattern(/^https:\/\/[a-z0-9][a-z0-9.-]*$/u)),
+      communityId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+      privyAccessToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
+      expectedPersonaId: Schema.optional(
+        Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+      ),
+    }),
+  ),
   /** Reviewed reset references: the measured shape of the reconstructed `0119`
    * schema and the pre-reset default-ACL digest the admission must observe. */
   reset: Schema.Struct({
@@ -158,6 +160,18 @@ export const StagingResetReleaseLiveConfiguration = Schema.Struct({
       roleName: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u)),
       branchId: Schema.Literal("syu03e00w3ux"),
       roleTtlMinutes: Schema.Literal(30),
+      /** The pre-producer product acceptance for the disposable release: the
+       * reviewed community-creation journey through the real UI. The legacy
+       * persona read is not accepted alongside it. */
+      communityCreation: Schema.optional(
+        Schema.Struct({
+          baseUrl: Schema.String.check(Schema.isPattern(/^https:\/\/[a-z0-9][a-z0-9.-]*$/u)),
+          timeoutMs: Schema.Int.check(
+            Schema.isGreaterThan(0),
+            Schema.isLessThanOrEqualTo(3_600_000),
+          ),
+        }),
+      ),
     }),
   ),
 });
@@ -174,6 +188,17 @@ export function validateStagingResetReleaseLiveConfiguration(value: unknown) {
     (config.version === "staging-disposable-release-live-v1" && config.disposable === undefined)
   ) {
     throw new Error("staging_live_reset_mode_unreviewed");
+  }
+  const communityCreation = config.disposable?.communityCreation;
+  if (config.version === "staging-disposable-release-live-v1") {
+    // The disposable release must run the reviewed community-creation journey
+    // as its product acceptance; the persona read assumes identity that the
+    // destructive reset removes and cannot be selected by accident.
+    if (communityCreation === undefined)
+      throw new Error("staging_live_community_creation_required");
+    if (config.acceptance !== undefined) throw new Error("staging_live_acceptance_ambiguous");
+  } else if (config.acceptance === undefined) {
+    throw new Error("staging_live_acceptance_missing");
   }
   const approvedMaterial =
     config.version === "staging-disposable-release-live-v1"
@@ -245,7 +270,7 @@ export type GitRunner = (args: readonly string[]) => {
   readonly status: number;
 };
 
-function findSiblingRepository(apiRoot: string, name: string): string {
+export function findSiblingRepository(apiRoot: string, name: string): string {
   let candidate = resolve(apiRoot, "..");
   for (let depth = 0; depth < 4; depth++) {
     const sibling = join(candidate, name);
@@ -442,6 +467,9 @@ export async function runLiveStagingResetReleaseComposition<
   /** Proves the reviewed Solid target is the version serving before product
    * acceptance. A no-op or assertion is not evidence. */
   readonly verifyDeployedPair: () => Promise<void>;
+  /** The disposable release's product acceptance: the reviewed community
+   * creation journey. Required exactly when the configuration selects it. */
+  readonly communityCreationAcceptance?: () => Promise<void>;
   /** Transport override for the acceptance read; the live launcher passes its
    * reviewed transport through so the composed path is testable without
    * reaching a network. */
@@ -450,15 +478,25 @@ export async function runLiveStagingResetReleaseComposition<
   readonly now?: () => string;
 }) {
   const configuration = validateStagingResetReleaseLiveConfiguration(input.configuration);
-  const acceptance = makeLiveAcceptanceCheck({
-    apiBaseUrl: configuration.acceptance.apiBaseUrl,
-    communityId: configuration.acceptance.communityId,
-    privyAccessToken: configuration.acceptance.privyAccessToken,
-    ...(configuration.acceptance.expectedPersonaId === undefined
-      ? {}
-      : { expectedPersonaId: configuration.acceptance.expectedPersonaId }),
-    ...(input.acceptanceFetch === undefined ? {} : { fetch: input.acceptanceFetch }),
-  });
+  const communityCreation = configuration.disposable?.communityCreation;
+  let productAcceptance: () => Promise<unknown>;
+  if (communityCreation !== undefined) {
+    if (input.communityCreationAcceptance === undefined)
+      throw new Error("staging_community_creation_acceptance_unbound");
+    productAcceptance = input.communityCreationAcceptance;
+  } else {
+    const persona = configuration.acceptance;
+    if (persona === undefined) throw new Error("staging_live_acceptance_missing");
+    productAcceptance = makeLiveAcceptanceCheck({
+      apiBaseUrl: persona.apiBaseUrl,
+      communityId: persona.communityId,
+      privyAccessToken: persona.privyAccessToken,
+      ...(persona.expectedPersonaId === undefined
+        ? {}
+        : { expectedPersonaId: persona.expectedPersonaId }),
+      ...(input.acceptanceFetch === undefined ? {} : { fetch: input.acceptanceFetch }),
+    });
+  }
   const onRecovery = makeLiveRecoveryReceipt(configuration.markerDirectory);
   try {
     return await reconstructAndReleaseStaging({
@@ -471,7 +509,7 @@ export async function runLiveStagingResetReleaseComposition<
         surfaces: input.surfaces,
         acceptance: async () => {
           await input.verifyDeployedPair();
-          await acceptance();
+          await productAcceptance();
         },
         refence: input.refence,
         onRecovery,

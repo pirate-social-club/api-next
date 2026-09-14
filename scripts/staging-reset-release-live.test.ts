@@ -61,6 +61,10 @@ const disposable = {
   roleName: "api-next-disposable-reset-fixture",
   branchId: "syu03e00w3ux",
   roleTtlMinutes: 30,
+  communityCreation: {
+    baseUrl: "https://web-next-staging.pirate.sc",
+    timeoutMs: 600_000,
+  },
 };
 
 const configuration = (overrides: { markerDirectory?: string } = {}) => ({
@@ -92,11 +96,6 @@ const configuration = (overrides: { markerDirectory?: string } = {}) => ({
     producers: {
       schedules: STAGING_PRODUCER_WORKERS.map((worker) => ({ worker, crons: [] })),
     },
-  },
-  acceptance: {
-    apiBaseUrl: "https://api.staging.example",
-    communityId: "community-1",
-    privyAccessToken: "privy-token",
   },
   reset: { baselineDigest: "9".repeat(64), defaultsDigest: "8".repeat(64) },
   recovery: { captureId: "capture1", captureEvidenceDigest: "7".repeat(64) },
@@ -228,6 +227,35 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
       ),
     }),
   ).toThrow("staging_live_release_serving_set_changed");
+});
+
+test("the disposable release requires community creation and refuses the persona read", () => {
+  const base = configuration();
+  const withoutCommunityCreation = {
+    mode: disposable.mode,
+    roleName: disposable.roleName,
+    branchId: disposable.branchId,
+    roleTtlMinutes: disposable.roleTtlMinutes,
+  };
+  expect(() =>
+    validateStagingResetReleaseLiveConfiguration({
+      ...base,
+      disposable: withoutCommunityCreation,
+      approvedPlanDigest: reconciliationDigest(
+        JSON.stringify({ plan, disposable: withoutCommunityCreation }),
+      ),
+    }),
+  ).toThrow("staging_live_community_creation_required");
+  expect(() =>
+    validateStagingResetReleaseLiveConfiguration({
+      ...base,
+      acceptance: {
+        apiBaseUrl: "https://api.staging.example",
+        communityId: "community-1",
+        privyAccessToken: "privy-token",
+      },
+    }),
+  ).toThrow("staging_live_acceptance_ambiguous");
 });
 
 test("an unreviewed checkout, mismatched version pin or wrong grant digest refuses", () => {
@@ -429,6 +457,7 @@ test("the composition binding writes a redacted recovery receipt on failure", as
           async producers() {},
         },
         verifyDeployedPair: async () => {},
+        communityCreationAcceptance: async () => {},
         upgrade: {
           async apply() {
             throw new Error("migration apply failed");

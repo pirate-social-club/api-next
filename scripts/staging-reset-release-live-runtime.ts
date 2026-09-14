@@ -5,6 +5,10 @@ import { promisify } from "node:util";
 import type { Client } from "pg";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import { normalizePostgresConnectionString } from "./postgres-migrations.ts";
+import {
+  makeCommunityCreationAcceptance,
+  writeCommunityCreationEvidence,
+} from "./staging-community-creation-acceptance.ts";
 import { makeKaraokeDatabaseRelease } from "./staging-karaoke-release-database.ts";
 import { makeKaraokeReleaseHttp } from "./staging-karaoke-release-http.ts";
 import { makeKaraokeIngressRelease } from "./staging-karaoke-release-ingress.ts";
@@ -46,6 +50,7 @@ import {
 } from "./staging-reset-release-ingress-refence.ts";
 import {
   assertLiveStagingCheckouts,
+  findSiblingRepository,
   formatLiveReleaseFailure,
   makeLiveStagingUpgradeApplier,
   runLiveStagingResetReleaseComposition,
@@ -571,6 +576,7 @@ export interface StagingLiveLaunchDependencies {
   readonly makeVerifier: typeof makeSolidServingVerifier;
   readonly makeApplier: typeof makeLiveStagingUpgradeApplier;
   readonly reset: typeof reconstructDisposableStaging;
+  readonly makeCommunityCreation: typeof makeCommunityCreationAcceptance;
 }
 
 export async function runStagingResetReleaseLive(
@@ -601,6 +607,23 @@ export async function runStagingResetReleaseLive(
   const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
   const assertCheckouts = options.dependencies?.assertCheckouts ?? assertLiveStagingCheckouts;
   assertCheckouts(repositoryRoot);
+  // The product acceptance is constructed before any provider contact so a
+  // missing journey target or credential refuses while the window is still
+  // untouched. A failed or timed-out journey refuses the producer release.
+  const makeCommunityCreation =
+    options.dependencies?.makeCommunityCreation ?? makeCommunityCreationAcceptance;
+  const communityCreation = disposable.communityCreation;
+  const communityCreationAcceptance =
+    communityCreation === undefined
+      ? undefined
+      : makeCommunityCreation({
+          solidRoot: findSiblingRepository(repositoryRoot, "pirate-web-solid"),
+          baseUrl: communityCreation.baseUrl,
+          timeoutMs: communityCreation.timeoutMs,
+          env,
+          recordEvidence: (evidence) =>
+            writeCommunityCreationEvidence(configuration.markerDirectory, evidence),
+        });
   const apiToken = env.CLOUDFLARE_API_TOKEN;
   if (!apiToken) throw new Error("staging_live_cloudflare_token_missing");
   const measureAdmission = options.dependencies?.measureAdmission ?? measureStagingLiveAdmission;
@@ -706,6 +729,7 @@ export async function runStagingResetReleaseLive(
           versionId: solidInput.versionId,
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
         }),
+        ...(communityCreationAcceptance === undefined ? {} : { communityCreationAcceptance }),
         ...(options.fetch === undefined ? {} : { acceptanceFetch: options.fetch }),
         ...(options.now === undefined ? {} : { now: options.now }),
       });
