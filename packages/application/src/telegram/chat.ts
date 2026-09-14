@@ -248,6 +248,39 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   const from = object(message?.from);
   const chatId = identifier(chat?.id);
   const userId = identifier(from?.id);
+  // Group surfaces get a bounded /start reply only. Assisted answers, setup
+  // links and learner flows stay private-chat capabilities.
+  if (
+    message &&
+    chatId &&
+    userId &&
+    from?.is_bot === false &&
+    (chat?.type === "group" || chat?.type === "supergroup")
+  ) {
+    const groupInput = typeof message.text === "string" ? message.text.slice(0, 4000) : "";
+    if (!/^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/u.test(groupInput)) return;
+    if (!(await admitCommand(services, item, chatId, userId))) {
+      await denialNotice(
+        services,
+        item,
+        chatId,
+        userId,
+        "Too many requests. Please try again in a few minutes.",
+      );
+      return;
+    }
+    await reply(
+      services,
+      item,
+      chatId,
+      textMessage(
+        record.botUsername
+          ? `I answer in a private chat. Open @${record.botUsername} and send /start there.`
+          : "I answer in a private chat. Open this bot in a direct message and send /start there.",
+      ),
+    );
+    return;
+  }
   if (
     !message ||
     chat?.type !== "private" ||
@@ -428,10 +461,12 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     return;
   }
   const voice = object(message.voice);
+  const audioAttachment = object(message.audio);
+  const audioInput = voice ?? audioAttachment;
   if (
     !record.policy.enabled ||
     record.credentials.openrouter?.status !== "valid" ||
-    (!input && !voice)
+    (!input && !audioInput)
   )
     return;
   if (
@@ -479,27 +514,35 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   }
   let prompt = input;
   const speech = record.credentials.elevenlabs;
-  if (voice) {
+  if (audioInput) {
+    const isVoice = voice !== null;
+    const fileId = audioInput.file_id;
+    // A voice note is capped at two minutes; an audio attachment gets a
+    // longer but still bounded transcription window at the same byte ceiling.
+    const maxDurationSeconds = isVoice ? 120 : 300;
     if (
       !record.policy.voice_enabled ||
       speech?.status !== "valid" ||
-      typeof voice.file_id !== "string" ||
-      typeof voice.duration !== "number" ||
-      voice.duration > 120 ||
-      typeof voice.file_size !== "number" ||
-      voice.file_size > 5_242_880
+      typeof fileId !== "string" ||
+      typeof audioInput.duration !== "number" ||
+      audioInput.duration > maxDurationSeconds ||
+      typeof audioInput.file_size !== "number" ||
+      audioInput.file_size > 5_242_880
     ) {
       await reply(
         services,
         item,
         chatId,
-        textMessage("Voice input is unavailable. Send a text message instead."),
+        textMessage(
+          isVoice
+            ? "Voice input is unavailable. Send a text message instead."
+            : "Audio input is unavailable. Send a voice note or a text message instead.",
+        ),
       );
       return;
     }
     const bot = await telegramBotCredentials(services, record);
     const key = await services.vault.open(speech.ciphertext, `${item.communityId}:elevenlabs`);
-    const fileId = voice.file_id;
     const transcription = await stagedProvider(
       services,
       item,
@@ -577,7 +620,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     if (!saved) throw new StaleClaim();
   }
   if (
-    telegramReplyUsesVoice(record.policy, voice !== null, /^\/voice\b/u.test(input)) &&
+    telegramReplyUsesVoice(record.policy, audioInput !== null, /^\/voice\b/u.test(input)) &&
     speech?.status === "valid"
   ) {
     if (!(await services.store.inboxLive(item))) throw new StaleClaim();

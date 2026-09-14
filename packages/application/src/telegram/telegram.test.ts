@@ -1003,3 +1003,176 @@ test("an exhausted model budget is denied once per cooldown", async () => {
   await processTelegramInbox(service, "inbox");
   expect(notices).toHaveLength(2);
 });
+
+function groupItem(text: string) {
+  return {
+    id: "group-inbox",
+    communityId: "community",
+    botEpoch: "epoch",
+    attempt: "attempt",
+    update: {
+      update_id: 9,
+      message: {
+        chat: { id: -100123, type: "supergroup" },
+        from: { id: 7, is_bot: false },
+        text,
+      },
+    },
+  };
+}
+
+function audioItem(attachment: Record<string, unknown>) {
+  return {
+    id: "inbox",
+    communityId: "community",
+    botEpoch: "epoch",
+    attempt: "attempt",
+    update: {
+      update_id: 10,
+      message: {
+        chat: { id: 7, type: "private" },
+        from: { id: 7, is_bot: false },
+        audio: attachment,
+      },
+    },
+  };
+}
+
+test("group /start gets private-chat guidance without assisted answers", async () => {
+  const replies: DeliveryIntent[] = [];
+  let commands = 0;
+  const service = services({
+    claimInbox: async () => groupItem("/start"),
+    integration: async () => integration,
+    admitCommand: async () => {
+      commands += 1;
+      return true;
+    },
+    enqueueDelivery: async (delivery) => {
+      replies.push(delivery);
+    },
+    finishInbox: async () => {},
+  });
+  await processTelegramInbox(service, "group-inbox");
+  expect(commands).toBe(1);
+  expect(replies).toHaveLength(1);
+  expect(replies[0]?.desired?.text).toContain("private chat");
+  expect(replies[0]?.desired?.text).toContain(`@${integration.botUsername}`);
+});
+
+test("group messages that are not /start stay unanswered", async () => {
+  const replies: DeliveryIntent[] = [];
+  const service = services({
+    claimInbox: async () => groupItem("hello bot"),
+    integration: async () => integration,
+    enqueueDelivery: async (delivery) => {
+      replies.push(delivery);
+    },
+    finishInbox: async () => {},
+  });
+  await processTelegramInbox(service, "group-inbox");
+  expect(replies).toEqual([]);
+});
+
+test("a throttled group /start answers with one cooldown-bounded notice", async () => {
+  const replies: DeliveryIntent[] = [];
+  let noticeAllowed = true;
+  const service = services({
+    claimInbox: async () => groupItem("/start"),
+    integration: async () => integration,
+    admitMinute: async () => false,
+    reserveNotice: async () => {
+      const allowed = noticeAllowed;
+      noticeAllowed = false;
+      return allowed;
+    },
+    enqueueDelivery: async (delivery) => {
+      replies.push(delivery);
+    },
+    finishInbox: async () => {},
+  });
+  await processTelegramInbox(service, "group-inbox");
+  await processTelegramInbox(service, "group-inbox");
+  expect(replies).toHaveLength(1);
+  expect(replies[0]?.desired?.text).toContain("Too many requests");
+});
+
+test("an audio attachment is transcribed through the bounded path", async () => {
+  const replies: string[] = [];
+  const transcriptions: Uint8Array[] = [];
+  const service = services({
+    claimInbox: async () =>
+      audioItem({ file_id: "audio-file", duration: 240, file_size: 1_000_000 }),
+    integration: async () => assistantVoiceIntegration(),
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    inboxLive: async () => true,
+    publicPosts: async () => [],
+    history: async () => [],
+    reserveUsage: async () => true,
+    saveConversation: async () => true,
+    beginProviderStage: async () => ({ kind: "issued" }) as const,
+    completeProviderStage: async () => true,
+    failProviderStage: async () => true,
+    enqueueInboxReply: async (delivery) => {
+      if (delivery.desired !== null && "text" in delivery.desired)
+        replies.push(delivery.desired.text as string);
+      return true;
+    },
+    finishInbox: async () => {},
+  });
+  service.vault.open = async (ciphertext) =>
+    ciphertext === "encrypted-token"
+      ? JSON.stringify({ token: "123:fixture", secret: "fixture-secret" })
+      : "fixture-key";
+  service.api = {
+    downloadVoice: async () => new Uint8Array([1, 2, 3]),
+  } as unknown as TelegramServices["api"];
+  service.providers = {
+    ...service.providers,
+    transcribe: async (_key, bytes) => {
+      transcriptions.push(bytes);
+      return "Fixture transcript";
+    },
+    complete: async () => "Fixture answer",
+  };
+  await processTelegramInbox(service, "inbox");
+  expect(transcriptions).toHaveLength(1);
+  expect(replies).toContain("Fixture answer");
+});
+
+test("an oversized audio attachment is refused before download", async () => {
+  const replies: string[] = [];
+  let transcriptions = 0;
+  const service = services({
+    claimInbox: async () =>
+      audioItem({ file_id: "audio-file", duration: 240, file_size: 6_000_000 }),
+    integration: async () => assistantVoiceIntegration(),
+    privateChatStarted: async () => true,
+    claimChat: async () => "lease",
+    releaseChat: async () => {},
+    inboxLive: async () => true,
+    publicPosts: async () => [],
+    reserveUsage: async () => true,
+    enqueueInboxReply: async (delivery) => {
+      if (delivery.desired !== null && "text" in delivery.desired)
+        replies.push(delivery.desired.text as string);
+      return true;
+    },
+    finishInbox: async () => {},
+  });
+  service.vault.open = async () => "fixture-key";
+  service.providers = {
+    ...service.providers,
+    transcribe: async () => {
+      transcriptions += 1;
+      return "Fixture transcript";
+    },
+  };
+  await processTelegramInbox(service, "inbox");
+  expect(transcriptions).toBe(0);
+  expect(replies).toEqual([
+    "Audio input is unavailable. Send a voice note or a text message instead.",
+  ]);
+});
