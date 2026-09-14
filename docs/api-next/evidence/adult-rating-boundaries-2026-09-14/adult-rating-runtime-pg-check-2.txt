@@ -1,0 +1,57 @@
+Running as unit: run-re1fe191c997a44b5ac5392d9349f439d.scope; invocation ID: 3aa543d07e344059afe0cb2297c65a57
+Checked 4 files in 86ms. Fixed 1 file.
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/text-submission-repository.pg.test.ts:
+(pass) Postgres 17 terminal text submission repository > commits a current V2 evaluation with complete restricted evidence [2521.22ms]
+(pass) Postgres 17 terminal text submission repository > commits one terminal row and makes concurrent same-key submissions replay the winner [2388.45ms]
+(pass) Postgres 17 terminal text submission repository > replays the immutable POST response bytes and digest without a second row [3814.39ms]
+(pass) Postgres 17 terminal text submission repository > returns the current GET state while replaying the original held POST response [2463.87ms]
+(pass) Postgres 17 terminal text submission repository > commits provider unavailability as manual review without publishing [2340.32ms]
+(pass) Postgres 17 terminal text submission repository > publishes posts and comments without a namespace binding [2427.22ms]
+(pass) Postgres 17 terminal text submission repository > rejects an unbound authoring persona before any effect [2537.81ms]
+(pass) Postgres 17 terminal text submission repository > comments same-key race commits one submission and replays winner bytes [2396.45ms]
+(pass) Postgres 17 terminal text submission repository > blocked comments create no comment, counter, projection, or outbox effect [2415.45ms]
+(pass) Postgres 17 terminal text submission repository > reply parent closure, cross-thread, depth, and reply_count invariants hold at commit [2469.59ms]
+(pass) Postgres 17 terminal text submission repository > provider-absent comments keep held state atomic with no public effects [2385.42ms]
+
+packages/platform-cf/src/content-repository.pg.test.ts:
+(pass) Postgres 17 content repository > creates processing posts and replays/conflicts idempotency atomically [2179.21ms]
+(pass) Postgres 17 content repository > replaces votes atomically, counts them, and clears them [4110.27ms]
+(pass) Postgres 17 content repository > replays cast, change, and clear results and rejects a changed request hash [2398.99ms]
+(pass) Postgres 17 content repository > coalesces a same-key vote race into one stored action [2267.64ms]
+content_vote_aggregate_drift {
+  community_id: "community_1",
+  post_id: "post_parent",
+  stored_upvote_count: 9,
+  stored_downvote_count: 8,
+  live_upvote_count: 0,
+  live_downvote_count: 0,
+}
+(pass) Postgres 17 content repository > serializes concurrent actors and repairs drifted vote aggregates [2641.87ms]
+(pass) Postgres 17 content repository > requires active membership and rejects delegated actors [3085.83ms]
+(pass) Postgres 17 content repository > applies status and members-only visibility rules [4656.81ms]
+(pass) Postgres 17 content repository > returns adult-rated post content when the viewer capability allows it [2283.87ms]
+(pass) Postgres 17 content repository > raises a text post and every descendant comment atomically [2074.64ms]
+(pass) Postgres 17 content repository > posts and votes in an optional-route community with no binding [2878.37ms]
+(pass) Postgres 17 content repository > creates a post independently of namespace route lifecycle [10049.97ms]
+(pass) Postgres 17 content repository > casts a vote independently of namespace route lifecycle [10631.44ms]
+(pass) Postgres 17 content repository > clears a vote independently of namespace route lifecycle [10384.71ms]
+
+packages/platform-cf/src/feed-repository.pg.test.ts:
+(pass) Postgres 17 home feed repository > public feed exposes only active-community published public projections [2910.99ms]
+(pass) Postgres 17 home feed repository > authenticated membership reveals members-only posts and viewer votes [2576.87ms]
+(pass) Postgres 17 home feed repository > keyset pagination returns every projected post once with a frozen time cutoff [824.60ms]
+(pass) Postgres 17 home feed repository > unrated content types stay content-free for anonymous viewers and the community owner [717.33ms]
+
+packages/platform-cf/src/public-post-slug-repository.pg.test.ts:
+(pass) Postgres 17 public post slug aliases > allocates collisions and observes a same-post race [3185.45ms]
+(pass) Postgres 17 public post slug aliases > rejects alias mutation, recycling, and physical post deletion [1486.19ms]
+(pass) Postgres 17 public post slug aliases > enforces the UTF-16 logical maximum [665.47ms]
+(pass) Postgres 17 public post slug aliases > reads live guards by slug and id and enumerates a stable sitemap without allocation [2857.64ms]
+
+ 32 pass
+ 0 fail
+ 194 expect() calls
+Ran 32 tests across 4 files. [103.49s]
+Verified 4 fresh task-owned completion sentinels.

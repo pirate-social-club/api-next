@@ -1,0 +1,8 @@
+{
+  "packages/platform-cf/src/content-repository.ts": "383cf1acfb17c22d6af52038233f52445859a725d870252312a492c03195556f",
+  "packages/platform-cf/src/content-repository.pg.test.ts": "4a9ae896f39a10bf25ac3e862f74cda2b71efc51cff28eccf2c53404a0cff7a2",
+  "packages/platform-cf/src/feed-repository.ts": "a4eab4e650fff84ddd6eea28e6eb5b03cdc7c5cd5260a2da6064eb83b3ccf3f3",
+  "packages/platform-cf/src/feed-repository.pg.test.ts": "d48d93b60b9d60828f6450aa978a9a963cf1d4654b98bdec8f17895c44eec8fa",
+  "packages/platform-cf/src/public-community-threads-repository.ts": "925b396df6547ec3abbca2e08fda1e6be15efd3397dc4285c82037925073025a",
+  "packages/platform-cf/src/public-community-threads-repository.pg.test.ts": "a3a93c56969733d0c30ae2f8abf2aa107225491d55d32c42f2a1d127674605a5"
+}

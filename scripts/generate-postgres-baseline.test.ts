@@ -109,17 +109,26 @@ INSERT INTO public.seed_table VALUES ('2026-08-31 17:07:43.49507+00');`,
   });
 
   test("keeps the explicit foundation table catalog equal to the normalized baseline", () => {
-    const baselineSource = "CREATE TABLE alpha_table (\n);\nCREATE TABLE beta_table (\n);\n";
+    const baselineSource =
+      "CREATE TABLE alpha_table (\n);\n" +
+      "CREATE TABLE beta_table (\n);\n" +
+      "CREATE VIEW current_items AS\nSELECT 1;\n";
     const foundationTestSource = `
       // POSTGRES_FOUNDATION_TABLE_CATALOG_START
       "alpha_table",
       "beta_table",
+      "current_items",
       // POSTGRES_FOUNDATION_TABLE_CATALOG_END
     `;
-    expect(tableNamesFromPostgresBaseline(baselineSource)).toEqual(["alpha_table", "beta_table"]);
+    expect(tableNamesFromPostgresBaseline(baselineSource)).toEqual([
+      "alpha_table",
+      "beta_table",
+      "current_items",
+    ]);
     expect(tableNamesFromFoundationCatalog(foundationTestSource)).toEqual([
       "alpha_table",
       "beta_table",
+      "current_items",
     ]);
     expect(() =>
       assertPostgresFoundationTableCatalogFresh({ baselineSource, foundationTestSource }),

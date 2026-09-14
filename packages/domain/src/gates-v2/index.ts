@@ -1,3 +1,11 @@
+export {
+  ACCOUNT_AGE_18_REQUIREMENT_HASH,
+  ACCOUNT_AGE_18_REQUIREMENTS,
+  type AccountAgeVerificationPolicy,
+  ageVerificationReservationHash,
+  compileAccountAgeVerificationPolicy,
+} from "./account-age-verification-policy.ts";
+export { documentProviderBindingHash } from "./document-provider-binding.ts";
 export type {
   CuratedAge18Evaluation,
   CuratedAge18EvaluatorInput,
@@ -42,3 +50,12 @@ export {
   evaluateCuratedHumanMembership,
   humanMembershipPolicyCanonicalPreimage,
 } from "./human-membership-evaluator.ts";
+export type { NationalityEvaluation, NationalityEvaluatorInput } from "./nationality-evaluator.ts";
+export { evaluateNationality } from "./nationality-evaluator.ts";
+export type { NationalityPolicyCompilation } from "./nationality-policy.ts";
+export {
+  compileNationalityPolicy,
+  NationalityPolicy,
+  nationalityCeremonyReservationHash,
+  nationalityProviderBindingHash,
+} from "./nationality-policy.ts";

@@ -188,3 +188,36 @@ export function resolveCommunityModerationPolicy(
     fail_closed_reasons: failClosedReasons,
   };
 }
+
+/** New evaluations bind this revision into their retained evidence preimage. */
+export const MODERATION_RATING_RULE_V2 = "accepted-adult-signals-v2" as const;
+
+export type ModerationPolicyResolutionV2 = ModerationPolicyResolutionV1 & {
+  readonly rating_rule_revision: typeof MODERATION_RATING_RULE_V2;
+};
+
+/** Publication policy cannot erase an accepted adult signal. Historical v1 stays frozen. */
+export function resolveCommunityModerationPolicyV2(
+  input: ModerationPolicyResolverInputV1,
+): ModerationPolicyResolutionV2 {
+  const previous = resolveCommunityModerationPolicy(input);
+  const automatedRating = previous.matched_categories.some((category) =>
+    ADULT_RATING_CATEGORIES.has(category),
+  )
+    ? "adult_18"
+    : "general";
+  const minors = previous.matched_categories.includes("sexual/minors");
+  return {
+    ...previous,
+    rating_rule_revision: MODERATION_RATING_RULE_V2,
+    category_decisions: minors
+      ? { ...previous.category_decisions, "sexual/minors": "block" }
+      : previous.category_decisions,
+    effective_policy_decision: minors ? "block" : previous.effective_policy_decision,
+    automated_rating: automatedRating,
+    resulting_content_rating:
+      previous.resulting_content_rating === "adult_18" || automatedRating === "adult_18"
+        ? "adult_18"
+        : "general",
+  };
+}

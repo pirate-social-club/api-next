@@ -1,0 +1,34 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/domain/src/handles/nationality-authoring.test.ts:
+(pass) freezes the server authoring reference independently of provider order [6.63ms]
+(pass) refuses disabled, incomplete, unlimited and caller-expanded authoring inputs [1.35ms]
+(pass) freezes the command hash with account, group, normalized requirement and server context [3.17ms]
+
+packages/domain/src/handles/sales-v2.test.ts:
+(pass) handle sales immutable hash vectors > reproduces all eight historical 5.1 vectors [1.56ms]
+(pass) handle sales immutable hash vectors > reproduces all nine 5.3 successor vectors [1.81ms]
+(pass) handle sales immutable hash vectors > reproduces the two recipient-token successor vectors [0.26ms]
+(pass) handle sales immutable hash vectors > pins the literal-null cap encoding [0.32ms]
+(pass) handle sales immutable hash vectors > separates hash domains and changes every representative mutation [3.12ms]
+(pass) handle sales policy > keeps grammar wide while enforcing conservative broad availability [0.19ms]
+(pass) handle sales policy > classifies reserved, exact, broad, and fallthrough in order [0.22ms]
+(pass) handle sales policy > resolves account caps and keeps revoked activation terminal [0.09ms]
+(pass) handle sales policy > classifies active authority refreshes without weakening lifecycle fences [0.15ms]
+(pass) freezes nationality offering identity and confines it to free first-come hosted allocation [1.29ms]
+
+packages/domain/src/handles/nationality-qualification.test.ts:
+(pass) handle nationality qualification authoring and snapshots > derives the versioned qualification ref from the curated policy [0.03ms]
+(pass) handle nationality qualification authoring and snapshots > pins the approved one-year lifetime independently of quote evaluation time [1.42ms]
+(pass) handle nationality qualification authoring and snapshots > refuses an indefinite lifetime because none was adopted [0.68ms]
+(pass) handle nationality qualification authoring and snapshots > freezes the canonical ref and snapshot preimages [0.31ms]
+(pass) handle nationality qualification authoring and snapshots > invalidates a stale pinned quote instead of substituting the newest policy [1.01ms]
+(pass) handle nationality qualification authoring and snapshots > freezes the nationality quote hash and keeps the eligibility arms disjoint [0.63ms]
+(pass) handle nationality qualification authoring and snapshots > qualifies a fresh pass from the pinned selected provider [0.04ms]
+(pass) handle nationality qualification authoring and snapshots > rejects stale offering, qualification, requirement, and provider pins [0.12ms]
+(pass) handle nationality qualification authoring and snapshots > rejects expired, revoked, missing, invalid, and indeterminate evidence [0.15ms]
+
+ 22 pass
+ 0 fail
+ 121 expect() calls
+Ran 22 tests across 3 files. [138.00ms]

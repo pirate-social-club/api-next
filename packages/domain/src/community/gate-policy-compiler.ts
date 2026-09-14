@@ -1,5 +1,7 @@
 import { canonicalJson } from "../canonical-json.ts";
 import { CURATED_HUMAN_MEMBERSHIP_POLICY } from "../gates-v2/human-membership-evaluator.ts";
+import type { NationalityPolicy } from "../gates-v2/nationality-policy.ts";
+import { compileNationalityPolicy } from "../gates-v2/nationality-policy.ts";
 import { sha256Hex } from "../gates-v2/sha256.ts";
 
 export const COMMUNITY_GATE_COMPILER_VERSION = "community-gate-compiler-v1" as const;
@@ -149,6 +151,146 @@ export function compileCommunityGatePolicy(value: unknown): CommunityGateCompila
       compiler_version: COMMUNITY_GATE_COMPILER_VERSION,
       evaluator: "curated-human-membership-v1",
       provider_binding: binding,
+    },
+  };
+}
+
+export const COMMUNITY_GATE_COMPILER_V2_VERSION = "community-gate-compiler-v2" as const;
+export const NATIONALITY_GATE_EVALUATOR_ID = "curated-nationality-v1" as const;
+
+export type ComposedCommunityGateCompilation =
+  | Readonly<{
+      readonly kind: "supported";
+      readonly canonical_policy: Readonly<{
+        readonly human: typeof CURATED_HUMAN_MEMBERSHIP_POLICY;
+        readonly nationality: NationalityPolicy;
+      }>;
+      readonly canonical_policy_hash: string;
+      readonly human_verification_requirement_hash: string;
+      readonly human_provider_binding: CommunityGateProviderBinding;
+      readonly compiled_plan: Readonly<{
+        readonly compiler_version: typeof COMMUNITY_GATE_COMPILER_V2_VERSION;
+        readonly evaluators: readonly [
+          "curated-human-membership-v1",
+          typeof NATIONALITY_GATE_EVALUATOR_ID,
+        ];
+        readonly human_provider_binding: CommunityGateProviderBinding;
+        readonly nationality_policy_hash: string;
+        readonly nationality_requirement_hash: string;
+        readonly nationality_provider_bindings: NationalityPolicy["provider_bindings"];
+      }>;
+    }>
+  | Readonly<{
+      readonly kind: "unsupported";
+      readonly reason: "invalid_policy" | "invalid_country" | "invalid_nationality_authoring";
+      readonly canonical_policy_hash: string;
+      readonly verification_requirement_hash: string;
+    }>;
+
+const EXACT_NATIONALITY_REQUIREMENT_KEYS = ["requirement", "allowedCountries"];
+
+function composedRequirements(
+  value: unknown,
+):
+  | { readonly kind: "human" }
+  | { readonly kind: "nationality"; readonly countries: string[] }
+  | null {
+  if (!isRecord(value) || !exactKeys(value, EXACT_POLICY_KEYS)) return null;
+  if (value.version !== 1 || !Array.isArray(value.accessPaths) || value.accessPaths.length !== 1) {
+    return null;
+  }
+  const path = value.accessPaths[0];
+  if (!isRecord(path) || !exactKeys(path, EXACT_PATH_KEYS)) return null;
+  if (
+    typeof path.id !== "string" ||
+    path.id.length === 0 ||
+    path.id.trim() !== path.id ||
+    path.operator !== "and" ||
+    !Array.isArray(path.requirements) ||
+    path.requirements.length !== 2
+  ) {
+    return null;
+  }
+  let human = false;
+  let nationality: string[] | null = null;
+  for (const requirement of path.requirements) {
+    if (isRecord(requirement) && exactKeys(requirement, ["requirement"])) {
+      if (requirement.requirement === "human-verification") {
+        if (human) return null;
+        human = true;
+        continue;
+      }
+    }
+    if (
+      isRecord(requirement) &&
+      exactKeys(requirement, EXACT_NATIONALITY_REQUIREMENT_KEYS) &&
+      requirement.requirement === "nationality-allowed" &&
+      Array.isArray(requirement.allowedCountries) &&
+      requirement.allowedCountries.length > 0 &&
+      requirement.allowedCountries.every(
+        (country) => typeof country === "string" && country.length > 0,
+      )
+    ) {
+      if (nationality !== null) return null;
+      nationality = requirement.allowedCountries as string[];
+      continue;
+    }
+    return null;
+  }
+  if (!human) return null;
+  if (nationality === null) return { kind: "human" };
+  return { kind: "nationality", countries: nationality };
+}
+
+/**
+ * Resolves the composed palm-and-nationality wizard policy into the frozen v1
+ * human constants plus a freshly compiled nationality policy. Authoring order
+ * of the two requirements is not policy identity. The v1 single-requirement
+ * path stays on `compileCommunityGatePolicy`; this successor never weakens it.
+ */
+export function compileCommunityGatePolicyV2(
+  value: unknown,
+  nationalityAuthoring: unknown,
+): ComposedCommunityGateCompilation {
+  const requirements = composedRequirements(value);
+  if (requirements === null || requirements.kind !== "nationality") {
+    return { ...unsupportedCompilation(value), reason: "invalid_policy" };
+  }
+  if (!isRecord(nationalityAuthoring)) {
+    return { ...unsupportedCompilation(value), reason: "invalid_nationality_authoring" };
+  }
+  const compilation = compileNationalityPolicy({
+    ...nationalityAuthoring,
+    allowed_countries: requirements.countries,
+  });
+  if (compilation.kind === "unsupported") {
+    return {
+      ...unsupportedCompilation(value),
+      reason:
+        compilation.reason === "invalid_country"
+          ? "invalid_country"
+          : "invalid_nationality_authoring",
+    };
+  }
+  const nationality = compilation.policy;
+  const binding = providerBinding();
+  const canonicalPolicy = {
+    human: CURATED_HUMAN_MEMBERSHIP_POLICY,
+    nationality,
+  };
+  return {
+    kind: "supported",
+    canonical_policy: canonicalPolicy,
+    canonical_policy_hash: sha256Hex(canonicalJson(canonicalPolicy)),
+    human_verification_requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+    human_provider_binding: binding,
+    compiled_plan: {
+      compiler_version: COMMUNITY_GATE_COMPILER_V2_VERSION,
+      evaluators: ["curated-human-membership-v1", NATIONALITY_GATE_EVALUATOR_ID],
+      human_provider_binding: binding,
+      nationality_policy_hash: nationality.policy_hash,
+      nationality_requirement_hash: nationality.requirement_hash,
+      nationality_provider_bindings: nationality.provider_bindings,
     },
   };
 }

@@ -316,8 +316,8 @@ export async function seedPublishedSongFixture(
          canonical_audio_sha256, title, audio_asset_ref, language_status,
          primary_language_bcp47, lyrics_explicitness, alignment, data_registration,
          locked_delivery, projected_at, author_persona_id, lyrics_status)
-       VALUES ($1,$2,$3,$4,$5,2,1,1,2,$6,$7,$8,'ready','en','not_explicit',
-         'ready','registered','not_required',clock_timestamp(),$9,'no_lyrics')`,
+       VALUES ($1,$2,$3,$4,$5,2,1,1,2,$6,$7,$8,'not_applicable',NULL,'not_explicit',
+         'not_applicable','registered','not_required',clock_timestamp(),$9,'no_lyrics')`,
       [
         submissionId,
         song.communityId,

@@ -30,6 +30,7 @@ import {
 } from "@pirate/contracts";
 import {
   canonicalTextModerationInput,
+  MODERATION_RATING_RULE_V2,
   publicTextPublicationResult,
   type TextModerationEvaluation,
   textContentSubmissionInvariant,
@@ -536,6 +537,7 @@ const restrictedEvidenceValid = (
   evidence: RestrictedTextModerationEvidenceV1,
   evaluation: Extract<TextModerationEvaluation, { readonly version: "text-moderation-v2" }>,
 ): boolean =>
+  evidence.rating_rule_revision === MODERATION_RATING_RULE_V2 &&
   validId(evidence.evidence_ref) &&
   validHash(evidence.evidence_hash) &&
   evidence.evidence_ref === evaluation.evidence_ref &&
@@ -805,10 +807,10 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                   input_hashes, evidence_hash, response_sha256, community_id,
                   policy_revision_id, policy_hash,
                   platform_policy_revision_id, platform_policy_hash,
-                  community_policy_revision_id, community_policy_hash
+                  community_policy_revision_id, community_policy_hash, rating_rule_revision
                 ) VALUES (
                   $1, $2, $3, $4, 'evaluated', $5::jsonb, $6::jsonb, $7::jsonb,
-                  $8, $9::jsonb, $10, $10, $11, $12, $13, $14, $15, $16, $17
+                  $8, $9::jsonb, $10, $10, $11, $12, $13, $14, $15, $16, $17, $18
                 ) ON CONFLICT (evidence_ref) DO NOTHING`,
               values: [
                 evidence.evidence_ref,
@@ -828,6 +830,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 evidence.platform_policy_hash,
                 evidence.community_policy_revision,
                 evidence.community_policy_hash,
+                evidence.rating_rule_revision,
               ],
               readonly: false,
             });
@@ -849,7 +852,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                         AND community_id = $11
                         AND policy_revision_id = $12 AND policy_hash = $13
                         AND platform_policy_revision_id = $14 AND platform_policy_hash = $15
-                        AND community_policy_revision_id = $16 AND community_policy_hash = $17`,
+                        AND community_policy_revision_id = $16 AND community_policy_hash = $17
+                        AND rating_rule_revision = $18`,
               values: [
                 evidence.evidence_ref,
                 evidence.provider_id,
@@ -868,6 +872,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 evidence.platform_policy_hash,
                 evidence.community_policy_revision,
                 evidence.community_policy_hash,
+                evidence.rating_rule_revision,
               ],
               readonly: false,
             });

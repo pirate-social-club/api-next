@@ -2,7 +2,9 @@
 
 This note records the dependency and transaction map behind the separation of
 current community creation activation from historical settlement, and the
-boundary this lane implements. The base is `origin/main` `5f3be3c8`.
+boundary this lane implements. The initial extraction was based on `origin/main` `5f3be3c8`. The nationality
+lane integrates the accepted extraction at `3e34a9c0` without duplicating its
+SQL or bypassing its transaction boundary.
 
 ## What was separated
 
@@ -26,22 +28,26 @@ Callers, each inside its own `ControlPlaneDb.withTransaction`:
   `creation_contract_version === "route_v1"`, after the route-evidence insert
   and its row-count check.
 
-Both advance helpers execute only through the caller's
+Both public advance helpers execute only through the caller's
 `ControlPlaneTransaction`; they open no transaction and own no commit.
+The verification dispatcher also retains the nationality lane's generic
+creation and join ceremony routing, with actor, action kind, current attempt,
+generation, result-hash, terminal-completion, and expiry fences unchanged.
 
 ## Boundary
 
-The two advance helpers, their outcome type and their failure mapping live in
-`community-creation-verification-settlement.ts`. The shared SQL and document
-helpers they use (`Row`, `asString`, `asTimestamp`, `asPositiveInteger`,
-`oneRow`, `validId`, `documentFromRow`, `loadLockedIntent`, `insertRevision`,
-`reserveNextCreationRequirement`, `loadCommitEvidence`, `exactCanonicalJson`,
-`failure`, `SHA256_HEX`, `TERMINAL_STATUSES`, `VERY_WEB_EVIDENCE_KIND`,
-`HUMAN_MEMBERSHIP_REQUIREMENTS`, `HUMAN_MEMBERSHIP_CLAIM_IDS`) remain owned by
-the creation repository and are package-internal exports imported by the
-settlement module. That keeps one owner of the shared SQL while the settlement
-lifetime is its own reviewable module; splitting the helpers into a third
-module can follow if the package's dependency direction needs it.
+The advance helpers and their outcome type live in
+`community-creation-verification-settlement.ts`. Current authoring, creator
+nationality issuance and enforcement, and the activation transaction stay in
+`community-creation-repository.ts`.
+
+Shared SQL and document helpers live in `community-creation-internals.ts`.
+That package-internal module owns row decoding, the locked intent projection,
+revision insertion, human-requirement reservation and evidence lookup. The
+nationality progress decoder and projection move with that shared owner.
+The completion-storage failure constructor is shared because both creator
+enforcement and completion use it. The module remains absent from the package
+exports map; callers use the public repository or settlement entry points.
 
 ## Preserved behavior
 
@@ -49,5 +55,8 @@ No SQL text, statement label, lock order, revision check, idempotency key,
 result-hash comparison, error mapping or persisted row shape changed. The
 grandfathered route-v1 projection and human-identity paths are untouched, and
 `makeControlPlaneCommunityCreationRepository` and its single activation
-transaction remain intact. The extraction is a move plus import updates; tests
-and hosted PostgreSQL checks carry the behavioral evidence.
+transaction remain intact. The extraction is a move plus import updates. An AST comparison against the
+nationality lane's pre-integration source proves all 64 top-level declaration
+bodies are unchanged, apart from export boundaries and formatting, with no
+duplicate helper owners. Repository checks and PostgreSQL transaction tests
+remain required to verify the new import graph and integrated schema.

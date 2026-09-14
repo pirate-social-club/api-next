@@ -1,6 +1,9 @@
 /** Pure Spec 013 song creation state machine. */
 
-import type { ModerationPolicyCategoryV1 } from "./content/community-moderation-policy.ts";
+import {
+  MODERATION_RATING_RULE_V2,
+  type ModerationPolicyCategoryV1,
+} from "./content/community-moderation-policy.ts";
 
 export type SongType = "original" | "remix";
 export type MediaSubmissionPhase =
@@ -147,6 +150,8 @@ export type TrustedSongAnalysis = Readonly<{
     }> | null;
   }>;
   contentModeration?: Readonly<{
+    /** Omitted only by retained predecessor evaluations. */
+    ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
     decision: "allow" | "manual_review" | "blocked";
     resultingContentRating: "general" | "adult_18";
     inputSha256: string;
@@ -658,7 +663,9 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
     return false;
   if (
     analysis.contentModeration !== undefined &&
-    (!["allow", "manual_review", "blocked"].includes(analysis.contentModeration.decision) ||
+    ((analysis.contentModeration.ratingRuleRevision !== undefined &&
+      analysis.contentModeration.ratingRuleRevision !== MODERATION_RATING_RULE_V2) ||
+      !["allow", "manual_review", "blocked"].includes(analysis.contentModeration.decision) ||
       !["general", "adult_18"].includes(analysis.contentModeration.resultingContentRating) ||
       !validId(analysis.contentModeration.inputSha256) ||
       !validId(analysis.contentModeration.policyRevision) ||

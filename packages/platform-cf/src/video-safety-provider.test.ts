@@ -25,6 +25,7 @@ async function fixture(
     | "minors"
     | "caption"
     | "adult"
+    | "adult-review"
     | "unavailable"
     | "bad-digest"
     | "disabled"
@@ -32,7 +33,8 @@ async function fixture(
 ) {
   const bytes = new Uint8Array([255, 216, 255, 217]);
   const sha256 = await mediaSha256Bytes(bytes);
-  const caption = mode === "caption" || mode === "adult" ? "Normalized caption" : null;
+  const caption =
+    mode === "caption" || mode === "adult" || mode === "adult-review" ? "Normalized caption" : null;
   const frame = (role: "poster" | "first" | "midpoint") => ({
     role,
     artifactRef: `media://derived/${role}.jpg`,
@@ -73,7 +75,7 @@ async function fixture(
           ? "sexual/minors"
           : mode === "caption" && type === "text"
             ? "hate"
-            : mode === "adult"
+            : mode === "adult" || mode === "adult-review"
               ? "sexual"
               : null;
       return Response.json({
@@ -135,7 +137,7 @@ test("clean frames stay in review, ordered inputs share one retained request and
     mediaSafety: "review_required",
     captionSafety: "not_applicable",
     minorSafetyEvidenceRef: null,
-    adapterRevision: "video-openai-safety-v1",
+    adapterRevision: "video-openai-safety-v2",
   });
   expect(f.reads).toEqual([
     "media://derived/poster.jpg",
@@ -151,6 +153,7 @@ test.each([
   "minors",
   "caption",
   "adult",
+  "adult-review",
   "unavailable",
   "bad-digest",
   "disabled",
@@ -168,7 +171,11 @@ test.each([
     expect(fact.captionSafety).toBe("review_required");
     expect(f.calls).toEqual(["image", "image", "image", "text"]);
   }
-  if (mode === "adult") expect(fact.automatedRating).toBe("adult_18");
+  if (mode === "adult" || mode === "adult-review") {
+    expect(fact.automatedRating).toBe("adult_18");
+    expect(f.evidence()?.ratingRuleRevision).toBe("accepted-adult-signals-v2");
+  }
+  if (mode === "adult-review") expect(fact.captionSafety).toBe("review_required");
   if (["unavailable", "bad-digest", "disabled", "oversized-evidence"].includes(mode))
     expect(fact.adapterRevision).toBe("safety-unavailable");
   if (mode === "bad-digest" || mode === "disabled") expect(f.calls).toHaveLength(0);

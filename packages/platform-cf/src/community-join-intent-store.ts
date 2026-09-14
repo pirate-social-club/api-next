@@ -152,3 +152,44 @@ export const resolveOrIssueCommunityJoinIntent = Effect.fn("resolveOrIssueCommun
     return { kind: "start", intentId };
   },
 );
+
+/**
+ * Fulfills the actor's open join intents for one community inside the
+ * membership-activation transaction. Only the exact actor, community, action
+ * kind, payload, and binding lineage transitions to `fulfilled`; terminal
+ * intents keep their own status. Replays are no-ops because only open
+ * intents are selected, and a rolled-back membership rolls this write back
+ * with it.
+ */
+export const fulfillCommunityJoinIntents = Effect.fn("fulfillCommunityJoinIntents")(function* (
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{ readonly communityId: string; readonly userId: string }>,
+): Effect.fn.Return<readonly string[], ControlPlaneError | CommunityJoinIntentDataInvalid> {
+  const actionPayloadHash = communityJoinActionPayloadHash(input.communityId);
+  const intentBindingHash = communityJoinIntentBindingHash({
+    actorId: input.userId,
+    communityId: input.communityId,
+  });
+  const result = yield* transaction.execute<Row>({
+    label: "community.join-intents.fulfill",
+    text: `UPDATE action_intents
+                SET status = 'fulfilled', updated_at = now()
+              WHERE user_id = $1
+                AND community_id = $2
+                AND action_kind = 'community_join'
+                AND action_scope = $2
+                AND action_payload_hash = $3
+                AND intent_binding_hash = $4
+                AND status = 'open'
+            RETURNING action_intent_id`,
+    values: [input.userId, input.communityId, actionPayloadHash, intentBindingHash],
+    readonly: false,
+  });
+  const fulfilled = result.rows
+    .map((candidate) => candidate.action_intent_id)
+    .filter((id): id is string => validId(id));
+  if (fulfilled.length !== result.rows.length) {
+    return yield* Effect.fail(invalid());
+  }
+  return fulfilled;
+});

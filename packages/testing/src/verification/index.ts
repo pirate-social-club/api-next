@@ -10,6 +10,7 @@ export {
   makeFakeVerificationTransport,
   NO_SUBJECT_FAKE_PROVIDER_MANIFEST,
 } from "./fake-provider.ts";
+export { startNationalityFixture } from "./nationality-start.ts";
 export type {
   ProviderConformanceHarness,
   ProviderTransportConformanceCase,

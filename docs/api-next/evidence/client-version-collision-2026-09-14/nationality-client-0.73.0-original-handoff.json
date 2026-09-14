@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.73.0",
+  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
+  "wireContract": "Additive over 0.72.0: community-creation requirement progress gains an optional nationality entry, and the optional-route creation next action widens its start_verification and wait requirement values from human_identity to human_identity or nationality. Existing values decode identically; consumers on 0.72.0 fail strict decoding when a nationality value arrives, so the Solid consumer must move to 0.73.0 before nationality-gated creation is advertised.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.73.0.tgz",
+    "sha256": "bf5c36323dcc9b4416e82580fa45f29132be944bb5789fd874b06694eb10f3d8"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.73.0",
+    "sourceIdentifier": "api-next-contracts@6db430a07db39c1505d80ca92a2ef71a6f10592ea4f456275bc4fd827a3436dd",
+    "openapiSha256": "6db430a07db39c1505d80ca92a2ef71a6f10592ea4f456275bc4fd827a3436dd",
+    "clientSha256": "67d0a19c5e7ecbe2f684f0fa7cfc6e73e5c10d29b434584228f2db246543ce84"
+  },
+  "verification": {
+    "status": "Cut from the nationality lane tip with migration 0175 present; generate:contracts and check:fresh pass locally. The full check and required gates remain outstanding; no consumer-side update is included in this lane."
+  }
+}

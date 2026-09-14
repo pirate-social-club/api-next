@@ -606,4 +606,38 @@ describe("HTTP production composition", () => {
       }),
     ).resolves.toBeDefined();
   });
+
+  test("keeps nationality authoring disabled by default and requires an explicit lifetime", async () => {
+    const configured = await bindings();
+    await expect(createProductionHttpWorker(configured)).resolves.toBeDefined();
+    const providers = {
+      ...configured,
+      SELF_PASS_ENABLED: "true",
+      SELF_PASS_MOCK_PASSPORT: "false",
+      PIRATE_API_PUBLIC_ORIGIN: "https://api.pirate.test",
+      ZKPASSPORT_ENABLED: "true",
+      ZKPASSPORT_DOMAIN: "api.example",
+      ZKPASSPORT_NAME: "Pirate",
+      ZKPASSPORT_VERIFIER_URL: "https://verifier.example/verify",
+      ZKPASSPORT_VERIFIER_SHARED_SECRET: "bearer-secret",
+      ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET: "response-secret",
+      ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID: "key-2026-08",
+    };
+    await expect(createProductionHttpWorker(providers)).resolves.toBeDefined();
+    await expect(
+      createProductionHttpWorker({
+        ...providers,
+        NATIONALITY_AUTHORING_ENABLED: "true",
+        NATIONALITY_AUTHORING_POLICY_REVISION: "1",
+      }),
+    ).rejects.toThrow("Nationality authoring configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...providers,
+        NATIONALITY_AUTHORING_ENABLED: "true",
+        NATIONALITY_AUTHORING_POLICY_REVISION: "1",
+        NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS: "3600",
+      }),
+    ).resolves.toBeDefined();
+  });
 });

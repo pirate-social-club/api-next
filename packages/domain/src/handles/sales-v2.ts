@@ -1,4 +1,10 @@
 import { sha256Hex } from "../gates-v2/sha256.ts";
+import {
+  type HandleNationalityEligibilitySnapshotV1,
+  type HandleNationalityQualificationPolicyRefV1,
+  handleNationalityEligibilitySnapshotPreimage,
+  handleNationalityQualificationRefPreimage,
+} from "./nationality-qualification.ts";
 
 export type HandleFamilyV1 = "hns" | "spaces";
 export type HandleFulfillmentKindV1 =
@@ -376,6 +382,31 @@ export function assertHandleOfferingCombinationV2(input: {
   }
 }
 
+/** The nationality successor admits only the existing free first-come hosted allocation. */
+export function assertHandleOfferingCombinationV3(
+  input: Omit<Parameters<typeof assertHandleOfferingCombinationV2>[0], "qualification_kind"> & {
+    qualification_kind: HandleQualificationPolicyRefV1["kind"] | "curated_nationality_v1";
+  },
+): void {
+  if (input.qualification_kind !== "curated_nationality_v1") {
+    assertHandleOfferingCombinationV2({
+      ...input,
+      qualification_kind: input.qualification_kind,
+    });
+    return;
+  }
+  handleLabelScopeV2Preimage(input.label_scope);
+  if (
+    input.label_scope.kind !== "label_rule_v2" ||
+    input.allocation_kind !== "first_come_v1" ||
+    input.fulfillment_kind !== "hosted_persona_v1" ||
+    input.pricing_kind !== "free_v1" ||
+    input.atomic_amount !== "0"
+  ) {
+    throw new TypeError("Unsupported nationality handle offering combination");
+  }
+}
+
 export function handleOfferingRevisionV1Hash(input: {
   offering_id: string;
   offering_revision: number;
@@ -444,6 +475,30 @@ export function handleOfferingRevisionV2Hash(input: {
   quote_ttl_seconds: number;
   reservation_ttl_seconds: number;
 }): HandleHashResultV1 {
+  return handleOfferingRevisionHash(
+    input,
+    "pirate-handle-offering-revision-v2",
+    handleQualificationPolicyPreimage(input.qualification_policy),
+  );
+}
+
+export function handleOfferingRevisionV3Hash(
+  input: Omit<Parameters<typeof handleOfferingRevisionV2Hash>[0], "qualification_policy"> & {
+    qualification_policy: HandleNationalityQualificationPolicyRefV1;
+  },
+): HandleHashResultV1 {
+  return handleOfferingRevisionHash(
+    input,
+    "pirate-handle-offering-revision-v3",
+    handleNationalityQualificationRefPreimage(input.qualification_policy),
+  );
+}
+
+function handleOfferingRevisionHash(
+  input: Omit<Parameters<typeof handleOfferingRevisionV2Hash>[0], "qualification_policy">,
+  version: "pirate-handle-offering-revision-v2" | "pirate-handle-offering-revision-v3",
+  qualificationPreimage: readonly unknown[],
+): HandleHashResultV1 {
   requireIdentifier(input.offering_id, "offering id");
   requireRevision(input.offering_revision, "offering revision");
   requireIdentifier(input.community_id, "community id");
@@ -472,7 +527,7 @@ export function handleOfferingRevisionV2Hash(input: {
   const pricing = handleFreePricingRevisionHash(input.pricing);
   if (pricing.sha256 !== input.pricing.pricing_hash) throw new TypeError("Stale pricing hash");
   return encoded([
-    "pirate-handle-offering-revision-v2",
+    version,
     input.offering_id,
     input.offering_revision,
     input.community_id,
@@ -483,7 +538,7 @@ export function handleOfferingRevisionV2Hash(input: {
     [input.allocation_kind],
     ["account_cap_v1", input.max_active_grants_per_account],
     [input.fulfillment_kind],
-    handleQualificationPolicyPreimage(input.qualification_policy),
+    qualificationPreimage,
     [
       input.pricing.kind,
       input.pricing.pricing_id,
@@ -567,6 +622,83 @@ export function handleQuoteV2Hash(input: {
       input.pricing.atomic_amount,
     ],
     eligibilityPreimage(input.eligibility),
+    input.quoted_at,
+    input.expires_at,
+  ]);
+}
+
+/**
+ * The nationality-qualified quote eligibility arm. `curated_policy_v1` keeps
+ * the frozen private account-allowlist snapshot; `curated_nationality_v1`
+ * carries the versioned nationality snapshot. The kind tag keeps the two
+ * preimages disjoint without reinterpretating either wire.
+ */
+export type HandleQuoteEligibilitySnapshotV2 =
+  | Readonly<{ kind: "curated_policy_v1"; snapshot: HandleEligibilitySnapshotV1 }>
+  | Readonly<{
+      kind: "curated_nationality_v1";
+      snapshot: HandleNationalityEligibilitySnapshotV1;
+    }>;
+
+const quoteEligibilityPreimageV2 = (
+  eligibility: HandleQuoteEligibilitySnapshotV2,
+): readonly unknown[] =>
+  eligibility.kind === "curated_nationality_v1"
+    ? [eligibility.kind, ...handleNationalityEligibilitySnapshotPreimage(eligibility.snapshot)]
+    : [eligibility.kind, ...eligibilityPreimage(eligibility.snapshot)];
+
+/**
+ * Successor quote hash for nationality-qualified offerings. The pin includes
+ * the qualification policy identity, both provider alternatives, and the
+ * selected evidence binding through the nationality snapshot; the v2 quote
+ * hash and its byte vectors are unchanged.
+ */
+export function handleQuoteV3Hash(input: {
+  quote_id: string;
+  offering_id: string;
+  offering_revision: number;
+  offering_hash: string;
+  sale_namespace_activation_id: string;
+  sale_namespace_activation_generation: number;
+  fulfillment_kind: HandleFulfillmentKindV1;
+  owner_persona_id: string;
+  family: HandleFamilyV1;
+  namespace_root: string;
+  handle_label: string;
+  pricing: HandleFreePricingV1;
+  eligibility: HandleQuoteEligibilitySnapshotV2;
+  quoted_at: string;
+  expires_at: string;
+}): HandleHashResultV1 {
+  requireIdentifier(input.quote_id, "quote id");
+  requireIdentifier(input.offering_id, "offering id");
+  requireRevision(input.offering_revision, "offering revision");
+  requireDigest(input.offering_hash, "offering hash");
+  requireIdentifier(input.sale_namespace_activation_id, "sale activation id");
+  requireRevision(input.sale_namespace_activation_generation, "sale activation generation");
+  requireIdentifier(input.owner_persona_id, "owner persona id");
+  requireIdentifier(input.namespace_root, "namespace root");
+  assertCanonicalHnsHandleLabelV2(input.handle_label);
+  requireIdentifier(input.quoted_at, "quote instant");
+  requireIdentifier(input.expires_at, "quote expiry");
+  return encoded([
+    "pirate-handle-quote-v3",
+    input.quote_id,
+    input.offering_id,
+    input.offering_revision,
+    input.offering_hash,
+    [input.sale_namespace_activation_id, input.sale_namespace_activation_generation],
+    [input.fulfillment_kind],
+    input.owner_persona_id,
+    [input.family, input.namespace_root, input.handle_label],
+    [
+      input.pricing.kind,
+      input.pricing.pricing_id,
+      input.pricing.pricing_revision,
+      input.pricing.pricing_hash,
+      input.pricing.atomic_amount,
+    ],
+    quoteEligibilityPreimageV2(input.eligibility),
     input.quoted_at,
     input.expires_at,
   ]);

@@ -1,0 +1,13 @@
+# Handle nationality checkout evidence
+
+Nationality-qualified handles now use an immutable quote snapshot and their own quote, reservation and claim decisions. The shared Gates v2 loader enforces the pinned provider, account binding, revalidation and explicit lifetime. Current offering changes invalidate the quote without rewriting its historical pin. No membership or follow is written by checkout. Existing none_v1 and private direct-grant behavior is retained; paid checkout remains disabled.
+
+An ineligible quote request returns a stable buyer qualification intent. Its private progress endpoint exposes both providers and the current child generation. Generic application starts support provider switches and failed-session retry; completion satisfies only the requirement. The buyer requests a new quote and explicitly reserves and claims. Client 0.76.0 contains these versioned wires and preserves the prior quote shapes for other policies. It is a local artifact, not a deployed consumer.
+
+The final PostgreSQL wrapper exited zero with 42 tests across six suites and six fresh completion sentinels. The nine checkout cases include each provider's nonmember claim, actual start/switch/retry, expiry between reservation and claim, changed allowlist, rollback, member denial, missing evidence and revocation. Existing authoring, sales, join, creator and ceremony tests also passed. The task container and socket directory were removed. These fixtures use local provider adapters and legally persisted evidence, not real document acceptance.
+
+The serial runtime chain exited zero: 4,142 unit tests, 20 Node tests and all five workerd configurations with 82, 74, 2, 10 and 15 tests. The render-host completion marker moved to shard 1 after the new PostgreSQL suite changed partition weights; the composed-flow marker stays on shard 3. Its owning unit test ran after that update and passed. The initial full check passed before the final member fixture and shard-pin edits. A final full check is retained separately.
+
+Earlier proof attempts failed on omitted fixture action IDs, a label shorter than the fixture offering's eight-character minimum, and an unbound persona. They were corrected without relaxing account/persona isolation. The buyer now has a community-scoped persona and deliberately has no membership or follow. The draft application script also stopped on an ambiguous replacement before writing the repository; the replacement was narrowed and applied only to that file.
+
+Full PostgreSQL partitions, trusted pull-request secret-boundary checks, compatible Solid integration, adult viewing and metadata, and real provider/browser staging acceptance remain open. Nothing was enabled, pushed or deployed.

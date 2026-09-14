@@ -7,7 +7,11 @@ import type {
   TextModerationInputV1,
   TextModerationReasonCode,
 } from "@pirate/contracts";
-import { canonicalTextModerationReasons, resolveCommunityModerationPolicy } from "@pirate/domain";
+import {
+  canonicalTextModerationReasons,
+  MODERATION_RATING_RULE_V2,
+  resolveCommunityModerationPolicyV2,
+} from "@pirate/domain";
 import { Effect } from "effect";
 import type {
   TextModerationProviderError,
@@ -53,6 +57,7 @@ export type TextModerationPolicySnapshotV2 = Readonly<{
 }>;
 
 export type RestrictedTextModerationEvidenceV1 = Readonly<{
+  readonly rating_rule_revision: typeof MODERATION_RATING_RULE_V2;
   readonly evidence_ref: string;
   readonly evidence_hash: string;
   readonly provider_id: "openai";
@@ -117,7 +122,8 @@ const restrictedEvidence = async (
   communityId: string,
 ): Promise<RestrictedTextModerationEvidenceV1> => {
   const preimage = JSON.stringify([
-    "text-moderation-restricted-evidence-v1",
+    "text-moderation-restricted-evidence-v2",
+    MODERATION_RATING_RULE_V2,
     provider.provider_id,
     provider.requested_model,
     provider.returned_model,
@@ -133,6 +139,7 @@ const restrictedEvidence = async (
   ]);
   const evidenceHash = await digestHex(preimage);
   return {
+    rating_rule_revision: MODERATION_RATING_RULE_V2,
     evidence_ref: `evidence_${evidenceHash}`,
     evidence_hash: evidenceHash,
     provider_id: provider.provider_id,
@@ -236,7 +243,7 @@ export const evaluateTextModerationV2 = Effect.fn("evaluateTextModerationV2")(fu
       ),
     };
   }
-  const resolution = resolveCommunityModerationPolicy({
+  const resolution = resolveCommunityModerationPolicyV2({
     platform_floor: policy.platform_policy,
     community_policy: policy.community_policy,
     matched_categories: provider.evaluation.matched_categories,

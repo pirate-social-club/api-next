@@ -1,10 +1,4 @@
-/**
- * Shared SQL and document helpers for the community creation repositories.
- *
- * This module is package-internal: it is deliberately absent from the
- * platform-cf exports map so the helpers cannot become package API. Both
- * the creation repository and the historical settlement module import it.
- */
+/** Package-internal SQL and projections shared by activation and settlement. */
 import {
   type CommunityCreationIntentDocument,
   CommunityCreationRepositoryError,
@@ -14,8 +8,10 @@ import {
   publicCommunityCreationRequirements,
   publicOptionalRouteCommunityCreationRequirements,
 } from "@pirate/application";
+import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import {
   CommunityCreationIntent as CommunityCreationIntentContract,
+  type CreationNationalityRequirementProgressV2,
   PublicPersonaV1,
 } from "@pirate/contracts";
 import {
@@ -50,8 +46,6 @@ export const HUMAN_MEMBERSHIP_CLAIM_IDS = [
   "credential.subject_unique",
   "human.personhood",
 ] as const;
-
-/** Spec 012 creator-requirement removal amendment: the account-scoped creation cap. */
 
 export function failure(
   operation: "create" | "get" | "update" | "commit",
@@ -153,6 +147,63 @@ function requirementFromValue(
   }
 }
 
+type CreationNationalityProgress = Readonly<{
+  readonly accepted_provider_ids: readonly ["self.pass", "zkpassport"];
+  readonly requirement: "nationality";
+  readonly status: "pending" | "satisfied";
+  readonly requirement_hash: string;
+  readonly provider_id: "self.pass" | "zkpassport";
+  readonly generation: number;
+  readonly ceremony_intent_id: string;
+  readonly satisfied_at: string | null;
+}>;
+
+/**
+ * Parses the locked loader's nationality projection. Absent means the creator
+ * carries no nationality requirement; a present but malformed row fails closed
+ * rather than silently dropping a policy requirement.
+ */
+function nationalityRequirementFromValue(value: unknown): CreationNationalityProgress | null {
+  const record = jsonValue(value);
+  if (record === null || typeof record !== "object" || Array.isArray(record)) return null;
+  const row = record as Row;
+  const accepted = jsonValue(row.accepted_provider_ids);
+  if (
+    !Array.isArray(accepted) ||
+    accepted.length !== 2 ||
+    accepted[0] !== "self.pass" ||
+    accepted[1] !== "zkpassport"
+  )
+    return null;
+  const status = asString(row.status);
+  if (status !== "pending" && status !== "satisfied") return null;
+  const generation = asPositiveInteger(row.generation);
+  const requirementHash = asString(row.requirement_hash);
+  const providerId = asString(row.provider_id);
+  const ceremonyIntentId = asString(row.current_ceremony_intent_id);
+  const satisfiedAt = row.satisfied_at === null ? null : asTimestamp(row.satisfied_at);
+  if (
+    generation === null ||
+    requirementHash === null ||
+    !SHA256_HEX.test(requirementHash) ||
+    (providerId !== "self.pass" && providerId !== "zkpassport") ||
+    ceremonyIntentId === null ||
+    (row.satisfied_at !== null && satisfiedAt === null)
+  ) {
+    return null;
+  }
+  return {
+    requirement: "nationality",
+    accepted_provider_ids: ["self.pass", "zkpassport"],
+    status,
+    requirement_hash: requirementHash,
+    provider_id: providerId,
+    generation,
+    ceremony_intent_id: ceremonyIntentId,
+    satisfied_at: satisfiedAt,
+  };
+}
+
 function nextActionFromRequirements(
   row: Row,
   input: Readonly<{
@@ -161,29 +212,69 @@ function nextActionFromRequirements(
     readonly contractVersion: "route_v1" | "optional_route_v2";
     readonly human: CreationRequirementProgress | null;
     readonly namespace: CreationRequirementProgress | null;
+    readonly nationality: CreationNationalityRequirementProgressV2 | null;
+    readonly nationalityStarted: boolean;
   }>,
 ) {
   if (input.status === "draft") {
     return { kind: "wait", requirement: null, reason_code: "operation_pending" } as const;
   }
   if (input.status === "verification_required") {
+    if (input.contractVersion === "optional_route_v2") {
+      const candidates: readonly (readonly [
+        "human_identity" | "nationality",
+        Readonly<{
+          readonly status: string;
+          readonly provider_id: string;
+          readonly ceremony_intent_id: string | null;
+          readonly generation: number;
+        }>,
+        boolean,
+      ])[] = [
+        ...(input.human === null
+          ? []
+          : ([["human_identity", input.human, row.human_started === true]] as const)),
+        ...(input.nationality === null
+          ? []
+          : ([["nationality", input.nationality, input.nationalityStarted]] as const)),
+      ];
+      for (const [requirement, progress, started] of candidates) {
+        if (progress.status !== "pending") continue;
+        return started
+          ? ({
+              kind: "wait",
+              requirement,
+              reason_code: "verification_pending",
+            } as const)
+          : ({
+              kind: "start_verification",
+              requirement,
+              provider_id: progress.provider_id,
+              creation_intent_id: input.intentId,
+              ceremony_intent_id: progress.ceremony_intent_id ?? "",
+              generation: progress.generation,
+            } as const);
+      }
+      // A verification-required post-amendment intent always carries a pending
+      // creator requirement; anything else is invalid, never requirement-free.
+      return input.human === null && input.nationality === null
+        ? null
+        : ({ kind: "wait", requirement: null, reason_code: "reconciliation_pending" } as const);
+    }
     // A requirement-free intent never waits on a creator ceremony.
     if (input.human === null) return null;
     const requirements: readonly (readonly [
       "human_identity" | "namespace_ownership",
       CreationRequirementProgress,
       boolean,
-    ])[] =
-      input.contractVersion === "optional_route_v2"
-        ? [["human_identity", input.human, row.human_started === true]]
-        : [
-            ["human_identity", input.human, row.human_started === true],
-            [
-              "namespace_ownership",
-              input.namespace as CreationRequirementProgress,
-              row.namespace_started === true,
-            ],
-          ];
+    ])[] = [
+      ["human_identity", input.human, row.human_started === true],
+      [
+        "namespace_ownership",
+        input.namespace as CreationRequirementProgress,
+        row.namespace_started === true,
+      ],
+    ];
     for (const [requirement, progress, started] of requirements) {
       if (progress.status !== "pending") continue;
       return started
@@ -248,6 +339,10 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
     draftPersonaKind.persona.kind === "create_new";
   const human = requirementFromValue(row.human_requirement, "human_identity");
   const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
+  const rawNationality = row.nationality_requirement ?? null;
+  const nationality =
+    rawNationality === null ? null : nationalityRequirementFromValue(rawNationality);
+  if (rawNationality !== null && nationality === null) return null;
   // Post-amendment optional-route intents carry no creator authority and no
   // requirement row; grandfathered and route-v1 intents carry both.
   const requirementFree =
@@ -266,7 +361,9 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
     (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
     (contractVersion === "route_v1" && namespace === null) ||
     (contractVersion === "optional_route_v2" && row.namespace_requirement !== null) ||
-    (contractVersion === "optional_route_v2" && Option.isNone(publicPersona) && !createNewOwner)
+    (contractVersion === "optional_route_v2" && Option.isNone(publicPersona) && !createNewOwner) ||
+    (nationality !== null && contractVersion !== "optional_route_v2") ||
+    (nationality !== null && nationality.status === "pending" && status !== "verification_required")
   ) {
     return null;
   }
@@ -282,6 +379,8 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
     contractVersion,
     human,
     namespace,
+    nationality,
+    nationalityStarted: row.nationality_started === true,
   });
   if (nextAction === null) return null;
   let committedResource: CommunityCreationIntentDocument["committed_resource"] = null;
@@ -341,6 +440,19 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
     verification_provider_id: providerId,
     expires_at: expiresAt,
     committed_resource: committedStateResource,
+    ...(nationality === null
+      ? {}
+      : {
+          nationality: {
+            status: nationality.status,
+            requirement_hash: nationality.requirement_hash,
+            provider_id: nationality.provider_id,
+            generation: nationality.generation,
+            ceremony_intent_id: nationality.ceremony_intent_id,
+            satisfied_at: nationality.satisfied_at,
+            started: row.nationality_started === true,
+          },
+        }),
   };
   if (contractVersion === "route_v1" && (human === null || namespace === null)) return null;
   const publicIntent = {
@@ -355,7 +467,7 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
     canonical_policy_hash: state.canonical_policy_hash,
     requirements:
       contractVersion === "optional_route_v2"
-        ? publicOptionalRouteCommunityCreationRequirements(human)
+        ? publicOptionalRouteCommunityCreationRequirements(human, nationality)
         : publicCommunityCreationRequirements({
             human_identity: human as CreationRequirementProgress,
             namespace_ownership: namespace as CreationRequirementProgress,
@@ -370,8 +482,6 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
   const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)(publicIntent);
   return Option.isSome(decoded) ? decoded.value : null;
 }
-
-/** The stored creator authority and the projected requirement map must agree. */
 
 function rowColumns(prefix = ""): string {
   const column = (name: string) => `${prefix}${name}`;
@@ -402,6 +512,33 @@ function routeV1ProjectionColumns(intentAlias: string): string {
   )`;
   return `${requirement("human_identity")} AS human_requirement,
           ${requirement("namespace_ownership")} AS namespace_requirement,
+          (
+            SELECT jsonb_build_object(
+              'status', state.status,
+              'requirement_hash', state.requirement_hash,
+              'provider_id', state.current_provider_id,
+              'accepted_provider_ids', state.accepted_provider_ids,
+              'generation', state.generation,
+              'current_ceremony_intent_id', state.current_ceremony_intent_id,
+              'satisfied_at', state.satisfied_at
+            )
+              FROM nationality_requirement_states AS state
+             WHERE state.action_kind = 'community_creation'
+               AND state.intent_id = ${intentAlias}.intent_id
+               AND state.requirement_kind = 'nationality'
+          ) AS nationality_requirement,
+          EXISTS (
+            SELECT 1 FROM proof_sessions AS proof
+             WHERE proof.intent_id = (
+               SELECT state.current_ceremony_intent_id
+                 FROM nationality_requirement_states AS state
+                WHERE state.action_kind = 'community_creation'
+                  AND state.intent_id = ${intentAlias}.intent_id
+                  AND state.requirement_kind = 'nationality'
+             )
+               AND proof.actor_id = ${intentAlias}.actor_id
+               AND proof.creation_ceremony_intent_id IS NULL
+          ) AS nationality_started,
           (
             SELECT public_persona_projection(persona.persona_id)
               FROM personas AS persona
@@ -669,6 +806,10 @@ export function reserveNextCreationRequirement(
     }
     return "reserved";
   });
+}
+
+export function verificationStorageFailure(): VerificationCompletionStorageFailed {
+  return new VerificationCompletionStorageFailed();
 }
 
 export function exactCanonicalJson(value: unknown, expected: unknown): boolean {

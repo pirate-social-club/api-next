@@ -1,0 +1,62 @@
+{
+  "base_commit": "8ec3996c4a9d5c26bda78c31ab7a81addeb2c785",
+  "changes": "one-year tests in three test files; documentation only otherwise",
+  "lifetime_seconds": 31536000,
+  "check_exit_code": 0,
+  "test_exit_code": 0,
+  "focused_tests": {
+    "passed": 79,
+    "failed": 0
+  },
+  "unit": {
+    "passed": 4085,
+    "failed": 0
+  },
+  "node": {
+    "passed": 20,
+    "files": 1
+  },
+  "workerd": [
+    {
+      "configuration": "workerd",
+      "passed": 82,
+      "files": 14
+    },
+    {
+      "configuration": "workerd-http",
+      "passed": 74,
+      "files": 22
+    },
+    {
+      "configuration": "workerd-self",
+      "passed": 2,
+      "files": 1
+    },
+    {
+      "configuration": "workerd-hns-verifier",
+      "passed": 10,
+      "files": 7
+    },
+    {
+      "configuration": "workerd-video-source",
+      "passed": 15,
+      "files": 4
+    }
+  ],
+  "limits": {
+    "memory_max": "3G",
+    "cpu_quota": "100%",
+    "timeout_seconds": 1200
+  },
+  "temporary_log_sha256": {
+    "check.log": "f635c0f4a87437101227ff7cd8583b9d9a0898e86ace049fc2a919e394f15973",
+    "test.log": "548ec96f69bd07452da1686d37f0f2560f93f9dcf5a4998c8cbdcc440a9b06dd",
+    "one-year-tests.log": "efa80436f0448844af7d9df9ef11261a95585db4fd7a06d3fc6dc8f59aba1b27"
+  },
+  "not_run": [
+    "PostgreSQL partitions",
+    "trusted secret-boundary gate",
+    "live provider acceptance",
+    "Solid verification"
+  ]
+}

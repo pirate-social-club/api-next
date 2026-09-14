@@ -88,6 +88,7 @@
     "./use-cases/content/text-post": "./src/use-cases/content/text-post.ts",
     "./use-cases/identity-account": "./src/use-cases/identity-account.ts",
     "./use-cases/current-user": "./src/use-cases/current-user.ts",
+    "./use-cases/age-verification": "./src/use-cases/age-verification.ts",
     "./use-cases/age-access": "./src/use-cases/age-access.ts",
     "./use-cases/song-owner-video-policy": "./src/use-cases/song-owner-video-policy.ts",
     "./use-cases/feed/home-feed": "./src/use-cases/feed/home-feed.ts",

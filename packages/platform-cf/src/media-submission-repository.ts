@@ -2260,7 +2260,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               : [null, null, null];
           const updated = yield* tx.execute<Row>({
             label: "media-decision.project",
-            text: "UPDATE media_post_submissions SET decision_revision=$1,current_decision_revision=$1,status=$2,phase=$3,review_ref=$4,held_revision=$5,review_reason_code=$6,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,resulting_content_rating=$7,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$8 AND actor_user_id=$9 AND submission_id=$10 AND creation_revision=$11 AND audio_revision=$12 AND analysis_revision=$13 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET decision_revision=$1,current_decision_revision=$1,status=$2,phase=$3,review_ref=$4,held_revision=$5,review_reason_code=$6,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,resulting_content_rating=CASE WHEN resulting_content_rating='adult_18' THEN 'adult_18' ELSE $7 END,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$8 AND actor_user_id=$9 AND submission_id=$10 AND creation_revision=$11 AND audio_revision=$12 AND analysis_revision=$13 RETURNING event_sequence",
             values: [
               next.decisionRevision,
               next.status,
@@ -3029,6 +3029,18 @@ export function makeControlPlaneMediaSubmissionRepository(
             membershipActive: authority.rows.length === 1 && authority.rows[0]?.allowed === true,
             postId: ownedPostId,
           });
+          // Current read floors can rise without rewriting the frozen publication decision.
+          const ratingRow = yield* tx.execute<Row>({
+            label: "media-publish.current-rating",
+            text: "SELECT resulting_content_rating FROM media_post_submissions WHERE submission_id=$1 FOR UPDATE",
+            values: [current.submissionId],
+            readonly: false,
+          });
+          const contentRating = ratingRow.rows[0]?.resulting_content_rating;
+          if (contentRating !== "general" && contentRating !== "adult_18")
+            return yield* Effect.fail(
+              fail("publish", "invalid-row", { submissionId: current.submissionId }),
+            );
           const existing = yield* tx.execute<Row>({
             label: "media-publish.post.lookup",
             text: "SELECT author_user_id,post_type,status,visibility,title,content_rating FROM posts WHERE community_id=$1 AND post_id=$2 FOR UPDATE",
@@ -3048,7 +3060,7 @@ export function makeControlPlaneMediaSubmissionRepository(
                 input.requestHash,
                 current.personaId,
                 current.submissionId,
-                current.decision?.contentRating ?? "general",
+                contentRating,
               ],
               readonly: false,
             });
@@ -3059,12 +3071,11 @@ export function makeControlPlaneMediaSubmissionRepository(
             existing.rows[0]?.status !== "published" ||
             existing.rows[0]?.visibility !== "public" ||
             existing.rows[0]?.title !== current.title ||
-            existing.rows[0]?.content_rating !== (current.decision?.contentRating ?? "general")
+            existing.rows[0]?.content_rating !== contentRating
           )
             return yield* Effect.fail(
               fail("publish", "post-ownership", { submissionId: current.submissionId }),
             );
-          const contentRating = current.decision?.contentRating ?? "general";
           const candidate =
             contentRating === "general"
               ? createPostSlugCandidate({ source: current.title, postType: "song" })
@@ -3152,7 +3163,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               current.lyrics?.lyricsRevision ?? null,
               current.lyrics?.text ?? null,
               current.lyrics === null ? "not_applicable" : "pending",
-              current.decision?.contentRating ?? "general",
+              contentRating,
             ],
             readonly: false,
           });
