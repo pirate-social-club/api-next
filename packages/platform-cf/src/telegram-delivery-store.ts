@@ -175,10 +175,10 @@ export function makeTelegramDeliveryStore(
           : null;
       });
     },
-    async finishDelivery(record, outcome, operation) {
+    async finishDelivery(record, outcome, operation, confirmed) {
       if (outcome.kind === "confirmed") {
-        const confirmed = operation === "delete" ? null : record.desired;
-        const hash = operation === "delete" ? null : record.desiredHash;
+        const sent = operation === "delete" ? null : (confirmed?.message ?? record.desired);
+        const hash = operation === "delete" ? null : (confirmed?.hash ?? record.desiredHash);
         await db.query(
           `UPDATE community_telegram_deliveries SET confirmed=$3::jsonb,confirmed_hash=$4,message_id=$5,
           state=CASE WHEN desired_hash IS DISTINCT FROM $4::text THEN 'pending' WHEN $5::bigint IS NULL THEN 'withdrawn' ELSE 'delivered' END,
@@ -188,7 +188,7 @@ export function makeTelegramDeliveryStore(
           [
             record.id,
             record.attempt,
-            confirmed === null ? null : JSON.stringify(confirmed),
+            sent === null ? null : JSON.stringify(sent),
             hash,
             operation === "delete" ? null : outcome.messageId,
           ],

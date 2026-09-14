@@ -1209,17 +1209,22 @@ test("a publication send attaches the authorized poster when bytes are available
     createdAt: "2026-09-08T00:00:00Z",
   };
   const dispatched: unknown[] = [];
+  const poster = {
+    artifactRef: "media://derived/key/poster.jpg",
+    key: "video-analysis/op/v1/c1/a1/poster.jpg",
+    sha256: "a",
+    sourceSha256: "b",
+    policyRevision: "1",
+  };
   const service = services({
-    claimDelivery: async () => delivery,
+    claimDelivery: async () => ({
+      ...delivery,
+      desired: { ...telegramPublication(post), kind: "photo" as const, media: poster.artifactRef },
+      desiredHash: `hash:${JSON.stringify({ ...telegramPublication(post), kind: "photo", media: poster.artifactRef })}`,
+    }),
     integration: async () => ({ ...integration, channelId: "-10001" }),
     publicPosts: async () => [post],
-    publicationPoster: async () => ({
-      artifactRef: "media://derived/key/poster.jpg",
-      key: "video-analysis/op/v1/c1/a1/poster.jpg",
-      sha256: "a",
-      sourceSha256: "b",
-      policyRevision: "1",
-    }),
+    publicationPoster: async () => poster,
     finishDelivery: async () => {},
   });
   service.vault.open = async () => JSON.stringify({ token: "123:fixture", secret: "s" });
@@ -1295,4 +1300,113 @@ test("a publication send without poster bytes stays text", async () => {
   } as unknown as TelegramServices["api"];
   await processTelegramDelivery(service, "publication-delivery");
   expect(dispatched).toEqual([undefined]);
+});
+
+const publicationPost = {
+  id: "post",
+  communityId: "community",
+  title: "Public",
+  body: "Body",
+  kind: "video",
+  url: "https://pirate.example.invalid/post",
+  studyUrl: null,
+  karaokeUrl: null,
+  media: null,
+  rewardText: null,
+};
+const publicationPosterIdentity = {
+  artifactRef: "media://derived/key/poster.jpg",
+  key: "video-analysis/op/v1/c1/a1/poster.jpg",
+  sha256: "a",
+  sourceSha256: "b",
+  policyRevision: "1",
+};
+const publicationPhotoMessage = {
+  ...telegramPublication(publicationPost),
+  kind: "photo" as const,
+  media: publicationPosterIdentity.artifactRef,
+};
+
+function publicationFixture(state: "pending" | "delivered", messageId: number | null) {
+  const dispatched: unknown[] = [];
+  const finishes: unknown[][] = [];
+  const delivery: DeliveryRecord = {
+    id: "publication-delivery",
+    communityId: "community",
+    botEpoch: "epoch",
+    chatId: "-10001",
+    kind: "publication",
+    postId: "post",
+    state,
+    desired: publicationPhotoMessage,
+    desiredHash: `hash:${JSON.stringify(publicationPhotoMessage)}`,
+    confirmed: state === "delivered" ? telegramPublication(publicationPost) : null,
+    confirmedHash:
+      state === "delivered" ? `hash:${JSON.stringify(telegramPublication(publicationPost))}` : null,
+    messageId,
+    attempt: "attempt",
+    attemptCount: 1,
+    lastError: null,
+    createdAt: "2026-09-08T00:00:00Z",
+  };
+  const service = services({
+    claimDelivery: async () => delivery,
+    integration: async () => ({ ...integration, channelId: "-10001" }),
+    publicPosts: async () => [publicationPost],
+    publicationPoster: async () => publicationPosterIdentity,
+    finishDelivery: async (...args) => {
+      finishes.push(args);
+    },
+  });
+  service.vault.open = async () => JSON.stringify({ token: "123:fixture", secret: "s" });
+  service.api = {
+    dispatch: async (
+      _token: string,
+      _delivery: DeliveryRecord,
+      _operation: "send" | "edit" | "delete",
+      _audio: Uint8Array | undefined,
+      photo: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }> | undefined,
+    ) => {
+      dispatched.push(photo);
+      return { kind: "confirmed" as const, messageId: 31 };
+    },
+  } as unknown as TelegramServices["api"];
+  return { service, dispatched, finishes };
+}
+
+test("a poster-less send records the text actually sent", async () => {
+  const { service, dispatched, finishes } = publicationFixture("pending", null);
+  service.posterBytes = async () => null;
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched).toEqual([undefined]);
+  expect(finishes).toHaveLength(1);
+  const override = finishes[0]?.[3] as {
+    message: { kind: string; media: string | null };
+    hash: string;
+  };
+  expect(override.message.kind).toBe("text");
+  expect(override.message.media).toBeNull();
+  expect(override.hash).toContain("text");
+});
+
+test("a text message upgrades to the poster when bytes exist", async () => {
+  const { service, dispatched, finishes } = publicationFixture("delivered", 31);
+  service.posterBytes = async () => new Uint8Array([7]);
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched).toEqual([{ bytes: new Uint8Array([7]), contentType: "image/jpeg" }]);
+  expect(finishes).toHaveLength(1);
+  expect(finishes[0]?.[3]).toBeUndefined();
+});
+
+test("a poster replacement without bytes retries instead of confirming a caption edit", async () => {
+  const { service, dispatched, finishes } = publicationFixture("delivered", 31);
+  service.posterBytes = async () => null;
+  await processTelegramDelivery(service, "publication-delivery");
+  expect(dispatched).toEqual([]);
+  expect(finishes).toHaveLength(1);
+  expect(finishes[0]?.[1]).toEqual({
+    kind: "rejected",
+    code: "publication_media_unavailable",
+    retryAfter: 60,
+  });
 });

@@ -99,6 +99,29 @@ export function telegramPublication(post: PublicTelegramPost): TelegramMessage {
   };
 }
 
+/**
+ * The publication revision carries the poster identity when one is authorized,
+ * so a later availability change, upgrade or replacement is a real revision.
+ * The identity is descriptive only; the adapter never fetches it as a URL.
+ */
+async function publicationMessage(
+  services: TelegramServices,
+  communityId: string,
+  post: PublicTelegramPost,
+): Promise<TelegramMessage> {
+  const base = telegramPublication(post);
+  try {
+    const poster = await services.store.publicationPoster({
+      id: post.id,
+      communityId,
+    });
+    return poster ? { ...base, kind: "photo", media: poster.artifactRef } : base;
+  } catch {
+    /* Media enrichment is best-effort; the text publication stands. */
+    return base;
+  }
+}
+
 /** Called for new publications and existing copies, including withdrawals. */
 export async function reconcileTelegramPublication(
   services: TelegramServices,
@@ -109,7 +132,7 @@ export async function reconcileTelegramPublication(
   if (record.status !== "ready" || !record.channelId) return;
   const posts = await services.store.publicPosts(communityId, [postId]);
   const post = posts.find((candidate) => candidate.id === postId);
-  const desired = post ? telegramPublication(post) : null;
+  const desired = post ? await publicationMessage(services, communityId, post) : null;
   const id = await services.vault.hash(
     `publication:${communityId}:${record.botEpoch}:${record.channelId}:${postId}`,
   );
@@ -170,8 +193,9 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
     const post = posts.find((candidate) => candidate.id === delivery.postId);
     if (
       !post ||
-      (await services.vault.hash(JSON.stringify(telegramPublication(post)))) !==
-        delivery.desiredHash
+      (await services.vault.hash(
+        JSON.stringify(await publicationMessage(services, delivery.communityId, post)),
+      )) !== delivery.desiredHash
     ) {
       await services.store.holdDelivery(delivery, "publication_changed");
       await reconcileTelegramPublication(services, delivery.communityId, delivery.postId);
@@ -224,7 +248,8 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
   if (
     delivery.kind === "publication" &&
     delivery.postId &&
-    decision === "send" &&
+    decision !== "delete" &&
+    delivery.desired?.kind === "photo" &&
     services.posterBytes
   ) {
     try {
@@ -242,6 +267,31 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
       /* Poster transfer is optional; the text publication stands. */
     }
   }
+  if (delivery.desired?.kind === "photo" && photo === undefined && decision === "edit") {
+    // A requested poster replacement or upgrade must not be confirmed as a
+    // caption-only edit; retry while storage or the artifact is unavailable.
+    await services.store.finishDelivery(
+      delivery,
+      { kind: "rejected", code: "publication_media_unavailable", retryAfter: 60 },
+      decision,
+    );
+    return;
+  }
   const outcome = await services.api.dispatch(credentials.token, delivery, decision, audio, photo);
+  if (
+    outcome.kind === "confirmed" &&
+    decision === "send" &&
+    delivery.desired?.kind === "photo" &&
+    photo === undefined
+  ) {
+    // The adapter sent the text fallback. Record what was actually sent so the
+    // next revision can upgrade the message to the poster once bytes exist.
+    const sent = { ...delivery.desired, kind: "text" as const, media: null };
+    await services.store.finishDelivery(delivery, outcome, decision, {
+      message: sent,
+      hash: await services.vault.hash(JSON.stringify(sent)),
+    });
+    return;
+  }
   await services.store.finishDelivery(delivery, outcome, decision);
 }

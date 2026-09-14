@@ -154,6 +154,7 @@ const JOBS_BINDING_KINDS = {
   CONTROL_PLANE: "platform",
   KARAOKE_ATTEMPT: "platform",
   LEARNER_AUDIO: "platform",
+  MEDIA_DERIVED: "platform",
   MEGAPOT_COMMITMENTS: "platform",
   HNS_OWNER_VERIFIER: "platform",
   API_NEXT_ENV: "var",

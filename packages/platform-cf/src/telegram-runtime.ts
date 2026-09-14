@@ -10,6 +10,7 @@ import type { Layer } from "effect";
 import { makeTelegramApi } from "./telegram-api.ts";
 import { makeTelegramAssistantProviders } from "./telegram-assistant-providers.ts";
 import { makeTelegramCredentialVault } from "./telegram-credential-vault.ts";
+import { makeTelegramPosterBytes, type SealedMediaBucket } from "./telegram-poster-bytes.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
 
 export interface TelegramBindings {
@@ -29,6 +30,7 @@ export interface TelegramBindings {
 export async function makeTelegramServices(
   bindings: TelegramBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  mediaDerived?: SealedMediaBucket,
 ): Promise<TelegramServices | null> {
   if (bindings.TELEGRAM_ENABLED !== "true") return null;
   if (
@@ -54,6 +56,7 @@ export async function makeTelegramServices(
     throw new Error("Telegram credential key ring invalid");
   }
   const queue = bindings.TELEGRAM_QUEUE;
+  const posterBytes = mediaDerived ? makeTelegramPosterBytes(mediaDerived) : undefined;
   return {
     store: makeControlPlaneTelegramStore(runtime, bindings.TELEGRAM_PUBLIC_ORIGIN),
     api: makeTelegramApi(fetch),
@@ -66,6 +69,7 @@ export async function makeTelegramServices(
     webhookOrigin: bindings.TELEGRAM_WEBHOOK_ORIGIN,
     now: Date.now,
     wake: (work, options) => queue.send(work, options),
+    ...(posterBytes ? { posterBytes } : {}),
   };
 }
 

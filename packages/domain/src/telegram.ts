@@ -44,7 +44,14 @@ export function decideTelegramDelivery(input: {
   if (input.desiredHash === null) return input.messageId === null ? "cancel" : "delete";
   if (input.messageId === null) return "send";
   if (input.state === "delivered" && input.confirmedHash === input.desiredHash) return "unchanged";
-  if (input.confirmedKind !== input.desiredKind) return "review";
+  if (input.confirmedKind !== input.desiredKind) {
+    // Text and photo swap through an edit so a poster can arrive later or be
+    // replaced; any other media-kind change still needs operator review.
+    const mediaSwap =
+      (input.confirmedKind === "text" && input.desiredKind === "photo") ||
+      (input.confirmedKind === "photo" && input.desiredKind === "text");
+    if (!mediaSwap) return "review";
+  }
   return "edit";
 }
 

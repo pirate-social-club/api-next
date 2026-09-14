@@ -242,6 +242,7 @@ export interface TelegramStore {
     record: DeliveryRecord,
     outcome: TelegramDispatchOutcome,
     operation: "send" | "edit" | "delete",
+    confirmed?: Readonly<{ message: TelegramMessage; hash: string }>,
   ): Promise<void>;
   holdDelivery(record: DeliveryRecord, code: string): Promise<void>;
   listDeliveries(

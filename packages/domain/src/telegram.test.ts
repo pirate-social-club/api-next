@@ -75,3 +75,24 @@ test("Telegram formatting preserves integer reward precision and Unicode boundar
   expect(formatTelegramAtomicAmount("123456789012345678901", 18)).toBe("123.456789012345678901");
   expect(boundedTelegramText(`${"a".repeat(1022)}😀more`, true)).toBe(`${"a".repeat(1022)}…`);
 });
+
+test("text and photo revisions edit each other while other kind changes still review", () => {
+  const base = {
+    state: "delivered" as const,
+    messageId: 1,
+    desiredHash: "b",
+    confirmedHash: "a",
+  };
+  expect(decideTelegramDelivery({ ...base, desiredKind: "photo", confirmedKind: "text" })).toBe(
+    "edit",
+  );
+  expect(decideTelegramDelivery({ ...base, desiredKind: "text", confirmedKind: "photo" })).toBe(
+    "edit",
+  );
+  expect(decideTelegramDelivery({ ...base, desiredKind: "video", confirmedKind: "photo" })).toBe(
+    "review",
+  );
+  expect(decideTelegramDelivery({ ...base, desiredKind: "text", confirmedKind: "video" })).toBe(
+    "review",
+  );
+});

@@ -766,7 +766,9 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
-  const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
+  const telegramHandlers = makeTelegramHandlers(
+    await makeTelegramServices(bindings, controlPlane, bindings.MEDIA_DERIVED),
+  );
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),

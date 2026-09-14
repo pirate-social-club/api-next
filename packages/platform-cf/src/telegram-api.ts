@@ -67,6 +67,15 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
             // is edited through editMessageCaption instead.
             method = "editMessageCaption";
             if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
+          } else if (photo) {
+            // Replace the media itself so a poster upgrade or replacement is
+            // not mistaken for a caption-only edit.
+            method = "editMessageMedia";
+            payload.media = {
+              type: "photo",
+              media: "attach://photo",
+              ...(message.text !== "" ? { caption: boundedTelegramText(message.text, true) } : {}),
+            };
           } else {
             method = "editMessageMedia";
             payload.media = { type: message.kind, media: message.media, caption: message.text };
@@ -78,6 +87,14 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
           // editMessageText.
           method = "sendPhoto";
           if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
+        } else if (
+          (message.kind === "photo" || message.kind === "video" || message.kind === "audio") &&
+          (message.media === null || !/^https:\/\//u.test(message.media))
+        ) {
+          // A media identity without transferable bytes is not a fetchable
+          // URL; send the text rather than a locator Telegram cannot use.
+          method = "sendMessage";
+          payload.text = message.text;
         } else {
           const methods = {
             text: "sendMessage",

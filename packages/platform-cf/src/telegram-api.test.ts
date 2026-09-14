@@ -203,3 +203,57 @@ test("an authorized poster transfers as a captioned photo", async () => {
   expect(form.get("photo")).toBeInstanceOf(Blob);
   expect(form.get("text")).toBeNull();
 });
+
+test("a poster replacement edits the media instead of only the caption", async () => {
+  const f = fixture(() => Response.json({ ok: true, result: { message_id: 21 } }));
+  expect(
+    await f.api.dispatch(
+      token,
+      {
+        ...delivery,
+        messageId: 21,
+        desired: {
+          kind: "photo",
+          text: "Public post",
+          media: "media://derived/key/poster.jpg",
+          buttons: [],
+        },
+      },
+      "edit",
+      undefined,
+      { bytes: new Uint8Array([4, 5]), contentType: "image/jpeg" },
+    ),
+  ).toEqual({ kind: "confirmed", messageId: 21 });
+  expect(String(f.urls[0])).toContain("/editMessageMedia");
+  const form = f.requests[0]?.body as FormData;
+  expect(form).toBeInstanceOf(FormData);
+  expect(JSON.parse(String(form.get("media")))).toEqual({
+    type: "photo",
+    media: "attach://photo",
+    caption: "Public post",
+  });
+  expect(form.get("photo")).toBeInstanceOf(Blob);
+});
+
+test("a media identity without transferable bytes falls back to text", async () => {
+  const f = fixture(() => Response.json({ ok: true, result: { message_id: 22 } }));
+  expect(
+    await f.api.dispatch(
+      token,
+      {
+        ...delivery,
+        desired: {
+          kind: "photo",
+          text: "Public post",
+          media: "media://derived/key/poster.jpg",
+          buttons: [],
+        },
+      },
+      "send",
+    ),
+  ).toEqual({ kind: "confirmed", messageId: 22 });
+  expect(String(f.urls[0])).toContain("/sendMessage");
+  const body = JSON.parse(String(f.requests[0]?.body));
+  expect(body.text).toBe("Public post");
+  expect(body).not.toHaveProperty("photo");
+});
