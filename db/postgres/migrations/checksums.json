@@ -175,6 +175,7 @@
     "0172_hns_cutover_evidence_consistency.sql": "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
     "0173_community_policy_provider_bindings_provider_key.sql": "bf4c63ae05979cb0ce21f098cfdcdec827002a17d99fc5e95bb39078cfeb66fe",
     "0174_nationality_ceremony_intents.sql": "251cb66833150e774c292caed09fea36095221252e285fc3d07bdb655af02daa",
-    "0175_nationality_ceremony_creation_action.sql": "c34a15f18cc82b526a44b0ca27453bddda8f318cea8de2994857218e0379fc3b"
+    "0175_nationality_ceremony_creation_action.sql": "c34a15f18cc82b526a44b0ca27453bddda8f318cea8de2994857218e0379fc3b",
+    "0180_handle_nationality_policy_authoring.sql": "de9903f6a79fe806f8444574bb6bf1e45cc3d465671fdbfafb9b83f3cb91f022"
   }
 }

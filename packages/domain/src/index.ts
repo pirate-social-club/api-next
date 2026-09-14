@@ -1,3 +1,4 @@
+export * from "./handles/nationality-authoring.ts";
 /**
  * @pirate/domain — pure entities, value objects, policies, reducers.
  *

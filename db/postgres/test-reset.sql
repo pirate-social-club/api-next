@@ -160,6 +160,7 @@ TRUNCATE TABLE
   "handle_grants",
   "handle_issuance_driver_revisions",
   "handle_key_fences",
+  "handle_nationality_policy_actions",
   "handle_persona_link_confirmation_actions",
   "handle_persona_link_confirmations",
   "handle_persona_public_linkage_states",
@@ -411,7 +412,7 @@ INSERT INTO handle_issuance_driver_revisions VALUES ('hns', 'hosted_persona-loca
 
 INSERT INTO handle_pricing_revisions VALUES ('platform_free_handles_v1', 1, 'cb24f410dbe3ea268df0ea438d56c48dc060f2319794ab2913717585b74809f8', 'free_v1', 0, 'active', '2000-01-01 00:00:00+00');
 
-INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00');
+INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00', NULL);
 
 INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04cfc7880c630f8e46a0b8ccfdfc7390ed704d2be542fff3bbe17b233c2307ed', 'hns', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
 

@@ -1,7 +1,9 @@
 import { sha256Hex } from "../gates-v2/sha256.ts";
 import {
   type HandleNationalityEligibilitySnapshotV1,
+  type HandleNationalityQualificationPolicyRefV1,
   handleNationalityEligibilitySnapshotPreimage,
+  handleNationalityQualificationRefPreimage,
 } from "./nationality-qualification.ts";
 
 export type HandleFamilyV1 = "hns" | "spaces";
@@ -380,6 +382,31 @@ export function assertHandleOfferingCombinationV2(input: {
   }
 }
 
+/** The nationality successor admits only the existing free first-come hosted allocation. */
+export function assertHandleOfferingCombinationV3(
+  input: Omit<Parameters<typeof assertHandleOfferingCombinationV2>[0], "qualification_kind"> & {
+    qualification_kind: HandleQualificationPolicyRefV1["kind"] | "curated_nationality_v1";
+  },
+): void {
+  if (input.qualification_kind !== "curated_nationality_v1") {
+    assertHandleOfferingCombinationV2({
+      ...input,
+      qualification_kind: input.qualification_kind,
+    });
+    return;
+  }
+  handleLabelScopeV2Preimage(input.label_scope);
+  if (
+    input.label_scope.kind !== "label_rule_v2" ||
+    input.allocation_kind !== "first_come_v1" ||
+    input.fulfillment_kind !== "hosted_persona_v1" ||
+    input.pricing_kind !== "free_v1" ||
+    input.atomic_amount !== "0"
+  ) {
+    throw new TypeError("Unsupported nationality handle offering combination");
+  }
+}
+
 export function handleOfferingRevisionV1Hash(input: {
   offering_id: string;
   offering_revision: number;
@@ -448,6 +475,30 @@ export function handleOfferingRevisionV2Hash(input: {
   quote_ttl_seconds: number;
   reservation_ttl_seconds: number;
 }): HandleHashResultV1 {
+  return handleOfferingRevisionHash(
+    input,
+    "pirate-handle-offering-revision-v2",
+    handleQualificationPolicyPreimage(input.qualification_policy),
+  );
+}
+
+export function handleOfferingRevisionV3Hash(
+  input: Omit<Parameters<typeof handleOfferingRevisionV2Hash>[0], "qualification_policy"> & {
+    qualification_policy: HandleNationalityQualificationPolicyRefV1;
+  },
+): HandleHashResultV1 {
+  return handleOfferingRevisionHash(
+    input,
+    "pirate-handle-offering-revision-v3",
+    handleNationalityQualificationRefPreimage(input.qualification_policy),
+  );
+}
+
+function handleOfferingRevisionHash(
+  input: Omit<Parameters<typeof handleOfferingRevisionV2Hash>[0], "qualification_policy">,
+  version: "pirate-handle-offering-revision-v2" | "pirate-handle-offering-revision-v3",
+  qualificationPreimage: readonly unknown[],
+): HandleHashResultV1 {
   requireIdentifier(input.offering_id, "offering id");
   requireRevision(input.offering_revision, "offering revision");
   requireIdentifier(input.community_id, "community id");
@@ -476,7 +527,7 @@ export function handleOfferingRevisionV2Hash(input: {
   const pricing = handleFreePricingRevisionHash(input.pricing);
   if (pricing.sha256 !== input.pricing.pricing_hash) throw new TypeError("Stale pricing hash");
   return encoded([
-    "pirate-handle-offering-revision-v2",
+    version,
     input.offering_id,
     input.offering_revision,
     input.community_id,
@@ -487,7 +538,7 @@ export function handleOfferingRevisionV2Hash(input: {
     [input.allocation_kind],
     ["account_cap_v1", input.max_active_grants_per_account],
     [input.fulfillment_kind],
-    handleQualificationPolicyPreimage(input.qualification_policy),
+    qualificationPreimage,
     [
       input.pricing.kind,
       input.pricing.pricing_id,

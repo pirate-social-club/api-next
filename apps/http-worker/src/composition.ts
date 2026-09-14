@@ -76,6 +76,7 @@ import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-reposi
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
 import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
+import { makeControlPlaneHandleNationalityAuthoringStore } from "@pirate/platform-cf/handle-nationality-authoring-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
 import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
@@ -212,6 +213,7 @@ import { makeDanceAttemptHandlers } from "./dance-attempt-handlers.ts";
 import { makeProductionDanceAttemptServices } from "./dance-attempt-production-composition.ts";
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
+import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-authoring-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
@@ -1318,6 +1320,10 @@ export async function createProductionHttpWorker(
         ),
     });
   })();
+  const handleNationalityAuthoringHandlers = makeHandleNationalityAuthoringHandlers({
+    store: makeControlPlaneHandleNationalityAuthoringStore(controlPlane, nationalityAuthoring),
+    ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+  });
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -1472,6 +1478,7 @@ export async function createProductionHttpWorker(
       ...learnerAudioHandlers,
       ...hnsEdgeStatusHandlers,
       ...handleSalesHandlers,
+      ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
       ...songOwnerVideoPolicyHandlers,

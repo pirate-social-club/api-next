@@ -1,0 +1,21 @@
+bun test v1.4.0 (34cbb9a40)
+
+apps/http-worker/src/handle-sales-handlers.test.ts:
+(pass) handle sales HTTP handlers > serves the seller-management context only to the authorized account [11.74ms]
+(pass) handle sales HTTP handlers > collapses unknown and unauthorized seller-management reads to private 404 [2.70ms]
+(pass) handle sales HTTP handlers > serves a persona-native public profile with V3 grants and no-store [2.71ms]
+(pass) handle sales HTTP handlers > keeps unknown public personas enumeration-safe [1.41ms]
+(pass) handle sales HTTP handlers > returns the recipient token only to an authenticated no-store response [2.80ms]
+(pass) handle sales HTTP handlers > preserves the single non-disclosing unusable-token response [3.25ms]
+(pass) handle sales HTTP handlers > rejects the historical seller-supplied account command before the store [1.99ms]
+(pass) handle sales HTTP handlers > maps a scope-invalid opaque cursor to the declared bad request [1.64ms]
+
+apps/http-worker/src/handle-nationality-authoring-handlers.test.ts:
+(pass) uses the authenticated seller and returns private server context and generated policy identity [2.96ms]
+(pass) rejects client-selected provider bindings, lifetime or actor fields before persistence [1.86ms]
+(pass) maps unavailable authoring to a safe failure without exposing provider configuration [1.27ms]
+
+ 11 pass
+ 0 fail
+ 36 expect() calls
+Ran 11 tests across 2 files. [190.00ms]

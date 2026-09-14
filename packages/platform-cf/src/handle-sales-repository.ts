@@ -5,16 +5,13 @@ import {
   type ControlPlaneTransaction,
   HandleDirectGrantRecipientUnavailable,
   HandleSalesPageRejected,
-  HandleSalesRejected,
-  HandleSalesStorageFailed,
   type HandleSalesStore,
 } from "@pirate/application";
 import type {
-  CommunityHandleOfferingManagementItemV1,
-  CommunityHandleOfferingV2,
+  CommunityHandleOffering,
+  CommunityHandleOfferingManagementItemV2,
   HandleClaimV2,
   HandleGrantPrivateV2,
-  HandleQualificationPolicyRefV1,
   HandleQuoteV2,
   HandleReservationV2,
   HandleSaleNamespaceCandidateV1,
@@ -26,7 +23,7 @@ import type {
 } from "@pirate/contracts";
 import {
   assertCanonicalHnsHandleLabelV2,
-  assertHandleOfferingCombinationV2,
+  assertHandleOfferingCombinationV3,
   classifyEffectiveHandleOfferingV2,
   classifyHandleSaleActivationRevisionV1,
   handleAccountAllowlistPolicyHash,
@@ -36,6 +33,7 @@ import {
   handleFreePricingRevisionHash,
   handleGrantFinalizeV2Hash,
   handleOfferingRevisionV2Hash,
+  handleOfferingRevisionV3Hash,
   handlePersonaLinkConfirmationRequestHash,
   handlePersonaPublicIdentityHash,
   handleQuoteRequestHash,
@@ -46,95 +44,24 @@ import {
   resolvedHandleAccountCap,
 } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
+import { handleQualificationPolicyRefFromRow } from "./handle-qualification-policy.ts";
+import {
+  advisoryLock,
+  boolean,
+  bytes,
+  instant,
+  integer,
+  mapped,
+  nullableInteger,
+  nullableText,
+  one,
+  type Row,
+  reject,
+  storage,
+  stringArray,
+  text,
+} from "./handle-sales-internals.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
-
-type Row = Readonly<Record<string, unknown>>;
-
-const storage = (reason: HandleSalesStorageFailed["reason"]): HandleSalesStorageFailed =>
-  new HandleSalesStorageFailed({ reason });
-
-const reject = (
-  reason: HandleSalesRejected["reason"],
-  retryable = false,
-  effectiveOfferingId?: string,
-): HandleSalesRejected =>
-  new HandleSalesRejected({
-    reason,
-    retryable,
-    ...(effectiveOfferingId === undefined ? {} : { effectiveOfferingId }),
-  });
-
-const mapControlPlaneError = (error: ControlPlaneError): HandleSalesStorageFailed => {
-  if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return storage("outcome-unknown");
-  if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
-    return storage("outcome-unknown");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState !== null) {
-    return storage("constraint");
-  }
-  return storage("unavailable");
-};
-
-const mapped = <A, E, R>(
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, Exclude<E, ControlPlaneError> | HandleSalesStorageFailed, R> =>
-  effect.pipe(
-    Effect.mapError((error) =>
-      typeof error === "object" && error !== null && "_tag" in error
-        ? error._tag === "ControlPlaneAcquireFailed" ||
-          error._tag === "ControlPlaneOperationTimedOut" ||
-          error._tag === "ControlPlaneStatementFailed" ||
-          error._tag === "ControlPlaneTransactionOutcomeUnknown"
-          ? mapControlPlaneError(error as unknown as ControlPlaneError)
-          : (error as Exclude<E, ControlPlaneError>)
-        : (error as Exclude<E, ControlPlaneError>),
-    ),
-  );
-
-const text = (row: Row, key: string): string => {
-  const value = row[key];
-  if (typeof value !== "string" || value.length === 0) throw new Error(`invalid ${key}`);
-  return value;
-};
-
-const nullableText = (row: Row, key: string): string | null => {
-  const value = row[key];
-  if (value === null) return null;
-  if (typeof value !== "string") throw new Error(`invalid ${key}`);
-  return value;
-};
-
-const integer = (row: Row, key: string): number => {
-  const parsed = typeof row[key] === "number" ? row[key] : Number(row[key]);
-  if (!Number.isSafeInteger(parsed)) throw new Error(`invalid ${key}`);
-  return parsed as number;
-};
-
-const nullableInteger = (row: Row, key: string): number | null =>
-  row[key] === null ? null : integer(row, key);
-
-const boolean = (row: Row, key: string): boolean => {
-  if (typeof row[key] !== "boolean") throw new Error(`invalid ${key}`);
-  return row[key] as boolean;
-};
-
-const instant = (value: unknown): string => {
-  const parsed = value instanceof Date ? value : new Date(String(value));
-  if (!Number.isFinite(parsed.getTime())) throw new Error("invalid instant");
-  return parsed.toISOString();
-};
-
-const bytes = (value: unknown): Uint8Array => {
-  if (value instanceof Uint8Array) return new Uint8Array(value);
-  throw new Error("invalid ciphertext");
-};
-
-const stringArray = (value: unknown): readonly string[] => {
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-    throw new Error("invalid string array");
-  }
-  return value;
-};
 
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -244,24 +171,6 @@ const pageLimit = (value: number | undefined): number => {
   return resolved;
 };
 
-const advisoryLock = (
-  transaction: ControlPlaneTransaction,
-  namespace: number,
-  parts: readonly string[],
-  label: string,
-) =>
-  transaction.execute({
-    label,
-    text: "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))",
-    values: [JSON.stringify(parts), namespace],
-    readonly: false,
-  });
-
-const one = (rows: readonly Row[], label: string): Row => {
-  if (rows.length !== 1 || rows[0] === undefined) throw new Error(`invalid ${label} cardinality`);
-  return rows[0];
-};
-
 const activationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
   sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
   sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
@@ -324,7 +233,7 @@ const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
   };
 };
 
-const offeringFromRow = (row: Row): CommunityHandleOfferingV2 => {
+const offeringFromRow = (row: Row): CommunityHandleOffering => {
   const exactLabel = nullableText(row, "exact_label");
   const labelScope =
     text(row, "label_scope_kind") === "exact_label_v2"
@@ -352,27 +261,8 @@ const offeringFromRow = (row: Row): CommunityHandleOfferingV2 => {
             max_label_length: integer(row, "max_label_length"),
           },
         };
-  const policyKind = text(row, "policy_kind");
-  const policy: HandleQualificationPolicyRefV1 =
-    policyKind === "none_v1"
-      ? {
-          kind: "none_v1",
-          policy_id: text(row, "qualification_policy_id"),
-          policy_revision: integer(row, "qualification_policy_revision"),
-          policy_hash: text(row, "qualification_policy_hash"),
-        }
-      : {
-          kind: "curated_policy_v1",
-          policy_id: text(row, "qualification_policy_id"),
-          policy_revision: integer(row, "qualification_policy_revision"),
-          policy_hash: text(row, "qualification_policy_hash"),
-          provider_binding_hash:
-            nullableText(row, "provider_binding_hash") ??
-            (() => {
-              throw new Error("missing provider binding hash");
-            })(),
-        };
-  return {
+  const policy = handleQualificationPolicyRefFromRow(row);
+  const offering = {
     offering_id: text(row, "offering_id"),
     offering_revision: integer(row, "offering_revision"),
     offering_hash: text(row, "offering_hash"),
@@ -384,13 +274,12 @@ const offeringFromRow = (row: Row): CommunityHandleOfferingV2 => {
     sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
     label_scope: labelScope,
     allocation: {
-      kind: text(row, "allocation_kind") as CommunityHandleOfferingV2["allocation"]["kind"],
+      kind: text(row, "allocation_kind") as CommunityHandleOffering["allocation"]["kind"],
     },
     max_active_grants_per_account: nullableInteger(row, "max_active_grants_per_account"),
     fulfillment: {
-      kind: text(row, "fulfillment_kind") as CommunityHandleOfferingV2["fulfillment"]["kind"],
+      kind: text(row, "fulfillment_kind") as CommunityHandleOffering["fulfillment"]["kind"],
     },
-    qualification_policy: policy,
     pricing: {
       kind: "free_v1",
       pricing_id: text(row, "pricing_id"),
@@ -405,9 +294,12 @@ const offeringFromRow = (row: Row): CommunityHandleOfferingV2 => {
     },
     quote_ttl_seconds: integer(row, "quote_ttl_seconds"),
     reservation_ttl_seconds: integer(row, "reservation_ttl_seconds"),
-    status: text(row, "status") as CommunityHandleOfferingV2["status"],
+    status: text(row, "status") as CommunityHandleOffering["status"],
     created_at: instant(row.created_at),
-  };
+  } as const;
+  return policy.kind === "curated_nationality_v1"
+    ? { ...offering, qualification_policy: policy }
+    : { ...offering, qualification_policy: policy };
 };
 
 const saleNamespaceCandidateFromRow = (row: Row): HandleSaleNamespaceCandidateV1 => {
@@ -468,7 +360,7 @@ const saleNamespaceManagementItemFromRow = (row: Row): HandleSaleNamespaceManage
   };
 };
 
-const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagementItemV1 => {
+const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagementItemV2 => {
   const reason = nullableText(row, "ineffective_reason") as
     | "community_inactive"
     | "offering_inactive"
@@ -616,7 +508,7 @@ const ACTIVATION_SELECT = `
 
 const OFFERING_SELECT = `
   SELECT revision.*,
-         policy.policy_kind,
+         policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,
          policy.subject_account_id
     FROM community_handle_offering_revisions AS revision
     JOIN handle_qualification_policy_revisions AS policy
@@ -928,21 +820,7 @@ const mutateOffering = (
         }),
       catch: () => reject("offering_unavailable"),
     });
-    const qualificationPolicy: HandleQualificationPolicyRefV1 =
-      text(policyRow, "policy_kind") === "none_v1"
-        ? {
-            kind: "none_v1",
-            policy_id: text(policyRow, "policy_id"),
-            policy_revision: integer(policyRow, "policy_revision"),
-            policy_hash: text(policyRow, "policy_hash"),
-          }
-        : {
-            kind: "curated_policy_v1",
-            policy_id: text(policyRow, "policy_id"),
-            policy_revision: integer(policyRow, "policy_revision"),
-            policy_hash: text(policyRow, "policy_hash"),
-            provider_binding_hash: text(policyRow, "provider_binding_hash"),
-          };
+    const qualificationPolicy = handleQualificationPolicyRefFromRow(policyRow);
     const freePricing = {
       kind: "free_v1" as const,
       pricing_id: text(pricingRow, "pricing_id"),
@@ -953,7 +831,7 @@ const mutateOffering = (
     yield* Effect.try({
       try: () => {
         handleFreePricingRevisionHash(freePricing);
-        assertHandleOfferingCombinationV2({
+        assertHandleOfferingCombinationV3({
           label_scope: labelScope,
           allocation_kind: input.terms.allocation_kind,
           fulfillment_kind: input.terms.fulfillment_kind,
@@ -995,11 +873,11 @@ const mutateOffering = (
     const offeringId = input.offeringId;
     const revision = prior === null ? 1 : prior.offering_revision + 1;
     const activation = activationFromRow(activationRow);
-    const offeringHash = handleOfferingRevisionV2Hash({
+    const offeringHashInput = {
       offering_id: offeringId,
       offering_revision: revision,
       community_id: input.communityId,
-      family: "hns",
+      family: "hns" as const,
       namespace_root: activation.canonical_root,
       sale_namespace_activation_id: activation.sale_namespace_activation_id,
       sale_namespace_activation_generation: activation.sale_namespace_activation_generation,
@@ -1007,13 +885,22 @@ const mutateOffering = (
       allocation_kind: input.terms.allocation_kind,
       max_active_grants_per_account: maxCap,
       fulfillment_kind: input.terms.fulfillment_kind,
-      qualification_policy: qualificationPolicy,
       pricing: freePricing,
       issuance_driver_id: input.terms.issuance_driver_id,
       issuance_driver_version: input.terms.expected_issuance_driver_version,
       quote_ttl_seconds: input.terms.quote_ttl_seconds,
       reservation_ttl_seconds: input.terms.reservation_ttl_seconds,
-    }).sha256;
+    };
+    const offeringHash =
+      qualificationPolicy.kind === "curated_nationality_v1"
+        ? handleOfferingRevisionV3Hash({
+            ...offeringHashInput,
+            qualification_policy: qualificationPolicy,
+          }).sha256
+        : handleOfferingRevisionV2Hash({
+            ...offeringHashInput,
+            qualification_policy: qualificationPolicy,
+          }).sha256;
     const now = instant(
       one((yield* currentDatabaseTime(transaction)).rows, "database clock").database_now,
     );
@@ -1741,7 +1628,7 @@ export function makeControlPlaneHandleSalesRepository() {
               if (authority.rows[0] === undefined) return yield* reject("offering_unavailable");
               const replay = yield* transaction.execute<Row>({
                 label: "handle-sales.policy.replay.read",
-                text: `SELECT action.*,policy.policy_kind,policy.policy_hash,
+                text: `SELECT action.*,policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,policy.policy_hash,
                               policy.provider_binding_hash,policy.provider_binding_version,
                               policy.created_at
                          FROM handle_qualification_policy_actions AS action
@@ -2328,7 +2215,7 @@ export function makeControlPlaneHandleSalesRepository() {
                                    revision.sale_namespace_activation_generation DESC
                        )
                        SELECT offering.*,
-                              policy.policy_kind,
+                              policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,
                               policy.subject_account_id,
                               CASE
                                 WHEN community.status <> 'active' THEN 'community_inactive'
@@ -2448,7 +2335,7 @@ export function makeControlPlaneHandleSalesRepository() {
               }
               const target = yield* transaction.execute<Row>({
                 label: "handle-sales.link-confirmation.target.read",
-                text: `SELECT revision.*,policy.policy_kind,policy.subject_account_id,
+                text: `SELECT revision.*,policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,policy.subject_account_id,
                               linkage.public_linkage_generation
                          FROM community_handle_offering_revisions AS revision
                          JOIN handle_qualification_policy_revisions AS policy
@@ -2603,7 +2490,7 @@ export function makeControlPlaneHandleSalesRepository() {
               });
               const requested = yield* transaction.execute<Row>({
                 label: "handle-sales.quote.offering.read",
-                text: `SELECT revision.*,policy.policy_kind,policy.subject_account_id,
+                text: `SELECT revision.*,policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,policy.subject_account_id,
                               linkage.public_linkage_generation
                          FROM community_handle_offering_revisions AS revision
                          JOIN handle_qualification_policy_revisions AS policy
@@ -2680,6 +2567,9 @@ export function makeControlPlaneHandleSalesRepository() {
               );
               const policyRow = requested.rows[0];
               const policyKind = text(policyRow, "policy_kind");
+              // Fail closed until the nationality quote and claim transaction is connected.
+              if (policyKind === "curated_nationality_v1")
+                return yield* reject("qualification_unsatisfied");
               const human =
                 policyKind === "none_v1"
                   ? undefined
@@ -2922,7 +2812,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 label: "handle-sales.reservation.quote.lock",
                 text: `SELECT quote.*,revision.reservation_ttl_seconds,
                               revision.max_active_grants_per_account,
-                              policy.policy_kind,policy.subject_account_id,
+                              policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,policy.subject_account_id,
                               revision.reserved_labels_id,revision.reserved_labels_revision
                          FROM handle_quotes AS quote
                          JOIN community_handle_offering_revisions AS revision
@@ -2994,6 +2884,9 @@ export function makeControlPlaneHandleSalesRepository() {
               });
               if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
               const policyKind = text(quoteRow, "policy_kind");
+              // Fail closed until the nationality quote and claim transaction is connected.
+              if (policyKind === "curated_nationality_v1")
+                return yield* reject("qualification_unsatisfied");
               if (policyKind !== "none_v1") {
                 const human = yield* activeHumanEvidence(transaction, input.accountId, now);
                 if (human.rows[0] === undefined) return yield* reject("evidence_required");
@@ -3222,7 +3115,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 text: `SELECT reservation.*,quote.display_identifier,quote.pricing_revision,
                               quote.pricing_hash,quote.atomic_amount,quote.offering_revision,
                               revision.max_active_grants_per_account,revision.community_id,
-                              policy.policy_kind,policy.subject_account_id
+                              policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,policy.subject_account_id
                          FROM handle_reservations AS reservation
                          JOIN handle_quotes AS quote ON quote.quote_id=reservation.quote_id
                          JOIN community_handle_offering_revisions AS revision
@@ -3304,6 +3197,9 @@ export function makeControlPlaneHandleSalesRepository() {
               if (persona.rows[0] === undefined || persona.rows[0]?.binding_eligible !== true)
                 return yield* reject("persona_unavailable");
               const policyKind = text(row, "policy_kind");
+              // Fail closed until the nationality quote and claim transaction is connected.
+              if (policyKind === "curated_nationality_v1")
+                return yield* reject("qualification_unsatisfied");
               if (policyKind !== "none_v1") {
                 const human = yield* activeHumanEvidence(transaction, input.accountId, now);
                 if (human.rows[0] === undefined) return yield* reject("evidence_required");

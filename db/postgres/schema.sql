@@ -7552,6 +7552,32 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_handle_nationality_authoring_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE policy handle_qualification_policy_revisions%ROWTYPE;
+BEGIN
+  IF TG_TABLE_NAME='handle_qualification_policy_revisions' THEN
+    IF NEW.policy_kind <> 'curated_nationality_v1' THEN RETURN NEW; END IF;
+    IF NOT has_community_handle_sales_authority(NEW.community_id,NEW.created_by_account_id) THEN
+      RAISE EXCEPTION 'nationality qualification requires active manage_handle_sales authority';
+    END IF;
+  ELSE
+    SELECT * INTO policy FROM handle_qualification_policy_revisions
+      WHERE policy_id=NEW.policy_id AND policy_revision=NEW.policy_revision FOR SHARE;
+    IF policy.policy_id IS NULL OR policy.policy_kind <> 'curated_nationality_v1'
+      OR policy.community_id IS DISTINCT FROM NEW.community_id
+      OR policy.created_by_account_id IS DISTINCT FROM NEW.actor_account_id
+      OR policy.request_hash IS DISTINCT FROM NEW.request_hash
+      OR policy.created_at IS DISTINCT FROM NEW.committed_at
+      OR NOT has_community_handle_sales_authority(NEW.community_id,NEW.actor_account_id) THEN
+      RAISE EXCEPTION 'nationality authoring action does not match its authorized policy';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_handle_persona_link_confirmation_change_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -16687,6 +16713,125 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_community_handle_offering_revision_insert_v3() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  activation community_handle_sale_namespace_activation_revisions%ROWTYPE;
+  reserved_document handle_reserved_label_revisions%ROWTYPE;
+  policy handle_qualification_policy_revisions%ROWTYPE;
+  pricing handle_pricing_revisions%ROWTYPE;
+  driver handle_issuance_driver_revisions%ROWTYPE;
+  prior community_handle_offering_revisions%ROWTYPE;
+BEGIN
+  IF NOT has_community_handle_sales_authority(NEW.community_id, NEW.actor_account_id) THEN
+    RAISE EXCEPTION 'handle offering requires active manage_handle_sales authority';
+  END IF;
+  SELECT * INTO activation
+    FROM community_handle_sale_namespace_activation_revisions
+   WHERE sale_namespace_activation_id = NEW.sale_namespace_activation_id
+     AND sale_namespace_activation_generation = NEW.sale_namespace_activation_generation
+   FOR SHARE;
+  IF activation.sale_namespace_activation_id IS NULL
+    OR activation.community_id <> NEW.community_id
+    OR activation.family <> NEW.family
+    OR activation.canonical_root <> NEW.namespace_root
+    OR activation.display_root <> NEW.display_root THEN
+    RAISE EXCEPTION 'handle offering sale activation reference is inconsistent';
+  END IF;
+  IF NEW.status = 'active' AND NOT EXISTS (
+    SELECT 1 FROM effective_community_handle_sale_namespace_v1(
+      NEW.sale_namespace_activation_id,
+      clock_timestamp()
+    ) AS effective
+     WHERE effective.sale_namespace_activation_generation
+         = NEW.sale_namespace_activation_generation
+  ) THEN
+    RAISE EXCEPTION 'active handle offering requires the current effective sale activation';
+  END IF;
+
+  SELECT * INTO reserved_document
+    FROM handle_reserved_label_revisions
+   WHERE reserved_labels_id = NEW.reserved_labels_id
+     AND reserved_labels_revision = NEW.reserved_labels_revision
+   FOR SHARE;
+  IF reserved_document.reserved_labels_id IS NULL
+    OR reserved_document.family <> NEW.family
+    OR reserved_document.status <> 'active'
+    OR reserved_document.reserved_labels_hash <> NEW.reserved_labels_hash
+    OR (NEW.label_scope_kind = 'exact_label_v2' AND (
+      NEW.exact_label = ANY(reserved_document.platform_labels)
+      OR NEW.exact_label = ANY(reserved_document.namespace_labels)
+    )) THEN
+    RAISE EXCEPTION 'handle offering reserved-label reference is inconsistent';
+  END IF;
+
+  SELECT * INTO policy
+    FROM handle_qualification_policy_revisions
+   WHERE policy_id = NEW.qualification_policy_id
+     AND policy_revision = NEW.qualification_policy_revision
+   FOR SHARE;
+  IF policy.policy_id IS NULL
+    OR policy.status <> 'active'
+    OR (policy.community_id IS NOT NULL AND policy.community_id <> NEW.community_id)
+    OR policy.policy_hash <> NEW.qualification_policy_hash
+    OR policy.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash THEN
+    RAISE EXCEPTION 'handle offering qualification reference is inconsistent';
+  END IF;
+
+  IF (NEW.label_scope_kind='label_rule_v2' AND policy.policy_kind NOT IN ('none_v1','curated_nationality_v1'))
+    OR (NEW.label_scope_kind='exact_label_v2' AND policy.policy_kind <> 'curated_policy_v1') THEN
+    RAISE EXCEPTION 'handle allocation does not admit this qualification policy';
+  END IF;
+
+  SELECT * INTO pricing
+    FROM handle_pricing_revisions
+   WHERE pricing_id = NEW.pricing_id
+     AND pricing_revision = NEW.pricing_revision
+   FOR SHARE;
+  IF pricing.pricing_id IS NULL
+    OR pricing.status <> 'active'
+    OR pricing.pricing_kind <> 'free_v1'
+    OR pricing.pricing_hash <> NEW.pricing_hash
+    OR pricing.atomic_amount <> NEW.atomic_amount THEN
+    RAISE EXCEPTION 'handle offering pricing reference is inconsistent';
+  END IF;
+
+  SELECT * INTO driver
+    FROM handle_issuance_driver_revisions
+   WHERE family = NEW.family
+     AND driver_id = NEW.issuance_driver_id
+     AND driver_version = NEW.issuance_driver_version
+   FOR SHARE;
+  IF driver.driver_id IS NULL
+    OR driver.status <> 'enabled'
+    OR driver.fulfillment_kind <> NEW.fulfillment_kind THEN
+    RAISE EXCEPTION 'handle offering issuance-driver reference is inconsistent';
+  END IF;
+
+  SELECT * INTO prior
+    FROM community_handle_offering_revisions
+   WHERE offering_id = NEW.offering_id
+   ORDER BY offering_revision DESC
+   LIMIT 1
+   FOR SHARE;
+  IF prior.offering_id IS NULL THEN
+    IF NEW.offering_revision <> 1 THEN
+      RAISE EXCEPTION 'handle offering must begin at revision one';
+    END IF;
+  ELSIF NEW.offering_revision <> prior.offering_revision + 1
+    OR NEW.community_id <> prior.community_id
+    OR NEW.created_at <> prior.created_at
+    OR prior.status = 'retired' THEN
+    RAISE EXCEPTION 'handle offering revision sequence or identity is invalid';
+  END IF;
+  IF NEW.recorded_at < NEW.created_at THEN
+    RAISE EXCEPTION 'handle offering recorded time precedes creation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_community_handle_sale_namespace_revision_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -22395,7 +22540,7 @@ CREATE TABLE community_handle_offering_revisions (
     CONSTRAINT community_handle_offering_revisions_quote_ttl_seconds_check CHECK (((quote_ttl_seconds >= 30) AND (quote_ttl_seconds <= 900))),
     CONSTRAINT community_handle_offering_revisions_reserved_labels_hash_check CHECK ((reserved_labels_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_handle_offering_revisions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'retired'::text]))),
-    CONSTRAINT community_handle_offering_supported_shape CHECK (((family = 'hns'::text) AND (namespace_root <> 'pirate'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (atomic_amount = (0)::numeric) AND (((label_scope_kind = 'label_rule_v2'::text) AND (allocation_kind = 'first_come_v1'::text) AND (qualification_policy_id = 'none_v1'::text) AND ((max_active_grants_per_account IS NULL) OR ((max_active_grants_per_account >= 1) AND (max_active_grants_per_account <= '9007199254740991'::bigint)))) OR ((label_scope_kind = 'exact_label_v2'::text) AND (allocation_kind = 'direct_grant_v1'::text) AND (qualification_policy_id <> 'none_v1'::text) AND (max_active_grants_per_account IS NULL)))))
+    CONSTRAINT community_handle_offering_supported_shape CHECK (((family = 'hns'::text) AND (namespace_root <> 'pirate'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (atomic_amount = (0)::numeric) AND (((label_scope_kind = 'label_rule_v2'::text) AND (allocation_kind = 'first_come_v1'::text) AND ((max_active_grants_per_account IS NULL) OR ((max_active_grants_per_account >= 1) AND (max_active_grants_per_account <= '9007199254740991'::bigint)))) OR ((label_scope_kind = 'exact_label_v2'::text) AND (allocation_kind = 'direct_grant_v1'::text) AND (qualification_policy_id <> 'none_v1'::text) AND (max_active_grants_per_account IS NULL)))))
 );
 
 CREATE TABLE community_handle_sale_namespace_activation_actions (
@@ -25052,6 +25197,23 @@ CREATE TABLE handle_key_fences (
     CONSTRAINT handle_key_fence_shape CHECK (((live_reservation_id IS NOT NULL) OR (permanent_grant_id IS NOT NULL)))
 );
 
+CREATE TABLE handle_nationality_policy_actions (
+    action_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    community_id text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    authoring_reference text NOT NULL,
+    policy_id text NOT NULL,
+    policy_revision bigint NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT handle_nationality_policy_actions_authoring_reference_check CHECK ((authoring_reference ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_policy_actions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/handle-nationality-qualification-policies'::text)),
+    CONSTRAINT handle_nationality_policy_actions_idempotency_key_check CHECK (is_handle_sales_identifier_v1(idempotency_key, 128)),
+    CONSTRAINT handle_nationality_policy_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE handle_persona_link_confirmation_actions (
     action_id text NOT NULL,
     actor_account_id text NOT NULL,
@@ -25144,11 +25306,12 @@ CREATE TABLE handle_qualification_policy_revisions (
     status text NOT NULL,
     created_by_account_id text,
     created_at timestamp with time zone NOT NULL,
+    nationality_policy jsonb,
     CONSTRAINT handle_qualification_policy_revisions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_qualification_policy_revisions_policy_kind_check CHECK ((policy_kind = ANY (ARRAY['none_v1'::text, 'curated_policy_v1'::text]))),
+    CONSTRAINT handle_qualification_policy_revisions_policy_kind_check CHECK ((policy_kind = ANY (ARRAY['none_v1'::text, 'curated_policy_v1'::text, 'curated_nationality_v1'::text]))),
     CONSTRAINT handle_qualification_policy_revisions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT handle_qualification_policy_revisions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text]))),
-    CONSTRAINT handle_qualification_policy_shape CHECK ((((policy_kind = 'none_v1'::text) AND (community_id IS NULL) AND (requirement_id IS NULL) AND (requirement_revision IS NULL) AND (requirement_kind IS NULL) AND (subject_account_id IS NULL) AND (provider_binding_kind IS NULL) AND (provider_binding_version IS NULL) AND (provider_binding_hash IS NULL) AND (created_by_account_id IS NULL)) OR ((policy_kind = 'curated_policy_v1'::text) AND (community_id IS NOT NULL) AND is_handle_sales_identifier_v1(requirement_id, 128) AND (requirement_revision = 1) AND (requirement_kind = 'account_allowlist_v1'::text) AND (subject_account_id IS NOT NULL) AND (provider_binding_kind = 'account_directory_v1'::text) AND is_handle_sales_identifier_v1(provider_binding_version, 128) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (created_by_account_id IS NOT NULL))))
+    CONSTRAINT handle_qualification_policy_shape CHECK ((((((policy_kind = 'none_v1'::text) AND (community_id IS NULL) AND (requirement_id IS NULL) AND (requirement_revision IS NULL) AND (requirement_kind IS NULL) AND (subject_account_id IS NULL) AND (provider_binding_kind IS NULL) AND (provider_binding_version IS NULL) AND (provider_binding_hash IS NULL) AND (created_by_account_id IS NULL)) OR ((policy_kind = 'curated_policy_v1'::text) AND (community_id IS NOT NULL) AND is_handle_sales_identifier_v1(requirement_id, 128) AND (requirement_revision = 1) AND (requirement_kind = 'account_allowlist_v1'::text) AND (subject_account_id IS NOT NULL) AND (provider_binding_kind = 'account_directory_v1'::text) AND is_handle_sales_identifier_v1(provider_binding_version, 128) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (created_by_account_id IS NOT NULL))) AND (nationality_policy IS NULL)) OR (((policy_kind = 'curated_nationality_v1'::text) AND (community_id IS NOT NULL) AND (created_by_account_id IS NOT NULL) AND (policy_revision > 0) AND (requirement_kind = 'nationality_allowed_v1'::text) AND (requirement_id IS NULL) AND (requirement_revision IS NULL) AND (subject_account_id IS NULL) AND (provider_binding_kind IS NULL) AND (provider_binding_version IS NULL) AND (provider_binding_hash IS NULL) AND (jsonb_typeof(nationality_policy) = 'object'::text) AND ((nationality_policy ->> 'policy_version_id'::text) = 'curated-nationality-v1'::text) AND ((nationality_policy ->> 'policy_hash'::text) = policy_hash) AND (((nationality_policy ->> 'policy_revision'::text))::bigint = policy_revision) AND ((nationality_policy ->> 'requirement_hash'::text) ~ '^[0-9a-f]{64}$'::text) AND ((nationality_policy ->> 'required_assurance'::text) = 'document_zk'::text) AND (((nationality_policy -> 'requirement'::text) ->> 'claim_id'::text) = 'nationality.allowed'::text) AND (jsonb_typeof(((nationality_policy -> 'requirement'::text) -> 'allowed_countries'::text)) = 'array'::text) AND ((jsonb_array_length(((nationality_policy -> 'requirement'::text) -> 'allowed_countries'::text)) >= 1) AND (jsonb_array_length(((nationality_policy -> 'requirement'::text) -> 'allowed_countries'::text)) <= 256)) AND (((nationality_policy -> 'evidence_lifetime'::text) ->> 'kind'::text) = 'max_age_seconds'::text) AND (((((nationality_policy -> 'evidence_lifetime'::text) ->> 'seconds'::text))::bigint >= 1) AND ((((nationality_policy -> 'evidence_lifetime'::text) ->> 'seconds'::text))::bigint <= '9007199254740991'::bigint)) AND (jsonb_array_length((nationality_policy -> 'provider_bindings'::text)) = 2) AND ((((nationality_policy -> 'provider_bindings'::text) -> 0) ->> 'provider_id'::text) = 'self.pass'::text) AND ((((nationality_policy -> 'provider_bindings'::text) -> 1) ->> 'provider_id'::text) = 'zkpassport'::text)) IS TRUE)))
 );
 
 CREATE TABLE handle_quote_actions (
@@ -30641,7 +30804,7 @@ INSERT INTO handle_issuance_driver_revisions VALUES ('hns', 'hosted_persona-loca
 
 INSERT INTO handle_pricing_revisions VALUES ('platform_free_handles_v1', 1, 'cb24f410dbe3ea268df0ea438d56c48dc060f2319794ab2913717585b74809f8', 'free_v1', 0, 'active', '2000-01-01 00:00:00+00');
 
-INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00');
+INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00', NULL);
 
 INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04cfc7880c630f8e46a0b8ccfdfc7390ed704d2be542fff3bbe17b233c2307ed', 'hns', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
 
@@ -31604,6 +31767,12 @@ ALTER TABLE ONLY handle_issuance_driver_revisions
 
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fences_pkey PRIMARY KEY (family, namespace_root, handle_label);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_act_actor_account_id_endpoint_tem_key UNIQUE (actor_account_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_actions_pkey PRIMARY KEY (action_id);
 
 ALTER TABLE ONLY handle_persona_link_confirmation_actions
     ADD CONSTRAINT handle_persona_link_confirmation_action_replay_unique UNIQUE (actor_account_id, endpoint_template, idempotency_key);
@@ -33650,7 +33819,7 @@ CREATE TRIGGER community_handle_offering_actions_append_only BEFORE DELETE OR UP
 
 CREATE TRIGGER community_handle_offering_current_change_guard BEFORE INSERT OR DELETE OR UPDATE ON community_handle_offering_current FOR EACH ROW EXECUTE FUNCTION guard_community_handle_offering_current_change_v1();
 
-CREATE TRIGGER community_handle_offering_revision_insert_guard BEFORE INSERT ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION validate_community_handle_offering_revision_insert_v2();
+CREATE TRIGGER community_handle_offering_revision_insert_guard BEFORE INSERT ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION validate_community_handle_offering_revision_insert_v3();
 
 CREATE TRIGGER community_handle_offering_revisions_append_only BEFORE DELETE OR UPDATE ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
@@ -33931,6 +34100,12 @@ CREATE TRIGGER handle_grant_insert_guard BEFORE INSERT ON handle_grants FOR EACH
 CREATE TRIGGER handle_grant_public_linkage_advance AFTER INSERT ON handle_grants FOR EACH ROW EXECUTE FUNCTION advance_handle_linkage_after_grant_v1();
 
 CREATE TRIGGER handle_issuance_driver_revisions_append_only BEFORE DELETE OR UPDATE ON handle_issuance_driver_revisions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER handle_nationality_policy_action_insert_guard BEFORE INSERT ON handle_nationality_policy_actions FOR EACH ROW EXECUTE FUNCTION guard_handle_nationality_authoring_v1();
+
+CREATE TRIGGER handle_nationality_policy_actions_append_only BEFORE DELETE OR UPDATE ON handle_nationality_policy_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER handle_nationality_policy_insert_guard BEFORE INSERT ON handle_qualification_policy_revisions FOR EACH ROW EXECUTE FUNCTION guard_handle_nationality_authoring_v1();
 
 CREATE TRIGGER handle_persona_link_confirmation_actions_append_only BEFORE DELETE OR UPDATE ON handle_persona_link_confirmation_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
@@ -35579,6 +35754,15 @@ ALTER TABLE ONLY handle_key_fences
 
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fences_live_reservation_id_fkey FOREIGN KEY (live_reservation_id) REFERENCES handle_reservations(reservation_id);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_action_policy_id_policy_revision_fkey FOREIGN KEY (policy_id, policy_revision) REFERENCES handle_qualification_policy_revisions(policy_id, policy_revision);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY handle_persona_link_confirmation_actions
     ADD CONSTRAINT handle_persona_link_confirmation_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);

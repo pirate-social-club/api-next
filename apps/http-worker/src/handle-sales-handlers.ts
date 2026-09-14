@@ -27,14 +27,14 @@ export type HandleSalesHandlerServices = Readonly<{
   tokenVault: HandleRecipientTokenVault["Service"];
 }>;
 
-const accountId = (principal: Principal | null): string => {
+export const accountId = (principal: Principal | null): string => {
   if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
     throw new AuthError({ message: "Authentication required" });
   }
   return principal.subject;
 };
 
-const wireFailure = (failure: HandleSalesFailure) => {
+export const wireFailure = (failure: HandleSalesFailure) => {
   if (failure instanceof HandleSalesPageRejected) {
     return new BadRequest({ message: "Invalid handle page request" });
   }
