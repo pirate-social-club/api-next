@@ -1,4 +1,8 @@
-import { canonicalTextModerationInput, resolveCommunityModerationPolicy } from "@pirate/domain";
+import {
+  canonicalTextModerationInput,
+  MODERATION_RATING_RULE_V2,
+  resolveCommunityModerationPolicyV2,
+} from "@pirate/domain";
 import { Effect } from "effect";
 import type { ImageModerationProviderServiceV1 } from "../../application/src/media/processing-contracts.ts";
 import { mediaSha256Bytes } from "../../application/src/media/submission-service.ts";
@@ -15,6 +19,7 @@ import { VIDEO_POSTER_POLICY_V1 } from "../../domain/src/video-submission.ts";
 
 export type VideoSafetyInput = Parameters<VideoAnalysisProviders["moderate"]>[0];
 export type VideoSafetyEvidence = Readonly<{
+  ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
   requestId: string;
   inputDigest: string;
   fact: VideoSafetyFact;
@@ -81,7 +86,7 @@ export function makeVideoSafetyProvider(
     const resolve = (categories: readonly string[]) => {
       // A known hard-floor signal cannot be weakened by an unavailable community policy.
       if (categories.includes("sexual/minors")) platformHeld = true;
-      const result = resolveCommunityModerationPolicy({
+      const result = resolveCommunityModerationPolicyV2({
         platform_floor: policy?.platform_policy,
         community_policy: policy?.community_policy,
         matched_categories: categories,
@@ -168,7 +173,14 @@ export function makeVideoSafetyProvider(
     }
     const evidenceDigest = await mediaSha256Bytes(
       new TextEncoder().encode(
-        JSON.stringify(["video-safety-evidence-v1", requestId, inputDigest, policy, inputs]),
+        JSON.stringify([
+          "video-safety-evidence-v2",
+          MODERATION_RATING_RULE_V2,
+          requestId,
+          inputDigest,
+          policy,
+          inputs,
+        ]),
       ),
     );
     const fact: VideoSafetyFact = {
@@ -184,6 +196,7 @@ export function makeVideoSafetyProvider(
           : `video-safety-policy-${await mediaSha256Bytes(
               new TextEncoder().encode(
                 JSON.stringify([
+                  MODERATION_RATING_RULE_V2,
                   policy.policy_revision,
                   policy.policy_hash,
                   policy.platform_policy_revision,
@@ -193,10 +206,11 @@ export function makeVideoSafetyProvider(
                 ]),
               ),
             )}`,
-      adapterRevision: unavailable ? "safety-unavailable" : "video-openai-safety-v1",
+      adapterRevision: unavailable ? "safety-unavailable" : "video-openai-safety-v2",
     };
     // Database failures propagate as infrastructure failures; they never fabricate accepted evidence.
     return options.evidence.save(input, {
+      ratingRuleRevision: MODERATION_RATING_RULE_V2,
       requestId,
       inputDigest,
       fact,

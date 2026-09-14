@@ -1193,7 +1193,21 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 
   test("persists provider unavailability as a review hold without a publication decision", async () => {
     await withCurrentSchema(async (admin, connection) => {
-      await createThroughDecision(connection, decision, analysis, true);
+      const moderation = analysis.contentModeration;
+      if (moderation === undefined) throw new Error("missing moderation fixture");
+      const taggedAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        contentModeration: { ...moderation, ratingRuleRevision: "accepted-adult-signals-v2" },
+      };
+      await createThroughDecision(connection, decision, taggedAnalysis, true);
+      expect(
+        (
+          await admin.query(
+            "SELECT analysis_snapshot->'contentModeration'->>'ratingRuleRevision' AS rule FROM media_analysis_evidence WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ rule: "accepted-adult-signals-v2" }]);
       const layer = makeDirectPostgresControlPlaneLayer(connection);
       const store = makeMediaProcessingStore(layer);
       const authority = await store.loadAuthority(submission, operation);
@@ -3670,19 +3684,41 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   test("allocates an opaque alias while reconciling an already-published adult song", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const contentModeration = analysis.contentModeration;
-      if (contentModeration === undefined) throw new Error("missing moderation fixture");
-      const adultAnalysis: TrustedSongAnalysis = {
+      if (contentModeration === undefined) throw new Error("missing fixture moderation");
+      await createThroughDecision(connection, decision, {
         ...analysis,
-        contentModeration: {
-          ...contentModeration,
-          resultingContentRating: "adult_18",
-        },
-      };
-      const adultDecision: PublicationDecision = {
-        ...decision,
-        contentRating: "adult_18",
-      };
-      await createThroughDecision(connection, adultDecision, adultAnalysis);
+        contentModeration: { ...contentModeration, matchedCategories: ["sexual"] },
+      });
+      const historical = (
+        await admin.query(
+          "SELECT response_snapshot_sha256,event_sequence FROM media_post_submissions WHERE submission_id=$1",
+          [submission],
+        )
+      ).rows[0];
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET resulting_content_rating='adult_18',title='tampered' WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("media submission authority is immutable");
+      const proposed = (
+        await admin.query("SELECT content_rating_reconciliation_plan_v1(100) AS plan")
+      ).rows[0].plan;
+      expect(proposed.items).toHaveLength(1);
+      expect(proposed.items[0].outcome).toBe("adult_18");
+      await admin.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await admin.query("SELECT apply_content_rating_reconciliation_v1($1,100)", [
+        proposed.plan_hash,
+      ]);
+      await admin.query("COMMIT");
+      expect(
+        (
+          await admin.query(
+            "SELECT response_snapshot_sha256,event_sequence FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual(historical);
       const postId = `media-post-${operation}`;
       await admin.query(
         "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id,author_declared_rating,content_rating) VALUES ($1,$2,$3,'song','published','public','Fixture song',clock_timestamp(),clock_timestamp(),'reconciled-post',$4,$5,'general','adult_18')",
@@ -3758,10 +3794,15 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         [postId],
       );
       expect(await read()).toBeNull();
-      await admin.query(
-        "UPDATE posts SET content_rating='general',status='removed' WHERE post_id=$1",
-        [postId],
-      );
+      await expect(
+        admin.query("UPDATE posts SET content_rating='general',status='removed' WHERE post_id=$1", [
+          postId,
+        ]),
+      ).rejects.toThrow("current content rating cannot be lowered");
+      await admin.query("UPDATE posts SET status='removed' WHERE post_id=$1", [postId]);
+      expect(
+        (await admin.query("SELECT content_rating FROM posts WHERE post_id=$1", [postId])).rows[0],
+      ).toEqual({ content_rating: "adult_18" });
       expect(await read()).toBeNull();
     });
     completedTestCount += 1;

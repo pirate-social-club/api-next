@@ -11,6 +11,18 @@ import {
   makeDataRegistrationArtifactPipeline,
 } from "./registration-artifact-pipeline";
 
+const memoryMetadata = () => {
+  const snapshots = new Map<string, import("./metadata-snapshot.ts").MetadataDocuments>();
+  return async (
+    input: Parameters<import("./metadata-snapshot.ts").MetadataSnapshotResolver>[0],
+  ) => {
+    const retained = snapshots.get(input.operationId);
+    if (retained) return retained;
+    snapshots.set(input.operationId, input.current);
+    return input.current;
+  };
+};
+
 const operation: DataRegistrationOperation = {
   registrationOperationId: "data-registration:1315:post-1:1",
   communityId: "community-1",
@@ -215,7 +227,11 @@ describe("DATA registration artifacts of a song-reference video", () => {
   test("registers the accepted master and names the resolved parent in its metadata", async () => {
     let pins: readonly DataRegistrationPinVerification[] = [];
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => derivativeAuthority, listPins: async () => pins },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => derivativeAuthority,
+        listPins: async () => pins,
+      },
       immutableOriginals: videoBucket,
       songVideoMasters: masters,
       pinning: fakePinning,
@@ -288,7 +304,11 @@ describe("DATA registration artifacts of a song-reference video", () => {
 
   test("fails closed without a master source", async () => {
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => derivativeAuthority, listPins: async () => [] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => derivativeAuthority,
+        listPins: async () => [],
+      },
       immutableOriginals: videoBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
@@ -299,7 +319,11 @@ describe("DATA registration artifacts of a song-reference video", () => {
 
   test("refuses a master other than the one the registration names", async () => {
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => derivativeAuthority, listPins: async () => [] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => derivativeAuthority,
+        listPins: async () => [],
+      },
       immutableOriginals: videoBucket,
       songVideoMasters: masters,
       pinning: fakePinning,
@@ -316,7 +340,11 @@ describe("DATA registration artifact pipeline", () => {
   test("builds original-video metadata only after the sealed video and poster pins", async () => {
     let pins: readonly DataRegistrationPinVerification[] = [];
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => videoAuthority, listPins: async () => pins },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => videoAuthority,
+        listPins: async () => pins,
+      },
       immutableOriginals: videoBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
@@ -355,7 +383,11 @@ describe("DATA registration artifact pipeline", () => {
       licensePreset: null,
     } as unknown as DataRegistrationArtifactAuthority;
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => malformedAuthority, listPins: async () => [] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => malformedAuthority,
+        listPins: async () => [],
+      },
       immutableOriginals: fakeBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
@@ -372,7 +404,11 @@ describe("DATA registration artifact pipeline", () => {
       rightsBasis: "derivative",
     } as const;
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => derivativeAuthority, listPins: async () => [] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => derivativeAuthority,
+        listPins: async () => [],
+      },
       immutableOriginals: fakeBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
@@ -386,7 +422,11 @@ describe("DATA registration artifact pipeline", () => {
   test("pins audio first, then builds metadata against the durable audio CID", async () => {
     let pins: readonly DataRegistrationPinVerification[] = [];
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => authority, listPins: async () => pins },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => pins,
+      },
       immutableOriginals: fakeBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
@@ -411,12 +451,16 @@ describe("DATA registration artifact pipeline", () => {
       lyrics_explicitness: "explicit",
       primary_language_bcp47: "en",
     });
-    expect(decoded).not.toHaveProperty("content_rating");
+    expect(decoded).toMatchObject({
+      schema_version: "pirate-data-metadata-v2",
+      content_rating: "general",
+    });
   });
 
   test("does not silently register a publication with unhandled artwork", async () => {
     const pipeline = makeDataRegistrationArtifactPipeline({
       authority: {
+        resolveMetadata: memoryMetadata(),
         read: async () => ({ ...authority, coverArtifactRef: "media://cover/present" }),
         listPins: async () => [],
       },
@@ -431,7 +475,11 @@ describe("DATA registration artifact pipeline", () => {
   test("retries only the independent gateway after a durable Filebase pin", async () => {
     let providerPinCalls = 0;
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => authority, listPins: async () => [audioPin] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [audioPin],
+      },
       immutableOriginals: fakeBucket,
       pinning: {
         pin: () => {
@@ -465,7 +513,11 @@ describe("DATA registration artifact pipeline", () => {
   test("pins through Filebase before verifying the fresh CID through the gateway", async () => {
     const calls: string[] = [];
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => authority, listPins: async () => [] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
       immutableOriginals: fakeBucket,
       pinning: {
         pin: () => {
@@ -514,7 +566,11 @@ describe("DATA registration artifact pipeline", () => {
     let providerPinCalls = 0;
     let gatewayCalls = 0;
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => authority, listPins: async () => [audioPin] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [audioPin],
+      },
       immutableOriginals: fakeBucket,
       pinning: {
         pin: () => {
@@ -551,7 +607,11 @@ describe("DATA registration artifact pipeline", () => {
   test("maps ordinary provider cancellation to retryable without invoking the gateway", async () => {
     const calls: string[] = [];
     const pipeline = makeDataRegistrationArtifactPipeline({
-      authority: { read: async () => authority, listPins: async () => [] },
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
       immutableOriginals: fakeBucket,
       pinning: {
         pin: () => {
@@ -581,6 +641,7 @@ describe("DATA registration artifact pipeline", () => {
     let listPinsCalls = 0;
     const pipeline = makeDataRegistrationArtifactPipeline({
       authority: {
+        resolveMetadata: memoryMetadata(),
         read: async () => authority,
         listPins: async () => {
           listPinsCalls += 1;
@@ -601,5 +662,79 @@ describe("DATA registration artifact pipeline", () => {
     } catch (error) {
       expect(error).toBe(failure);
     }
+  });
+});
+
+describe("rated song metadata snapshots", () => {
+  test.each(["general", "adult_18"] as const)(
+    "pins %s in both documents and preserves the pair on retry",
+    async (rating) => {
+      let current: DataRegistrationArtifactAuthority = { ...authority, contentRating: rating };
+      const pipeline = makeDataRegistrationArtifactPipeline({
+        authority: {
+          read: async () => current,
+          listPins: async () => [audioPin],
+          resolveMetadata: memoryMetadata(),
+        },
+        immutableOriginals: fakeBucket,
+        pinning: fakePinning,
+        gateway: fakeGateway,
+        publicOrigin: "https://staging.pirate.sc",
+      });
+      const first = (await pipeline.prepare(operation)).filter(
+        (value) => value.artifact.artifactKind !== "canonical_audio",
+      );
+      const firstBytes = await Promise.all(first.map((value) => collect(value.open)));
+      if (firstBytes[0] === undefined || firstBytes[1] === undefined)
+        throw new Error("metadata pair missing");
+      const ip = JSON.parse(firstBytes[0]);
+      const nft = JSON.parse(firstBytes[1]);
+      expect(ip).toMatchObject({
+        schema_version: "pirate-data-metadata-v2",
+        content_rating: rating,
+        mediaUrl: "ipfs://bafycanonicalaudio",
+      });
+      expect(nft.attributes).toContainEqual({ trait_type: "Content rating", value: rating });
+      for (const bytes of firstBytes) {
+        expect(bytes).not.toMatch(/passport|nationality|birth_date|receipt_id|attestation_id/);
+      }
+      current = {
+        ...authority,
+        title: "Changed after preparation",
+        contentRating: rating === "general" ? "adult_18" : "general",
+      };
+      const retry = (await pipeline.prepare(operation)).filter(
+        (value) => value.artifact.artifactKind !== "canonical_audio",
+      );
+      expect(await Promise.all(retry.map((value) => collect(value.open)))).toEqual(firstBytes);
+      expect(retry.map((value) => value.artifact.canonicalSha256)).toEqual(
+        first.map((value) => value.artifact.canonicalSha256),
+      );
+    },
+  );
+
+  test("keeps the legacy encoder available for retained preparation recovery", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: {
+        read: async () => authority,
+        listPins: async () => [audioPin],
+        resolveMetadata: async (input) => input.legacy,
+      },
+      immutableOriginals: fakeBucket,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    const artifacts = (await pipeline.prepare(operation)).filter(
+      (value) => value.artifact.artifactKind !== "canonical_audio",
+    );
+    const [ip, nft] = await Promise.all(
+      artifacts.map(async (value) => JSON.parse(await collect(value.open))),
+    );
+    expect(ip.schema_version).toBe("pirate-data-metadata-v1");
+    expect(ip).not.toHaveProperty("content_rating");
+    expect(nft.attributes).not.toContainEqual(
+      expect.objectContaining({ trait_type: "Content rating" }),
+    );
   });
 });

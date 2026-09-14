@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.75.0",
+  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
+  "wireContract": "Adds authorized GET /communities/:communityId/handle-nationality-authoring and POST /communities/:communityId/handle-nationality-qualification-policies. The seller supplies an allowlist and server-issued authoring reference; both providers and explicit lifetime remain server-resolved. Offering responses admit the curated_nationality_v1 successor with independent qualification identity and v3 offering hash. Existing none_v1 and private account-allowlist schemas and commands remain unchanged. Nationality quote/reservation/claim paths still fail closed pending qualification enforcement; this release is not capability advertisement or production acceptance. A compatible consumer is required before nationality offerings are advertised.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.75.0.tgz",
+    "sha256": "33b8855ef41d30b71ffd58e301fa8e7698262a65da8d6038c9c626e06b97b35c"
+  },
+  "validation": {
+    "version": "0.75.0",
+    "status": "local checks passed; production acceptance outstanding",
+    "notes": "Full check passed. Serial complete test chain passed: unit 4137, Node 20, workerd 82/74/2/10/15. PostgreSQL authoring and existing handle-sales suites passed 10 tests with two fresh completion markers. Four-shard PostgreSQL, trusted remote secret-boundary, staging and compatible consumer rollout remain outstanding."
+  }
+}

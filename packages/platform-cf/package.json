@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./account-age-verification": "./src/account-age-verification.ts",
     "./karaoke-reset-caller": "./src/karaoke-reset-caller.ts",
     ".": "./src/index.ts",
     "./cloudflare-access-jwt": "./src/cloudflare-access-jwt.ts",
@@ -34,6 +35,7 @@
     "./community-join-intent-resolver": "./src/community-join-intent-resolver.ts",
     "./community-creation-intent-resolver": "./src/community-creation-intent-resolver.ts",
     "./community-creation-repository": "./src/community-creation-repository.ts",
+    "./nationality-authoring": "./src/nationality-authoring.ts",
     "./community-purchase-funding-repository": "./src/community-purchase-funding-repository.ts",
     "./community-purchase-funding-chain-reader": "./src/community-purchase-funding-chain-reader.ts",
     "./custody-solvency-coordinator": "./src/custody-solvency-coordinator.ts",
@@ -163,7 +165,9 @@
     "./video-safety-provider": "./src/video-safety-provider.ts",
     "./video-safety-frame-reader": "./src/video-safety-frame-reader.ts",
     "./video-safety-evidence-repository": "./src/video-safety-evidence-repository.ts",
-    "./comment-thread-repository": "./src/comment-thread-repository.ts"
+    "./comment-thread-repository": "./src/comment-thread-repository.ts",
+    "./handle-nationality-authoring-repository": "./src/handle-nationality-authoring-repository.ts",
+    "./handle-nationality-qualification-repository": "./src/handle-nationality-qualification-repository.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",

@@ -118,9 +118,10 @@ describe("Postgres suite sentinel verification", () => {
     expect(workflow).toContain("CONTROL_PLANE_POSTGRES_TEST_PARTITION: audited-general-shard");
     expect(workflow).toContain("CONTROL_PLANE_POSTGRES_TEST_PARTITION: recovery");
     expect(workflow).toContain(
-      "needs: [postgres17-namespace, postgres17-recovery, postgres17-general]",
+      "needs: [postgres17-namespace, postgres17-recovery, postgres17-general, postgres18-shape]",
     );
     expect(workflow).toContain('[[ "$RECOVERY_RESULT" == "success" ]]');
+    expect(workflow).toContain('[[ "$PG18_SHAPE_RESULT" == "success" ]]');
     expect(workflow).toContain("merge-multiple: true");
   });
 

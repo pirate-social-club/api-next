@@ -21,7 +21,7 @@ const AgeMinimumRequirement = Schema.Struct({
   ),
 });
 
-const NationalityAllowedRequirement = Schema.Struct({
+export const NationalityAllowedRequirement = Schema.Struct({
   claim_id: Schema.Literal("nationality.allowed"),
   allowed_countries: Schema.NonEmptyArray(Iso3166Alpha2).check(
     Schema.makeFilter((countries) =>

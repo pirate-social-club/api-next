@@ -17,6 +17,11 @@ import type {
 import { canonicalJson, VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
 import { Effect, type Layer, Predicate } from "effect";
 
+import {
+  type MetadataSnapshotResolver,
+  makePostgresMetadataSnapshotResolver,
+} from "./metadata-snapshot.ts";
+
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
 // Spec 008 requires DATA to admit every permitted original-video source. This
 // does not choose U.6's separate song-video master ceiling or enable rendering.
@@ -128,6 +133,7 @@ export type DataRegistrationMasterSource = Readonly<{
 }>;
 
 export interface DataRegistrationArtifactAuthorityReader {
+  readonly resolveMetadata: MetadataSnapshotResolver;
   readonly read: (
     operation: DataRegistrationOperation,
   ) => Promise<DataRegistrationArtifactAuthority>;
@@ -215,6 +221,7 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
   const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>): Promise<A> =>
     Effect.runPromise(Effect.provide(runtime)(effect));
   return {
+    resolveMetadata: makePostgresMetadataSnapshotResolver(runtime),
     read: (operation) =>
       run(
         Effect.gen(function* () {
@@ -605,9 +612,8 @@ const sha256 = async (bytes: Uint8Array): Promise<string> =>
 const memoryArtifact = async (
   operation: DataRegistrationOperation,
   kind: "ip_metadata" | "nft_metadata",
-  value: unknown,
+  bytes: Uint8Array,
 ): Promise<DataRegistrationPreparedArtifact> => {
-  const bytes = new TextEncoder().encode(canonicalJson(value));
   const hash = await sha256(bytes);
   const artifact: DataRegistrationArtifact = {
     artifactId: deterministicDataRegistrationArtifactId(operation.registrationOperationId, kind),
@@ -806,6 +812,30 @@ export function makeDataRegistrationArtifactPipeline(
   options: DataRegistrationArtifactPipelineOptions,
 ): DataRegistrationArtifactPipeline {
   const now = options.now ?? Date.now;
+  const metadata = async (
+    operation: DataRegistrationOperation,
+    ip: Readonly<Record<string, unknown>>,
+    nft: Readonly<Record<string, unknown>>,
+    legacy = { ip, nft },
+    schemaRevision:
+      | "pirate-data-metadata-v1"
+      | "pirate-data-metadata-v2" = "pirate-data-metadata-v1",
+  ): Promise<readonly DataRegistrationPreparedArtifact[]> => {
+    const pinned = await options.authority.resolveMetadata({
+      operationId: operation.registrationOperationId,
+      current: { schemaRevision, ipMetadata: canonicalJson(ip), nftMetadata: canonicalJson(nft) },
+      legacy: {
+        schemaRevision: "pirate-data-metadata-v1",
+        ipMetadata: canonicalJson(legacy.ip),
+        nftMetadata: canonicalJson(legacy.nft),
+      },
+    });
+    return [
+      await memoryArtifact(operation, "ip_metadata", new TextEncoder().encode(pinned.ipMetadata)),
+      await memoryArtifact(operation, "nft_metadata", new TextEncoder().encode(pinned.nftMetadata)),
+    ];
+  };
+
   const pinAndVerifyEffect = Effect.fn("DataRegistrationArtifactPipeline.pinAndVerify")(function* (
     prepared: DataRegistrationPreparedArtifact,
   ): Effect.fn.Return<DataRegistrationPinResult, unknown> {
@@ -904,6 +934,8 @@ export function makeDataRegistrationArtifactPipeline(
   return {
     prepare: async (operation) => {
       const authority = await options.authority.read(operation);
+      if (authority.contentRating !== "general" && authority.contentRating !== "adult_18")
+        throw new Error("invalid DATA publication rating");
       if (authority.mediaKind === "video" && authority.rightsBasis === "derivative") {
         if (
           operation.mediaKind !== "video" ||
@@ -971,7 +1003,7 @@ export function makeDataRegistrationArtifactPipeline(
             options.publicOrigin,
           ).toString(),
         } as const;
-        const ipMetadata = await memoryArtifact(operation, "ip_metadata", {
+        const ipMetadata = {
           ...common,
           description: authority.caption ?? "Public video published on Pirate.",
           mediaUrl,
@@ -1004,8 +1036,8 @@ export function makeDataRegistrationArtifactPipeline(
               hash: authority.ownerPolicy.hash,
             },
           },
-        });
-        const nftMetadata = await memoryArtifact(operation, "nft_metadata", {
+        };
+        const nftMetadata = {
           ...common,
           name: "Pirate video",
           description: authority.caption ?? "Pirate public video IP Asset.",
@@ -1017,8 +1049,8 @@ export function makeDataRegistrationArtifactPipeline(
             { trait_type: "Relationship", value: "references_song" },
             { trait_type: "Content rating", value: authority.contentRating },
           ],
-        });
-        return [video, poster, ipMetadata, nftMetadata];
+        };
+        return [video, poster, ...(await metadata(operation, ipMetadata, nftMetadata))];
       }
       if (authority.mediaKind === "video") {
         if (
@@ -1097,7 +1129,7 @@ export function makeDataRegistrationArtifactPipeline(
             options.publicOrigin,
           ).toString(),
         } as const;
-        const ipMetadata = await memoryArtifact(operation, "ip_metadata", {
+        const ipMetadata = {
           ...common,
           description: authority.caption ?? "Public video published on Pirate.",
           mediaUrl,
@@ -1119,8 +1151,8 @@ export function makeDataRegistrationArtifactPipeline(
             acr_policy_revision: authority.acrPolicyRevision,
           },
           post: { original_sound_id: authority.originalSoundId },
-        });
-        const nftMetadata = await memoryArtifact(operation, "nft_metadata", {
+        };
+        const nftMetadata = {
           ...common,
           name: "Pirate video",
           description: authority.caption ?? "Pirate public video IP Asset.",
@@ -1131,8 +1163,8 @@ export function makeDataRegistrationArtifactPipeline(
             { trait_type: "Rights basis", value: "original" },
             { trait_type: "Content rating", value: authority.contentRating },
           ],
-        });
-        return [video, poster, ipMetadata, nftMetadata];
+        };
+        return [video, poster, ...(await metadata(operation, ipMetadata, nftMetadata))];
       }
       if (
         operation.mediaKind !== "song" ||
@@ -1181,7 +1213,7 @@ export function makeDataRegistrationArtifactPipeline(
           options.publicOrigin,
         ).toString(),
       } as const;
-      const ipMetadata = await memoryArtifact(operation, "ip_metadata", {
+      const ipMetadata = {
         ...common,
         description: "Public song published on Pirate.",
         mediaUrl,
@@ -1203,8 +1235,8 @@ export function makeDataRegistrationArtifactPipeline(
         },
         lyrics_explicitness: authority.lyricsExplicitness,
         primary_language_bcp47: authority.primaryLanguageBcp47,
-      });
-      const nftMetadata = await memoryArtifact(operation, "nft_metadata", {
+      };
+      const nftMetadata = {
         ...common,
         name: authority.title,
         description: "Pirate public song IP Asset.",
@@ -1213,8 +1245,28 @@ export function makeDataRegistrationArtifactPipeline(
           { trait_type: "License", value: authority.licensePreset },
           { trait_type: "Explicit lyrics", value: authority.lyricsExplicitness },
         ],
-      });
-      return [audio, ipMetadata, nftMetadata];
+      };
+      return [
+        audio,
+        ...(await metadata(
+          operation,
+          {
+            ...ipMetadata,
+            schema_version: "pirate-data-metadata-v2",
+            content_rating: authority.contentRating,
+          },
+          {
+            ...nftMetadata,
+            schema_version: "pirate-data-metadata-v2",
+            attributes: [
+              ...nftMetadata.attributes,
+              { trait_type: "Content rating", value: authority.contentRating },
+            ],
+          },
+          { ip: ipMetadata, nft: nftMetadata },
+          "pirate-data-metadata-v2",
+        )),
+      ];
     },
     pinAndVerify: (_operation, prepared) => Effect.runPromise(pinAndVerifyEffect(prepared)),
   };

@@ -102,3 +102,24 @@ describe("community creation requirement contracts", () => {
     ).toThrow();
   });
 });
+
+describe("creator nationality provider alternatives", () => {
+  const nationality = {
+    ...human,
+    requirement: "nationality",
+    provider_id: "self.pass",
+    accepted_provider_ids: ["self.pass", "zkpassport"],
+  } as const;
+  test("preserves the bound provider while exposing both pinned alternatives", () => {
+    expect(decodeCommunityCreationRequirementsV2({ nationality })).toEqual({ nationality });
+  });
+  test("fails closed without the accepted set or with a duplicated provider", () => {
+    const { accepted_provider_ids: _, ...missing } = nationality;
+    expect(() => decodeCommunityCreationRequirementsV2({ nationality: missing })).toThrow();
+    expect(() =>
+      decodeCommunityCreationRequirementsV2({
+        nationality: { ...nationality, accepted_provider_ids: ["self.pass", "self.pass"] },
+      }),
+    ).toThrow();
+  });
+});

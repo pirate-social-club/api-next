@@ -1,6 +1,7 @@
 import type {
-  CommunityHandleOfferingManagementItemV1,
-  CommunityHandleOfferingV2,
+  CommunityHandleOffering,
+  CommunityHandleOfferingManagementItemV2,
+  CreateHandleQuoteResultV3,
   HandleClaimV2,
   HandleCuratedQualificationPolicyRefV1,
   HandleGrantPrivateV2,
@@ -203,19 +204,19 @@ export interface HandleSalesStore {
   readonly createOffering: (
     input: CreateHandleOfferingInput & Readonly<{ offeringId: string; actionId: string }>,
   ) => Effect.Effect<
-    Readonly<{ offering: CommunityHandleOfferingV2; replayed: boolean }>,
+    Readonly<{ offering: CommunityHandleOffering; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly reviseOffering: (
     input: ReviseHandleOfferingInput & Readonly<{ actionId: string }>,
   ) => Effect.Effect<
-    Readonly<{ offering: CommunityHandleOfferingV2; replayed: boolean }>,
+    Readonly<{ offering: CommunityHandleOffering; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly listOfferings: (
     input: Readonly<{ communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<CommunityHandleOfferingV2>,
+    PageResult<CommunityHandleOffering>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly getManagementContext: (
@@ -233,7 +234,7 @@ export interface HandleSalesStore {
   readonly listManagementOfferings: (
     input: Readonly<{ accountId: string; communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<CommunityHandleOfferingManagementItemV1> | null,
+    PageResult<CommunityHandleOfferingManagementItemV2> | null,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly confirmPersonaReuse: (
@@ -256,7 +257,7 @@ export interface HandleSalesStore {
       quoteId: string;
       actionId: string;
     }>,
-  ) => Effect.Effect<CreateHandleQuoteResultV2, HandleSalesFailure>;
+  ) => Effect.Effect<CreateHandleQuoteResultV3, HandleSalesFailure>;
   readonly createReservation: (
     input: Readonly<{
       accountId: string;
@@ -465,3 +466,5 @@ export function makeHandleSalesService(store: HandleSalesStore) {
 }
 
 export type HandleGrantDocumentV2 = HandleGrantPrivateV2;
+
+export type { HandleNationalityQualificationStore } from "./nationality-qualification.ts";

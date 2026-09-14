@@ -236,17 +236,13 @@ const feedItemFromRow = (
     commentCount === null ||
     rank === null ||
     (row.viewer_vote !== null && viewerVote === null) ||
-    (contentRating !== "general" && contentRating !== "adult_18") ||
+    (contentRating !== null && contentRating !== "general" && contentRating !== "adult_18") ||
     ratingViewAllowed === null
   ) {
     return null;
   }
 
-  if (
-    (postType === "text" || postType === "song" || postType === "video") &&
-    contentRating === "adult_18" &&
-    !ratingViewAllowed
-  ) {
+  if (!ratingViewAllowed || contentRating === null) {
     return ageLockedResource();
   }
 
@@ -300,7 +296,7 @@ const feedItemFromRow = (
         ...(postType === "video" ? { caption: optionalString(row, "video_caption") } : {}),
         analysis_state: "allow",
         content_safety_state: "safe",
-        age_gate_policy: "none",
+        age_gate_policy: stringValue(row, "content_rating") === "adult_18" ? "18_plus" : "none",
         created,
       },
       thread_snapshot: null,
@@ -353,8 +349,7 @@ const homeFeedStatement = (input: {
                   p.content_rating,
                   ${videoPostProjectionSelect},
                   alias.slug AS canonical_slug,
-                  (p.post_type NOT IN ('text', 'song', 'video')
-                    OR can_account_view_content_rating_v1($1, p.content_rating)) AS rating_view_allowed,
+                  can_account_view_content_rating_v1($1, p.content_rating) AS rating_view_allowed,
                   p.comments_locked,
                   p.created_at,
                   c.display_name,

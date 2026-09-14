@@ -20,10 +20,19 @@ export type CreationNextAction =
       readonly provider_id: string;
       readonly intent_id: string;
     }
+  | {
+      readonly kind: "start_verification";
+      readonly requirement: "nationality";
+      readonly provider_id: string;
+      readonly creation_intent_id: string;
+      readonly ceremony_intent_id: string;
+      readonly generation: number;
+    }
   | { readonly kind: "commit" }
   | {
       readonly kind: "wait";
       readonly reason_code: NextActionWaitReasonCode;
+      readonly requirement?: "nationality";
       readonly retry_after_seconds?: number;
     }
   | { readonly kind: "blocked"; readonly reason: "quota_exceeded" | "gate_unsupported" }
@@ -32,6 +41,17 @@ export type CreationNextAction =
 export type CommittedCommunityResource = Readonly<{
   readonly community_id: string;
   readonly href: string;
+}>;
+
+/** The creator's optional nationality requirement, distinct from the Palm authority. */
+export type CommunityCreationNationalityProgress = Readonly<{
+  readonly status: "pending" | "satisfied";
+  readonly requirement_hash: string;
+  readonly provider_id: string;
+  readonly generation: number;
+  readonly ceremony_intent_id: string;
+  readonly satisfied_at: string | null;
+  readonly started: boolean;
 }>;
 
 export type CommunityCreationIntentState = Readonly<{
@@ -45,6 +65,8 @@ export type CommunityCreationIntentState = Readonly<{
   readonly verification_provider_id: string | null;
   readonly expires_at: string;
   readonly committed_resource: CommittedCommunityResource | null;
+  /** Present only while the creator's compiled draft requires document nationality. */
+  readonly nationality?: CommunityCreationNationalityProgress;
 }>;
 
 export type CommunityCreationIntentEvent =
@@ -142,11 +164,28 @@ export function communityCreationIntentInvariant(
     return "canonical_policy_revision";
   }
   if (!SHA256_HEX.test(state.canonical_policy_hash)) return "canonical_policy_hash";
+  const nationality = state.nationality;
+  if (nationality !== undefined) {
+    if (!SHA256_HEX.test(nationality.requirement_hash)) return "nationality_requirement_hash";
+    if (!nonEmptyCanonical(nationality.provider_id)) return "nationality_provider_id";
+    if (!Number.isSafeInteger(nationality.generation) || nationality.generation < 1) {
+      return "nationality_generation";
+    }
+    if (!nonEmptyCanonical(nationality.ceremony_intent_id)) return "nationality_ceremony_intent_id";
+    if (nationality.status === "pending") {
+      if (nationality.satisfied_at !== null) return "nationality_satisfied_at";
+      if (state.status !== "verification_required") return "nationality_pending_status";
+    } else if (nationality.satisfied_at === null || !canonicalInstant(nationality.satisfied_at)) {
+      return "nationality_satisfied_at";
+    }
+  }
   if (state.verification_requirement_hash === null || state.verification_provider_id === null) {
     if (state.verification_requirement_hash !== null || state.verification_provider_id !== null) {
       return "verification_authority_shape";
     }
-    if (state.status === "verification_required") return "verification_required_without_authority";
+    if (state.status === "verification_required" && state.nationality?.status !== "pending") {
+      return "verification_required_without_authority";
+    }
   } else {
     if (!SHA256_HEX.test(state.verification_requirement_hash)) {
       return "verification_requirement_hash";
@@ -173,14 +212,29 @@ export function creationNextAction(state: CommunityCreationIntentState): Creatio
   switch (state.status) {
     case "draft":
       return { kind: "wait", reason_code: "operation_pending" };
-    case "verification_required":
-      return state.verification_provider_id === null
-        ? { kind: "wait", reason_code: "reconciliation_pending" }
-        : {
-            kind: "start_verification",
-            provider_id: state.verification_provider_id,
-            intent_id: state.intent_id,
-          };
+    case "verification_required": {
+      if (state.verification_provider_id !== null) {
+        return {
+          kind: "start_verification",
+          provider_id: state.verification_provider_id,
+          intent_id: state.intent_id,
+        };
+      }
+      const nationality = state.nationality;
+      if (nationality !== undefined && nationality.status === "pending") {
+        return nationality.started
+          ? { kind: "wait", requirement: "nationality", reason_code: "verification_pending" }
+          : {
+              kind: "start_verification",
+              requirement: "nationality",
+              provider_id: nationality.provider_id,
+              creation_intent_id: state.intent_id,
+              ceremony_intent_id: nationality.ceremony_intent_id,
+              generation: nationality.generation,
+            };
+      }
+      return { kind: "wait", reason_code: "reconciliation_pending" };
+    }
     case "commit_ready":
       return { kind: "commit" };
     case "quota_exceeded":

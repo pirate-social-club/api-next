@@ -173,9 +173,20 @@
     "0170_hns_renewal_authoritative_evidence.sql": "ede05876beff2f135cfafaad77c26f445659d4c5c940e529668f9abd7f57d8c2",
     "0171_hns_cutover_execution_probe.sql": "1e35f43dc2bb1107224b0f3e109b386a36b2ef66de38556de17c388ea31f9355",
     "0172_hns_cutover_evidence_consistency.sql": "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
+    "0173_community_policy_provider_bindings_provider_key.sql": "bf4c63ae05979cb0ce21f098cfdcdec827002a17d99fc5e95bb39078cfeb66fe",
+    "0174_nationality_ceremony_intents.sql": "251cb66833150e774c292caed09fea36095221252e285fc3d07bdb655af02daa",
+    "0175_nationality_ceremony_creation_action.sql": "c34a15f18cc82b526a44b0ca27453bddda8f318cea8de2994857218e0379fc3b",
     "0176_media_workflow_terminal_escalation.sql": "980f6619a7e9b9f199311ac2dcbace699e6045926ec1c5757ee0b3f2626aeb6f",
     "0177_media_operator_reprocess_actions.sql": "3b167635f2fd2e9b565fa8ff2b91891c0d853bde1d5f1986a39e01f91c1b0790",
     "0178_media_operator_reprocess_transition.sql": "c0b54a72e675cd4ac37326037c3685963e21f9e5a425fc0dbda506c9c2e9d46e",
-    "0179_data_registration_confirmed_recovery.sql": "27009d8f44d73168cf3dd07de7588394c4cadc6cbf7933ab1d027dc13e50dd8d"
+    "0179_data_registration_confirmed_recovery.sql": "27009d8f44d73168cf3dd07de7588394c4cadc6cbf7933ab1d027dc13e50dd8d",
+    "0180_handle_nationality_policy_authoring.sql": "de9903f6a79fe806f8444574bb6bf1e45cc3d465671fdbfafb9b83f3cb91f022",
+    "0181_handle_nationality_quote_decisions.sql": "c66e51c67e8472127a6ca7e1eca07a81292faa96259cdab61784bd909c6fa1b9",
+    "0182_accepted_adult_rating_evidence.sql": "5f5ca1db8ff8e0452590a2a9b33b5d8fc3a1d614416a24221b5c5b9f377d2408",
+    "0183_account_age_verification_ceremonies.sql": "5a9ae2b7882fd2bfa2353a4366f281b1e90955512e2723fede8e0ba6fb220149",
+    "0184_data_metadata_preparation_snapshots.sql": "ed5c05f3f2fbfa7dbdd9e6d3987a5d90b22c7523e2349f8bf4b1bd173fe60125",
+    "0185_current_content_rating_floors.sql": "eaa771de80de0a0c631b24a4970cf0c41571eae4212fe6660467c7c205f856bd",
+    "0186_retained_content_rating_reconciliation.sql": "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab",
+    "0187_text_rating_raise_counts.sql": "4eb58bd66f3f4d5f453e6033dc6f2e38eaba27dd18658e6cac6c6525487f49c8"
   }
 }

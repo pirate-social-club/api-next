@@ -243,6 +243,20 @@ suite("Postgres 17 public post slug aliases", () => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
       await seedLiveStateFixtures(admin);
 
+      await admin.query(`INSERT INTO posts
+        (community_id, post_id, post_type, status, visibility, title, created_at, updated_at)
+        VALUES ('slug-live-community', 'slug-unrated', 'image', 'published', 'public', 'Restricted image', now(), now())`);
+      await admin.query(`INSERT INTO post_slug_aliases (slug, post_id, slug_policy_version, created_at)
+        VALUES ('unrated-image', 'slug-unrated', 'post-slug-v1', now())`);
+      const unrated = await lookupByPostId(connection, "slug-unrated");
+      expect(unrated).toMatchObject({
+        post: { contentRating: null },
+        viewer: { ratingViewAllowed: false, canRead: false },
+        canonicalPath: null,
+      });
+      const ownerUnrated = await lookupByPostId(connection, "slug-unrated", "slug-owner");
+      expect(ownerUnrated).toMatchObject({ viewer: { ratingViewAllowed: false, canRead: false } });
+
       const publicBySlug = await lookupBySlug(connection, "café-post");
       expect(publicBySlug).toMatchObject({
         alias: { slug: "café-post", postId: "slug-public" },

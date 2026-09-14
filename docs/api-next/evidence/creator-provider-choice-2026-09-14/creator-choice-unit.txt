@@ -1,0 +1,15 @@
+Running as unit: run-r8d5aabc0d53940af819de8e5338e31b2.scope; invocation ID: 159b28b34ab94803b15fab6fbb7cff80
+bun test v1.4.0 (34cbb9a40)
+
+packages/contracts/src/community-creation-requirements.test.ts:
+(pass) community creation requirement contracts > round-trips the complete keyed public progress projection [2.96ms]
+(pass) community creation requirement contracts > freezes V2 to at most one grandfathered human identity requirement [1.36ms]
+(pass) community creation requirement contracts > enforces the closed progress-state cross-field invariant [1.14ms]
+(pass) community creation requirement contracts > rejects mismatched keys, private authority fields, and excess wire properties [0.68ms]
+(pass) creator nationality provider alternatives > preserves the bound provider while exposing both pinned alternatives [0.75ms]
+(pass) creator nationality provider alternatives > fails closed without the accepted set or with a duplicated provider [0.40ms]
+
+ 6 pass
+ 0 fail
+ 25 expect() calls
+Ran 6 tests across 1 file. [114.00ms]

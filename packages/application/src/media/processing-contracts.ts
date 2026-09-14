@@ -1,5 +1,6 @@
 import type { ModerationPolicyCategoryV1 } from "@pirate/contracts";
 import type { Effect } from "effect";
+import type { TrustedSongAnalysis } from "../../../domain/src/media-submission.ts";
 import type {
   MediaTransformAudioSampleOutcome,
   MediaTransformProbeOutcome,
@@ -229,22 +230,7 @@ export type MediaProcessingAnalysis = Readonly<{
     readonly evidenceRef: string | null;
     readonly evidence: NormalizedModerationInputEvidenceV1 | null;
   }>;
-  readonly contentModeration: Readonly<{
-    readonly decision: "allow" | "manual_review" | "blocked";
-    readonly resultingContentRating: "general" | "adult_18";
-    readonly inputSha256: string;
-    readonly matchedCategories: readonly string[];
-    readonly policyRevision: string;
-    readonly platformPolicyRevision: string;
-    readonly communityPolicyRevision: string;
-    readonly evidenceRef: string | null;
-    readonly providerEvidence: Readonly<{
-      readonly providerId: "openai";
-      readonly requestedModel: string;
-      readonly returnedModel: string;
-      readonly inputs: readonly unknown[];
-    }> | null;
-  }>;
+  readonly contentModeration: NonNullable<TrustedSongAnalysis["contentModeration"]>;
 }>;
 
 export type MediaProcessingDecision = Readonly<{

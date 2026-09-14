@@ -58,3 +58,38 @@ export function communityJoinIntentBindingHash(
 ): string {
   return sha256Hex(communityJoinIntentBindingPreimage(input));
 }
+
+/**
+ * Stable identity for the joiner's nationality child ceremony. A join action
+ * intent expires with its Palm ceremony, but the nationality requirement must
+ * survive eligibility refetches, so its identity derives from the exact
+ * actor, community, and normalized requirement it serves. A changed allowlist
+ * derives a new id and cannot reuse the previous state.
+ */
+export function communityJoinNationalityIntentId(
+  input: Readonly<{
+    readonly actorId: string;
+    readonly communityId: string;
+    readonly requirementHash: string;
+  }>,
+): string {
+  if (
+    !validIdentityPart(input.actorId) ||
+    !validIdentityPart(input.communityId) ||
+    !/^[0-9a-f]{64}$/u.test(input.requirementHash)
+  ) {
+    throw new TypeError("Invalid community join nationality intent identity");
+  }
+  return `community-join-nationality_${sha256Hex(
+    canonicalJson({
+      actor_id: input.actorId,
+      community_id: input.communityId,
+      requirement_hash: input.requirementHash,
+      version: "community-join-nationality-intent-v1",
+    }),
+  )}`;
+}
+
+function validIdentityPart(value: string): boolean {
+  return value.length > 0 && value.trim() === value && !value.includes("\u0000");
+}

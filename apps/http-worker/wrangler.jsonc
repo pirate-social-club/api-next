@@ -286,9 +286,9 @@
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next-staging.pirate.sc",
         "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
-        // Staging is the developer-document environment. A separately
-        // authorized live-document deployment is required for physical proof.
-        "SELF_PASS_MOCK_PASSPORT": "true",
+        // The nationality/adult acceptance window uses physical documents.
+        // Never reuse sessions minted under the former developer-document mode.
+        "SELF_PASS_MOCK_PASSPORT": "false",
         "VERY_OAUTH_ENABLED": "false",
         "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
@@ -327,7 +327,12 @@
         // one reviewed change. The inactive path is intentionally undeclared.
         "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID": "",
         "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL": "",
-        "ZKPASSPORT_DEV_MODE": "true",
+        "ZKPASSPORT_DEV_MODE": "false",
+        // Keep authoring off for the compatibility deployment. Enable it only
+        // after the compatible Solid/API pair and real-provider checks pass.
+        "NATIONALITY_AUTHORING_ENABLED": "false",
+        "NATIONALITY_AUTHORING_POLICY_REVISION": "1",
+        "NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS": "31536000",
         "PIRATE_APP_JWT_ISSUER": "api-next-session-staging",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-staging",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-staging",

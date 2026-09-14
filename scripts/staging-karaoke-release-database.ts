@@ -46,12 +46,24 @@ export function makeKaraokeDatabaseRelease(configuration: {
   readonly reviewedGrantDigest: string;
   readonly targetBindingDigest: string;
   readonly restoreRuntimeConnect: true;
+  /** Verified against the runtime connection before the fence denied it. The
+   * release cannot discover it: a correctly fenced database refuses exactly the
+   * connection identity discovery would need, and loosening the fence to ask
+   * would defeat the fence. */
+  readonly runtimeRole: string;
+  /** Digest of the pre-fence SQL identity observation that established
+   * `runtimeRole`. Agreement with provider metadata is not evidence that the
+   * earlier connection check happened, so the observation is carried into the
+   * receipt rather than assumed. */
+  readonly runtimeIdentityEvidence: string;
 }) {
   const input = structuredClone(configuration);
   // The stdin bundle has no scripts/ module directory. The release CLI is
   // required to run from its api-next checkout; Git objects still undergo the exact
   // approved SHA, manifest and baseline validation, independent of HEAD.
   const repositoryRoot = assertKaraokeRepositoryRoot();
+  if (!/^[a-f0-9]{64}$/.test(configuration.runtimeIdentityEvidence))
+    throw new Error("karaoke_release_runtime_identity_evidence_missing");
   const bound = async () => {
     const binding = await collectStagingProviderBinding();
     if (
@@ -86,31 +98,54 @@ export function makeKaraokeDatabaseRelease(configuration: {
       throw new Error("karaoke_release_database_identity_changed");
     return row.version as string;
   };
+  /** The role is a reviewed input, bound here to the verified provider target.
+   * Both facts are established before the fence; neither needs a connection the
+   * fence refuses. */
+  const boundRuntimeRole = (binding: Awaited<ReturnType<typeof bound>>) => {
+    if (input.runtimeRole !== binding.runtime.sqlRole)
+      throw new Error(`karaoke_release_runtime_role_mismatch:${input.runtimeRole}`);
+    return input.runtimeRole;
+  };
+  /** Recheck through the runtime connection once CONNECT is restored. Until
+   * then this connection is denied by design. */
+  const recheckRuntimeRole = async (binding: Awaited<ReturnType<typeof bound>>) => {
+    const runtime = await connect(binding.runtimeRaw);
+    try {
+      const row = (await runtime.query("SELECT session_user AS login,current_user AS active"))
+        .rows[0];
+      const derived = row?.active as string | undefined;
+      if (!derived || row?.login !== derived)
+        throw new Error("karaoke_release_runtime_role_underived");
+      if (derived !== input.runtimeRole)
+        throw new Error(`karaoke_release_runtime_role_mismatch:${derived}`);
+      return derived;
+    } finally {
+      await runtime.end().catch(() => undefined);
+    }
+  };
   const readback = async () => {
     const binding = await bound();
+    const runtimeRole = boundRuntimeRole(binding);
     const admin = await connect(binding.adminRaw);
     try {
       await admin.query("BEGIN READ ONLY");
       const serverVersion = await identity(admin, binding.admin.sqlRole);
-      await verifyApprovedStagingRuntime(admin, binding.runtime.sqlRole, repositoryRoot);
+      await verifyApprovedStagingRuntime(admin, runtimeRole, repositoryRoot);
       const grantDigest = await assertKaraokeRuntimeGrantDigest(
         admin,
-        binding.runtime.sqlRole,
+        runtimeRole,
         input.reviewedGrantDigest,
       );
       const allowed = (
         await admin.query(
           "SELECT has_database_privilege($1,current_database(),'CONNECT') AS allowed",
-          [binding.runtime.sqlRole],
+          [runtimeRole],
         )
       ).rows[0]?.allowed;
       if (allowed !== true) throw new Error("karaoke_release_connect_unproven");
-      const runtime = await connect(binding.runtimeRaw);
-      try {
-        await identity(runtime, binding.runtime.sqlRole);
-      } finally {
-        await runtime.end();
-      }
+      // CONNECT is proven restored above, so the role is rechecked through the
+      // connection that will actually use it.
+      await recheckRuntimeRole(binding);
       return {
         serverVersion,
         grantDigest,
@@ -132,6 +167,10 @@ export function makeKaraokeDatabaseRelease(configuration: {
       )
         throw new Error("karaoke_release_database_directive_changed");
       const binding = await bound();
+      // The stage keeps the role until the binding check passes, so a mismatch
+      // fails with the role in the failure record rather than an opaque stage.
+      stage = `database-runtime-role:${input.runtimeRole}`;
+      const runtimeRole = boundRuntimeRole(binding);
       stage = "database-connect";
       const admin = await connect(binding.adminRaw);
       try {
@@ -140,16 +179,12 @@ export function makeKaraokeDatabaseRelease(configuration: {
         await observeMaintainedDatabaseFence({
           admin,
           expectedAdmin: binding.admin.sqlRole,
-          runtimes: [{ role: binding.runtime.sqlRole, connectionString: binding.runtimeRaw }],
+          runtimes: [{ role: runtimeRole, connectionString: binding.runtimeRaw }],
         });
         await admin.query("BEGIN");
         stage = "database-grant-restoration";
         await admin.query("SET LOCAL lock_timeout='3s'");
-        const approved = await compileApprovedStagingPrivileges(
-          admin,
-          binding.runtime.sqlRole,
-          repositoryRoot,
-        );
+        const approved = await compileApprovedStagingPrivileges(admin, runtimeRole, repositoryRoot);
         // This is the already-reviewed fixed grant vocabulary, not arbitrary
         // SQL from configuration or an inferred grant for a new object.
         await restoreReviewedResetGrants(
@@ -158,16 +193,12 @@ export function makeKaraokeDatabaseRelease(configuration: {
           approved.reviewed,
           approved.policy,
         );
-        await verifyApprovedStagingRuntime(admin, binding.runtime.sqlRole, repositoryRoot);
-        await assertKaraokeRuntimeGrantDigest(
-          admin,
-          binding.runtime.sqlRole,
-          input.reviewedGrantDigest,
-        );
+        await verifyApprovedStagingRuntime(admin, runtimeRole, repositoryRoot);
+        await assertKaraokeRuntimeGrantDigest(admin, runtimeRole, input.reviewedGrantDigest);
         const sql = (
           await admin.query(
             "SELECT format('GRANT CONNECT ON DATABASE %I TO %I',current_database(),$1::text) AS statement",
-            [binding.runtime.sqlRole],
+            [runtimeRole],
           )
         ).rows[0]?.statement;
         if (typeof sql !== "string") throw new Error("karaoke_release_connect_unproven");
@@ -179,7 +210,11 @@ export function makeKaraokeDatabaseRelease(configuration: {
         await admin.end().catch(() => undefined);
       }
       stage = "database-independent-readback";
-      const providerEvidence = JSON.stringify(await readback());
+      const providerEvidence = JSON.stringify({
+        ...(await readback()),
+        runtimeRole: input.runtimeRole,
+        runtimeIdentityEvidence: input.runtimeIdentityEvidence,
+      });
       return {
         surface: "database",
         releasedAt: now(),

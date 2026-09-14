@@ -8,6 +8,27 @@ export type PostgresSentinel = {
 
 export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
   {
+    name: "rating reconciliation",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_RATING_RECONCILIATION_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-rating-reconciliation-suite-complete",
+    contents: "api-next-control-plane-postgres-rating-reconciliation-suite-complete\n",
+  },
+  {
+    name: "handle nationality checkout",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_HANDLE_NATIONALITY_CHECKOUT_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-handle-nationality-checkout-suite-complete",
+    contents: "api-next-control-plane-postgres-handle-nationality-checkout-suite-complete\n",
+  },
+  {
+    name: "handle nationality authoring",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_HANDLE_NATIONALITY_AUTHORING_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-handle-nationality-authoring-suite-complete",
+    contents: "api-next-control-plane-postgres-handle-nationality-authoring-suite-complete\n",
+  },
+  {
     name: "postgres adapter",
     path:
       process.env.CONTROL_PLANE_POSTGRES_TEST_SENTINEL ??
@@ -97,6 +118,41 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       process.env.CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL ??
       "/tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete",
     contents: "api-next-control-plane-postgres-gates-v2-community-suite-complete\n",
+  },
+  {
+    name: "gates v2 nationality provider alternatives",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_GATES_V2_NATIONALITY_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-gates-v2-nationality-suite-complete",
+    contents: "api-next-control-plane-postgres-gates-v2-nationality-suite-complete\n",
+  },
+  {
+    name: "renewable account age verification",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_ACCOUNT_AGE_VERIFICATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-account-age-verification-suite-complete",
+    contents: "api-next-control-plane-postgres-account-age-verification-suite-complete\n",
+  },
+  {
+    name: "nationality ceremony store",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_NATIONALITY_CEREMONY_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-nationality-ceremony-suite-complete",
+    contents: "api-next-control-plane-postgres-nationality-ceremony-suite-complete\n",
+  },
+  {
+    name: "community creation nationality completion",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_CREATION_NATIONALITY_COMPLETION_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-creation-nationality-completion-suite-complete",
+    contents: "api-next-control-plane-postgres-creation-nationality-completion-suite-complete\n",
+  },
+  {
+    name: "community join intent fulfillment",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_JOIN_FULFILLMENT_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-join-fulfillment-suite-complete",
+    contents: "api-next-control-plane-postgres-join-fulfillment-suite-complete\n",
   },
   {
     name: "postgres feed repository",

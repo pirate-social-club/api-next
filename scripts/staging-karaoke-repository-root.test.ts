@@ -50,6 +50,8 @@ test("wrong cwd refuses parent and database factory before private configuration
         reviewedGrantDigest: "a".repeat(64),
         targetBindingDigest: "b".repeat(64),
         restoreRuntimeConnect: true,
+        runtimeRole: "fixture_runtime",
+        runtimeIdentityEvidence: "d".repeat(64),
       }),
     ).toThrow("karaoke_release_repository_root_denied");
   } finally {

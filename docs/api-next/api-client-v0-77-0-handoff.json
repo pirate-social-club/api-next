@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.77.0",
+  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
+  "wireContract": "Creator nationality progress now exposes accepted_provider_ids from the locked requirement state and confines provider_id to Self Pass or ZKPassport. Both choices must be rendered equally; generic starts use the current server-issued ceremony and switching rebinds a new generation. Existing Palm and route-v1 projections are unchanged. Includes the previous join and handle qualification successors. Upgrade the consumer before advertising nationality creation.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.77.0.tgz",
+    "sha256": "5c1640489a7f1def756cbcc17fafdc74e9f18089f263a44abb0549f3381f7b1c"
+  },
+  "validation": {
+    "status": "focused validation and full static check passed; rollout acceptance outstanding",
+    "notes": "Full bun run check passed after fixing a test fixture literal type. Five creator flow PostgreSQL proofs passed with a fresh marker and wrapper exit zero, including alternatives projection, switching, completion, persistence, rollback and changed allowlist. Six contract tests passed. Full runtime suites were not repeated for this projection-only change; prior 0.76.0 runtime evidence is not a validation of this commit. Nothing published or enabled."
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.78.0",
+  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
+  "wireContract": "Additive authenticated GET /me/age-verification returns verified, unavailable, or a renewable age-18 requirement with both document providers and a server-issued current child ceremony. Start through the generic verification route. Refetch authority after completion; never grant age capability from an SDK callback. Existing /me/age-capability and content-free age-locked wires remain unchanged. This does not grant membership or a handle.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.78.0.tgz",
+    "sha256": "2d7de646a7d644f10673fcb6ec31aaaeb45dfc4265f88e6e58a25b593a91ec8e"
+  },
+  "validation": {
+    "status": "full static check, unit, Node and all workerd components passed; eight renewable-age PostgreSQL proofs passed",
+    "notes": "4,161 unit tests, 20 Node tests and all five workerd configurations (82/74/2/10/15) passed. Commands ran separately, not as one bun run test invocation. The four nationality ceremony and 14 curated community regressions passed in the earlier run whose age fixtures failed; all eight corrected age proofs passed subsequently. PostgreSQL partitions, trusted remote gate and live acceptance remain open. Local deterministic provider fixtures only; nothing deployed or enabled."
+  }
+}

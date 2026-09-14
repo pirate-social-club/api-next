@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.76.0",
+  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
+  "wireContract": "Adds nationality_required quote results with an immutable buyer qualification intent and GET /handle-qualification-intents/:intentId. Progress exposes equal Self Pass and ZKPassport choices and the currently bound child ceremony. Start through the generic verification route; refetch progress after switching. Completion requests a fresh quote and never purchases, joins or follows. Qualified quotes carry the curated_nationality_v1 snapshot and v3 quote hash; reservation and claim independently recheck the pinned provider and current offering. Existing none_v1 and private direct-grant quote shapes remain unchanged. Consumer compatibility and staging acceptance are required before advertisement. Paid checkout remains disabled.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.76.0.tgz",
+    "sha256": "d5029d24df994188cefeda2ededf4c651462fe6c7a27e4754340555c4a7e06eb"
+  },
+  "validation": {
+    "version": "0.76.0",
+    "status": "local validation passed; rollout acceptance outstanding",
+    "notes": "Full check passed. Final serial runtime passed 4,142 unit, 20 Node and all five workerd configurations (82/74/2/10/15). PostgreSQL passed 42 tests across six suites with six fresh markers and wrapper exit zero, including both providers, actual start/switch/retry, immutable quote pins, changed allowlist, member denial, nonmember claim without membership/follow, revocation, expiry and rollback. The final static recheck after adding the member proof and updating the render-host shard pin is recorded in the accompanying evidence. Four-shard PostgreSQL, trusted PR checks, compatible consumer and live staging remain outstanding."
+  }
+}

@@ -1,6 +1,14 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "scripts/staging-reset-release-runtime.ts",
+    "scripts/staging-reset-release-runtime.test.ts",
+    "scripts/staging-persona-upgrade-plan.ts",
+    "scripts/staging-persona-upgrade-plan.test.ts",
+    "scripts/staging-persona-reset-marker.test.ts",
+    "scripts/staging-persona-provider-rehearsal.ts",
+    "scripts/staging-persona-rehearsal-grants.ts",
+    "scripts/staging-persona-rehearsal-supervisor.test.ts",
     "packages",
     "apps",
     "scripts/staging-persona-phased-reset.pg.test.ts",
@@ -16,5 +24,23 @@
     ,"scripts/staging-karaoke-release-database.pg.test.ts"
     ,"scripts/staging-persona-reset-denied-grants.pg.test.ts"
     ,"scripts/staging-karaoke-repository-root.test.ts"
+    ,"scripts/staging-persona-prepare-reset.pg.test.ts"
+    ,"scripts/staging-persona-rehearsal-launch.ts"
+    ,"scripts/staging-persona-rehearsal-launch.test.ts"
+    ,"scripts/staging-persona-rehearsal-launch-plan.ts"
+    ,"scripts/staging-persona-rehearsal-launch-plan.test.ts"
+    ,"scripts/staging-persona-rehearsal-launch-runtime.ts"
+    ,"scripts/staging-persona-rehearsal-launch-system.test.ts"
+    ,"scripts/staging-persona-prepare-reset.test.ts"
+    ,"scripts/staging-persona-rehearsal-failure.ts"
+    ,"scripts/staging-reset-release-live.ts"
+    ,"scripts/staging-reset-release-live.test.ts"
+    ,"scripts/staging-reset-release-live-runtime.ts"
+    ,"scripts/staging-reset-release-live-runtime.test.ts"
+    ,"scripts/staging-reset-release-ingress-refence.ts"
+    ,"scripts/staging-reset-release-live-launch-fixture.ts"
+    ,"scripts/staging-reset-release-live-runtime.pg.test.ts"
+    ,"scripts/staging-reset-release-live-ingress.test.ts"
+    ,"scripts/staging-reset-release-live-refence-fixture.ts"
   ]
 }

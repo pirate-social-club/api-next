@@ -45,14 +45,14 @@ unit("even a signed malformed surface record cannot stand for a required receipt
 });
 
 const plan: KaraokeReleasePlan = {
-  version: "staging-karaoke-release-plan-v1",
+  version: "staging-karaoke-release-plan-v2",
   ingressApplicationId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   resumeQueues: [{ name: "staging-events", id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
   servingWorkers: [{ worker: "http-worker", versionId: "cccccccccccccccccccccccccccccccc" }],
   reviewedGrantDigest: "d".repeat(64),
   // The approved surface order is an owner decision; tests exercise the
   // executor logic with one explicit order, not an approved one.
-  surfaceOrder: ["ingress", "producers", "database"] as const,
+  surfaceOrder: ["versions", "database", "ingress", "producers"] as const,
 };
 const intent = { planDigest: reconciliationDigest(JSON.stringify(plan)), intentId: "b".repeat(64) };
 
@@ -66,7 +66,12 @@ function surfaces(
     void now;
     return { surface, releasedAt: at(), receipt: `${surface}-receipt` };
   };
-  return { ingress: make("ingress"), producers: make("producers"), database: make("database") };
+  return {
+    versions: make("versions"),
+    ingress: make("ingress"),
+    producers: make("producers"),
+    database: make("database"),
+  };
 }
 
 function evidence(f: ReturnType<typeof fixture>) {
@@ -120,6 +125,53 @@ async function pendingIntent(f: Awaited<ReturnType<typeof ceremony>>) {
   return captured;
 }
 
+unit(
+  "reconciliation requires all four retained surface receipts without re-execution",
+  async () => {
+    for (const receiptOrder of [
+      ["database", "ingress", "producers"],
+      ["versions", "database", "ingress", "producers"],
+      ["versions", "database", "ingress", "ingress"],
+    ] as const) {
+      const f = fixture();
+      f.state.markers = "retired";
+      const retained = evidence(f);
+      let releasedAt = f.now();
+      for (const [index, surface] of receiptOrder.entries()) {
+        releasedAt = f.now();
+        retained.put({
+          ...intent,
+          surface,
+          phase: "released",
+          releasedAt,
+          receipt: `${surface}-${index}`,
+        });
+      }
+      const state = { fail: null, calls: [] as KaraokeReleaseSurface[] };
+      const restored = async () => "restored" as const;
+      const binding = makeKaraokeReleaseBinding({
+        plan,
+        surfaces: surfaces(state, f.now),
+        observeRestored: {
+          versions: restored,
+          database: restored,
+          ingress: restored,
+          producers: restored,
+        },
+        evidence: retained,
+        readers: f.base.readers,
+        now: f.now,
+      });
+      expect(await binding.reconcileReleasedFence(intent)).toEqual(
+        receiptOrder.length === 4 && receiptOrder[3] === "producers"
+          ? { disposition: "released", release: { releasedAt, allSixRetired: true } }
+          : { disposition: "unresolved" },
+      );
+      expect(state.calls).toEqual([]);
+    }
+  },
+);
+
 test("successful release across all surfaces records with the operation's release time", async () => {
   const f = await ceremony();
   const base = f.base;
@@ -132,6 +184,7 @@ test("successful release across all surfaces records with the operation's releas
     plan: callerPlan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "restored" as const,
       ingress: async () => "restored" as const,
       producers: async () => "restored" as const,
       database: async () => "restored" as const,
@@ -148,7 +201,7 @@ test("successful release across all surfaces records with the operation's releas
   });
   expect(result.executionAuthorized).toBe(false);
   expect(readKaraokeMaintenanceJournal(base.journal, base.now()).state).toBe("released");
-  expect(state.calls).toEqual(["ingress", "producers", "database"]);
+  expect(state.calls).toEqual(["versions", "database", "ingress", "producers"]);
 });
 
 test("an independent readback failure after successful mutations refuses release and re-execution", async () => {
@@ -161,6 +214,7 @@ test("an independent readback failure after successful mutations refuses release
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "restored",
       ingress: async () => "restored",
       producers: async () => "restored",
       database: async () => {
@@ -174,9 +228,9 @@ test("an independent readback failure after successful mutations refuses release
   await expect(recordKaraokeFenceRelease({ ...f.base, ...binding })).rejects.toThrow(
     "karaoke_release_operation_unresolved",
   );
-  expect(state.calls).toEqual(["ingress", "producers", "database"]);
+  expect(state.calls).toEqual(["versions", "database", "ingress", "producers"]);
   await expect(recordKaraokeFenceRelease({ ...f.base, ...binding })).rejects.toThrow();
-  expect(state.calls).toHaveLength(3);
+  expect(state.calls).toHaveLength(4);
   expect(readKaraokeMaintenanceJournal(f.journal, f.now()).state).toBe("retired");
 });
 
@@ -191,6 +245,7 @@ test("an uncertain surface leaves the release unresolved with no second executio
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "restored" as const,
       ingress: async () => "restored" as const,
       producers: async () => "uncertain" as const,
       database: async () => "fenced" as const,
@@ -206,7 +261,7 @@ test("an uncertain surface leaves the release unresolved with no second executio
       reconcileReleasedFence: binding.reconcileReleasedFence,
     }),
   ).rejects.toThrow("karaoke_release_operation_unresolved");
-  expect(state.calls).toEqual(["ingress", "producers"]);
+  expect(state.calls).toEqual(["versions", "database", "ingress", "producers"]);
   expect(readKaraokeMaintenanceJournal(base.journal, base.now()).state).toBe("retired");
 });
 
@@ -221,6 +276,7 @@ test("interruption between surfaces recovers from retained receipts without re-e
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "restored" as const,
       ingress: async () => "restored" as const,
       producers: async () => "restored" as const,
       database: async () => "restored" as const,
@@ -247,7 +303,7 @@ test("interruption between surfaces recovers from retained receipts without re-e
     }),
   ).rejects.toThrow();
   expect(state.calls.length).toBe(callsAfterInterruption);
-  // Restored surfaces without three retained receipts stay unresolved; the
+  // Restored surfaces without all four retained receipts stay unresolved; the
   // release time is never reconstructed from current state.
   await expect(binding.reconcileReleasedFence(intent)).rejects.toThrow("foreign_intent");
 });
@@ -261,6 +317,7 @@ test("fenced surfaces without positive non-execution evidence stay unresolved; o
       plan,
       surfaces: surfaces({ fail: null, calls: [] }, base.now),
       observeRestored: {
+        versions: async () => "fenced" as const,
         ingress: async () => "fenced" as const,
         producers: async () => "fenced" as const,
         database: async () => "fenced" as const,
@@ -300,6 +357,7 @@ test("mutation success with lost receipt persistence then re-fencing never re-ex
     plan,
     surfaces: surfaces(state, base.now),
     observeRestored: {
+      versions: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
       ingress: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
       producers: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
       database: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
@@ -318,7 +376,7 @@ test("mutation success with lost receipt persistence then re-fencing never re-ex
       reconcileReleasedFence: binding.reconcileReleasedFence,
     }),
   ).rejects.toThrow("karaoke_release_operation_unresolved");
-  expect(state.calls).toEqual(["ingress"]);
+  expect(state.calls).toEqual(["versions"]);
   // The surfaces are subsequently re-fenced; the retry must be unresolved
   // with zero additional mutations.
   reFenced = true;
@@ -345,6 +403,7 @@ test("a cancelled intent refuses subsequent execution", async () => {
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "fenced" as const,
       ingress: async () => "fenced" as const,
       producers: async () => "fenced" as const,
       database: async () => "fenced" as const,
@@ -372,11 +431,11 @@ test("a signed not-executed closure permits a fresh intent without erasing cance
     calls: [] as KaraokeReleaseSurface[],
   };
   const observe = async () =>
-    state.calls.length === 3 ? ("restored" as const) : ("fenced" as const);
+    state.calls.length === 4 ? ("restored" as const) : ("fenced" as const);
   const binding = makeKaraokeReleaseBinding({
     plan,
     surfaces: surfaces(state, f.now),
-    observeRestored: { ingress: observe, producers: observe, database: observe },
+    observeRestored: { versions: observe, ingress: observe, producers: observe, database: observe },
     evidence: evidence(f),
     readers: f.base.readers,
     now: f.now,
@@ -389,13 +448,13 @@ test("a signed not-executed closure permits a fresh intent without erasing cance
     verifyFenceRelease: binding.verifyFenceRelease,
     reconcileReleasedFence: binding.reconcileReleasedFence,
   });
-  expect(state.calls).toEqual(["ingress", "producers", "database"]);
+  expect(state.calls).toEqual(["versions", "database", "ingress", "producers"]);
   expect(readdirSync(f.journal.directory)).toContain(`${reconciliationDigest(cancelled)}.json`);
   expect(
     readFileSync(`${f.journal.directory}/${reconciliationDigest(cancelled)}.json`, "utf8"),
   ).toBe(cancelled);
   await expect(binding.verifyFenceRelease(old)).rejects.toThrow("refused-foreign");
-  expect(state.calls).toHaveLength(3);
+  expect(state.calls).toHaveLength(4);
 });
 
 test("a malformed claim from interrupted persistence refuses mutation", async () => {
@@ -413,6 +472,7 @@ test("a malformed claim from interrupted persistence refuses mutation", async ()
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "fenced" as const,
       ingress: async () => "fenced" as const,
       producers: async () => "fenced" as const,
       database: async () => "fenced" as const,
@@ -441,6 +501,7 @@ test("changing the plan during recovery refuses instead of hiding history", asyn
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "fenced" as const,
       ingress: async () => "fenced" as const,
       producers: async () => "fenced" as const,
       database: async () => "fenced" as const,
@@ -451,9 +512,10 @@ test("changing the plan during recovery refuses instead of hiding history", asyn
   });
   await binding.cancelBeforeExecution(intent);
   const altered = makeKaraokeReleaseBinding({
-    plan: { ...plan, surfaceOrder: ["database", "producers", "ingress"] as const },
+    plan: { ...plan, surfaceOrder: ["database", "versions", "ingress", "producers"] as const },
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "fenced" as const,
       ingress: async () => "fenced" as const,
       producers: async () => "fenced" as const,
       database: async () => "fenced" as const,
@@ -492,6 +554,7 @@ test("recovery refuses signed confirmations that run backward in reviewed surfac
     plan,
     surfaces: surfaces(state, f.now),
     observeRestored: {
+      versions: async () => "restored",
       ingress: async () => "restored",
       producers: async () => "restored",
       database: async () => "restored",

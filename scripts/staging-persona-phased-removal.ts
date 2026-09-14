@@ -23,6 +23,13 @@ async function checkLocks(admin: Pick<Client, "query">, budget: RemovalBatchBudg
   return row as { own: number; cluster: number };
 }
 
+/** The authorized diagnostic run stops immediately before the first
+ * destructive statement, after every read-only precheck, so a window that
+ * proves clean stays diagnostic-only instead of reconstructing. */
+export function assertDiagnosticStopBeforeApply(stopBeforeApply: boolean | undefined): void {
+  if (stopBeforeApply === true) throw new Error("diagnostic_stop_before_first_apply");
+}
+
 /** ONE root per caller-owned transaction. No BEGIN/COMMIT or live CLI. The
  * maintained producer fence and durable marker must already be established.
  * Any failed phase requires whole-dataset restore, not this helper's retry.
@@ -30,7 +37,12 @@ async function checkLocks(admin: Pick<Client, "query">, budget: RemovalBatchBudg
 export async function removeStagingRootBatch(
   admin: Pick<Client, "query">,
   artifacts: Parameters<typeof validateStagingResetArtifacts>[0],
-  expected: { transactionId: string; schemaOid: number; budget: RemovalBatchBudget },
+  expected: {
+    transactionId: string;
+    schemaOid: number;
+    budget: RemovalBatchBudget;
+    readonly stopBeforeApply?: boolean;
+  },
 ) {
   validateStagingResetArtifacts(artifacts);
   if (Object.values(expected.budget).some((n) => !Number.isSafeInteger(n) || n < 1))
@@ -62,6 +74,7 @@ export async function removeStagingRootBatch(
   if (root.phase === 1) await admin.query(`LOCK TABLE ${root.identity} IN ACCESS EXCLUSIVE MODE`);
   // Check before the irreversible-to-earlier-batches step, not after COMMIT.
   await checkLocks(admin, expected.budget);
+  assertDiagnosticStopBeforeApply(expected.stopBeforeApply);
   await admin.query(root.statement);
   const after = await checkLocks(admin, expected.budget);
   // Caller must verify outside-catalog integrity and the marker before COMMIT.

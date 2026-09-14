@@ -1,5 +1,6 @@
+/** Proof settlement inside the caller-owned transaction; activation stays separate. */
 import type { ControlPlaneError, ControlPlaneTransaction } from "@pirate/application";
-import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
+import type { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import { CommunityCreationIntent as CommunityCreationIntentContract } from "@pirate/contracts";
 import {
   communityCreationProviderBindingHash,
@@ -15,6 +16,7 @@ import {
 } from "@pirate/domain";
 import { Effect, Option, Schema } from "effect";
 import {
+  asNonNegativeInteger,
   asPositiveInteger,
   asString,
   asTimestamp,
@@ -32,18 +34,9 @@ import {
   TERMINAL_STATUSES,
   VERY_WEB_EVIDENCE_KIND,
   validId,
+  verificationStorageFailure,
 } from "./community-creation-internals.ts";
-
-/**
- * Historical community creation settlement.
- *
- * These helpers settle proofs produced by retired flows - identity completion
- * and grandfathered route-v1 HNS namespace ownership - against a creation
- * intent. They run only inside the caller's transaction and preserve the
- * original locking, revision and idempotency behavior. Current creation and
- * activation stay in the creation repository; the shared SQL and document
- * helpers it owns are imported here.
- */
+import { advanceCommunityJoinNationalityVerificationInTransaction } from "./community-join-nationality-completion.ts";
 
 export type CommunityCreationVerificationAdvanceOutcome =
   | Readonly<{ readonly kind: "advanced"; readonly intent_id: string; readonly revision: number }>
@@ -63,17 +56,119 @@ export type CommunityCreationVerificationAdvanceOutcome =
         | "evidence_invalid";
     }>;
 
-function verificationStorageFailure(): VerificationCompletionStorageFailed {
-  return new VerificationCompletionStorageFailed();
+/**
+ * Satisfies the creator's nationality requirement when a generic verification
+ * session for a `community_creation` nationality attempt completes. The write
+ * matches the exact actor, creation intent, requirement, and current attempt:
+ * a superseded generation, a foreign actor, a different action kind, or a
+ * non-pending state grants nothing and leaves the requirement untouched.
+ */
+function advanceNationalityCreationVerificationInTransaction(
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{
+    readonly actor_id: string;
+    readonly result_hash: string;
+    readonly session: Row;
+  }>,
+): Effect.Effect<
+  CommunityCreationVerificationAdvanceOutcome | null,
+  VerificationCompletionStorageFailed | ControlPlaneError
+> {
+  return Effect.gen(function* () {
+    const sessionIntentId = asString(input.session.intent_id);
+    const creationCeremonyId = asString(input.session.creation_ceremony_intent_id);
+    if (sessionIntentId === null || creationCeremonyId !== null) return null;
+
+    const attemptResult = yield* transaction.execute<Row>({
+      label: "community.creation.verification.lock-nationality-attempt",
+      text: `SELECT attempt.ceremony_intent_id,
+                    attempt.actor_id,
+                    attempt.intent_id,
+                    attempt.generation,
+                    attempt.provider_id,
+                    attempt.expires_at,
+                    state.status AS requirement_status,
+                    state.generation AS requirement_generation,
+                    state.current_ceremony_intent_id
+               FROM nationality_ceremony_attempts AS attempt
+               JOIN nationality_requirement_states AS state
+                 ON state.action_kind = attempt.action_kind
+                AND state.intent_id = attempt.intent_id
+                AND state.requirement_kind = attempt.requirement_kind
+              WHERE attempt.ceremony_intent_id = $1
+                AND attempt.actor_id = $2
+                AND attempt.action_kind = 'community_creation'
+                AND attempt.requirement_kind = 'nationality'
+              FOR UPDATE OF attempt, state`,
+      values: [sessionIntentId, input.actor_id],
+      readonly: false,
+    });
+    const attempt = oneRow(attemptResult.rows);
+    if (attempt === null) return null;
+    if (attempt === undefined) return yield* Effect.fail(verificationStorageFailure());
+
+    const attemptGeneration = asPositiveInteger(attempt.generation);
+    const stateGeneration = asNonNegativeInteger(attempt.requirement_generation);
+    const completedAt = asTimestamp(input.session.completed_at);
+    const terminalAt = asTimestamp(input.session.terminal_at);
+    const sessionExpiresAt = asTimestamp(input.session.expires_at);
+    if (
+      attemptGeneration === null ||
+      stateGeneration === null ||
+      completedAt === null ||
+      terminalAt === null ||
+      sessionExpiresAt === null ||
+      input.session.status !== "completed" ||
+      asString(input.session.completion_result_hash) !== input.result_hash ||
+      asString(input.session.completion_idempotency_key) === null ||
+      completedAt !== terminalAt ||
+      Date.parse(completedAt) >= Date.parse(sessionExpiresAt) ||
+      attemptGeneration !== stateGeneration ||
+      asString(attempt.current_ceremony_intent_id) !== sessionIntentId ||
+      attempt.requirement_status !== "pending"
+    ) {
+      return { kind: "stale", reason: "session_binding_drift" } as const;
+    }
+
+    const intentId = asString(attempt.intent_id);
+    if (intentId === null) return yield* Effect.fail(verificationStorageFailure());
+    const bumped = yield* transaction.execute<Row>({
+      label: "community.creation.verification.advance-nationality-intent",
+      text: `UPDATE community_creation_intents
+                SET revision = revision + 1, status = 'commit_ready', updated_at = clock_timestamp()
+              WHERE intent_id = $1 AND actor_id = $2 AND status = 'verification_required'
+            RETURNING revision`,
+      values: [intentId, input.actor_id],
+      readonly: false,
+    });
+    if (bumped.rowCount !== 1) {
+      return { kind: "stale", reason: "session_binding_drift" } as const;
+    }
+    const revision = asPositiveInteger(bumped.rows[0]?.revision);
+    if (revision === null) return yield* Effect.fail(verificationStorageFailure());
+
+    const satisfied = yield* transaction.execute({
+      label: "community.creation.verification.satisfy-nationality-requirement",
+      text: `UPDATE nationality_requirement_states
+                SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
+              WHERE action_kind = 'community_creation' AND intent_id = $2
+                AND requirement_kind = 'nationality' AND actor_id = $3
+                AND status = 'pending' AND generation = $4
+                AND current_ceremony_intent_id = $5`,
+      values: [completedAt, intentId, input.actor_id, attemptGeneration, sessionIntentId],
+      readonly: false,
+    });
+    if (satisfied.rowCount !== 1) {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    return { kind: "advanced", intent_id: intentId, revision } as const;
+  });
 }
 
 /**
- * Settle a completed canonical Very ceremony against its creation intent.
- *
- * The helper deliberately preserves valid generic/stale evidence: only a
- * storage or constraint failure aborts the surrounding completion transaction.
- * Replays may call it again to repair a completion produced before the intent
- * revision was appended.
+ * Dispatch a completed ceremony to its server-owned requirement state within
+ * the caller's transaction. Stale evidence grants nothing; storage failures
+ * abort settlement. Exact replay can repair a missing intent revision.
  */
 export function advanceCommunityCreationVerificationInTransaction(
   transaction: ControlPlaneTransaction,
@@ -95,6 +190,16 @@ export function advanceCommunityCreationVerificationInTransaction(
       return yield* Effect.fail(verificationStorageFailure());
     }
 
+    // Generic sessions for join nationality child ceremonies route here too:
+    // the join advance satisfies its own requirement state and every other
+    // path treats the completion as not applicable.
+    yield* advanceCommunityJoinNationalityVerificationInTransaction(transaction, input);
+    yield* advanceCommunityJoinNationalityVerificationInTransaction(
+      transaction,
+      input,
+      "handle_claim",
+    );
+
     const sessionResult = yield* transaction.execute<Row>({
       label: "community.creation.verification.lock-session",
       text: `SELECT proof_session_id, actor_id, intent_id, provider_id,
@@ -115,6 +220,16 @@ export function advanceCommunityCreationVerificationInTransaction(
     const session = oneRow(sessionResult.rows);
     if (session === undefined) return yield* Effect.fail(verificationStorageFailure());
     if (session === null) return { kind: "not_applicable" } as const;
+
+    const nationalityOutcome = yield* advanceNationalityCreationVerificationInTransaction(
+      transaction,
+      {
+        actor_id: input.actor_id,
+        result_hash: input.result_hash,
+        session,
+      },
+    );
+    if (nationalityOutcome !== null) return nationalityOutcome;
 
     const ceremonyIntentId = asString(session.creation_ceremony_intent_id);
     const completedAt = asTimestamp(session.completed_at);
@@ -455,8 +570,23 @@ export function advanceCommunityCreationVerificationInTransaction(
       ceremonyIntentId: `community-creation-ceremony-${crypto.randomUUID()}`,
       operation: "get",
     }).pipe(Effect.mapError(() => verificationStorageFailure()));
-    const nextStatus =
+    let nextStatus: "commit_ready" | "verification_required" =
       requirementProgress === "complete" ? "commit_ready" : "verification_required";
+    if (nextStatus === "commit_ready") {
+      // A grandfathered composed intent also carries the creator's nationality
+      // requirement; human completion alone never makes it commit-ready.
+      const nationalityPending = yield* transaction.execute<Row>({
+        label: "community.creation.verification.check-nationality",
+        text: `SELECT 1 AS pending
+                 FROM nationality_requirement_states
+                WHERE action_kind = 'community_creation' AND intent_id = $1
+                  AND requirement_kind = 'nationality' AND actor_id = $2
+                  AND status = 'pending'`,
+        values: [intentId, input.actor_id],
+        readonly: false,
+      });
+      if (nationalityPending.rows.length > 0) nextStatus = "verification_required";
+    }
     const nextRevision = document.revision + 1;
     const updated = yield* transaction.execute({
       label: "community.creation.verification.persist-intent",

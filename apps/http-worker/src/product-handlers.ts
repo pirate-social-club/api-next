@@ -1,4 +1,8 @@
 import {
+  type AgeVerificationStoreService,
+  getMyAgeVerification,
+} from "@pirate/application/use-cases/age-verification";
+import {
   type FollowCommunityInput,
   followCommunity,
 } from "@pirate/application/use-cases/community/follow-community";
@@ -60,11 +64,13 @@ export interface ProductHandlerServices {
   readonly identityStore?: CurrentUserServices["identityStore"];
   readonly moderationStore?: CommunityModerationStoreService;
   readonly ageAccessStore?: AgeAccessStoreService;
+  readonly ageVerificationStore?: AgeVerificationStoreService;
 }
 
 export type ProductHandlers = Readonly<{
   readonly GetCurrentUser: EndpointHandler;
   readonly GetMyAgeCapability: EndpointHandler;
+  readonly GetMyAgeVerification: EndpointHandler;
   readonly PutMyMinimumAgeAttestation: EndpointHandler;
   readonly ListMyCommunityMemberships: EndpointHandler;
   readonly GetCommunityPreview: EndpointHandler;
@@ -532,6 +538,16 @@ const homeFeed = async (request: DecodedRequest, services: ProductHandlerService
 
 export const makeProductHandlers = (services: ProductHandlerServices): ProductHandlers => ({
   GetCurrentUser: (request) => currentUser(request, services),
+  GetMyAgeVerification: (request) => {
+    if (services.ageVerificationStore === undefined)
+      throw new AuthError({ message: "Unauthorized" });
+    return Effect.runPromise(
+      getMyAgeVerification(
+        { actor: communityActor(request.principal) },
+        { ageVerificationStore: services.ageVerificationStore },
+      ),
+    );
+  },
   GetMyAgeCapability: (request) => ageCapabilityHandler(request, services),
   PutMyMinimumAgeAttestation: (request) => ageAttestationHandler(request, services),
   ListMyCommunityMemberships: (request) => accountCommunityMemberships(request, services),

@@ -226,7 +226,13 @@ function transactionWith(
   return {
     execute: <ResultRow>(statement: ControlPlaneStatement) => {
       statements.push(statement);
-      const configured = responses[statement.label];
+      const configured =
+        responses[statement.label] ??
+        // The join nationality router runs first and no-ops on an empty
+        // session lookup; these suites exercise the creation path only.
+        (statement.label === "community.join.nationality.lock-session"
+          ? { rows: [], rowCount: 0 }
+          : undefined);
       if (configured === undefined) throw new Error(`unexpected statement: ${statement.label}`);
       const sequence = Array.isArray(configured) ? configured : [configured];
       const position = positions.get(statement.label) ?? 0;
@@ -391,6 +397,7 @@ describe("community creation verification settlement", () => {
           rows: requirementRows("satisfied"),
           rowCount: 2,
         },
+        "community.creation.verification.check-nationality": { rows: [], rowCount: 0 },
         "community.creation.verification.persist-intent": { rows: [], rowCount: 1 },
         "community.creation.verification.insert-revision": { rows: [], rowCount: 1 },
         "community.creation.verification.load-result-replay": {
@@ -484,5 +491,77 @@ describe("community creation verification settlement", () => {
     expect(statements.map((statement) => statement.label)).not.toContain(
       "community.creation.verification.insert-result",
     );
+  });
+
+  test("holds a grandfathered composed intent open while creator nationality is pending", async () => {
+    const statements: ControlPlaneStatement[] = [];
+    const transaction = transactionWith(
+      {
+        "community.creation.verification.lock-session": { rows: [sessionRow()], rowCount: 1 },
+        "community.creation.verification.lock-authority": {
+          rows: [authorityRow("pending")],
+          rowCount: 1,
+        },
+        "community.creation.get.lock-intent": [
+          {
+            rows: [
+              intentRow({ revision: 1, humanStatus: "pending", namespaceStatus: "satisfied" }),
+            ],
+            rowCount: 1,
+          },
+          {
+            rows: [
+              intentRow({ revision: 2, humanStatus: "satisfied", namespaceStatus: "satisfied" }),
+            ],
+            rowCount: 1,
+          },
+        ],
+        "community.creation.verification.validate-evidence": {
+          rows: [{ evidence_valid: true }],
+          rowCount: 1,
+        },
+        "community.creation.commit.validate-evidence": {
+          rows: [
+            {
+              evidence_valid: true,
+              evidence_receipt_id: "receipt-1",
+              evidence_digest: "c".repeat(64),
+              subject_key_id: "subject-1",
+              subject_digest: "d".repeat(64),
+              receipt_expires_at: null,
+              assertion_expires_at: null,
+            },
+          ],
+          rowCount: 1,
+        },
+        "community.creation.verification.insert-result": { rows: [], rowCount: 1 },
+        "community.creation.verification.satisfy-human-requirement": { rows: [], rowCount: 1 },
+        "community.creation.get.lock-requirements": {
+          rows: requirementRows("satisfied"),
+          rowCount: 2,
+        },
+        "community.creation.verification.check-nationality": {
+          rows: [{ pending: 1 }],
+          rowCount: 1,
+        },
+        "community.creation.verification.persist-intent": { rows: [], rowCount: 1 },
+        "community.creation.verification.insert-revision": { rows: [], rowCount: 1 },
+      },
+      statements,
+    );
+
+    await expect(
+      Effect.runPromise(
+        advanceCommunityCreationVerificationInTransaction(transaction, {
+          actor_id: actorId,
+          proof_session_id: proofSessionId,
+          result_hash: resultHash,
+        }),
+      ),
+    ).resolves.toEqual({ kind: "advanced", intent_id: intentId, revision: 2 });
+    const persisted = statements.find(
+      (statement) => statement.label === "community.creation.verification.persist-intent",
+    );
+    expect(persisted?.values.slice(0, 3)).toEqual([2, "verification_required", intentId]);
   });
 });

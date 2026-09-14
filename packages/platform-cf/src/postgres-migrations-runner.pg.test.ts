@@ -133,8 +133,32 @@ suite("Postgres 17 migration runner", () => {
     completedTestCount += 1;
   });
 
+  test("reports the failed migration and driver message without erasing rollback", async () => {
+    await withSchema(async (scopedConnection, admin) => {
+      await expect(
+        runPostgresMigrations({
+          connectionString: scopedConnection,
+          migrations: [
+            {
+              version: "0001_invalid_check.sql",
+              checksum: "1".repeat(64),
+              sql: "CREATE TABLE invalid_check (value integer CHECK (value IN (SELECT 1)))",
+            },
+          ],
+        }),
+      ).rejects.toThrow(
+        "postgres.migrations.0001_invalid_check.sql.apply failed (SQLSTATE 0A000): cannot use subquery in check constraint",
+      );
+      const result = await admin.query(
+        "SELECT to_regclass('invalid_check') AS invalid_table, to_regclass('schema_migrations') AS ledger",
+      );
+      expect(result.rows).toEqual([{ invalid_table: null, ledger: null }]);
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 3) {
+    if (connectionString !== undefined && completedTestCount === 4) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

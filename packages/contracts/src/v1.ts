@@ -5,6 +5,7 @@ import {
   MinimumAgeAttestationV1,
   PutMyMinimumAgeAttestation,
 } from "./age-access.ts";
+import { GetMyAgeVerification } from "./age-verification.ts";
 import { Auth } from "./auth.ts";
 import { ContentRatingV1 } from "./community-moderation-policy.ts";
 import {
@@ -1749,7 +1750,7 @@ const JoinNextAction = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("none"), reason: Schema.Literal("already_joined") }),
 ]);
 
-const JoinEligibility = Schema.Struct({
+const JoinEligibilityV1 = Schema.Struct({
   community: Schema.String,
   membership_mode: Schema.Literals(["open", "request", "gated"]),
   human_verification_lane: Schema.NullOr(Schema.Literals(["very", "self"])),
@@ -1816,6 +1817,191 @@ const JoinEligibility = Schema.Struct({
   gate_evaluation: Schema.optional(Schema.NullOr(JsonObject)),
   next_action: JoinNextAction,
 });
+
+/**
+ * The provider-choice successor. A composed join adds explicit per-requirement
+ * progress and both document-provider alternatives so a client never ranks
+ * providers or compiles a start action from omitted facts. Proof completion
+ * only satisfies the requirement state; the separate join transaction still
+ * re-evaluates the account evidence before membership is granted.
+ */
+const JoinAcceptedDocumentProviders = Schema.Tuple([
+  Schema.Literal("self.pass"),
+  Schema.Literal("zkpassport"),
+]);
+
+const JoinHumanIdentityProgressV2 = Schema.Struct({
+  requirement: Schema.Literal("human_identity"),
+  status: Schema.Literals(["pending", "satisfied"]),
+  provider_id: Schema.Literal("very.web"),
+});
+
+const JoinNationalityProgressV2 = Schema.Struct({
+  requirement: Schema.Literal("nationality"),
+  status: Schema.Literals(["pending", "satisfied"]),
+  requirement_hash: Sha256Hex,
+  provider_id: VerificationProviderId,
+  accepted_provider_ids: JoinAcceptedDocumentProviders,
+  ceremony_intent_id: Schema.NonEmptyString,
+  generation: NonNegativeSafeInteger,
+}).check(
+  Schema.makeFilter((progress) =>
+    (progress.accepted_provider_ids as readonly string[]).includes(progress.provider_id) &&
+    progress.generation > 0
+      ? undefined
+      : "Expected the currently bound document provider and a started ceremony",
+  ),
+);
+
+const JoinEligibilityRequirementsV2 = Schema.Struct({
+  human_identity: Schema.optional(JoinHumanIdentityProgressV2),
+  nationality: Schema.optional(JoinNationalityProgressV2),
+}).check(
+  Schema.makeFilter((requirements) =>
+    requirements.human_identity !== undefined || requirements.nationality !== undefined
+      ? undefined
+      : "Composed eligibility requires at least one requirement entry",
+  ),
+);
+
+const JoinNextActionV2 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("start_verification"),
+    requirement: Schema.Literals(["human_identity", "nationality"]),
+    provider_id: VerificationProviderId,
+    intent_id: Schema.NonEmptyString,
+  }),
+  Schema.Struct({ kind: Schema.Literal("join") }),
+  Schema.Struct({ kind: Schema.Literal("request_membership") }),
+  Schema.Struct({
+    kind: Schema.Literal("wait"),
+    requirement: Schema.NullOr(Schema.Literals(["human_identity", "nationality"])),
+    reason_code: JoinNextActionWaitReasonCode,
+    retry_after_seconds: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("blocked"),
+    reason: Schema.Literals(["banned", "gate_failed", "unsupported"]),
+  }),
+  Schema.Struct({ kind: Schema.Literal("none"), reason: Schema.Literal("already_joined") }),
+]);
+
+const JoinEligibilityV2 = Schema.Struct({
+  join_eligibility_version: Schema.Literal("provider_choice_v2"),
+  community: Schema.String,
+  membership_mode: Schema.Literals(["open", "request", "gated"]),
+  human_verification_lane: Schema.NullOr(Schema.Literals(["very", "self"])),
+  preferred_verification_provider: Schema.optional(Schema.NullOr(VerificationProviderId)),
+  joinable_now: Schema.Boolean,
+  status: Schema.Literals([
+    "joinable",
+    "requestable",
+    "pending_request",
+    "verification_required",
+    "gate_failed",
+    "already_joined",
+    "banned",
+  ]),
+  requirements: JoinEligibilityRequirementsV2,
+  membership_gate_summaries: Schema.Array(MembershipGateSummary),
+  membership_gate_expression: Schema.optional(Schema.NullOr(MembershipGateExpression)),
+  missing_capabilities: Schema.optional(
+    Schema.Array(Schema.Literals(["human_identity", "nationality"])),
+  ),
+  suggested_verification_provider: Schema.optional(Schema.NullOr(VerificationProviderId)),
+  suggested_verification_intent: Schema.optional(
+    Schema.NullOr(Schema.Literals(["community_join"])),
+  ),
+  failure_reason: Schema.optional(
+    Schema.NullOr(
+      Schema.Literals([
+        "missing_verification",
+        "provider_not_accepted",
+        "nationality_mismatch",
+        "gender_mismatch",
+        "minimum_age_mismatch",
+        "erc721_holding_required",
+        "erc721_inventory_match_required",
+        "token_inventory_unavailable",
+        "wallet_score_too_low",
+        "asset_balance_too_low",
+        "unsupported",
+        "banned",
+      ]),
+    ),
+  ),
+  gate_evaluation: Schema.optional(Schema.NullOr(JsonObject)),
+  next_action: JoinNextActionV2,
+}).check(
+  Schema.makeFilter((eligibility) => {
+    if (eligibility.status === "joinable") {
+      return eligibility.next_action.kind === "join"
+        ? undefined
+        : "Joinable eligibility requires the join action";
+    }
+    if (eligibility.status === "verification_required") {
+      if (eligibility.next_action.kind === "start_verification") {
+        const progress =
+          eligibility.next_action.requirement === "nationality"
+            ? eligibility.requirements.nationality
+            : eligibility.requirements.human_identity;
+        if (progress === undefined) {
+          return "Verification start must name a present requirement";
+        }
+        if (eligibility.next_action.requirement === "nationality") {
+          return progress.requirement === "nationality" &&
+            progress.status === "pending" &&
+            progress.provider_id === eligibility.next_action.provider_id &&
+            progress.ceremony_intent_id === eligibility.next_action.intent_id
+            ? undefined
+            : "Nationality start action must match its requirement progress";
+        }
+        return progress.requirement === "human_identity" &&
+          progress.provider_id === eligibility.next_action.provider_id
+          ? undefined
+          : "Human start action must match its requirement progress";
+      }
+      if (eligibility.next_action.kind === "wait") {
+        const requirement = eligibility.next_action.requirement;
+        if (requirement === null) return undefined;
+        return eligibility.requirements[requirement] === undefined
+          ? "Verification wait must name a present requirement"
+          : undefined;
+      }
+      return "Verification-required eligibility requires a typed verification action";
+    }
+    if (eligibility.status === "gate_failed") {
+      return eligibility.next_action.kind === "blocked" &&
+        eligibility.next_action.reason === "gate_failed"
+        ? undefined
+        : "Gate-failed eligibility requires its blocked action";
+    }
+    if (eligibility.status === "banned") {
+      return eligibility.next_action.kind === "blocked" &&
+        eligibility.next_action.reason === "banned"
+        ? undefined
+        : "Banned eligibility requires its blocked action";
+    }
+    if (eligibility.status === "already_joined") {
+      return eligibility.next_action.kind === "none" &&
+        eligibility.next_action.reason === "already_joined"
+        ? undefined
+        : "Joined eligibility requires its terminal action";
+    }
+    if (eligibility.status === "pending_request") {
+      return eligibility.next_action.kind === "wait" &&
+        eligibility.next_action.reason_code === "membership_pending"
+        ? undefined
+        : "Pending requests require the membership wait";
+    }
+    return eligibility.next_action.kind === "request_membership"
+      ? undefined
+      : "Requestable eligibility requires the request action";
+  }),
+);
+export type JoinEligibilityV2 = Schema.Schema.Type<typeof JoinEligibilityV2>;
+
+export const JoinEligibility = Schema.Union([JoinEligibilityV2, JoinEligibilityV1]);
 
 export const GetJoinEligibility = endpoint({
   method: "GET",
@@ -2214,6 +2400,7 @@ export const v1Registry = {
   SessionExchange,
   RegisterIdentity,
   SessionLogout,
+  GetMyAgeVerification,
   GetMyAgeCapability,
   PutMyMinimumAgeAttestation,
   GetCurrentUser,

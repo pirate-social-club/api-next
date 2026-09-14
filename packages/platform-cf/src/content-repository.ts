@@ -304,7 +304,7 @@ const postFromRow = (row: Row): PostDocument | null => {
     ...(postType === "video" ? { caption: stringValue(row, "video_caption") } : {}),
     analysis_state: "pending",
     content_safety_state: "pending",
-    age_gate_policy: "none",
+    age_gate_policy: stringValue(row, "content_rating") === "adult_18" ? "18_plus" : "none",
     created,
   };
 };
@@ -1059,13 +1059,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           ) {
             return yield* invalid("get-post");
           }
-          if (
-            (post.post_type === "text" ||
-              post.post_type === "song" ||
-              post.post_type === "video") &&
-            contentRating === "adult_18" &&
-            !ratingViewAllowed
-          ) {
+          if (!ratingViewAllowed) {
             return {
               kind: "age_locked",
               content_rating: "adult_18",

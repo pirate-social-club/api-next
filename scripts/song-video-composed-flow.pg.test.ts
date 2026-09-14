@@ -1585,40 +1585,50 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
     completedTestCount += 1;
   }, 600_000);
 
-  test("a song made adult-only while its master renders publishes the video adult-only", async () => {
-    await inSchema(async (admin, schema, directory) => {
-      const composed = await compose(admin, schema, directory);
-      const submitted = await submitCapture(composed, "rating-floor");
-      const step: VideoWorkflowStep = {
-        ...plainStep,
-        do: async (name, run) => {
-          if (name === "render-publish") {
-            // Whatever made the song adult-only did so after the decision.
-            await admin.query("SET session_replication_role = replica");
-            await admin.query(
-              `UPDATE "${schema}".posts SET content_rating='adult_18' WHERE post_id=$1`,
-              [SONG_POST],
-            );
-            await admin.query("SET session_replication_role = origin");
-          }
-          return run();
-        },
-      };
-      expect(
-        await runVideoAnalysisWorkflow(submitted.effectIdentity, step, composed.workflow),
-      ).toEqual({ status: "published" });
-      const ratings = await admin.query(
-        `SELECT
+  test("a song made adult-only during rendering or after publication raises the video floor", async () => {
+    for (const moment of ["render", "published"] as const) {
+      await inSchema(async (admin, schema, directory) => {
+        const composed = await compose(admin, schema, directory);
+        const submitted = await submitCapture(composed, "rating-floor");
+        const step: VideoWorkflowStep = {
+          ...plainStep,
+          do: async (name, run) => {
+            if (moment === "render" && name === "render-publish") {
+              // Whatever made the song adult-only did so after the decision.
+              await admin.query(
+                `UPDATE "${schema}".posts SET content_rating='adult_18' WHERE post_id=$1`,
+                [SONG_POST],
+              );
+            }
+            return run();
+          },
+        };
+        expect(
+          await runVideoAnalysisWorkflow(submitted.effectIdentity, step, composed.workflow),
+        ).toEqual({ status: "published" });
+        if (moment === "published")
+          await admin.query(
+            `UPDATE "${schema}".posts SET content_rating='adult_18' WHERE post_id=$1`,
+            [SONG_POST],
+          );
+        const ratings = await admin.query(
+          `SELECT
            (SELECT d.effective_content_rating FROM "${schema}".media_video_publication_decisions d
              WHERE d.submission_id=$1) AS decided,
            (SELECT p.content_rating FROM "${schema}".posts p
              JOIN "${schema}".media_video_song_references e ON e.post_id=p.post_id
-             WHERE e.submission_id=$1) AS published`,
-        [submitted.submissionId],
-      );
-      // Decided general before the change; published at the song's floor.
-      expect(ratings.rows[0]).toEqual({ decided: "general", published: "adult_18" });
-    });
+             WHERE e.submission_id=$1) AS published,
+           (SELECT content_rating FROM "${schema}".media_publication_projections WHERE submission_id=$1) AS projection`,
+          [submitted.submissionId],
+        );
+        // Decided general before the change; published at the song's floor.
+        expect(ratings.rows[0]).toEqual({
+          decided: "general",
+          published: "adult_18",
+          projection: "adult_18",
+        });
+      });
+    }
     completedTestCount += 1;
   }, 600_000);
 

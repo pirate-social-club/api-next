@@ -1,0 +1,52 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/gates-v2-community-nationality.pg.test.ts:
+(pass) Gates v2 nationality provider alternatives and evidence loader > widened provider key stores both alternatives and rejects a duplicate provider row [2005.08ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > loads account-bound evidence for either provider and passes with a witness [1947.90ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > a revoked alternative cannot hide valid evidence and a pinned provider cannot substitute it [2042.55ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > enforcement serializes revalidation with its decision transaction [2247.88ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > treats an unchanged-requirement mismatch as missing evidence, not reuse [2038.08ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > expired evidence is actionable needs_evidence [1991.17ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > latest revalidation outcome gates reuse without disclosing a country [1911.88ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > ownership recovery to another account removes the evidence rather than failing it [2024.43ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > a current nationality policy with missing provider rows never becomes an open gate [2442.45ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > palm alone cannot admit to a nationality-gated community [2076.92ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > either document provider satisfies nationality alongside palm [2864.69ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > creator activation rejects without nationality evidence and passes with it [2137.65ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > creator activation is a no-op without a current nationality policy [2004.99ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > issues, fences, completes, and joins through the joiner nationality ceremony [4536.50ms]
+
+packages/platform-cf/src/community-creation-nationality-flow.pg.test.ts:
+(pass) Postgres 17 community creation nationality flow > reuses accepted account evidence for a composed commit [2725.55ms]
+(pass) Postgres 17 community creation nationality flow > issues, switches, completes, and commits the creator nationality ceremony [3579.80ms]
+(pass) Postgres 17 community creation nationality flow > rolls back the terminal commit when the creator lacks accepted evidence [2206.05ms]
+(pass) Postgres 17 community creation nationality flow > requires fresh proof when the allowlist changes and fences the old ceremony [2682.51ms]
+(pass) Postgres 17 community creation nationality flow > keeps Palm-only creation commit-ready and fails closed without authoring [1972.23ms]
+
+packages/platform-cf/src/nationality-ceremony-store.pg.test.ts:
+(pass) nationality ceremony store > issues generation one, replays the same provider as wait, and switches provider at generation two [1969.51ms]
+(pass) nationality ceremony store > retires an expired attempt before issuing the next generation [3417.86ms]
+(pass) nationality ceremony store > rejects a foreign actor on an owned intent and an unknown provider [2715.07ms]
+(pass) nationality ceremony store > keeps join, claim, and creator ceremonies separate per action intent [1953.96ms]
+
+packages/platform-cf/src/gates-v2-community.pg.test.ts:
+(pass) Gates v2 curated age community vertical > records needs_evidence before denying a user without evidence [2086.25ms]
+(pass) Gates v2 curated age community vertical > rejects a current policy pointer that does not match the pinned policy [1959.11ms]
+(pass) Gates v2 curated age community vertical > loads evidence, persists an array witness, joins atomically, and replays by membership predicate [2909.42ms]
+(pass) Gates v2 curated age community vertical > keeps underage evidence terminal and never creates membership without enforce/pass [2009.73ms]
+(pass) Gates v2 curated age community vertical > rolls back membership when decision persistence fails [2019.44ms]
+(pass) Gates v2 curated age community vertical > rolls back the decision when membership persistence fails [2001.30ms]
+(pass) Gates v2 curated age community vertical > treats expired evidence as actionable needs_evidence [2248.98ms]
+(pass) Gates v2 curated age community vertical > issues, replays, waits, and joins through exact persisted Very evidence [2772.41ms]
+(pass) Gates v2 curated age community vertical > issues a Very intent when the runtime role cannot update policy metadata [2012.00ms]
+(pass) Gates v2 curated age community vertical > does not treat a Very creation ceremony as join evidence [2077.81ms]
+(pass) Gates v2 curated age community vertical > fails closed before issuing an intent when the persisted provider binding drifts [1998.59ms]
+(pass) Gates v2 curated age community vertical > serializes concurrent eligibility reads onto one opaque join intent [1984.00ms]
+(pass) Gates v2 curated age community vertical > locks passing Very evidence in completion order before committing membership [2199.37ms]
+(pass) Gates v2 curated age community vertical > invalidates completed join evidence after active subject ownership recovery [2456.63ms]
+
+ 37 pass
+ 0 fail
+ 162 expect() calls
+Ran 37 tests across 4 files. [86.53s]
+Verified 4 fresh task-owned completion sentinels.

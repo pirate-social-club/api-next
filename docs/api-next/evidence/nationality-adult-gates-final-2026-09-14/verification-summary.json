@@ -1,0 +1,29 @@
+{
+  "source_commit": "edd957c713f8654d341ac4ec1a956d26ba63f428",
+  "migration_count": 187,
+  "api_client": {
+    "version": "0.79.0",
+    "artifact_sha256": "85488f318432c4ee3e124f16be406acc4a762c4953fc8f1cc58f0a2cc6e19c27"
+  },
+  "check_exit_code": 0,
+  "test": {
+    "exit_code": 0,
+    "unit": 4181,
+    "node": 20,
+    "workerd": [82, 74, 2, 10, 15]
+  },
+  "postgres": {
+    "general_shards": [209, 168, 185, 195],
+    "general_skips": [1, 0, 0, 2],
+    "namespace": 35,
+    "completion_markers": 41,
+    "recovery": 7,
+    "recovery_assertions": 4003
+  },
+  "not_run_locally": [
+    "trusted pull-request secret-boundary gate",
+    "live Self document acceptance",
+    "live ZKPassport document acceptance",
+    "staging deployment and acceptance"
+  ]
+}

@@ -52,6 +52,9 @@ const HTTP_BINDING_KINDS = {
   ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID: "var",
   ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL: "var",
   ZKPASSPORT_DEV_MODE: "var",
+  NATIONALITY_AUTHORING_ENABLED: "var",
+  NATIONALITY_AUTHORING_POLICY_REVISION: "var",
+  NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS: "var",
   VERY_OAUTH_ENABLED: "var",
   VERY_OAUTH_AUTHORIZATION_ENDPOINT: "var",
   VERY_OAUTH_TOKEN_ENDPOINT: "var",
@@ -372,6 +375,11 @@ const HTTP_ZKPASSPORT_ROTATION_DECLARATIONS = [
   "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL",
 ] as const;
 
+const HTTP_NATIONALITY_AUTHORING_REQUIRED = [
+  "NATIONALITY_AUTHORING_POLICY_REVISION",
+  "NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS",
+] as const;
+
 const HTTP_HNS_REQUIRED = [
   "HNS_OWNERSHIP_CONFIGURATION_REFERENCE",
   "HNS_OWNERSHIP_CONFIGURATION_VERSION",
@@ -536,6 +544,9 @@ const requiredNamesFor = (
   const required: string[] = [...HTTP_ALWAYS_REQUIRED, ...HTTP_REGISTRATION_REQUIRED];
   if (environment.vars.ZKPASSPORT_ENABLED === "true") {
     required.push(...HTTP_ZKPASSPORT_REQUIRED);
+  }
+  if (environment.vars.NATIONALITY_AUTHORING_ENABLED === "true") {
+    required.push(...HTTP_NATIONALITY_AUTHORING_REQUIRED);
   }
   if (environment.vars.HNS_OWNERSHIP_ENABLED === "true") {
     required.push(...HTTP_HNS_REQUIRED);
@@ -717,6 +728,15 @@ describe("source-to-Wrangler binding contract", () => {
     expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
       "ELEVENLABS_API_KEY",
     );
+  });
+
+  test("staging pins real-document verification before nationality authoring is enabled", () => {
+    const staging = declaredEnvironment(configs.http, "staging");
+    expect(staging.vars.SELF_PASS_MOCK_PASSPORT).toBe("false");
+    expect(staging.vars.ZKPASSPORT_DEV_MODE).toBe("false");
+    expect(staging.vars.NATIONALITY_AUTHORING_ENABLED).toBe("false");
+    expect(staging.vars.NATIONALITY_AUTHORING_POLICY_REVISION).toBe("1");
+    expect(staging.vars.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS).toBe("31536000");
   });
 
   test("video Workflow bindings agree on class, name and processor script in every environment", () => {

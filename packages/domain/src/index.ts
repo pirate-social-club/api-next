@@ -1,3 +1,4 @@
+export * from "./handles/nationality-authoring.ts";
 /**
  * @pirate/domain — pure entities, value objects, policies, reducers.
  *
@@ -56,19 +57,33 @@ export type {
   EvidenceUnavailableReason,
   GatesV2EvaluationOutcome,
   HumanMembershipRequiredClaim,
+  NationalityEvaluation,
+  NationalityEvaluatorInput,
   RequiredClaim,
 } from "./gates-v2/index.ts";
 export {
+  ACCOUNT_AGE_18_REQUIREMENT_HASH,
+  ACCOUNT_AGE_18_REQUIREMENTS,
+  type AccountAgeVerificationPolicy,
+  ageVerificationReservationHash,
   CURATED_AGE_18_POLICY,
   CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
   CURATED_HUMAN_MEMBERSHIP_POLICY,
   CURATED_HUMAN_MEMBERSHIP_POLICY_CANONICAL_PREIMAGE,
+  compileAccountAgeVerificationPolicy,
+  compileNationalityPolicy,
+  documentProviderBindingHash,
   evaluateCuratedAge,
   evaluateCuratedHumanMembership,
+  evaluateNationality,
   humanMembershipPolicyCanonicalPreimage,
+  NationalityPolicy,
+  nationalityCeremonyReservationHash,
+  nationalityProviderBindingHash,
   policyCanonicalPreimage,
 } from "./gates-v2/index.ts";
 export * from "./handles/label-claim-rules.ts";
+export * from "./handles/nationality-qualification.ts";
 export * from "./handles/platform-pirate-rename.ts";
 export * from "./handles/policy.ts";
 export * from "./handles/sales-v2.ts";

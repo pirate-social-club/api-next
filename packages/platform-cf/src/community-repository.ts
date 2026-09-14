@@ -18,8 +18,10 @@ import { decodeCommunityCanonicalRouteV2 } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
 import {
   CommunityJoinIntentDataInvalid,
+  fulfillCommunityJoinIntents,
   resolveOrIssueCommunityJoinIntent,
 } from "./community-join-intent-store.ts";
+import { resolveJoinNationalityCeremony } from "./community-join-nationality-ceremony.ts";
 import {
   type CommunityGateEvaluation,
   CURATED_AGE_GATE_SUMMARY,
@@ -28,8 +30,12 @@ import {
   gateEvaluationDetails,
   loadCuratedAgeEvaluation,
   loadCuratedHumanMembershipEvaluation,
+  loadCuratedNationalityEvaluation,
+  loadCuratedNationalityPolicy,
   persistEnforceDecision,
+  persistNationalityEnforceDecision,
 } from "./gates-v2-community.ts";
+import { NationalityCeremonyDataInvalid } from "./nationality-ceremony-store.ts";
 import { PLATFORM_AGE_18_VERIFICATION_INTENT_ID } from "./verification-intent-resolver.ts";
 
 type CommunityRow = {
@@ -932,6 +938,102 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                 return yield* Effect.fail(invalid("eligibility"));
               }
               if (evaluation.outcome === "pass") {
+                const nationalityPolicy = yield* loadCuratedNationalityPolicy(
+                  transaction,
+                  input.communityId,
+                ).pipe(
+                  Effect.mapError((error) =>
+                    error instanceof GatesV2CommunityDataInvalid ? invalid("eligibility") : error,
+                  ),
+                );
+                if (nationalityPolicy !== null) {
+                  const nationality = yield* loadCuratedNationalityEvaluation(transaction, {
+                    userId: input.userId,
+                    policy: nationalityPolicy,
+                  }).pipe(
+                    Effect.mapError((error) =>
+                      error instanceof GatesV2CommunityDataInvalid ? invalid("eligibility") : error,
+                    ),
+                  );
+                  if (nationality.outcome === "indeterminate") {
+                    return yield* Effect.fail(invalid("eligibility"));
+                  }
+                  const nationalitySummary = {
+                    gate_type: "nationality" as const,
+                    accepted_providers: ["self.pass", "zkpassport"] as const,
+                    required_values: nationalityPolicy.requirement.allowed_countries,
+                  };
+                  const summaries = [CURATED_HUMAN_GATE_SUMMARY, nationalitySummary];
+                  if (nationality.outcome === "pass") {
+                    return {
+                      join_eligibility_version: "provider_choice_v2" as const,
+                      community: id,
+                      membership_mode: mode,
+                      human_verification_lane: verification,
+                      preferred_verification_provider: "very.web" as const,
+                      joinable_now: true,
+                      status: "joinable" as const,
+                      requirements: {
+                        human_identity: {
+                          requirement: "human_identity" as const,
+                          status: "satisfied" as const,
+                          provider_id: "very.web" as const,
+                        },
+                      },
+                      membership_gate_summaries: summaries,
+                      gate_evaluation: gateEvaluation,
+                      next_action: { kind: "join" as const },
+                    };
+                  }
+                  const action = yield* resolveJoinNationalityCeremony(transaction, {
+                    actorId: input.userId,
+                    communityId: input.communityId,
+                    policy: nationalityPolicy,
+                  }).pipe(
+                    Effect.mapError((error) =>
+                      error instanceof NationalityCeremonyDataInvalid
+                        ? invalid("eligibility")
+                        : error,
+                    ),
+                  );
+                  return {
+                    join_eligibility_version: "provider_choice_v2" as const,
+                    community: id,
+                    membership_mode: mode,
+                    human_verification_lane: verification,
+                    preferred_verification_provider: "very.web" as const,
+                    joinable_now: false,
+                    status: "verification_required" as const,
+                    requirements: {
+                      human_identity: {
+                        requirement: "human_identity" as const,
+                        status: "satisfied" as const,
+                        provider_id: "very.web" as const,
+                      },
+                      nationality: {
+                        requirement: "nationality" as const,
+                        status: "pending" as const,
+                        requirement_hash: nationalityPolicy.requirement_hash,
+                        provider_id: action.providerId,
+                        accepted_provider_ids: ["self.pass", "zkpassport"] as const,
+                        ceremony_intent_id: action.ceremonyIntentId,
+                        generation: action.generation,
+                      },
+                    },
+                    membership_gate_summaries: summaries,
+                    missing_capabilities: ["nationality" as const],
+                    suggested_verification_provider: action.providerId,
+                    suggested_verification_intent: "community_join" as const,
+                    failure_reason: "missing_verification" as const,
+                    gate_evaluation: gateEvaluation,
+                    next_action: {
+                      kind: "start_verification" as const,
+                      requirement: "nationality" as const,
+                      provider_id: action.providerId,
+                      intent_id: action.ceremonyIntentId,
+                    },
+                  };
+                }
                 return {
                   community: id,
                   membership_mode: mode,
@@ -1205,6 +1307,40 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               requestId: `join-${globalThis.crypto.randomUUID()}`,
               evaluation,
             });
+            if (verification === "very") {
+              const nationalityPolicy = yield* loadCuratedNationalityPolicy(
+                transaction,
+                input.communityId,
+              ).pipe(
+                Effect.mapError((error) =>
+                  error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+                ),
+              );
+              if (nationalityPolicy !== null) {
+                const nationality = yield* loadCuratedNationalityEvaluation(transaction, {
+                  userId: input.actor.userId,
+                  policy: nationalityPolicy,
+                  lockEvidence: true,
+                }).pipe(
+                  Effect.mapError((error) =>
+                    error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+                  ),
+                );
+                yield* persistNationalityEnforceDecision(transaction, {
+                  communityId: input.communityId,
+                  userId: input.actor.userId,
+                  requestId: `join-${globalThis.crypto.randomUUID()}`,
+                  policy: nationalityPolicy,
+                  evaluation: nationality,
+                });
+                if (nationality.outcome !== "pass" && evaluation.outcome === "pass") {
+                  return {
+                    kind: "gated-rejected" as const,
+                    reason: "membership-required" as const,
+                  };
+                }
+              }
+            }
             if (evaluation.outcome !== "pass") {
               return {
                 kind: "gated-rejected" as const,
@@ -1281,6 +1417,14 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               values: [generatedId("follow"), input.communityId, input.actor.userId],
               readonly: false,
             });
+            yield* fulfillCommunityJoinIntents(transaction, {
+              communityId: input.communityId,
+              userId: input.actor.userId,
+            }).pipe(
+              Effect.mapError((error) =>
+                error instanceof CommunityJoinIntentDataInvalid ? invalid("join") : error,
+              ),
+            );
           }
           return joined({
             community: communityId,
