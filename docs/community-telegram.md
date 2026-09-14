@@ -86,10 +86,10 @@ and model-budget denials, send at most one notice per user, chat and community
 per fifteen-minute cooldown; later refusals inside the cooldown are recorded
 but not answered. Private replies are delivered in creation order per chat: a
 pending, sending, retry-scheduled or recently uncertain earlier reply keeps
-later text and voice replies back, an uncertain reply holds the queue for five
-minutes before later replies proceed, and an exhausted delivery no longer
-blocks. Channel publications keep their revision semantics and are not part of
-this ordering.
+later text and voice replies back. The uncertain hold is bounded: after five
+minutes later replies proceed even though the earlier delivery remains
+unresolved, and an exhausted delivery no longer blocks. Channel publications
+keep their revision semantics and are not part of this ordering.
 
 Cleanup and bot rotation fence running handlers. Before starting a provider
 call, committing a stage result, publishing a reply or saving a conversation,
