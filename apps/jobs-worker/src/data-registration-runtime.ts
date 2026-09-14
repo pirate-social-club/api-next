@@ -1,5 +1,6 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import { replaceLostDataRegistrationWorkflow } from "@pirate/application/data/registration-workflow-queue";
+import { isWorkflowInstanceMissingError } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import {
   type CloudflareDataRegistrationWorkflowBinding,
   makeCloudflareDataRegistrationWorkflowLauncher,
@@ -26,6 +27,13 @@ export type DataRegistrationMaintenanceResult = Readonly<{
   dispatchFailed: number;
   inspected: number;
   present: number;
+  finished: number;
+  reconciled: number;
+  reverted: number;
+  escalated: number;
+  pending: number;
+  unavailable: number;
+  indeterminate: number;
   replaced: number;
   stale: number;
   limitReached: number;
@@ -39,8 +47,6 @@ export type DataRegistrationWorkflowCandidate = Readonly<{
   launch_state: "delivered" | "exhausted";
 }>;
 
-const workflowIsNeverMissingByThrownError = (): boolean => false;
-
 export async function recoverDataRegistrationWorkflowCandidates(
   candidates: readonly DataRegistrationWorkflowCandidate[],
   dependencies: Readonly<{
@@ -50,12 +56,31 @@ export async function recoverDataRegistrationWorkflowCandidates(
 ): Promise<
   Pick<
     DataRegistrationMaintenanceResult,
-    "inspected" | "present" | "replaced" | "stale" | "limitReached" | "lookupFailed"
+    | "inspected"
+    | "present"
+    | "finished"
+    | "reconciled"
+    | "reverted"
+    | "escalated"
+    | "pending"
+    | "unavailable"
+    | "indeterminate"
+    | "replaced"
+    | "stale"
+    | "limitReached"
+    | "lookupFailed"
   >
 > {
   const counts = {
     inspected: 0,
     present: 0,
+    finished: 0,
+    reconciled: 0,
+    reverted: 0,
+    escalated: 0,
+    pending: 0,
+    unavailable: 0,
+    indeterminate: 0,
     replaced: 0,
     stale: 0,
     limitReached: 0,
@@ -64,11 +89,7 @@ export async function recoverDataRegistrationWorkflowCandidates(
   for (const candidate of candidates) {
     counts.inspected += 1;
     const revision = BigInt(candidate.workflow_revision);
-    if (dataWorkflowReplacementLimitReached(revision)) {
-      counts.limitReached += 1;
-      continue;
-    }
-    let workflowStatus: "present" | "missing";
+    let workflowStatus: Awaited<ReturnType<typeof dependencies.workflow.get>>;
     try {
       workflowStatus = await dependencies.workflow.get(candidate.workflow_instance_id);
     } catch {
@@ -79,6 +100,28 @@ export async function recoverDataRegistrationWorkflowCandidates(
       counts.present += 1;
       continue;
     }
+    // A finished instance is never replaced: the persisted transaction and
+    // receipt evidence reconciles the operation, and pending or unavailable
+    // evidence is reported without authorizing a resubmission.
+    if (workflowStatus === "finished") {
+      counts.finished += 1;
+      const outcome = await dependencies.store.reconcileTerminalWorkflow(
+        candidate.registration_operation_id,
+        revision,
+      );
+      if (outcome === "stale") counts.stale += 1;
+      else counts[outcome] += 1;
+      continue;
+    }
+    // An existing instance with an unrecognized status proves no absence.
+    if (workflowStatus === "indeterminate") {
+      counts.indeterminate += 1;
+      continue;
+    }
+    if (dataWorkflowReplacementLimitReached(revision)) {
+      counts.limitReached += 1;
+      continue;
+    }
     try {
       const outcome = await replaceLostDataRegistrationWorkflow(
         candidate.registration_operation_id,
@@ -86,6 +129,7 @@ export async function recoverDataRegistrationWorkflowCandidates(
         dependencies,
       );
       if (outcome === "present") counts.present += 1;
+      else if (outcome === "finished" || outcome === "indeterminate") counts[outcome] += 1;
       else counts.replaced += 1;
     } catch {
       counts.stale += 1;
@@ -171,7 +215,7 @@ export function makeDataRegistrationMaintenance(
   const queue = env.DATA_REGISTRATION_QUEUE;
   const workflow = makeCloudflareDataRegistrationWorkflowLauncher(
     env.DATA_REGISTRATION_WORKFLOW,
-    workflowIsNeverMissingByThrownError,
+    isWorkflowInstanceMissingError,
   );
   const store = makeDataRegistrationStore(runtime);
 

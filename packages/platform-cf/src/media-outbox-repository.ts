@@ -83,10 +83,12 @@ const payloadFor = (value: unknown, kind: EventType): MediaOutboxPayload | null 
       !["terms", "lyrics", "reference"].includes(String(object.trigger)))
   )
     return null;
+  // Zero is reserved for an audited operator budget reset. PostgreSQL rejects
+  // an unaudited zero-sequence launch; normal automatic replacements start at one.
   if (
     kind === "workflow_replacement" &&
     (!Number.isSafeInteger(object.replacement_sequence) ||
-      (object.replacement_sequence as number) < 1)
+      (object.replacement_sequence as number) < 0)
   )
     return null;
   if (
@@ -357,6 +359,9 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
         input.workflowRevision < 1 ||
         input.workflowInstanceId !==
           deterministicMediaWorkflowInstanceId(input.operationId, input.workflowRevision) ||
+        (input.eventType === "workflow_replacement" &&
+          (!Number.isSafeInteger(input.replacementSequence) ||
+            (input.replacementSequence ?? 0) < 1)) ||
         checkedPayload === null ||
         !payloadMatchesInput(checkedPayload, input)
       )

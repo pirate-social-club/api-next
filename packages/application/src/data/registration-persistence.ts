@@ -222,6 +222,12 @@ export type DataRegistrationReceiptObservation = Readonly<{
   ipMetadataHash: string | null;
   nftMetadataUri: string | null;
   nftMetadataHash: string | null;
+  /**
+   * The terms a confirmed song attached, persisted with the observation that
+   * carries its registration. Null for a video and for a confirmed
+   * observation recorded before the terms evidence was persisted.
+   */
+  attachedLicense: DataAttachedLicense | null;
   evidenceRef: string;
   observedAt: string;
 }>;
@@ -240,6 +246,41 @@ export type DataRegistrationOutbox = Readonly<{
   leaseExpiresAt: string | null;
   nextEligibleAt: string | null;
   failureCode: "queue_unavailable" | "workflow_unavailable" | "invalid_binding" | null;
+}>;
+
+/**
+ * The outcome of reconciling a finished DATA registration Workflow from its
+ * persisted transaction and receipt evidence. `reconciled` is the replay of a
+ * durable row that already reached the registered end state; `reverted`
+ * records the receipt_reverted failure; `escalated` moves a submitted
+ * registration whose completion evidence is not durable (including a
+ * confirmed receipt) to reconciliation_required for an operator decision;
+ * `pending` and `unavailable` prove no completion and never authorize a
+ * replacement; `stale` means the workflow authority already moved.
+ */
+export type DataRegistrationTerminalReconciliation =
+  | "reconciled"
+  | "reverted"
+  | "escalated"
+  | "pending"
+  | "unavailable"
+  | "stale";
+
+export type ResumeDataRegistrationReconciliationInput = Readonly<{
+  registrationOperationId: string;
+  operatorPrincipalId: string;
+  idempotencyKey: string;
+  evidenceRef: string;
+  reasonCode: "receipt_inconclusive" | "terms_evidence_unavailable";
+  expectedWorkflowRevision: bigint;
+}>;
+
+export type DataRegistrationResumeResult = Readonly<{
+  kind: "resumed" | "replay";
+  registrationOperationId: string;
+  workflowRevision: bigint;
+  attemptId: string;
+  outbox: DataRegistrationOutbox;
 }>;
 
 export type CreateDataRegistrationOperationInput = Readonly<{
@@ -403,6 +444,25 @@ export interface DataRegistrationStore {
     registrationOperationId: string,
     expectedWorkflowRevision: bigint,
   ) => Promise<Readonly<{ operation: DataRegistrationOperation; outbox: DataRegistrationOutbox }>>;
+  /**
+   * Reconciles a finished Workflow from persisted transaction and receipt
+   * evidence. The workflow revision is the completion fence: a mismatched or
+   * moved authority is `stale`. Pending or unavailable evidence leaves the
+   * durable row untouched and never authorizes a replacement submission.
+   */
+  readonly reconcileTerminalWorkflow: (
+    registrationOperationId: string,
+    expectedWorkflowRevision: bigint,
+  ) => Promise<DataRegistrationTerminalReconciliation>;
+  /**
+   * Operator-authorized resolution for a reconciliation_required registration:
+   * returns the attempt to observation under a fresh workflow revision and a
+   * pending replacement launch. The audit row, attempt, revision and launch
+   * commit together; a repeated request replays its original result.
+   */
+  readonly resumeReconciliation: (
+    input: ResumeDataRegistrationReconciliationInput,
+  ) => Promise<DataRegistrationResumeResult>;
   readonly getOutbox: (outboxId: string) => Promise<DataRegistrationOutbox | null>;
   readonly listEligibleOutbox: (limit: number) => Promise<readonly DataRegistrationOutbox[]>;
   readonly claimOutbox: (

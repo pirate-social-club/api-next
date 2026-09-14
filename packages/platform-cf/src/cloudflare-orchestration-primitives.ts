@@ -35,6 +35,27 @@ const PRESENT_WORKFLOW_STATUSES = new Set([
 export const isPresentWorkflowStatus = (status: string): boolean =>
   PRESENT_WORKFLOW_STATUSES.has(status);
 
+/**
+ * Terminal instance states. A finished instance is neither proof of success nor
+ * grounds for replacement: recovery must reconcile the persisted operation row
+ * instead of relaunching the Workflow.
+ */
+const FINISHED_WORKFLOW_STATUSES = new Set(["complete", "errored", "terminated"]);
+
+export const isFinishedWorkflowStatus = (status: string): boolean =>
+  FINISHED_WORKFLOW_STATUSES.has(status);
+
+/**
+ * The installed runtime reports an unknown Workflow instance id as an `Error`
+ * whose message is exactly `instance.not_found`. That is measured behavior of
+ * the installed runtime, not a guaranteed API contract, and the runtime
+ * exposes no typed error. Classification therefore matches only that exact
+ * message: unfamiliar errors must remain visible lookup failures rather than
+ * being mistaken for a missing instance.
+ */
+export const isWorkflowInstanceMissingError = (error: unknown): boolean =>
+  error instanceof Error && error.message.trim() === "instance.not_found";
+
 export function classifyWorkflowCreateBatch(
   created: readonly unknown[],
   unexpectedCountMessage: string,

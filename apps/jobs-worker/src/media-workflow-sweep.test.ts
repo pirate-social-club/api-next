@@ -48,6 +48,7 @@ describe("media Workflow missing-instance sweep", () => {
     const observed: number[] = [];
     const dependencies = {
       store: {
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [current],
         loadAuthority: async () => current,
         replaceMissingWorkflow: async (
@@ -68,6 +69,10 @@ describe("media Workflow missing-instance sweep", () => {
     expect(await sweepMissingMediaWorkflows(dependencies)).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -83,6 +88,7 @@ describe("media Workflow missing-instance sweep", () => {
     let replacementWrites = 0;
     const result = await sweepMissingMediaWorkflows({
       store: {
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [active, terminal],
         loadAuthority: async () => ({ ...active, workflowRevision: 2 }),
         replaceMissingWorkflow: async () => {
@@ -95,6 +101,10 @@ describe("media Workflow missing-instance sweep", () => {
     expect(result).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 1,
       limitReached: 0,
@@ -104,6 +114,7 @@ describe("media Workflow missing-instance sweep", () => {
 
     const present = await sweepMissingMediaWorkflows({
       store: {
+        reconcileTerminalWorkflow: async () => "escalated" as const,
         listWorkflowCandidates: async () => [active],
         loadAuthority: async () => active,
         replaceMissingWorkflow: async () => {
@@ -116,6 +127,10 @@ describe("media Workflow missing-instance sweep", () => {
     expect(present).toEqual({
       inspected: 1,
       present: 1,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 0,
       limitReached: 0,
@@ -129,6 +144,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [active],
           loadAuthority: async () => active,
           replaceMissingWorkflow: async () => "replay",
@@ -138,6 +154,10 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 1,
       limitReached: 0,
@@ -150,6 +170,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [
             candidate({ workflowRevision: 4, replacementSequence: 3 }),
           ],
@@ -164,6 +185,10 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 0,
       stale: 0,
       limitReached: 1,
@@ -185,6 +210,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [current],
           loadAuthority: async () => current,
           replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
@@ -203,6 +229,10 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -223,6 +253,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [current],
           loadAuthority: async () => current,
           replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
@@ -237,6 +268,10 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 1,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -253,6 +288,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
           listWorkflowCandidates: async () => [failing, healthy],
           loadAuthority: async () => healthy,
           replaceMissingWorkflow: async () => {
@@ -273,6 +309,10 @@ describe("media Workflow missing-instance sweep", () => {
     ).toEqual({
       inspected: 2,
       present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 0,
       replaced: 1,
       stale: 0,
       limitReached: 0,
@@ -280,5 +320,130 @@ describe("media Workflow missing-instance sweep", () => {
     });
     expect(replacementWrites).toBe(1);
     expect(observed).toContain("workflow_lookup_failed");
+  });
+
+  test("escalates a finished instance even when its replacement budget is spent", async () => {
+    const active = candidate({ replacementSequence: 3 });
+    let replacementWrites = 0;
+    const observed: string[] = [];
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
+          listWorkflowCandidates: async () => [active],
+          loadAuthority: async () => active,
+          replaceMissingWorkflow: async () => {
+            replacementWrites += 1;
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "finished" },
+        observe: (event: { event: string }) => observed.push(event.event),
+      }),
+    ).toEqual({
+      inspected: 1,
+      present: 0,
+      finished: 1,
+      reconciled: 0,
+      escalated: 1,
+      indeterminate: 0,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+    expect(replacementWrites).toBe(0);
+    expect(observed).toContain("workflow_terminal");
+  });
+
+  test("reconciles a publish-phase terminal instance through the durable fence", async () => {
+    const active = candidate({ phase: "publish", decisionRevision: 2 });
+    let replacementWrites = 0;
+    const observed: string[] = [];
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          reconcileTerminalWorkflow: async () => "reconciled" as const,
+          listWorkflowCandidates: async () => [active],
+          loadAuthority: async () => active,
+          replaceMissingWorkflow: async () => {
+            replacementWrites += 1;
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "finished" },
+        observe: (event: { event: string }) => observed.push(event.event),
+      }),
+    ).toEqual({
+      inspected: 1,
+      present: 0,
+      finished: 1,
+      reconciled: 1,
+      escalated: 0,
+      indeterminate: 0,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+    expect(replacementWrites).toBe(0);
+    expect(observed).toContain("workflow_terminal");
+  });
+
+  test("concurrent sweepers produce exactly one replacement through the fence", async () => {
+    let current = candidate();
+    let replacementWrites = 0;
+    const dependencies = {
+      store: {
+        reconcileTerminalWorkflow: async () => "escalated" as const,
+        listWorkflowCandidates: async () => [current],
+        loadAuthority: async () => current,
+        replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
+          if (expected.workflowRevision !== current.workflowRevision) return "stale" as const;
+          replacementWrites += 1;
+          current = { ...current, workflowRevision: current.workflowRevision + 1 };
+          return "committed" as const;
+        },
+      },
+      workflow: { get: async () => "missing" as const },
+    };
+    const [first, second] = await Promise.all([
+      sweepMissingMediaWorkflows(dependencies),
+      sweepMissingMediaWorkflows(dependencies),
+    ]);
+    expect([first.replaced, second.replaced].sort()).toEqual([0, 1]);
+    expect(first.lookupFailed + second.lookupFailed).toBe(0);
+    expect(replacementWrites).toBe(1);
+  });
+
+  test("never replaces an existing instance whose status is indeterminate", async () => {
+    const active = candidate();
+    let replacementWrites = 0;
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          reconcileTerminalWorkflow: async () => "escalated" as const,
+          listWorkflowCandidates: async () => [active],
+          loadAuthority: async () => active,
+          replaceMissingWorkflow: async () => {
+            replacementWrites += 1;
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "indeterminate" },
+      }),
+    ).toEqual({
+      inspected: 1,
+      present: 0,
+      finished: 0,
+      reconciled: 0,
+      escalated: 0,
+      indeterminate: 1,
+      replaced: 0,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+    });
+    expect(replacementWrites).toBe(0);
   });
 });
