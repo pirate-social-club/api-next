@@ -1117,6 +1117,20 @@ function align(
         return Effect.failCause(cause);
       }),
     );
+    if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
+    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
+    if (recovery.kind === "committed") {
+      if (started.kind === "run") {
+        yield* completeAttempt(current, started.lease, recovery.result, dependencies);
+      }
+      return { outcome: "alignment_recorded" } as const;
+    }
+    if (recovery.kind === "stale") {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    if (recovery.kind === "failed") {
+      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+    }
     if (started.kind === "exhausted") {
       const exhaustedResult = {
         kind: "alignment",
@@ -1128,18 +1142,6 @@ function align(
       );
       if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
       return { outcome: "alignment_recorded" } as const;
-    }
-    if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
-    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
-    if (recovery.kind === "committed") {
-      yield* completeAttempt(current, started.lease, recovery.result, dependencies);
-      return { outcome: "alignment_recorded" } as const;
-    }
-    if (recovery.kind === "stale") {
-      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
-    }
-    if (recovery.kind === "failed") {
-      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
     }
     let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
     if (current.lyrics === null) {

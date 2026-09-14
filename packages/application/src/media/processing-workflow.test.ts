@@ -1493,6 +1493,38 @@ describe("media processing workflow", () => {
     expect(store.providerReviews).toBe(0);
   });
 
+  test("alignment exhaustion preserves a result committed before its response was lost", async () => {
+    class AlignmentExhaustedStore extends FakeStore {
+      override startAttempt: MediaProcessingStore["startAttempt"] = async () => ({
+        kind: "exhausted",
+      });
+    }
+    const committedResult = {
+      kind: "alignment",
+      status: "ready",
+      artifactRef: "timed-lyrics-1",
+      artifactSha256: hash,
+      artifact: { words: [] },
+    } as const;
+    const store = new AlignmentExhaustedStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        replacementSequence: 0,
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    store.alignmentRecovery = { kind: "committed", result: committedResult };
+
+    expect(
+      await runWorkflow(workflowPayload(store), "alignment", dependencies(store, providers([]))),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(store.alignmentResults).toEqual([]);
+    expect(store.events).not.toContain("complete:alignment");
+  });
+
   test("stale attempt completion is fenced", async () => {
     const store = new FakeStore();
     const first = await store.startAttempt({
