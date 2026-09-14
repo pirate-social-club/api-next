@@ -2411,13 +2411,16 @@ export function makeDataRegistrationStore(
         const result = yield* db.execute<Row>({
           label: "data-registration.outbox.claim",
           text: `UPDATE data_registration_outbox
-                    SET state='running',delivery_attempts=delivery_attempts+1,
+                    SET state='running',
+                        delivery_attempts=delivery_attempts+CASE WHEN state='running' THEN 0 ELSE 1 END,
                         claim_owner=$2,claim_fence=claim_fence+1,
                         lease_expires_at=clock_timestamp()+($3::text||' seconds')::interval,
                         next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp()
-                  WHERE outbox_id=$1 AND delivery_attempts<5 AND
-                    (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp())
-                     OR (state='running' AND lease_expires_at<=clock_timestamp()))
+                  WHERE outbox_id=$1 AND
+                    ((delivery_attempts<5 AND
+                      (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp())))
+                     OR (state='running' AND delivery_attempts<=5
+                         AND lease_expires_at<=clock_timestamp()))
                   RETURNING outbox_id,registration_operation_id,workflow_revision,
                     workflow_instance_id,event_type,effect_identity,state,delivery_attempts,
                     claim_owner,claim_fence,lease_expires_at,next_eligible_at,failure_code`,

@@ -47,7 +47,10 @@ export async function consumeDataRegistrationQueueMessage(
   const existing = await dependencies.store.getOutbox(outboxId);
   if (existing === null) return { disposition: "dlq" };
   if (existing.state === "delivered") return { disposition: "ack" };
-  if (existing.state === "exhausted" || existing.deliveryAttempts >= 5) {
+  if (
+    existing.state === "exhausted" ||
+    (existing.deliveryAttempts >= 5 && existing.state !== "running")
+  ) {
     return { disposition: "dlq" };
   }
   const claimed = await dependencies.store.claimOutbox(

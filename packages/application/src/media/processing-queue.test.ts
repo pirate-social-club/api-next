@@ -32,7 +32,8 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
       current = {
         ...current,
         state: "running",
-        deliveryAttempts: current.deliveryAttempts + 1,
+        deliveryAttempts:
+          current.state === "running" ? current.deliveryAttempts : current.deliveryAttempts + 1,
         claimFence: current.claimFence + 1,
         claimOwner: workerId,
       };
@@ -175,6 +176,20 @@ describe("media processing Queue ingress", () => {
     );
     expect(third).toEqual({ disposition: "dlq" });
     expect(harness.current().state).toBe("exhausted");
+  });
+
+  test("reclaims an expired third delivery without consuming a fourth attempt", async () => {
+    const harness = queueHarness();
+    harness.setCurrent(record({ deliveryAttempts: 3, state: "running", claimFence: 3 }));
+
+    expect(
+      await consumeMediaProcessingQueueMessage(
+        { outbox_id: "outbox-1" },
+        { store: harness.store, workflow: harness.workflow, workerId: "queue-worker-4" },
+      ),
+    ).toEqual({ disposition: "ack" });
+    expect(harness.calls).toEqual(["claim", "create", "complete"]);
+    expect(harness.current().deliveryAttempts).toBe(3);
   });
 
   test("invalid payloads and missing authority are sent to DLQ without launch", async () => {
