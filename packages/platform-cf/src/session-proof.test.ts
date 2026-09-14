@@ -132,7 +132,11 @@ type Verifier = ReturnType<typeof makeJwksSessionProofVerifier>;
 function makeTestVerifier(
   fetcher: (input: string, init?: RequestInit) => Promise<Response>,
   clock: () => number,
-  overrides: { readonly cacheTtlMs?: number; readonly jwksRefreshCooldownMs?: number } = {},
+  overrides: {
+    readonly cacheTtlMs?: number;
+    readonly fetchTimeoutMs?: number;
+    readonly jwksRefreshCooldownMs?: number;
+  } = {},
 ): Verifier {
   return makeJwksSessionProofVerifier({
     privy: {
@@ -142,10 +146,21 @@ function makeTestVerifier(
     },
     fetcher,
     nowMs: clock,
-    fetchTimeoutMs: 5_000,
+    fetchTimeoutMs: overrides.fetchTimeoutMs ?? 5_000,
     cacheTtlMs: overrides.cacheTtlMs ?? 300_000,
     jwksRefreshCooldownMs: overrides.jwksRefreshCooldownMs ?? 30_000,
   });
+}
+
+function deferred<A>(): {
+  readonly promise: Promise<A>;
+  readonly resolve: (value: A) => void;
+} {
+  let resolve!: (value: A) => void;
+  const promise = new Promise<A>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }
 
 async function verifyToken(verifier: Verifier, accessToken: string): Promise<boolean> {
@@ -278,9 +293,197 @@ describe("bounded provider response reads", () => {
     expect(streamed.cancelled()).toBe(true);
     expect(streamed.response.body?.locked).toBe(false);
   });
+
+  test("propagates interruption to a pending provider user lookup", async () => {
+    const key = await makeRsaKey("key-a");
+    const started = deferred<void>();
+    const settled = deferred<void>();
+    let lookupSignal: AbortSignal | undefined;
+    const verifier = makeJwksSessionProofVerifier({
+      privy: {
+        jwksUrl: "https://provider.test/jwks.json",
+        issuer: "test-issuer",
+        audience: "test-audience",
+      },
+      privyApi: {
+        apiUrl: "https://api.privy.test",
+        appId: "app-id",
+        appSecret: "app-secret",
+      },
+      fetcher: async (input, init) => {
+        if (input.includes("/jwks")) return jwksResponse([key]);
+        lookupSignal = init?.signal ?? undefined;
+        started.resolve();
+        try {
+          return await new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+          });
+        } finally {
+          settled.resolve();
+        }
+      },
+      nowMs: () => 1_000_000,
+    });
+    const parent = new AbortController();
+    const result = Effect.runPromiseExit(
+      verifier.verifyPrivy({
+        accessToken: await signToken(key),
+        identityToken: null,
+        walletAddress: null,
+      }),
+      { signal: parent.signal },
+    );
+
+    await started.promise;
+    parent.abort(new DOMException("cancelled", "AbortError"));
+    expect((await result)._tag).toBe("Failure");
+    await settled.promise;
+    expect(lookupSignal?.aborted).toBe(true);
+    expect(lookupSignal?.reason).toMatchObject({ name: "AbortError" });
+  });
 });
 
 describe("JWKS refresh control", () => {
+  test("parent interruption wins the pending JWKS deadline race", async () => {
+    const key = await makeRsaKey("key-a");
+    const started = deferred<void>();
+    const settled = deferred<void>();
+    let providerSignal: AbortSignal | undefined;
+    const verifier = makeTestVerifier(
+      async (_input, init) => {
+        providerSignal = init?.signal ?? undefined;
+        started.resolve();
+        try {
+          return await new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+          });
+        } finally {
+          settled.resolve();
+        }
+      },
+      () => 1_000_000,
+      { fetchTimeoutMs: 100 },
+    );
+    const parent = new AbortController();
+    const result = Effect.runPromiseExit(
+      verifier.verifyPrivy({
+        accessToken: await signToken(key),
+        identityToken: null,
+        walletAddress: null,
+      }),
+      { signal: parent.signal },
+    );
+
+    await started.promise;
+    parent.abort(new DOMException("cancelled", "AbortError"));
+    expect((await result)._tag).toBe("Failure");
+    await settled.promise;
+    expect(providerSignal?.aborted).toBe(true);
+    expect(providerSignal?.reason).toMatchObject({ name: "AbortError" });
+    await Bun.sleep(120);
+    expect(providerSignal?.reason).toMatchObject({ name: "AbortError" });
+  });
+
+  test("the JWKS deadline aborts and joins a pending provider request", async () => {
+    const key = await makeRsaKey("key-a");
+    const settled = deferred<void>();
+    let providerSignal: AbortSignal | undefined;
+    const verifier = makeTestVerifier(
+      async (_input, init) => {
+        providerSignal = init?.signal ?? undefined;
+        try {
+          return await new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+          });
+        } finally {
+          settled.resolve();
+        }
+      },
+      () => 1_000_000,
+      { fetchTimeoutMs: 10 },
+    );
+
+    expect(await verifyToken(verifier, await signToken(key))).toBe(false);
+    await settled.promise;
+    expect(providerSignal?.aborted).toBe(true);
+    expect(providerSignal?.reason).toMatchObject({ name: "TimeoutError" });
+  });
+
+  test("cancels and unlocks a pending JWKS body when interrupted", async () => {
+    const key = await makeRsaKey("key-a");
+    const reading = deferred<void>();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        reading.resolve();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = new Response(body);
+    const verifier = makeTestVerifier(
+      async () => response,
+      () => 1_000_000,
+    );
+    const parent = new AbortController();
+    const result = Effect.runPromiseExit(
+      verifier.verifyPrivy({
+        accessToken: await signToken(key),
+        identityToken: null,
+        walletAddress: null,
+      }),
+      { signal: parent.signal },
+    );
+
+    await reading.promise;
+    parent.abort(new DOMException("cancelled", "AbortError"));
+    expect((await result)._tag).toBe("Failure");
+    expect(cancelled).toBe(true);
+    expect(response.body?.locked).toBe(false);
+  });
+
+  test("keeps a shared refresh alive for a remaining waiter", async () => {
+    const key = await makeRsaKey("key-a");
+    const token = await signToken(key);
+    const started = deferred<void>();
+    const release = deferred<Response>();
+    let calls = 0;
+    let providerSignal: AbortSignal | undefined;
+    const verifier = makeTestVerifier(
+      async (_input, init) => {
+        calls += 1;
+        providerSignal = init?.signal ?? undefined;
+        started.resolve();
+        return release.promise;
+      },
+      () => 1_000_000,
+    );
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const input = { accessToken: token, identityToken: null, walletAddress: null };
+    const first = Effect.runPromiseExit(verifier.verifyPrivy(input), {
+      signal: firstController.signal,
+    });
+    const second = Effect.runPromiseExit(verifier.verifyPrivy(input), {
+      signal: secondController.signal,
+    });
+
+    await started.promise;
+    firstController.abort(new DOMException("cancelled", "AbortError"));
+    expect((await first)._tag).toBe("Failure");
+    expect(providerSignal?.aborted).toBe(false);
+    release.resolve(jwksResponse([key]));
+    expect((await second)._tag).toBe("Success");
+    expect(calls).toBe(1);
+  });
+
   test("shares one pending refresh across concurrent cache misses", async () => {
     const key = await makeRsaKey("key-a");
     const token = await signToken(key);
