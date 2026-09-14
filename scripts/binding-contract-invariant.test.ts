@@ -730,6 +730,15 @@ describe("source-to-Wrangler binding contract", () => {
     );
   });
 
+  test("staging pins real-document verification before nationality authoring is enabled", () => {
+    const staging = declaredEnvironment(configs.http, "staging");
+    expect(staging.vars.SELF_PASS_MOCK_PASSPORT).toBe("false");
+    expect(staging.vars.ZKPASSPORT_DEV_MODE).toBe("false");
+    expect(staging.vars.NATIONALITY_AUTHORING_ENABLED).toBe("false");
+    expect(staging.vars.NATIONALITY_AUTHORING_POLICY_REVISION).toBe("1");
+    expect(staging.vars.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS).toBe("31536000");
+  });
+
   test("video Workflow bindings agree on class, name and processor script in every environment", () => {
     for (const environment of ENVIRONMENTS) {
       const suffix = environment === "development" ? "" : `-${environment}`;
