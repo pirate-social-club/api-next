@@ -47,7 +47,10 @@ const relationCatalogs = [
 ] as const;
 
 /** Same-database catalog digest. Never use it as a portable recovery fingerprint. */
-export async function snapshotOutsideResetCatalog(admin: Pick<Client, "query">) {
+export async function snapshotOutsideResetCatalog(
+  admin: Pick<Client, "query">,
+  options: { readonly replaceableSchemaIdentity?: boolean } = {},
+) {
   const queries: [string, string][] = [
     [
       "pg_inherits",
@@ -120,7 +123,27 @@ export async function snapshotOutsideResetCatalog(admin: Pick<Client, "query">) 
       "pg_database",
     ].map((table): [string, string] => [
       table,
-      `SELECT to_jsonb(o) AS fact FROM pg_catalog.${table} o`,
+      table === "pg_namespace" && options.replaceableSchemaIdentity === true
+        ? "SELECT to_jsonb(o) AS fact FROM pg_catalog.pg_namespace o WHERE nspname<>'api_next'"
+        : table === "pg_default_acl" && options.replaceableSchemaIdentity === true
+          ? `SELECT pg_catalog.jsonb_build_object(
+            'role',(SELECT r.rolname FROM pg_catalog.pg_roles r WHERE r.oid=o.defaclrole),
+            'namespace',CASE WHEN o.defaclnamespace=0 THEN NULL
+              ELSE (SELECT n.nspname FROM pg_catalog.pg_namespace n WHERE n.oid=o.defaclnamespace) END,
+            'objtype',o.defaclobjtype,
+            'acl',o.defaclacl
+          ) AS fact FROM pg_catalog.pg_default_acl o`
+          : table === "pg_database" && options.replaceableSchemaIdentity === true
+            ? `SELECT pg_catalog.jsonb_build_object(
+            'database',to_jsonb(o)-'datacl',
+            'effective_acl',(SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+              'role',r.rolname,
+              'connect',pg_catalog.has_database_privilege(r.oid,o.oid,'CONNECT'),
+              'create',pg_catalog.has_database_privilege(r.oid,o.oid,'CREATE'),
+              'temporary',pg_catalog.has_database_privilege(r.oid,o.oid,'TEMPORARY')
+            ) ORDER BY r.rolname) FROM pg_catalog.pg_roles r)
+          ) AS fact FROM pg_catalog.pg_database o`
+            : `SELECT to_jsonb(o) AS fact FROM pg_catalog.${table} o`,
     ]),
   ];
   const digest = createHash("sha256");

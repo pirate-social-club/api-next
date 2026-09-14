@@ -411,6 +411,7 @@ async function launcherHarness() {
       await verifyServingPair();
     },
   });
+  let communityCreationInput: Record<string, unknown> | undefined;
   const run = (upgradeFails: boolean) =>
     runStagingResetReleaseLive({
       env: {
@@ -418,12 +419,15 @@ async function launcherHarness() {
         CLOUDFLARE_API_TOKEN: "token",
         CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
         CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+        E2E_PRIVY_EMAIL: "e2e@example.test",
+        E2E_PRIVY_OTP: "123456",
       },
       provider,
       connect: () => clients.shift() as Client,
       fetch: acceptanceFetch as unknown as typeof globalThis.fetch,
       refenceIngress: async () => {},
       dependencies: {
+        reset: async () => makeReset() as never,
         assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
         measureAdmission: fakeAdmission(directory),
         makeSurfaces: (() => fakeSurfaces()) as never,
@@ -433,13 +437,23 @@ async function launcherHarness() {
           async producers() {},
         })) as never,
         makeVerifier: (() => async () => {}) as never,
+        makeCommunityCreation: ((input: Record<string, unknown>) => {
+          communityCreationInput = input;
+          return async () => {};
+        }) as never,
         makeApplier: (() => async () => {
           if (upgradeFails) throw new Error("migration apply failed");
           return stagingUpgradeReceipt({ sourceSha: STAGING_UPGRADE_RELEASE.sourceSha }, applied);
         }) as never,
       },
     });
-  return { directory, ends, run, dispose: () => rm(directory, { recursive: true, force: true }) };
+  return {
+    directory,
+    ends,
+    run,
+    communityCreationInput: () => communityCreationInput,
+    dispose: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
 test("the launcher composes the reviewed path and closes the connection", async () => {
@@ -448,6 +462,19 @@ test("the launcher composes the reviewed path and closes the connection", async 
     const result = await harness.run(false);
     expect(result.release.disposition).toBe("released");
     expect(harness.ends).toEqual(["operator"]);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+test("an injected acceptance factory is constructed without resolving the sibling checkout", async () => {
+  const harness = await launcherHarness();
+  try {
+    const result = await harness.run(false);
+    expect(result.release.disposition).toBe("released");
+    const input = harness.communityCreationInput();
+    expect(input).toBeDefined();
+    expect(Object.keys(input ?? {})).not.toContain("solidRoot");
   } finally {
     await harness.dispose();
   }
@@ -515,11 +542,14 @@ test("an acceptance failure after ingress opens re-fences through the production
           CLOUDFLARE_API_TOKEN: "token",
           CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
           CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+          E2E_PRIVY_EMAIL: "e2e@example.test",
+          E2E_PRIVY_OTP: "123456",
         },
         provider,
         connect: () => clients.shift() as Client,
         fetch,
         dependencies: {
+          reset: async () => makeReset() as never,
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
           measureAdmission: fakeAdmission(directory),
           makeSurfaces: (() => fakeSurfaces()) as never,
@@ -531,6 +561,9 @@ test("an acceptance failure after ingress opens re-fences through the production
             return { database: async () => {}, producers: async () => {}, ingress: real.ingress };
           }) as never,
           makeVerifier: (() => async () => {}) as never,
+          makeCommunityCreation: (() => async () => {
+            throw new Error("staging_community_creation_failed");
+          }) as never,
           makeApplier: (() => async () =>
             stagingUpgradeReceipt(
               { sourceSha: STAGING_UPGRADE_RELEASE.sourceSha },
@@ -605,11 +638,14 @@ test("a stalled probe records ingress failure and the database re-fence still ru
           CLOUDFLARE_API_TOKEN: "token",
           CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
           CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+          E2E_PRIVY_EMAIL: "e2e@example.test",
+          E2E_PRIVY_OTP: "123456",
         },
         provider,
         connect: () => clients.shift() as Client,
         fetch,
         dependencies: {
+          reset: async () => makeReset() as never,
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
           measureAdmission: fakeAdmission(directory),
           makeSurfaces: (() => fakeSurfaces()) as never,
@@ -626,6 +662,9 @@ test("a stalled probe records ingress failure and the database re-fence still ru
             };
           }) as never,
           makeVerifier: (() => async () => {}) as never,
+          makeCommunityCreation: (() => async () => {
+            throw new Error("staging_community_creation_failed");
+          }) as never,
           makeApplier: (() => async () =>
             stagingUpgradeReceipt(
               { sourceSha: STAGING_UPGRADE_RELEASE.sourceSha },
@@ -661,12 +700,15 @@ test("a launcher whose reversal cannot be read refuses before any mutation", asy
           CLOUDFLARE_API_TOKEN: "token",
           CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
           CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+          E2E_PRIVY_EMAIL: "e2e@example.test",
+          E2E_PRIVY_OTP: "123456",
         },
         fetch: (async () => {
           throw new Error("access transport unavailable");
         }) as unknown as typeof globalThis.fetch,
         dependencies: {
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
+          makeCommunityCreation: (() => async () => {}) as never,
         },
         provider: async () => {
           providerCalls++;
@@ -674,6 +716,40 @@ test("a launcher whose reversal cannot be read refuses before any mutation", asy
         },
       }),
     ).rejects.toThrow("staging_live_ingress_refence_unavailable");
+    expect(providerCalls).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("missing journey credentials refuse before any provider contact", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "live-launcher-credentials-"));
+  const configPath = join(directory, "live-release.json");
+  await writeFile(configPath, JSON.stringify(configuration(directory)));
+  let providerCalls = 0;
+  try {
+    await expect(
+      runStagingResetReleaseLive({
+        env: {
+          STAGING_RESET_RELEASE_LIVE_CONFIG: configPath,
+          CLOUDFLARE_API_TOKEN: "token",
+          CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
+          CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+        },
+        dependencies: {
+          assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
+          // The launcher must refuse on the missing credential itself; if this
+          // ran, the window would already have resolved the Solid checkout.
+          makeCommunityCreation: (() => {
+            throw new Error("community creation must not be constructed");
+          }) as never,
+        },
+        provider: async () => {
+          providerCalls++;
+          return databasePayload;
+        },
+      }),
+    ).rejects.toThrow("staging_community_creation_credentials_missing");
     expect(providerCalls).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });

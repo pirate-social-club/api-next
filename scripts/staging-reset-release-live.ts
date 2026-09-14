@@ -20,18 +20,17 @@ import { STAGING_FENCED_QUEUES } from "./staging-persona-cloudflare-producers.ts
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
 import { describeRehearsalFailure } from "./staging-persona-rehearsal-failure.ts";
 import {
-  loadStagingResetArtifacts,
-  validateStagingResetArtifacts,
-} from "./staging-persona-reset-plan.ts";
-import {
+  applyStagingUpgradeInPhases,
   loadStagingUpgradeArtifacts,
   type StagingUpgradeReceipt,
-  stagingUpgradeBaseLedger,
-  stagingUpgradeReceipt,
 } from "./staging-persona-upgrade-plan.ts";
 import type { RefencedOutcomes, StagingRefence } from "./staging-reset-release-executor.ts";
 import {
   reconstructAndReleaseStaging,
+  type StagingResetAdmission,
+  type StagingResetArtifacts,
+  type StagingResetCompletion,
+  type StagingResetDatabase,
   StagingResetRunUnresolved,
   StagingUpgradeFailedRestoreRequired,
 } from "./staging-reset-release-runtime.ts";
@@ -103,9 +102,10 @@ const DeploymentInput = Schema.Struct({
 
 /** The owner-held live-window inputs. Shape validation is not approval: every
  * cross-binding below must match the reviewed plan and the reviewed checkouts,
- * and the recorded owner approval must name this exact plan digest. */
+ * and the recorded owner approval must name the digest of the release plan and
+ * destructive reset mode together. */
 export const StagingResetReleaseLiveConfiguration = Schema.Struct({
-  version: Schema.Literal("staging-reset-release-live-v1"),
+  version: Schema.Literals(["staging-reset-release-live-v1", "staging-disposable-release-live-v1"]),
   executionAuthorized: Schema.Boolean,
   approvedPlanDigest: ReconciliationDigest,
   plan: KaraokeReleasePlan,
@@ -124,14 +124,16 @@ export const StagingResetReleaseLiveConfiguration = Schema.Struct({
     }),
     producers: Schema.Struct({ schedules: KaraokeReleasedSchedules }),
   }),
-  acceptance: Schema.Struct({
-    apiBaseUrl: Schema.String.check(Schema.isPattern(/^https:\/\/[a-z0-9][a-z0-9.-]*$/u)),
-    communityId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    privyAccessToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
-    expectedPersonaId: Schema.optional(
-      Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    ),
-  }),
+  acceptance: Schema.optional(
+    Schema.Struct({
+      apiBaseUrl: Schema.String.check(Schema.isPattern(/^https:\/\/[a-z0-9][a-z0-9.-]*$/u)),
+      communityId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+      privyAccessToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
+      expectedPersonaId: Schema.optional(
+        Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+      ),
+    }),
+  ),
   /** Reviewed reset references: the measured shape of the reconstructed `0119`
    * schema and the pre-reset default-ACL digest the admission must observe. */
   reset: Schema.Struct({
@@ -147,6 +149,26 @@ export const StagingResetReleaseLiveConfiguration = Schema.Struct({
   markerDirectory: Schema.String.check(Schema.isMinLength(1)),
   validUntilMs: Schema.Int.check(Schema.isGreaterThan(0)),
   budgets: Schema.Struct({ removal: Budget, replay: ReplayBudget }),
+  disposable: Schema.optional(
+    Schema.Struct({
+      mode: Schema.Literal("drop_schema_recreate"),
+      roleName: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u)),
+      branchId: Schema.Literal("syu03e00w3ux"),
+      roleTtlMinutes: Schema.Literal(30),
+      /** The pre-producer product acceptance for the disposable release: the
+       * reviewed community-creation journey through the real UI. The legacy
+       * persona read is not accepted alongside it. */
+      communityCreation: Schema.optional(
+        Schema.Struct({
+          baseUrl: Schema.String.check(Schema.isPattern(/^https:\/\/[a-z0-9][a-z0-9.-]*$/u)),
+          timeoutMs: Schema.Int.check(
+            Schema.isGreaterThan(0),
+            Schema.isLessThanOrEqualTo(3_600_000),
+          ),
+        }),
+      ),
+    }),
+  ),
 });
 export type StagingResetReleaseLiveConfiguration = typeof StagingResetReleaseLiveConfiguration.Type;
 
@@ -156,7 +178,28 @@ export type StagingResetReleaseLiveConfiguration = typeof StagingResetReleaseLiv
  * checkouts with the exact version IDs pinned in the plan. */
 export function validateStagingResetReleaseLiveConfiguration(value: unknown) {
   const config = decodeReconciliation(StagingResetReleaseLiveConfiguration, value);
-  if (config.approvedPlanDigest !== reconciliationDigest(JSON.stringify(config.plan)))
+  if (
+    (config.version === "staging-reset-release-live-v1" && config.disposable !== undefined) ||
+    (config.version === "staging-disposable-release-live-v1" && config.disposable === undefined)
+  ) {
+    throw new Error("staging_live_reset_mode_unreviewed");
+  }
+  const communityCreation = config.disposable?.communityCreation;
+  if (config.version === "staging-disposable-release-live-v1") {
+    // The disposable release must run the reviewed community-creation journey
+    // as its product acceptance; the persona read assumes identity that the
+    // destructive reset removes and cannot be selected by accident.
+    if (communityCreation === undefined)
+      throw new Error("staging_live_community_creation_required");
+    if (config.acceptance !== undefined) throw new Error("staging_live_acceptance_ambiguous");
+  } else if (config.acceptance === undefined) {
+    throw new Error("staging_live_acceptance_missing");
+  }
+  const approvedMaterial =
+    config.version === "staging-disposable-release-live-v1"
+      ? { plan: config.plan, disposable: config.disposable }
+      : config.plan;
+  if (config.approvedPlanDigest !== reconciliationDigest(JSON.stringify(approvedMaterial)))
     throw new Error("staging_live_release_plan_changed");
   if (
     JSON.stringify(config.plan.surfaceOrder) !== JSON.stringify(STAGING_LIVE_RELEASE.surfaceOrder)
@@ -222,7 +265,7 @@ export type GitRunner = (args: readonly string[]) => {
   readonly status: number;
 };
 
-function findSiblingRepository(apiRoot: string, name: string): string {
+export function findSiblingRepository(apiRoot: string, name: string): string {
   let candidate = resolve(apiRoot, "..");
   for (let depth = 0; depth < 4; depth++) {
     const sibling = join(candidate, name);
@@ -275,17 +318,12 @@ export function makeLiveStagingUpgradeApplier(
   connectionString: string,
   run: typeof runPostgresMigrations = runPostgresMigrations,
 ) {
-  return async (): Promise<StagingUpgradeReceipt> => {
-    const upgrade = loadStagingUpgradeArtifacts();
-    const resetPlan = validateStagingResetArtifacts(loadStagingResetArtifacts());
-    const output = await run({
-      connectionString,
-      migrations: upgrade.migrations,
-      expectedLedger: stagingUpgradeBaseLedger(resetPlan),
+  return async (): Promise<StagingUpgradeReceipt> =>
+    applyStagingUpgradeInPhases(connectionString, async (input) => {
+      const output = await run(input);
+      if (output.dryRun) throw new Error("staging_live_upgrade_unexpected_dry_run");
+      return output;
     });
-    if (output.dryRun) throw new Error("staging_live_upgrade_unexpected_dry_run");
-    return stagingUpgradeReceipt(upgrade, output.result.applied);
-  };
 }
 
 const SESSION_COOKIE = "__Host-pirate_session";
@@ -401,17 +439,27 @@ export function makeLiveRecoveryReceipt(markerDirectory: string) {
  * the release plan cannot carry: the plan activates only the four producer
  * workers, and the application Worker is verified here, after ingress opens
  * and before the acceptance read that gates producer release. */
-export async function runLiveStagingResetReleaseComposition(input: {
+export async function runLiveStagingResetReleaseComposition<
+  Admission extends StagingResetAdmission,
+>(input: {
   readonly configuration: StagingResetReleaseLiveConfiguration;
-  readonly database: Parameters<typeof reconstructAndReleaseStaging>[0]["database"];
-  readonly artifacts: Parameters<typeof reconstructAndReleaseStaging>[0]["artifacts"];
-  readonly admission: Parameters<typeof reconstructAndReleaseStaging>[0]["admission"];
+  readonly database: StagingResetDatabase;
+  readonly artifacts: StagingResetArtifacts;
+  readonly admission: Admission;
+  readonly reset?: (
+    database: StagingResetDatabase,
+    artifacts: StagingResetArtifacts,
+    admission: Admission,
+  ) => Promise<StagingResetCompletion>;
   readonly surfaces: KaraokeReleaseSurfaces;
   readonly refence: StagingRefence;
   readonly upgrade: { apply: () => Promise<StagingUpgradeReceipt> };
   /** Proves the reviewed Solid target is the version serving before product
    * acceptance. A no-op or assertion is not evidence. */
   readonly verifyDeployedPair: () => Promise<void>;
+  /** The disposable release's product acceptance: the reviewed community
+   * creation journey. Required exactly when the configuration selects it. */
+  readonly communityCreationAcceptance?: () => Promise<void>;
   /** Transport override for the acceptance read; the live launcher passes its
    * reviewed transport through so the composed path is testable without
    * reaching a network. */
@@ -420,27 +468,38 @@ export async function runLiveStagingResetReleaseComposition(input: {
   readonly now?: () => string;
 }) {
   const configuration = validateStagingResetReleaseLiveConfiguration(input.configuration);
-  const acceptance = makeLiveAcceptanceCheck({
-    apiBaseUrl: configuration.acceptance.apiBaseUrl,
-    communityId: configuration.acceptance.communityId,
-    privyAccessToken: configuration.acceptance.privyAccessToken,
-    ...(configuration.acceptance.expectedPersonaId === undefined
-      ? {}
-      : { expectedPersonaId: configuration.acceptance.expectedPersonaId }),
-    ...(input.acceptanceFetch === undefined ? {} : { fetch: input.acceptanceFetch }),
-  });
+  const communityCreation = configuration.disposable?.communityCreation;
+  let productAcceptance: () => Promise<unknown>;
+  if (communityCreation !== undefined) {
+    if (input.communityCreationAcceptance === undefined)
+      throw new Error("staging_community_creation_acceptance_unbound");
+    productAcceptance = input.communityCreationAcceptance;
+  } else {
+    const persona = configuration.acceptance;
+    if (persona === undefined) throw new Error("staging_live_acceptance_missing");
+    productAcceptance = makeLiveAcceptanceCheck({
+      apiBaseUrl: persona.apiBaseUrl,
+      communityId: persona.communityId,
+      privyAccessToken: persona.privyAccessToken,
+      ...(persona.expectedPersonaId === undefined
+        ? {}
+        : { expectedPersonaId: persona.expectedPersonaId }),
+      ...(input.acceptanceFetch === undefined ? {} : { fetch: input.acceptanceFetch }),
+    });
+  }
   const onRecovery = makeLiveRecoveryReceipt(configuration.markerDirectory);
   try {
     return await reconstructAndReleaseStaging({
       database: input.database,
       artifacts: input.artifacts,
       admission: input.admission,
+      ...(input.reset === undefined ? {} : { reset: input.reset }),
       release: {
         plan: configuration.plan,
         surfaces: input.surfaces,
         acceptance: async () => {
           await input.verifyDeployedPair();
-          await acceptance();
+          await productAcceptance();
         },
         refence: input.refence,
         onRecovery,
@@ -497,6 +556,12 @@ export async function verifyLiveStagingRelease() {
   if (!path) throw new Error("staging_live_configuration_missing");
   const raw = JSON.parse(await Bun.file(path).text()) as unknown;
   const configuration = validateStagingResetReleaseLiveConfiguration(raw);
+  if (
+    configuration.version !== "staging-disposable-release-live-v1" ||
+    configuration.disposable === undefined
+  ) {
+    throw new Error("staging_disposable_release_required");
+  }
   const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
   const checkouts = assertLiveStagingCheckouts(repositoryRoot);
   return {
@@ -513,6 +578,8 @@ export async function verifyLiveStagingRelease() {
     reviewed_checkouts: checkouts,
     execution_authorized: configuration.executionAuthorized,
     upgrade_source_sha: loadStagingUpgradeArtifacts().sourceSha,
+    reset_mode: configuration.disposable.mode,
+    temporary_role_name: configuration.disposable.roleName,
     database_connected: false,
     provider_contacted: false,
   };

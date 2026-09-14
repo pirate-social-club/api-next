@@ -16,6 +16,12 @@ import {
 
 type ResetArguments = Parameters<typeof reconstructStagingInPhases>;
 type ReleaseArguments = Parameters<typeof executeStagingResetRelease>[0];
+export type StagingResetDatabase = ResetArguments[0];
+export type StagingResetArtifacts = ResetArguments[1];
+export type StagingResetAdmission = ResetArguments[2];
+export type StagingResetCompletion = Readonly<{
+  completeAfterPairedRelease(verifyServingPair: () => Promise<void>): Promise<void>;
+}>;
 
 /** An unresolved release is a failed run, including when all recovery calls
  * succeeded. Keeping its structured outcome prevents a CLI from treating a
@@ -50,7 +56,7 @@ export class StagingUpgradeFailedRestoreRequired extends Error {
   }
 }
 
-/** Composes the real phased reset, the pinned `0120`–`0166` upgrade and the
+/** Composes one reviewed reset, the pinned `0120`–`0179` upgrade and the
  * release in the same process. This accepts the existing trusted admission
  * ports, not JSON approval flags or a deserialized completion receipt. Live
  * callers must bind those ports and the release surfaces to their reviewed
@@ -65,7 +71,7 @@ export class StagingUpgradeFailedRestoreRequired extends Error {
  * the serving pair, retired the marker and asserted the fence again, and
  * before the first grant is restored or any traffic can reach the pair. That
  * ordering is forced by the reset contract — completion proves the exact 0119
- * ledger — so the schema reaches 0166 while every fence is still held rather
+ * ledger — so the schema reaches 0179 while every fence is still held rather
  * than before version activation. Product acceptance here is the pre-producer
  * signup/persona check; asynchronous song acceptance runs only after producers
  * have been released.
@@ -76,10 +82,15 @@ export class StagingUpgradeFailedRestoreRequired extends Error {
  * therefore retains its reset marker by design; this handoff exists for the
  * live composition, where completion retires that marker.
  */
-export async function reconstructAndReleaseStaging(input: {
+export async function reconstructAndReleaseStaging<Admission extends ResetArguments[2]>(input: {
   readonly database: ResetArguments[0];
   readonly artifacts: ResetArguments[1];
-  readonly admission: ResetArguments[2];
+  readonly admission: Admission;
+  readonly reset?: (
+    database: ResetArguments[0],
+    artifacts: ResetArguments[1],
+    admission: Admission,
+  ) => Promise<StagingResetCompletion>;
   readonly release: Omit<ReleaseArguments, "reset">;
   /** Applies the reviewed upgrade span; the rehearsal binding is
    * `applyStagingUpgradeOnRehearsalBranch` in `staging-persona-upgrade-plan.ts`. */
@@ -194,7 +205,11 @@ export async function reconstructAndReleaseStaging(input: {
       | { readonly stage: "marker" | "apply" | "receipt"; readonly cause: unknown }
       | undefined;
   } => ({ state: upgradeState, receipt: upgradeReceipt, failure: upgradeFailure });
-  const reset = await reconstructStagingInPhases(input.database, input.artifacts, input.admission);
+  const reset = await (input.reset ?? reconstructStagingInPhases)(
+    input.database,
+    input.artifacts,
+    input.admission,
+  );
   // The reset marker is retired inside the original completion hook. Writing
   // the replacement first means an interruption between completion and the
   // database surface leaves the release marker instead of neither.
