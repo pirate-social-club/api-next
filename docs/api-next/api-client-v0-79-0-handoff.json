@@ -10,7 +10,7 @@
     "sha256": "85488f318432c4ee3e124f16be406acc4a762c4953fc8f1cc58f0a2cc6e19c27"
   },
   "validation": {
-    "status": "candidate generated; combined-tree validation pending",
-    "notes": "Integrates published upstream 0.73.0 with local successors through 0.78.0. The conflicting unpublished nationality 0.73.0 draft is preserved under docs/api-next/evidence/client-version-collision-2026-09-14/. Do not advertise until the paired Solid consumer adopts this exact artifact and acceptance gates pass. Nothing pushed, enabled or deployed."
+    "status": "local combined-tree validation passed at edd957c713f8654d341ac4ec1a956d26ba63f428",
+    "notes": "Integrates published upstream 0.73.0 with local successors through 0.78.0. The conflicting unpublished nationality 0.73.0 draft is preserved under docs/api-next/evidence/client-version-collision-2026-09-14/. Full check, the chained unit/Node/Workerd test command, all four PostgreSQL general shards, namespace ownership, completion-marker verification, and recovery passed. The paired Solid consumer adopted this exact artifact and passed local build and browser checks. Do not advertise until trusted pull-request and live-provider staging gates pass. Nothing pushed, enabled or deployed."
   }
 }
