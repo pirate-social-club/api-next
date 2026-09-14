@@ -180,6 +180,7 @@
     "0181_handle_nationality_quote_decisions.sql": "c66e51c67e8472127a6ca7e1eca07a81292faa96259cdab61784bd909c6fa1b9",
     "0182_accepted_adult_rating_evidence.sql": "5f5ca1db8ff8e0452590a2a9b33b5d8fc3a1d614416a24221b5c5b9f377d2408",
     "0183_account_age_verification_ceremonies.sql": "5a9ae2b7882fd2bfa2353a4366f281b1e90955512e2723fede8e0ba6fb220149",
-    "0184_data_metadata_preparation_snapshots.sql": "ed5c05f3f2fbfa7dbdd9e6d3987a5d90b22c7523e2349f8bf4b1bd173fe60125"
+    "0184_data_metadata_preparation_snapshots.sql": "ed5c05f3f2fbfa7dbdd9e6d3987a5d90b22c7523e2349f8bf4b1bd173fe60125",
+    "0185_current_content_rating_floors.sql": "eaa771de80de0a0c631b24a4970cf0c41571eae4212fe6660467c7c205f856bd"
   }
 }

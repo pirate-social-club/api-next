@@ -982,15 +982,9 @@ suite("video publication PostgreSQL", () => {
           }),
         ),
       ).toBe(true);
-      await admin.query(
-        "UPDATE posts SET visibility='public',content_rating='adult_18' WHERE post_id=$1",
-        ["post-video-publication"],
-      );
-      expect(await access()).toBe(false);
-      await admin.query(
-        "UPDATE posts SET content_rating='general',status='hidden' WHERE post_id=$1",
-        ["post-video-publication"],
-      );
+      await admin.query("UPDATE posts SET visibility='public',status='hidden' WHERE post_id=$1", [
+        "post-video-publication",
+      ]);
       expect(await access()).toBe(false);
       await admin.query("UPDATE posts SET status='published' WHERE post_id=$1", [
         "post-video-publication",
@@ -1141,6 +1135,26 @@ suite("video publication PostgreSQL", () => {
         posterSha256: analysis.frames.extracted[0].sha256,
         originalSoundId: publication.originalSound.originalSoundId,
       });
+      await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [
+        "post-video-publication",
+      ]);
+      expect(await access()).toBe(false);
+      await expect(
+        admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [
+          "post-video-publication",
+        ]),
+      ).rejects.toThrow("current content rating cannot be lowered");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            contentStore.getPost({
+              communityId: community,
+              postId: "post-video-publication",
+              viewerUserId: actor,
+            }),
+          ),
+        ),
+      ).toMatchObject({ kind: "age_locked" });
     });
   });
   test("a publication-only retry plays and serves its poster on the decision, approvals and safety evidence it rests on", async () => {

@@ -3620,20 +3620,31 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("allocates an opaque alias while reconciling an already-published adult song", async () => {
     await withCurrentSchema(async (admin, connection) => {
-      const contentModeration = analysis.contentModeration;
-      if (contentModeration === undefined) throw new Error("missing moderation fixture");
-      const adultAnalysis: TrustedSongAnalysis = {
-        ...analysis,
-        contentModeration: {
-          ...contentModeration,
-          resultingContentRating: "adult_18",
-        },
-      };
-      const adultDecision: PublicationDecision = {
-        ...decision,
-        contentRating: "adult_18",
-      };
-      await createThroughDecision(connection, adultDecision, adultAnalysis);
+      await createThroughDecision(connection, decision, analysis);
+      const historical = (
+        await admin.query(
+          "SELECT response_snapshot_sha256,event_sequence FROM media_post_submissions WHERE submission_id=$1",
+          [submission],
+        )
+      ).rows[0];
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET resulting_content_rating='adult_18',title='tampered' WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("media submission authority is immutable");
+      await admin.query(
+        "UPDATE media_post_submissions SET resulting_content_rating='adult_18' WHERE submission_id=$1",
+        [submission],
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT response_snapshot_sha256,event_sequence FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual(historical);
       const postId = `media-post-${operation}`;
       await admin.query(
         "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id,author_declared_rating,content_rating) VALUES ($1,$2,$3,'song','published','public','Fixture song',clock_timestamp(),clock_timestamp(),'reconciled-post',$4,$5,'general','adult_18')",
@@ -3709,10 +3720,15 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         [postId],
       );
       expect(await read()).toBeNull();
-      await admin.query(
-        "UPDATE posts SET content_rating='general',status='removed' WHERE post_id=$1",
-        [postId],
-      );
+      await expect(
+        admin.query("UPDATE posts SET content_rating='general',status='removed' WHERE post_id=$1", [
+          postId,
+        ]),
+      ).rejects.toThrow("current content rating cannot be lowered");
+      await admin.query("UPDATE posts SET status='removed' WHERE post_id=$1", [postId]);
+      expect(
+        (await admin.query("SELECT content_rating FROM posts WHERE post_id=$1", [postId])).rows[0],
+      ).toEqual({ content_rating: "adult_18" });
       expect(await read()).toBeNull();
     });
     completedTestCount += 1;

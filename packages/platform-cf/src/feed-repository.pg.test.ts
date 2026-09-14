@@ -239,23 +239,90 @@ suite("Postgres 17 home feed repository", () => {
       await seedCommunity(admin);
       await insertProjectedPost(admin, { id: "adult_post" });
       await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id='adult_post'");
-      await admin.query(`CREATE OR REPLACE FUNCTION current_account_age_capability_v1(target_account_id TEXT)
+      const original = (
+        await admin.query(
+          "SELECT pg_get_functiondef('current_account_age_capability_v1(text)'::regprocedure) AS definition",
+        )
+      ).rows[0].definition;
+      try {
+        await admin.query(`CREATE OR REPLACE FUNCTION current_account_age_capability_v1(target_account_id TEXT)
         RETURNS TEXT LANGUAGE sql STABLE AS $$ SELECT CASE WHEN target_account_id='usr_member' THEN 'adult_18' ELSE 'general' END $$`);
-      const store = makeControlPlaneFeedStore(makeDirectPostgresControlPlaneLayer(connection));
-      const anonymous = await Effect.runPromise(Effect.scoped(store.listHome({ query: {} })));
-      expect(anonymous.items[0]).toMatchObject({ kind: "age_locked" });
-      const allowed = await Effect.runPromise(
-        Effect.scoped(store.listHome({ query: {}, viewerUserId: "usr_member" })),
-      );
-      expect(allowed.items[0]).toMatchObject({
-        post: { post: { id: "adult_post", age_gate_policy: "18_plus" } },
-      });
+        const store = makeControlPlaneFeedStore(makeDirectPostgresControlPlaneLayer(connection));
+        const anonymous = await Effect.runPromise(Effect.scoped(store.listHome({ query: {} })));
+        expect(anonymous.items[0]).toMatchObject({ kind: "age_locked" });
+        const allowed = await Effect.runPromise(
+          Effect.scoped(store.listHome({ query: {}, viewerUserId: "usr_member" })),
+        );
+        expect(allowed.items[0]).toMatchObject({
+          post: { post: { id: "adult_post", age_gate_policy: "18_plus" } },
+        });
+      } finally {
+        await admin.query(original);
+      }
+    });
+    completedTestCount += 1;
+  });
+
+  test("current adult floors propagate through text, song and video comments and cannot be lowered", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seedCommunity(admin);
+      for (const kind of ["text", "song", "video"]) {
+        const postId = `floor_${kind}`;
+        await admin.query(
+          `INSERT INTO posts (community_id,post_id,post_type,author_declared_rating,
+          content_rating,created_at,updated_at) VALUES ('com_alpha',$1,$2,'general','general',now(),now())`,
+          [postId, kind],
+        );
+        await admin.query(
+          `INSERT INTO comments (community_id,comment_id,post_id,created_at,updated_at)
+          VALUES ('com_alpha',$1,$2,now(),now())`,
+          [`root_${kind}`, postId],
+        );
+        await admin.query(
+          `INSERT INTO comments (community_id,comment_id,post_id,parent_comment_id,depth,created_at,updated_at)
+          VALUES ('com_alpha',$1,$2,$3,1,now(),now())`,
+          [`reply_${kind}`, postId, `root_${kind}`],
+        );
+        await admin.query("BEGIN");
+        await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [postId]);
+        expect(
+          (await admin.query("SELECT content_rating FROM comments WHERE post_id=$1", [postId]))
+            .rows,
+        ).toEqual([{ content_rating: "adult_18" }, { content_rating: "adult_18" }]);
+        await admin.query("ROLLBACK");
+        expect(
+          (await admin.query("SELECT content_rating FROM comments WHERE post_id=$1", [postId]))
+            .rows,
+        ).toEqual([{ content_rating: "general" }, { content_rating: "general" }]);
+        await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [postId]);
+        await admin.query(
+          `INSERT INTO comments (community_id,comment_id,post_id,created_at,updated_at)
+          VALUES ('com_alpha',$1,$2,now(),now())`,
+          [`later_${kind}`, postId],
+        );
+        expect(
+          (
+            await admin.query("SELECT content_rating FROM comments WHERE comment_id=$1", [
+              `later_${kind}`,
+            ])
+          ).rows[0],
+        ).toEqual({ content_rating: "adult_18" });
+        await expect(
+          admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [postId]),
+        ).rejects.toThrow("current content rating cannot be lowered");
+        await expect(
+          admin.query("UPDATE comments SET content_rating='general' WHERE comment_id=$1", [
+            `root_${kind}`,
+          ]),
+        ).rejects.toThrow("current content rating cannot be lowered");
+      }
     });
     completedTestCount += 1;
   });
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 5) {
+    if (connectionString !== undefined && completedTestCount === 6) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
