@@ -1694,6 +1694,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_streak_days_append_only",
         "custody_solvency_observations_append_only",
         "dance_reference_actions_append_only",
+        "data_operator_resume_actions_append_only",
         "data_registration_artifacts_append_only",
         "data_registration_parent_resolutions_append_only",
         "data_registration_pins_append_only",

@@ -22,12 +22,16 @@ ALTER TABLE data_registration_receipt_observations
 
 ALTER TABLE data_registration_receipt_observations
   ADD CONSTRAINT data_registration_receipt_attached_license_shape CHECK (
-    ROW(
-      attached_license_template, attached_license_terms_id,
-      attached_license_preset, attached_commercial_rev_share_bps,
-      terms_attachment_transaction_hash, terms_attachment_block_number,
-      terms_attachment_block_hash, terms_attachment_log_index
-    ) IS NOT DISTINCT FROM ROW(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+    (
+      attached_license_template IS NULL
+      AND attached_license_terms_id IS NULL
+      AND attached_license_preset IS NULL
+      AND attached_commercial_rev_share_bps IS NULL
+      AND terms_attachment_transaction_hash IS NULL
+      AND terms_attachment_block_number IS NULL
+      AND terms_attachment_block_hash IS NULL
+      AND terms_attachment_log_index IS NULL
+    )
     OR (
       outcome = 'confirmed'
       AND attached_license_template ~ '^0x[0-9a-f]{40}$'
