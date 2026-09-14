@@ -1208,6 +1208,21 @@ function align(
   });
 }
 
+function resumeCommittedDecision(
+  authority: MediaProcessingAuthority,
+  dependencies: MediaProcessingWorkflowDependencies,
+): WorkflowEffect<MediaProcessingWorkflowResult> {
+  if (authority.decision === null) return Effect.fail(new DeferredAttempt("stale_fence"));
+  if (authority.decision.outcome === "manual_review") {
+    return Effect.succeed({ outcome: "manual_review" });
+  }
+  if (authority.decision.outcome === "block") return Effect.succeed({ outcome: "blocked" });
+  if (authority.decision.outcome === "reference_required") {
+    return Effect.succeed({ outcome: "action_required" });
+  }
+  return publish(authority, dependencies);
+}
+
 /** Durable interpreter. Every effectful phase begins from a fresh authority reload. */
 function runMediaProcessingWorkflowOnce(
   rawPayload: unknown,
@@ -1263,6 +1278,8 @@ function runMediaProcessingWorkflowOnce(
               : "published",
       } as const;
     }
+
+    if (authority.decision !== null) return yield* resumeCommittedDecision(authority, dependencies);
 
     if (!dependencies.options.enabled || dependencies.providers === null) {
       yield* storeWrite(() =>
@@ -1321,10 +1338,7 @@ function runMediaProcessingWorkflowOnce(
     );
     if (decisionCommit === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
     authority = yield* authoritativeReload(authority, dependencies);
-    if (decision.outcome === "manual_review") return { outcome: "manual_review" } as const;
-    if (decision.outcome === "block") return { outcome: "blocked" } as const;
-    if (decision.outcome === "reference_required") return { outcome: "action_required" } as const;
-    return yield* publish(authority, dependencies);
+    return yield* resumeCommittedDecision(authority, dependencies);
   });
 }
 

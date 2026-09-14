@@ -1151,6 +1151,36 @@ describe("media processing workflow", () => {
     expect(store.alignmentLaunches).toBe(1);
   });
 
+  test("resumes from a committed decision after its response is lost", async () => {
+    const store = new FakeStore();
+    const providerEvents: string[] = [];
+    const provider = providers(providerEvents);
+    const commitDecision = store.commitDecision;
+    let loseResponse = true;
+    store.commitDecision = async (expected, decision) => {
+      const result = await commitDecision(expected, decision);
+      if (loseResponse) {
+        loseResponse = false;
+        throw new Error("decision response lost");
+      }
+      return result;
+    };
+
+    await expect(
+      runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).rejects.toThrow("decision response lost");
+    const providerEventsAfterDecision = [...providerEvents];
+    expect(store.current.decision?.outcome).toBe("allow");
+    expect(store.publications).toBe(0);
+
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "published" });
+    expect(providerEvents).toEqual(providerEventsAfterDecision);
+    expect(store.events.filter((event) => event.startsWith("commit:decision:"))).toHaveLength(1);
+    expect(store.publications).toBe(1);
+  });
+
   test("disabled or missing provider composition fails closed without effects", async () => {
     const store = new FakeStore();
     const deps = dependencies(store, null);
