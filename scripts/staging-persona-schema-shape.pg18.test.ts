@@ -95,6 +95,11 @@ suite("reset schema shape on disposable PostgreSQL 18.6", () => {
         "ALTER TABLE api_next.shape_named ADD CONSTRAINT explicit_name NOT NULL value",
       );
       await expect(readResetSchemaShape(admin)).rejects.toThrow("reset_baseline_shape_unsupported");
+
+      await admin.query("DROP TABLE api_next.shape_named");
+      const withoutDomain = await readResetSchemaShape(admin);
+      await admin.query("CREATE DOMAIN api_next.shape_domain AS text NOT NULL");
+      expect((await readResetSchemaShape(admin)).sha256).not.toBe(withoutDomain.sha256);
     });
   }, 120_000);
 });
