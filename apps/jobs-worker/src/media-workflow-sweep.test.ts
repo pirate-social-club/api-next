@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type {
   MediaProcessingAuthority,
   MediaProcessingCommit,
+  MediaProcessingOutboxRecord,
+  MediaProcessingStore,
+  MediaProcessingWorkflowPayload,
 } from "../../../packages/application/src/media/processing-contracts.ts";
+import { consumeMediaProcessingQueueMessage } from "../../../packages/application/src/media/processing-queue.ts";
+import { dispatchEligibleMediaOutbox } from "./media-outbox-dispatch.ts";
 import { sweepMissingMediaWorkflows } from "./media-workflow-sweep.ts";
 
 const candidate = (
@@ -42,6 +47,109 @@ const candidate = (
 });
 
 describe("media Workflow missing-instance sweep", () => {
+  test("dispatches a committed replacement through the consumer into its new Workflow", async () => {
+    let current = candidate();
+    let replacement: MediaProcessingOutboxRecord | null = null;
+    const launches: Readonly<{
+      instanceId: string;
+      payload: MediaProcessingWorkflowPayload;
+    }>[] = [];
+    const store = {
+      reconcileTerminalWorkflow: async () => "escalated" as const,
+      listWorkflowCandidates: async () => [current],
+      loadAuthority: async () => current,
+      replaceMissingWorkflow: async (expected: MediaProcessingAuthority) => {
+        if (expected.workflowRevision !== current.workflowRevision) return "stale" as const;
+        current = {
+          ...current,
+          workflowRevision: current.workflowRevision + 1,
+          replacementSequence: current.replacementSequence + 1,
+        };
+        replacement = {
+          outboxId: "replacement-outbox-1",
+          eventType: "workflow_replacement",
+          submissionId: current.submissionId,
+          operationId: current.operationId,
+          workflowRevision: current.workflowRevision,
+          workflowInstanceId: `media-${current.operationId}-r${current.workflowRevision}`,
+          deliveryAttempts: 0,
+          state: "pending",
+          claimFence: 0,
+          claimOwner: null,
+        };
+        return "committed" as const;
+      },
+      getOutbox: async () => replacement,
+      claimOutbox: async (_outboxId: string, workerId: string) => {
+        if (replacement === null) return null;
+        replacement = {
+          ...replacement,
+          state: "running",
+          deliveryAttempts: 1,
+          claimFence: 1,
+          claimOwner: workerId,
+        };
+        return replacement;
+      },
+      completeOutbox: async () => {
+        if (replacement === null) return false;
+        replacement = { ...replacement, state: "delivered", claimOwner: null };
+        return true;
+      },
+      failOutbox: async () => false,
+    };
+
+    expect(
+      await sweepMissingMediaWorkflows({
+        store,
+        workflow: { get: async () => "missing" },
+      }),
+    ).toMatchObject({ replaced: 1 });
+
+    const dispatch = await dispatchEligibleMediaOutbox(
+      {
+        listEligible: async () =>
+          replacement === null ? [] : [{ outboxEventId: replacement.outboxId }],
+      },
+      {
+        send: async (message) => {
+          if ("kind" in message) throw new Error("song replacement used the video queue shape");
+          const disposition = await consumeMediaProcessingQueueMessage(message, {
+            store: store as unknown as MediaProcessingStore,
+            workerId: "replacement-consumer-1",
+            workflow: {
+              get: async () => "missing",
+              create: async (instanceId, payload) => {
+                launches.push({ instanceId, payload });
+                return "created";
+              },
+              notify: async () => {
+                throw new Error("a newly created replacement must not receive a wakeup event");
+              },
+            },
+          });
+          if (disposition.disposition !== "ack") {
+            throw new Error(`replacement consumer returned ${disposition.disposition}`);
+          }
+        },
+      },
+    );
+
+    expect(dispatch).toEqual({ selected: 1, sent: 1, failed: 0 });
+    expect(launches).toEqual([
+      {
+        instanceId: "media-operation-1-r2",
+        payload: {
+          outboxId: "replacement-outbox-1",
+          submissionId: "submission-1",
+          operationId: "operation-1",
+          workflowRevision: 2,
+        },
+      },
+    ]);
+    expect(replacement).toMatchObject({ state: "delivered", deliveryAttempts: 1 });
+  });
+
   test("advances authority once and leaves Queue delivery to launch replacement", async () => {
     let current = candidate();
     let replacementWrites = 0;
