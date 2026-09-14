@@ -608,7 +608,7 @@ const loadHumanEvidence = (
     } as const;
   });
 
-const lockPassingHumanEvidence = (
+const lockPassingAccountEvidence = (
   transaction: ControlPlaneTransaction,
   input: Readonly<{
     readonly proofSessionId: string;
@@ -924,9 +924,18 @@ const nationalityCandidateFromRow = (row: Row) => {
   } as const;
 };
 
+type NationalityEvidenceInput = Readonly<{
+  userId: string;
+  policy: NationalityPolicy;
+  /** A quote may reuse only its pinned winning provider. */
+  providerId?: "self.pass" | "zkpassport";
+  /** Enforcement holds proof, binding and revalidation locks through its grant transaction. */
+  lockEvidence?: boolean;
+}>;
+
 const loadNationalityEvidence = (
   transaction: ControlPlaneTransaction,
-  input: Readonly<{ readonly userId: string; readonly policy: NationalityPolicy }>,
+  input: NationalityEvidenceInput & Readonly<{ receiptId?: string }>,
 ) =>
   Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
@@ -1032,24 +1041,25 @@ const loadNationalityEvidence = (
                 AND ps.completed_at = ps.terminal_at
                 AND ps.requested_requirements = $2::jsonb
                 AND ps.requested_claim_ids = $3::jsonb
+                AND ($4::text IS NULL OR ps.provider_id = $4)
+                AND ($5::text IS NULL OR r.evidence_receipt_id = $5)
            ORDER BY ps.completed_at DESC, ps.proof_session_id, a.observed_at DESC, a.assertion_id`,
       values: [
         input.userId,
         JSON.stringify([input.policy.requirement]),
         JSON.stringify(["nationality.allowed"]),
+        input.providerId ?? null,
+        input.receiptId ?? null,
       ],
       readonly: true,
     });
-    if (result.rows.length === 0) {
-      return { kind: "available", candidate: null } as const;
+    const candidates = result.rows.map(nationalityCandidateFromRow);
+    if (candidates.some((candidate) => candidate === null)) {
+      return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "evidence" }));
     }
-    for (const row of result.rows) {
-      const candidate = nationalityCandidateFromRow(row);
-      if (candidate !== null) {
-        return { kind: "available", candidate } as const;
-      }
-    }
-    return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "evidence" }));
+    return candidates.filter(
+      (candidate): candidate is NonNullable<typeof candidate> => candidate !== null,
+    );
   });
 
 /**
@@ -1070,11 +1080,11 @@ export const loadCuratedNationalityPolicy = (
                     b.method, b.protocol_version, b.issuer, b.scope_kind,
                     b.issuer_rp_scope, b.issuer_rp_action_scope, b.request_mode
                FROM community_policy_current AS current_policy
-               JOIN policy_versions AS p
+               LEFT JOIN policy_versions AS p
                  ON p.community_id = current_policy.community_id
                 AND p.policy_key = current_policy.policy_key
                 AND p.policy_version_id = current_policy.policy_version_id
-               JOIN community_policy_provider_bindings AS b
+               LEFT JOIN community_policy_provider_bindings AS b
                  ON b.community_id = p.community_id
                 AND b.policy_key = p.policy_key
                 AND b.policy_version_id = p.policy_version_id
@@ -1122,18 +1132,53 @@ export const loadCuratedNationalityPolicy = (
 export const loadCuratedNationalityEvaluation = Effect.fn("loadCuratedNationalityEvaluation")(
   function* (
     transaction: ControlPlaneTransaction,
-    input: Readonly<{ readonly userId: string; readonly policy: NationalityPolicy }>,
+    input: NationalityEvidenceInput,
   ): Effect.fn.Return<NationalityEvaluation, ControlPlaneError | GatesV2CommunityDataInvalid> {
-    const [evidence, now] = yield* Effect.all([
-      loadNationalityEvidence(transaction, input),
-      loadDatabaseNow(transaction),
-    ]);
-    return evaluateNationality({
-      policy: input.policy,
-      account_id: input.userId,
-      now,
-      evidence,
-    });
+    const candidates = yield* loadNationalityEvidence(transaction, input);
+    const now = yield* loadDatabaseNow(transaction);
+    const evaluate = (candidate: (typeof candidates)[number] | null, at: string) =>
+      evaluateNationality({
+        policy: input.policy,
+        account_id: input.userId,
+        now: at,
+        evidence: { kind: "available", candidate },
+      });
+    let fallback: NationalityEvaluation | undefined;
+    for (const candidate of candidates) {
+      const evaluation = evaluate(candidate, now);
+      fallback ??= evaluation;
+      if (evaluation.outcome !== "pass") continue;
+      if (!input.lockEvidence) return evaluation;
+      yield* lockPassingAccountEvidence(transaction, {
+        proofSessionId: candidate.proof_session.id,
+        subjectKeyId: candidate.subject_key.id,
+        userId: input.userId,
+      });
+      // Revalidation inserts take a foreign-key key-share lock on this assertion.
+      // FOR UPDATE serializes those inserts with the decision and grant.
+      const assertion = yield* transaction.execute<Row>({
+        label: "community.gates.nationality-evidence.lock-assertion",
+        text: `SELECT assertion_id FROM assertions
+                WHERE assertion_id = $1 AND user_id = $2 FOR UPDATE`,
+        values: [candidate.assertion.id, input.userId],
+        readonly: false,
+      });
+      if (assertion.rows.length !== 1) {
+        return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "evidence" }));
+      }
+      const locked = yield* loadNationalityEvidence(transaction, {
+        ...input,
+        receiptId: candidate.receipt.id,
+      });
+      const lockedNow = yield* loadDatabaseNow(transaction);
+      const rechecked = evaluate(
+        locked.find((value) => value.assertion.id === candidate.assertion.id) ?? null,
+        lockedNow,
+      );
+      if (rechecked.outcome === "pass") return rechecked;
+      fallback = rechecked;
+    }
+    return fallback ?? evaluate(null, now);
   },
 );
 
@@ -1188,7 +1233,7 @@ export const loadCuratedHumanMembershipEvaluation = Effect.fn(
   ) {
     return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "evidence" }));
   }
-  yield* lockPassingHumanEvidence(transaction, {
+  yield* lockPassingAccountEvidence(transaction, {
     proofSessionId: evidence.proofSessionId,
     subjectKeyId: witness.subject_key_id,
     userId: input.userId,

@@ -114,13 +114,14 @@ async function insertCompletedNationalityEvidence(
       allowed_countries: readonly string[];
     }>;
     readonly expired?: boolean;
+    readonly reuseBindingSuffix?: string;
   }>,
 ): Promise<void> {
   const provider = input.provider === "self.pass" ? providerFixtures[0] : providerFixtures[1];
   if (provider === undefined) throw new Error("provider fixture missing");
   const sessionId = `proof-nationality-${input.suffix}`;
-  const subjectId = `subject-nationality-${input.suffix}`;
-  const bindingEventId = `binding-event-nationality-${input.suffix}`;
+  const subjectId = `subject-nationality-${input.reuseBindingSuffix ?? input.suffix}`;
+  const bindingEventId = `binding-event-nationality-${input.reuseBindingSuffix ?? input.suffix}`;
   const receiptId = `receipt-nationality-${input.suffix}`;
   const bindingId = `binding-nationality-${input.suffix}`;
   const assertionId = `assertion-nationality-${input.suffix}`;
@@ -155,20 +156,22 @@ async function insertCompletedNationalityEvidence(
         `upstream-${input.suffix}`,
       ],
     });
-    await admin.query({
-      text: `INSERT INTO subject_keys (
+    if (input.reuseBindingSuffix === undefined) {
+      await admin.query({
+        text: `INSERT INTO subject_keys (
              subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
              issuer_rp_action_scope, subject_digest
            ) VALUES ($1, $2, 'document', 'issuer_rp_scope', 'test', NULL, repeat('1', 64))`,
-      values: [subjectId, provider.provider_id],
-    });
-    await admin.query({
-      text: `INSERT INTO subject_key_binding_events (
+        values: [subjectId, provider.provider_id],
+      });
+      await admin.query({
+        text: `INSERT INTO subject_key_binding_events (
              binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
              binding_kind, idempotency_key, bound_at
            ) VALUES ($1, $2, 1, 'user-a', $3, 'initial', $4, clock_timestamp())`,
-      values: [bindingEventId, subjectId, sessionId, `bind-${input.suffix}`],
-    });
+        values: [bindingEventId, subjectId, sessionId, `bind-${input.suffix}`],
+      });
+    }
     await admin.query({
       text: `INSERT INTO evidence_receipts (
              evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
@@ -237,12 +240,17 @@ async function insertCompletedNationalityEvidence(
 function runEvaluation(
   connection: string,
   policy: NationalityPolicy,
+  providerId?: "self.pass" | "zkpassport",
 ): Promise<Record<string, unknown>> {
   const program = Effect.scoped(
     Effect.gen(function* () {
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
-        loadCuratedNationalityEvaluation(transaction, { userId: "user-a", policy }),
+        loadCuratedNationalityEvaluation(transaction, {
+          userId: "user-a",
+          policy,
+          ...(providerId === undefined ? {} : { providerId }),
+        }),
       );
     }),
   );
@@ -335,6 +343,7 @@ async function seedNationalityPolicy(
   admin: Client,
   communityId: string,
   policy: NationalityPolicy,
+  persistBindings = true,
 ): Promise<void> {
   await admin.query({
     text: `INSERT INTO policy_versions (
@@ -346,7 +355,7 @@ async function seedNationalityPolicy(
                      '{"kind":"none"}'::jsonb, 'user-a', clock_timestamp(), 'access')`,
     values: [communityId, policy.policy_hash, JSON.stringify(policy)],
   });
-  for (const provider of policy.provider_bindings) {
+  for (const provider of persistBindings ? policy.provider_bindings : []) {
     await admin.query({
       text: `INSERT INTO community_policy_provider_bindings (
                policy_version_id, community_id, policy_key, verification_requirement_hash,
@@ -612,6 +621,84 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("a revoked alternative cannot hide valid evidence and a pinned provider cannot substitute it", async () => {
+    await withSchema(async (connection, admin) => {
+      const policy = nationalityPolicy(["US"]);
+      await insertCompletedNationalityEvidence(admin, {
+        suffix: "valid-alternative",
+        provider: "self.pass",
+        requirement: policy.requirement,
+      });
+      await insertCompletedNationalityEvidence(admin, {
+        suffix: "revoked-alternative",
+        provider: "zkpassport",
+        requirement: policy.requirement,
+      });
+      await admin.query(`INSERT INTO assertion_revalidation_events
+        (assertion_revalidation_event_id,assertion_id,user_id,evidence_receipt_id,outcome,observed_at)
+        VALUES ('alternative-revoked','assertion-nationality-revoked-alternative','user-a',
+          'receipt-nationality-revoked-alternative','revoked',clock_timestamp())`);
+      expect(await runEvaluation(connection, policy)).toMatchObject({
+        outcome: "pass",
+        winning_witness: [{ evidence_receipt_ids: ["receipt-nationality-valid-alternative"] }],
+      });
+      expect(await runEvaluation(connection, policy, "zkpassport")).toMatchObject({
+        outcome: "needs_evidence",
+        reason: "revoked",
+      });
+      expect(await runEvaluation(connection, policy, "self.pass")).toMatchObject({
+        outcome: "pass",
+      });
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("enforcement serializes revalidation with its decision transaction", async () => {
+    await withSchema(async (connection, admin) => {
+      const policy = nationalityPolicy(["US"]);
+      await insertCompletedNationalityEvidence(admin, {
+        suffix: "locked",
+        provider: "self.pass",
+        requirement: policy.requirement,
+      });
+      const insertRevalidation = () =>
+        admin.query(`INSERT INTO assertion_revalidation_events
+        (assertion_revalidation_event_id,assertion_id,user_id,evidence_receipt_id,outcome,observed_at)
+        VALUES ('lock-revoked','assertion-nationality-locked','user-a','receipt-nationality-locked','revoked',clock_timestamp())`);
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.withTransaction((transaction) =>
+              Effect.gen(function* () {
+                const evaluation = yield* loadCuratedNationalityEvaluation(transaction, {
+                  userId: "user-a",
+                  policy,
+                  lockEvidence: true,
+                });
+                expect(evaluation).toMatchObject({ outcome: "pass" });
+                yield* Effect.promise(async () => {
+                  await admin.query("SET statement_timeout = '150ms'");
+                  try {
+                    await expect(insertRevalidation()).rejects.toMatchObject({ code: "57014" });
+                  } finally {
+                    await admin.query("RESET statement_timeout");
+                  }
+                });
+              }),
+            );
+          }),
+        ).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+      );
+      await insertRevalidation();
+      expect(await runEvaluation(connection, policy)).toMatchObject({
+        outcome: "needs_evidence",
+        reason: "revoked",
+      });
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   test("treats an unchanged-requirement mismatch as missing evidence, not reuse", async () => {
     await withSchema(async (connection, admin) => {
       const seeded = nationalityPolicy(["US"]);
@@ -716,6 +803,29 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
       });
       const after = await runEvaluation(connection, policy);
       expect(after).toMatchObject({ outcome: "needs_evidence", reason: "missing" });
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("a current nationality policy with missing provider rows never becomes an open gate", async () => {
+    await withSchema(async (connection, admin) => {
+      const policy = nationalityPolicy(["US"]);
+      const communityId = "community-missing-nationality-bindings";
+      await seedHumanCommunity(admin, communityId);
+      await seedNationalityPolicy(admin, communityId, policy, false);
+      await seedPalmEvidence(admin, "missing-bindings", communityId);
+      const eligibility = () =>
+        runStore(connection, (store) =>
+          store.getJoinEligibility({ communityId, userId: "user-a" }),
+        );
+      await expect(eligibility()).rejects.toMatchObject({ _tag: "CommunityRepositoryError" });
+      await admin.query(bindingRow(communityId, policy, "self.pass"));
+      await expect(eligibility()).rejects.toMatchObject({ _tag: "CommunityRepositoryError" });
+      await admin.query(bindingRow(communityId, policy, "zkpassport"));
+      expect(await eligibility()).toMatchObject({
+        status: "verification_required",
+        joinable_now: false,
+      });
     });
     completedTestCount += 1;
   }, 30_000);
@@ -959,6 +1069,25 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
           }),
         ),
       ).resolves.toBeNull();
+      const refreshed = await Promise.all(
+        [0, 1].map(() =>
+          runStore(connection, (store) =>
+            store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
+          ),
+        ),
+      );
+      for (const projection of refreshed) {
+        expect(projection).toMatchObject({
+          requirements: {
+            nationality: {
+              provider_id: "zkpassport",
+              generation: 2,
+              ceremony_intent_id: currentCeremonyId,
+            },
+          },
+          next_action: { provider_id: "zkpassport", intent_id: currentCeremonyId },
+        });
+      }
 
       await seedCompletedJoinNationalitySession(admin, {
         sessionId: "session-join-nationality",
@@ -1005,6 +1134,55 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
           human_identity: { requirement: "human_identity", status: "satisfied" },
         },
       });
+      await admin.query(`INSERT INTO assertion_revalidation_events (
+        assertion_revalidation_event_id, assertion_id, user_id, evidence_receipt_id, outcome, observed_at
+      ) VALUES ('join-revoked', 'assertion-nationality-join-ceremony', 'user-a',
+        'receipt-nationality-join-ceremony', 'revoked', clock_timestamp())`);
+      const renewed = await runStore(connection, (store) =>
+        store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
+      );
+      assertProviderChoiceEligibility(renewed);
+      expect(renewed).toMatchObject({
+        status: "verification_required",
+        requirements: { nationality: { provider_id: "zkpassport", generation: 1 } },
+      });
+      const renewalId =
+        renewed.next_action.kind === "start_verification" ? renewed.next_action.intent_id : null;
+      expect(renewalId).not.toBe(currentCeremonyId);
+      const renewalReplay = await runStore(connection, (store) =>
+        store.getJoinEligibility({ communityId: "community-join-ceremony", userId: "user-a" }),
+      );
+      expect(renewalReplay?.next_action).toEqual(renewed.next_action);
+      expect(
+        (
+          await admin.query(
+            `SELECT status FROM nationality_requirement_states
+        WHERE current_ceremony_intent_id = $1`,
+            [currentCeremonyId],
+          )
+        ).rows,
+      ).toEqual([{ status: "satisfied" }]);
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-join-ceremony",
+            actor: { userId: "user-a", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "membership-required" });
+      if (renewalId === null) throw new Error("Expected a renewal ceremony");
+      await expect(
+        Effect.runPromise(
+          resolver.resolve({ actor_id: "user-a", intent_id: renewalId, provider_id: "zkpassport" }),
+        ),
+      ).resolves.toMatchObject({ protocol_version: "zkpassport-v2" });
+      await insertCompletedNationalityEvidence(admin, {
+        suffix: "join-renewed",
+        reuseBindingSuffix: "join-ceremony",
+        provider: "zkpassport",
+        requirement: policy.requirement,
+      });
       await expect(
         runStore(connection, (store) =>
           store.join({
@@ -1019,7 +1197,7 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
   }, 90_000);
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 11) {
+    if (connectionString !== undefined && completedTestCount === 14) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

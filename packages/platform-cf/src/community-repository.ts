@@ -15,13 +15,13 @@ import {
   type UnfollowDocument,
 } from "@pirate/application";
 import { decodeCommunityCanonicalRouteV2 } from "@pirate/contracts";
-import { communityJoinNationalityIntentId, nationalityProviderBindingHash } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
 import {
   CommunityJoinIntentDataInvalid,
   fulfillCommunityJoinIntents,
   resolveOrIssueCommunityJoinIntent,
 } from "./community-join-intent-store.ts";
+import { resolveJoinNationalityCeremony } from "./community-join-nationality-ceremony.ts";
 import {
   type CommunityGateEvaluation,
   CURATED_AGE_GATE_SUMMARY,
@@ -35,14 +35,8 @@ import {
   persistEnforceDecision,
   persistNationalityEnforceDecision,
 } from "./gates-v2-community.ts";
-import {
-  NationalityCeremonyDataInvalid,
-  resolveOrIssueNationalityCeremony,
-} from "./nationality-ceremony-store.ts";
+import { NationalityCeremonyDataInvalid } from "./nationality-ceremony-store.ts";
 import { PLATFORM_AGE_18_VERIFICATION_INTENT_ID } from "./verification-intent-resolver.ts";
-
-/** Ceremony lifetime for the joiner's nationality child ceremony; not evidence lifetime. */
-const COMMUNITY_JOIN_NATIONALITY_CEREMONY_TTL_SECONDS = 3_600;
 
 type CommunityRow = {
   readonly community_id: unknown;
@@ -991,36 +985,10 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                       next_action: { kind: "join" as const },
                     };
                   }
-                  const intentId = communityJoinNationalityIntentId({
+                  const action = yield* resolveJoinNationalityCeremony(transaction, {
                     actorId: input.userId,
                     communityId: input.communityId,
-                    requirementHash: nationalityPolicy.requirement_hash,
-                  });
-                  const selected = nationalityPolicy.provider_bindings[0];
-                  const selectedBindingHash = nationalityProviderBindingHash(selected);
-                  const action = yield* resolveOrIssueNationalityCeremony(transaction, {
-                    actionKind: "community_join",
-                    intentId,
-                    actorId: input.userId,
-                    requirementHash: nationalityPolicy.requirement_hash,
-                    acceptedProviderIds: ["self.pass", "zkpassport"],
-                    selectedProviderId: selected.provider_id,
-                    selectedBinding: {
-                      bindingHash: selectedBindingHash,
-                      configurationKind: selected.provider_configuration.kind,
-                      configurationRef: selected.provider_configuration.reference,
-                      configurationVersion: selected.provider_configuration.version,
-                    },
-                    reservationRequest: {
-                      action_kind: "community_join",
-                      actor_id: input.userId,
-                      community_id: input.communityId,
-                      intent_id: intentId,
-                      requirement_hash: nationalityPolicy.requirement_hash,
-                      provider_id: selected.provider_id,
-                      provider_binding_hash: selectedBindingHash,
-                    },
-                    ttlSeconds: COMMUNITY_JOIN_NATIONALITY_CEREMONY_TTL_SECONDS,
+                    policy: nationalityPolicy,
                   }).pipe(
                     Effect.mapError((error) =>
                       error instanceof NationalityCeremonyDataInvalid
@@ -1046,7 +1014,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                         requirement: "nationality" as const,
                         status: "pending" as const,
                         requirement_hash: nationalityPolicy.requirement_hash,
-                        provider_id: selected.provider_id,
+                        provider_id: action.providerId,
                         accepted_provider_ids: ["self.pass", "zkpassport"] as const,
                         ceremony_intent_id: action.ceremonyIntentId,
                         generation: action.generation,
@@ -1054,14 +1022,14 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                     },
                     membership_gate_summaries: summaries,
                     missing_capabilities: ["nationality" as const],
-                    suggested_verification_provider: selected.provider_id,
+                    suggested_verification_provider: action.providerId,
                     suggested_verification_intent: "community_join" as const,
                     failure_reason: "missing_verification" as const,
                     gate_evaluation: gateEvaluation,
                     next_action: {
                       kind: "start_verification" as const,
                       requirement: "nationality" as const,
-                      provider_id: selected.provider_id,
+                      provider_id: action.providerId,
                       intent_id: action.ceremonyIntentId,
                     },
                   };
@@ -1352,6 +1320,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                 const nationality = yield* loadCuratedNationalityEvaluation(transaction, {
                   userId: input.actor.userId,
                   policy: nationalityPolicy,
+                  lockEvidence: true,
                 }).pipe(
                   Effect.mapError((error) =>
                     error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,

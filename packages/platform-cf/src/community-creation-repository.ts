@@ -774,6 +774,7 @@ export const enforceCreatorNationalityPolicy = Effect.fn("enforceCreatorNational
     const evaluation = yield* loadCuratedNationalityEvaluation(transaction, {
       userId: input.userId,
       policy,
+      lockEvidence: true,
     });
     yield* persistNationalityEnforceDecision(transaction, {
       communityId: input.communityId,
