@@ -6,10 +6,7 @@ import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconc
 import type { KaraokeSurfaceReceipt } from "./staging-karaoke-release-operation.ts";
 import { STAGING_FENCED_QUEUES } from "./staging-persona-cloudflare-producers.ts";
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
-import {
-  loadStagingUpgradeArtifacts,
-  STAGING_UPGRADE_RELEASE,
-} from "./staging-persona-upgrade-plan.ts";
+import { STAGING_UPGRADE_RELEASE } from "./staging-persona-upgrade-plan.ts";
 import type { StagingResetReleaseLiveConfiguration } from "./staging-reset-release-live.ts";
 
 // The reset is mocked so the composition binding's failure receipt and port
@@ -332,18 +329,26 @@ test("checkout reachability is proven from immutable Git history in both reposit
 }, 120_000);
 
 test("the live applier requires the exact reconstructed prefix and refuses dry runs", async () => {
-  const applied = loadStagingUpgradeArtifacts()
-    .migrations.filter(({ version }) => Number(version.slice(0, 4)) >= 120)
-    .map(({ version }) => version);
   const seen: unknown[] = [];
   const applier = makeLiveStagingUpgradeApplier("postgres://live", async (input) => {
+    if (!input) throw new Error("missing migration input");
     seen.push(input);
+    const applied = input.migrations
+      ?.slice(input.expectedLedger?.length ?? 0)
+      .map(({ version }) => version);
     return { dryRun: false, result: { applied } } as never;
   });
   const receipt = await applier();
   expect(receipt.toVersion).toBe(STAGING_UPGRADE_RELEASE.terminalVersion);
   expect(receipt.applied).toHaveLength(STAGING_UPGRADE_RELEASE.upgradeCount);
+  expect(seen).toHaveLength(2);
   expect((seen[0] as { connectionString: string }).connectionString).toBe("postgres://live");
+  expect(
+    (seen[0] as { migrations: readonly { version: string }[] }).migrations.at(-1)?.version,
+  ).toBe("0153_hns_activation_policy.sql");
+  expect(
+    (seen[1] as { expectedLedger: readonly { version: string }[] }).expectedLedger.at(-1)?.version,
+  ).toBe("0153_hns_activation_policy.sql");
   const dry = makeLiveStagingUpgradeApplier(
     "postgres://live",
     async () =>

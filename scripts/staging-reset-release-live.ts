@@ -20,14 +20,9 @@ import { STAGING_FENCED_QUEUES } from "./staging-persona-cloudflare-producers.ts
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
 import { describeRehearsalFailure } from "./staging-persona-rehearsal-failure.ts";
 import {
-  loadStagingResetArtifacts,
-  validateStagingResetArtifacts,
-} from "./staging-persona-reset-plan.ts";
-import {
+  applyStagingUpgradeInPhases,
   loadStagingUpgradeArtifacts,
   type StagingUpgradeReceipt,
-  stagingUpgradeBaseLedger,
-  stagingUpgradeReceipt,
 } from "./staging-persona-upgrade-plan.ts";
 import type { RefencedOutcomes, StagingRefence } from "./staging-reset-release-executor.ts";
 import {
@@ -323,17 +318,12 @@ export function makeLiveStagingUpgradeApplier(
   connectionString: string,
   run: typeof runPostgresMigrations = runPostgresMigrations,
 ) {
-  return async (): Promise<StagingUpgradeReceipt> => {
-    const upgrade = loadStagingUpgradeArtifacts();
-    const resetPlan = validateStagingResetArtifacts(loadStagingResetArtifacts());
-    const output = await run({
-      connectionString,
-      migrations: upgrade.migrations,
-      expectedLedger: stagingUpgradeBaseLedger(resetPlan),
+  return async (): Promise<StagingUpgradeReceipt> =>
+    applyStagingUpgradeInPhases(connectionString, async (input) => {
+      const output = await run(input);
+      if (output.dryRun) throw new Error("staging_live_upgrade_unexpected_dry_run");
+      return output;
     });
-    if (output.dryRun) throw new Error("staging_live_upgrade_unexpected_dry_run");
-    return stagingUpgradeReceipt(upgrade, output.result.applied);
-  };
 }
 
 const SESSION_COOKIE = "__Host-pirate_session";
