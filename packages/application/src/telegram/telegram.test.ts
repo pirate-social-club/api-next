@@ -1436,7 +1436,8 @@ function videoPublicationFixture(state: "pending" | "delivered", messageId: numb
     desired: videoMessage,
     desiredHash: `hash:${JSON.stringify(videoMessage)}`,
     confirmed: state === "delivered" ? telegramPublication(publicationPost) : null,
-    confirmedHash: state === "delivered" ? `hash:${JSON.stringify(telegramPublication(publicationPost))}` : null,
+    confirmedHash:
+      state === "delivered" ? `hash:${JSON.stringify(telegramPublication(publicationPost))}` : null,
     messageId,
     attempt: "attempt",
     attemptCount: 1,
@@ -1455,7 +1456,14 @@ function videoPublicationFixture(state: "pending" | "delivered", messageId: numb
   });
   service.vault.open = async () => JSON.stringify({ token: "123:fixture", secret: "s" });
   service.api = {
-    dispatch: async (_token: string, _delivery: DeliveryRecord, _operation: "send" | "edit" | "delete", _audio: Uint8Array | undefined, photo: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }> | undefined, video: Readonly<{ bytes: Uint8Array; contentType: "video/mp4" }> | undefined) => {
+    dispatch: async (
+      _token: string,
+      _delivery: DeliveryRecord,
+      _operation: "send" | "edit" | "delete",
+      _audio: Uint8Array | undefined,
+      photo: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }> | undefined,
+      video: Readonly<{ bytes: Uint8Array; contentType: "video/mp4" }> | undefined,
+    ) => {
       dispatched.push({ photo, video });
       return { kind: "confirmed" as const, messageId: 41 };
     },
@@ -1465,9 +1473,14 @@ function videoPublicationFixture(state: "pending" | "delivered", messageId: numb
 
 test("a video publication transfers the accepted source", async () => {
   const { service, dispatched, finishes } = videoPublicationFixture("pending", null);
-  service.videoSourceBytes = async () => ({ bytes: new Uint8Array([1, 2, 3]), contentType: "video/mp4" });
+  service.videoSourceBytes = async () => ({
+    bytes: new Uint8Array([1, 2, 3]),
+    contentType: "video/mp4",
+  });
   await processTelegramDelivery(service, "publication-delivery");
-  expect(dispatched).toEqual([{ photo: undefined, video: { bytes: new Uint8Array([1, 2, 3]), contentType: "video/mp4" } }]);
+  expect(dispatched).toEqual([
+    { photo: undefined, video: { bytes: new Uint8Array([1, 2, 3]), contentType: "video/mp4" } },
+  ]);
   expect(finishes[0]?.[3]).toBeUndefined();
 });
 
