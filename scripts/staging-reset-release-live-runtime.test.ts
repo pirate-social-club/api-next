@@ -411,6 +411,7 @@ async function launcherHarness() {
       await verifyServingPair();
     },
   });
+  let communityCreationInput: Record<string, unknown> | undefined;
   const run = (upgradeFails: boolean) =>
     runStagingResetReleaseLive({
       env: {
@@ -436,14 +437,23 @@ async function launcherHarness() {
           async producers() {},
         })) as never,
         makeVerifier: (() => async () => {}) as never,
-        makeCommunityCreation: (() => async () => {}) as never,
+        makeCommunityCreation: ((input: Record<string, unknown>) => {
+          communityCreationInput = input;
+          return async () => {};
+        }) as never,
         makeApplier: (() => async () => {
           if (upgradeFails) throw new Error("migration apply failed");
           return stagingUpgradeReceipt({ sourceSha: STAGING_UPGRADE_RELEASE.sourceSha }, applied);
         }) as never,
       },
     });
-  return { directory, ends, run, dispose: () => rm(directory, { recursive: true, force: true }) };
+  return {
+    directory,
+    ends,
+    run,
+    communityCreationInput: () => communityCreationInput,
+    dispose: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
 test("the launcher composes the reviewed path and closes the connection", async () => {
@@ -452,6 +462,19 @@ test("the launcher composes the reviewed path and closes the connection", async 
     const result = await harness.run(false);
     expect(result.release.disposition).toBe("released");
     expect(harness.ends).toEqual(["operator"]);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+test("an injected acceptance factory is constructed without resolving the sibling checkout", async () => {
+  const harness = await launcherHarness();
+  try {
+    const result = await harness.run(false);
+    expect(result.release.disposition).toBe("released");
+    const input = harness.communityCreationInput();
+    expect(input).toBeDefined();
+    expect(Object.keys(input ?? {})).not.toContain("solidRoot");
   } finally {
     await harness.dispose();
   }

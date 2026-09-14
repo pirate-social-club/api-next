@@ -561,13 +561,6 @@ export function makeSolidServingVerifier(input: {
   };
 }
 
-/** The launch binding. It refuses before any mutation unless the configuration
- * is authorized, both reviewed checkouts are reachable from accepted main and
- * the Cloudflare token is present, then acquires the live target, measures the
- * admission, wires the release surfaces, re-fence and upgrade applier, and
- * runs the composed reset/release in one process. The dependencies seam exists
- * so the composed path can be exercised against isolated fixtures; production
- * callers omit it. */
 /** The acceptance factory's input without the sibling checkout. The default
  * factory resolves the Solid checkout itself, so an injected factory cannot
  * trigger a filesystem resolution the launch does not need. */
@@ -576,6 +569,13 @@ type CommunityCreationAcceptanceInput = Omit<
   "solidRoot"
 >;
 
+/** The launch binding. It refuses before any mutation unless the configuration
+ * is authorized, both reviewed checkouts are reachable from accepted main and
+ * the Cloudflare token is present, then acquires the live target, measures the
+ * admission, wires the release surfaces, re-fence and upgrade applier, and
+ * runs the composed reset/release in one process. The dependencies seam exists
+ * so the composed path can be exercised against isolated fixtures; production
+ * callers omit it. */
 export interface StagingLiveLaunchDependencies {
   readonly assertCheckouts: typeof assertLiveStagingCheckouts;
   readonly measureAdmission: typeof measureStagingLiveAdmission;
