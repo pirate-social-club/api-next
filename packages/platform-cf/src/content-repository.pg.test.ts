@@ -798,9 +798,9 @@ suite("Postgres 17 content repository", () => {
         content_rating: "adult_18",
         next_action: { kind: "verify_minimum_age", minimum_age: 18 },
       });
-      await admin.query(
-        "UPDATE posts SET content_rating = 'general' WHERE post_id = 'post_parent'",
-      );
+      await expect(
+        admin.query("UPDATE posts SET content_rating = 'general' WHERE post_id = 'post_parent'"),
+      ).rejects.toMatchObject({ code: "23514" });
 
       for (const status of ["hidden", "removed", "deleted"] as const) {
         await admin.query("UPDATE posts SET status = $1 WHERE post_id = 'post_parent'", [status]);

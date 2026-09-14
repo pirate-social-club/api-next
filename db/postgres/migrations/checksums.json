@@ -186,6 +186,7 @@
     "0183_account_age_verification_ceremonies.sql": "5a9ae2b7882fd2bfa2353a4366f281b1e90955512e2723fede8e0ba6fb220149",
     "0184_data_metadata_preparation_snapshots.sql": "ed5c05f3f2fbfa7dbdd9e6d3987a5d90b22c7523e2349f8bf4b1bd173fe60125",
     "0185_current_content_rating_floors.sql": "eaa771de80de0a0c631b24a4970cf0c41571eae4212fe6660467c7c205f856bd",
-    "0186_retained_content_rating_reconciliation.sql": "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab"
+    "0186_retained_content_rating_reconciliation.sql": "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab",
+    "0187_text_rating_raise_counts.sql": "4eb58bd66f3f4d5f453e6033dc6f2e38eaba27dd18658e6cac6c6525487f49c8"
   }
 }

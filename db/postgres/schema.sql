@@ -15203,23 +15203,51 @@ CREATE FUNCTION raise_text_rating_with_descendants_v1(target_community_id text, 
     AS $$
 DECLARE
   changed_count INTEGER := 0;
-  latest_count INTEGER := 0;
 BEGIN
   IF target_kind = 'text_post' THEN
+    SELECT
+      (SELECT count(*) FROM posts
+        WHERE community_id = target_community_id
+          AND post_id = target_resource_id
+          AND post_type = 'text'
+          AND content_rating <> 'adult_18')
+      +
+      (SELECT count(*) FROM comments
+        WHERE community_id = target_community_id
+          AND post_id = target_resource_id
+          AND content_rating <> 'adult_18')
+      INTO changed_count;
+
     UPDATE posts
        SET content_rating = 'adult_18', updated_at = transition_at
      WHERE community_id = target_community_id
        AND post_id = target_resource_id
-       AND post_type = 'text';
-    GET DIAGNOSTICS changed_count = ROW_COUNT;
+       AND post_type = 'text'
+       AND content_rating <> 'adult_18';
+
     UPDATE comments
        SET content_rating = 'adult_18', updated_at = transition_at
      WHERE community_id = target_community_id
        AND post_id = target_resource_id
        AND content_rating <> 'adult_18';
-    GET DIAGNOSTICS latest_count = ROW_COUNT;
-    changed_count := changed_count + latest_count;
   ELSIF target_kind IN ('comment', 'reply') THEN
+    WITH RECURSIVE descendants AS (
+      SELECT comment_id
+        FROM comments
+       WHERE community_id = target_community_id
+         AND comment_id = target_resource_id
+      UNION ALL
+      SELECT child.comment_id
+        FROM comments AS child
+        JOIN descendants AS parent ON parent.comment_id = child.parent_comment_id
+       WHERE child.community_id = target_community_id
+    )
+    SELECT count(*) INTO changed_count
+      FROM comments AS comment
+      JOIN descendants ON descendants.comment_id = comment.comment_id
+     WHERE comment.community_id = target_community_id
+       AND comment.content_rating <> 'adult_18';
+
     WITH RECURSIVE descendants AS (
       SELECT comment_id
         FROM comments
@@ -15237,7 +15265,6 @@ BEGIN
      WHERE comment.community_id = target_community_id
        AND comment.comment_id = descendants.comment_id
        AND comment.content_rating <> 'adult_18';
-    GET DIAGNOSTICS changed_count = ROW_COUNT;
   ELSE
     RAISE EXCEPTION 'unsupported text rating target kind';
   END IF;
