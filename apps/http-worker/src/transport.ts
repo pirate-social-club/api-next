@@ -992,6 +992,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             !isPublic(binding.endpoint) ||
             binding.name === "GetPublicPersona" ||
             binding.name === "GetPublicCommunityThreads" ||
+            binding.name === "GetPublicHomeFeed" ||
+            binding.name === "GetPublicPostSitemap" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||
