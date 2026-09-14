@@ -12,6 +12,14 @@ export type PostgresMigration = {
   readonly sql: string;
 };
 
+/** An exact starting ledger an apply must observe before its first mutation.
+ * Names, order, count and checksums all have to agree; a prefix is not enough
+ * when the caller needs a specific reconstructed state. */
+export type PostgresExpectedLedger = readonly {
+  readonly version: string;
+  readonly checksum: string;
+}[];
+
 /** Migration filenames use a fixed-width numeric prefix so lexical order is numeric order. */
 export const POSTGRES_MIGRATION_VERSION_PATTERN = /^\d{4}(?:_[^/]+)?\.sql$/;
 
@@ -21,7 +29,7 @@ export class MigrationDefinitionInvalid extends Data.TaggedError("MigrationDefin
 }> {}
 
 export class MigrationLedgerMismatch extends Data.TaggedError("MigrationLedgerMismatch")<{
-  readonly reason: "unknown-version" | "checksum" | "not-prefix";
+  readonly reason: "unknown-version" | "checksum" | "not-prefix" | "exact-ledger";
   readonly version: string;
   readonly expectedVersion: string | null;
   readonly actualVersion: string | null;
@@ -132,6 +140,7 @@ export const applyPostgresMigrationsInTransaction = Effect.fn(
 )(function* (
   transaction: ControlPlaneTransaction,
   migrations: readonly PostgresMigration[],
+  expectedLedger?: PostgresExpectedLedger,
 ): Effect.fn.Return<
   MigrationApplyResult,
   MigrationDefinitionInvalid | MigrationLedgerMismatch | ControlPlaneError
@@ -146,6 +155,37 @@ export const applyPostgresMigrationsInTransaction = Effect.fn(
       readonly: true,
     });
     const applied = new Map(result.rows.map((row) => [row.version, row.checksum]));
+
+    // The exact-state requirement is checked in the same transaction that
+    // would carry the mutations, before the first write. A caller that needs
+    // the reconstructed 0119 state must not accept a prefix of it, and an
+    // unreset 0109 state must not reach 0110.
+    if (expectedLedger !== undefined) {
+      const actual = [...applied].map(([version, checksum]) => ({ version, checksum }));
+      let mismatch = -1;
+      if (actual.length !== expectedLedger.length) {
+        mismatch = Math.min(actual.length, expectedLedger.length);
+      } else {
+        mismatch = actual.findIndex(
+          (entry, index) =>
+            entry.version !== expectedLedger[index]?.version ||
+            entry.checksum !== expectedLedger[index]?.checksum,
+        );
+      }
+      if (mismatch >= 0) {
+        const actualEntry = actual[mismatch];
+        const expectedEntry = expectedLedger[mismatch];
+        return yield* new MigrationLedgerMismatch({
+          reason: "exact-ledger",
+          version: actualEntry?.version ?? expectedEntry?.version ?? "unknown",
+          expectedVersion: expectedEntry?.version ?? null,
+          actualVersion: actualEntry?.version ?? null,
+          expectedChecksum: expectedEntry?.checksum ?? null,
+          actualChecksum: actualEntry?.checksum ?? null,
+        });
+      }
+    }
+
     const defined = new Set(migrations.map((migration) => migration.version));
 
     for (const [version, checksum] of applied) {
@@ -197,6 +237,7 @@ export const applyPostgresMigrationsInTransaction = Effect.fn(
 /** Owns a transaction for ordinary callers; reset tooling uses the supplied-transaction form. */
 export const applyPostgresMigrations = Effect.fn("applyPostgresMigrations")(function* (
   migrations: readonly PostgresMigration[],
+  expectedLedger?: PostgresExpectedLedger,
 ): Effect.fn.Return<
   MigrationApplyResult,
   MigrationDefinitionInvalid | MigrationLedgerMismatch | ControlPlaneError,
@@ -205,6 +246,6 @@ export const applyPostgresMigrations = Effect.fn("applyPostgresMigrations")(func
   yield* validateDefinitions(migrations);
   const db = yield* ControlPlaneDb;
   return yield* db.withTransaction((transaction) =>
-    applyPostgresMigrationsInTransaction(transaction, migrations),
+    applyPostgresMigrationsInTransaction(transaction, migrations, expectedLedger),
   );
 });

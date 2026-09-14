@@ -36,6 +36,10 @@ export const MEGAPOT_V2_RPC_MAX_RESPONSE_BYTES = 512 * 1024;
 
 type JsonObject = Readonly<Record<string, unknown>>;
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+type RequestPacingClock = Readonly<{
+  nowMs: () => number;
+  sleep: (milliseconds: number) => Promise<void>;
+}>;
 
 export class MegapotV2RpcFailed extends Error {
   readonly _tag = "MegapotV2RpcFailed";
@@ -92,11 +96,8 @@ export type MegapotV2RpcClientOptions = Readonly<{
   reuseSuccessfulAttestation?: boolean;
   /** Optional provider-throttle guard; zero or absent preserves immediate request starts. */
   minimumRequestIntervalMs?: number;
-  /** Monotonic pacing clock; injectable without replacing global timers. */
-  requestStartTiming?: Readonly<{
-    now: () => number;
-    wait: (milliseconds: number) => Promise<void>;
-  }>;
+  /** Deterministic test seam for the request-start scheduler. */
+  requestPacingClock?: RequestPacingClock;
 }>;
 
 export type MegapotV2FeeQuote = Readonly<{
@@ -285,39 +286,42 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     throw new MegapotV2RpcFailed("invalid-config");
   }
   const fetcher = options.fetcher ?? fetch;
-  const requestStartTiming = options.requestStartTiming ?? {
-    now: () => performance.now(),
-    wait: (milliseconds: number) =>
-      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
-  };
+  const requestPacingClock =
+    options.requestPacingClock ??
+    ({
+      nowMs: () => performance.now(),
+      sleep: (milliseconds) =>
+        new Promise<void>((resolve) => setTimeout(resolve, Math.ceil(milliseconds))),
+    } satisfies RequestPacingClock);
   let requestSequence = 0;
   let previousRequestStart = Promise.resolve();
   let lastRequestStartedAt = Number.NEGATIVE_INFINITY;
 
-  const startRequest = (start: () => Promise<Response>): Promise<Response> => {
-    if (minimumRequestIntervalMs === 0) return Promise.resolve().then(start);
-    const scheduled = previousRequestStart.then(async () => {
-      const targetStart = lastRequestStartedAt + minimumRequestIntervalMs;
-      let remaining = targetStart - requestStartTiming.now();
-      while (remaining > 0) {
-        await requestStartTiming.wait(Math.ceil(remaining));
-        remaining = targetStart - requestStartTiming.now();
-      }
-      try {
-        // Keep the actual transport invocation inside the start queue. Wrapping
-        // its promise releases the queue without waiting for the response.
-        return { response: start() };
-      } finally {
-        // Account for synchronous setup before transport dispatch; a permit
-        // timestamp recorded earlier can shorten the next actual start gap.
-        lastRequestStartedAt = requestStartTiming.now();
-      }
+  const startRequest = async (start: () => Promise<Response>): Promise<Response> => {
+    if (minimumRequestIntervalMs === 0) return start();
+    const predecessor = previousRequestStart;
+    let releaseStart!: () => void;
+    previousRequestStart = new Promise<void>((resolve) => {
+      releaseStart = resolve;
     });
-    previousRequestStart = scheduled.then(
-      () => undefined,
-      () => undefined,
-    );
-    return scheduled.then(({ response }) => response);
+    let startAttempted = false;
+    try {
+      await predecessor;
+      const targetStart = lastRequestStartedAt + minimumRequestIntervalMs;
+      let remaining = targetStart - requestPacingClock.nowMs();
+      while (remaining > 0) {
+        await requestPacingClock.sleep(remaining);
+        remaining = targetStart - requestPacingClock.nowMs();
+      }
+      startAttempted = true;
+      return start();
+    } finally {
+      try {
+        if (startAttempted) lastRequestStartedAt = requestPacingClock.nowMs();
+      } finally {
+        releaseStart();
+      }
+    }
   };
 
   const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {

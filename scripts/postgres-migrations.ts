@@ -12,6 +12,7 @@ import {
   applyPostgresMigrations,
   type MigrationApplyResult,
   POSTGRES_MIGRATION_VERSION_PATTERN,
+  type PostgresExpectedLedger,
   type PostgresMigration,
 } from "../packages/platform-cf/src/postgres-migrations.ts";
 import { makeMigrationDiagnosticClient } from "./postgres-migration-diagnostics.ts";
@@ -92,6 +93,8 @@ export async function runPostgresMigrations(
     readonly connectionString?: string;
     readonly dryRun?: boolean;
     readonly migrations?: readonly PostgresMigration[];
+    /** Exact starting ledger enforced inside the apply transaction. */
+    readonly expectedLedger?: PostgresExpectedLedger;
   } = {},
 ): Promise<MigrationRunResult> {
   const migrations = input.migrations ?? (await loadPostgresMigrations());
@@ -108,7 +111,7 @@ export async function runPostgresMigrations(
     Effect.scoped(
       Effect.gen(function* () {
         yield* ControlPlaneDb;
-        return yield* applyPostgresMigrations(migrations);
+        return yield* applyPostgresMigrations(migrations, input.expectedLedger);
       }).pipe(
         Effect.provide(
           makeDirectPostgresControlPlaneLayer(normalizePostgresConnectionString(connectionString), {

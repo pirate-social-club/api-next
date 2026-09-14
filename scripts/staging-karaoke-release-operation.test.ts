@@ -1,15 +1,18 @@
 import { expect, test } from "bun:test";
 import { KaraokeReleaseFailure } from "./staging-karaoke-release-failure.ts";
-import { executeKaraokeFenceRelease } from "./staging-karaoke-release-operation.ts";
+import {
+  executeKaraokeFenceRelease,
+  type KaraokeReleaseSurface,
+} from "./staging-karaoke-release-operation.ts";
 
 // Deliberately synthetic directives, not a reviewed live restoration plan.
 const plan = {
-  version: "staging-karaoke-release-plan-v1",
+  version: "staging-karaoke-release-plan-v2",
   ingressApplicationId: "a".repeat(32),
   resumeQueues: [{ name: "fixture-queue", id: "b".repeat(32) }],
   servingWorkers: [{ worker: "fixture-worker", versionId: "c".repeat(32) }],
   reviewedGrantDigest: "d".repeat(64),
-  surfaceOrder: ["database", "producers", "ingress"],
+  surfaceOrder: ["versions", "database", "ingress", "producers"],
 };
 const now = () => "2026-09-07T10:00:00.000Z";
 
@@ -18,7 +21,7 @@ test("invalid or duplicate restoration directives refuse before any attempt", as
     null,
     { ...plan, unexpected: true },
     { ...plan, ingressApplicationId: "invalid" },
-    { ...plan, surfaceOrder: ["database", "database", "ingress"] },
+    { ...plan, surfaceOrder: ["versions", "database", "database", "ingress"] },
     { ...plan, resumeQueues: [...plan.resumeQueues, ...plan.resumeQueues] },
   ]) {
     let attempts = 0;
@@ -30,7 +33,7 @@ test("invalid or duplicate restoration directives refuse before any attempt", as
       executeKaraokeFenceRelease({
         plan: invalid,
         now,
-        surfaces: { ingress: refused, producers: refused, database: refused },
+        surfaces: { versions: refused, ingress: refused, producers: refused, database: refused },
         onAttempt: () => {
           attempts++;
         },
@@ -50,7 +53,7 @@ test("unproven confirmation time stops the release after one surface", async () 
     const result = await executeKaraokeFenceRelease({
       plan,
       now,
-      surfaces: { ingress: run, producers: run, database: run },
+      surfaces: { versions: run, ingress: run, producers: run, database: run },
     });
     expect(result.disposition).toBe("unresolved");
     expect(attempts).toBe(1);
@@ -69,13 +72,13 @@ test("an unproven SQL effect retains stage and SQLSTATE without driver text", as
   const result = await executeKaraokeFenceRelease({
     plan,
     now,
-    surfaces: { database: fail, producers: fail, ingress: fail },
+    surfaces: { versions: fail, database: fail, producers: fail, ingress: fail },
     onAttempt: (record) => records.push(record),
   });
   expect(result.disposition).toBe("unresolved");
   expect(result.receipts).toHaveLength(0);
   expect(records.at(-1)).toEqual({
-    surface: "database",
+    surface: "versions",
     phase: "uncertain",
     failure: { stage: "database-commit", sqlstate: "40001" },
   });
@@ -83,8 +86,8 @@ test("an unproven SQL effect retains stage and SQLSTATE without driver text", as
 });
 
 test("changed provider evidence cannot produce a receipt", async () => {
-  const execute = async () => ({
-    surface: "database" as const,
+  const execute = (surface: KaraokeReleaseSurface) => async () => ({
+    surface,
     releasedAt: now(),
     receipt: "a".repeat(64),
     providerEvidence: "different evidence",
@@ -92,7 +95,12 @@ test("changed provider evidence cannot produce a receipt", async () => {
   const result = await executeKaraokeFenceRelease({
     plan,
     now,
-    surfaces: { database: execute, producers: execute, ingress: execute },
+    surfaces: {
+      versions: execute("versions"),
+      database: execute("database"),
+      producers: execute("producers"),
+      ingress: execute("ingress"),
+    },
   });
   expect(result.disposition).toBe("unresolved");
   expect(result.receipts).toHaveLength(0);
@@ -102,9 +110,9 @@ test("a backward clock step between surfaces refuses before the next executor st
   let clock = "2026-09-07T10:00:10.000Z";
   let reads = 0;
   let mutations = 0;
-  const execute = async () => {
+  const execute = (surface: KaraokeReleaseSurface) => async () => {
     mutations++;
-    return { surface: "database" as const, releasedAt: clock, receipt: "provider-proof" };
+    return { surface, releasedAt: clock, receipt: "provider-proof" };
   };
   const result = await executeKaraokeFenceRelease({
     plan,
@@ -112,7 +120,12 @@ test("a backward clock step between surfaces refuses before the next executor st
       if (++reads === 3) clock = "2026-09-07T10:00:09.000Z";
       return clock;
     },
-    surfaces: { database: execute, producers: execute, ingress: execute },
+    surfaces: {
+      versions: execute("versions"),
+      database: execute("database"),
+      producers: execute("producers"),
+      ingress: execute("ingress"),
+    },
   });
   expect(result.disposition).toBe("unresolved");
   expect(result.receipts).toHaveLength(1);

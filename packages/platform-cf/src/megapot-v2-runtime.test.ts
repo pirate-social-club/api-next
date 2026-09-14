@@ -347,76 +347,91 @@ describe("Megapot v2 Worker runtime adapters", () => {
     expect(requestCount).toBe(12);
   });
 
-  test.each([undefined, 0, 20])(
-    "paces actual transport starts with interval %s despite synchronous setup delay",
-    async (interval) => {
-      let now = 0;
-      const requestStarts: number[] = [];
-      const fetchAttestation = attestationFetcher();
-      const client = makeMegapotV2RpcClient({
-        rpcUrl: "https://base-sepolia.example.invalid",
-        attestation: attestation(),
-        reuseSuccessfulAttestation: true,
-        ...(interval === undefined ? {} : { minimumRequestIntervalMs: interval }),
-        requestStartTiming: {
-          now: () => now,
-          wait: async (milliseconds) => {
-            now += milliseconds;
-          },
-        },
-        fetcher: async (input, init) => {
-          // Model work between the scheduling permit and the transport start.
-          if (requestStarts.length === 0) now += 7;
-          requestStarts.push(now);
-          return fetchAttestation(input, init);
-        },
-      });
-
-      await client.attestDeployment();
-      expect(requestStarts).toHaveLength(6);
-      for (let index = 1; index < requestStarts.length; index += 1) {
-        expect(
-          (requestStarts[index] as number) - (requestStarts[index - 1] as number),
-        ).toBeGreaterThanOrEqual(interval ?? 0);
-      }
-      if (!interval) expect(requestStarts).toEqual([7, 7, 7, 7, 7, 7]);
-    },
-  );
-
-  test("paces starts without waiting for earlier RPC responses", async () => {
-    let now = 0;
-    let chainReadsStarted = 0;
-    const bothStarted = Promise.withResolvers<void>();
-    const releaseResponses = Promise.withResolvers<void>();
+  test("paces request starts only when the bounded client opts in", async () => {
+    let nowMs = 1_000;
+    const requestStarts: number[] = [];
+    const sleeps: number[] = [];
     const fetchAttestation = attestationFetcher();
     const client = makeMegapotV2RpcClient({
       rpcUrl: "https://base-sepolia.example.invalid",
       attestation: attestation(),
+      reuseSuccessfulAttestation: true,
       minimumRequestIntervalMs: 20,
-      requestStartTiming: {
-        now: () => now,
-        wait: async (milliseconds) => {
-          now += milliseconds;
+      requestPacingClock: {
+        nowMs: () => nowMs,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+          nowMs += milliseconds;
         },
       },
       fetcher: async (input, init) => {
-        const request = JSON.parse(String(init?.body)) as { method: string };
-        if (request.method === "eth_chainId") {
-          chainReadsStarted += 1;
-          if (chainReadsStarted === 2) bothStarted.resolve();
-          await releaseResponses.promise;
-        }
+        requestStarts.push(nowMs);
+        if (requestStarts.length === 1) nowMs += 7;
         return fetchAttestation(input, init);
       },
     });
 
-    const first = client.attestDeployment();
-    const second = client.attestDeployment();
-    await bothStarted.promise;
-    expect(chainReadsStarted).toBe(2);
-    expect(now).toBeGreaterThanOrEqual(20);
-    releaseResponses.resolve();
-    await Promise.all([first, second]);
+    await client.attestDeployment();
+    expect(requestStarts).toEqual([1_000, 1_027, 1_047, 1_067, 1_087, 1_107]);
+    expect(sleeps).toEqual([20, 20, 20, 20, 20]);
+
+    let unpacedSleeps = 0;
+    const unpaced = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      requestPacingClock: {
+        nowMs: () => nowMs,
+        sleep: async () => {
+          unpacedSleeps += 1;
+        },
+      },
+      fetcher: fetchAttestation,
+    });
+    await unpaced.attestDeployment();
+    expect(unpacedSleeps).toBe(0);
+  });
+
+  test("paces concurrent starts without waiting for earlier responses", async () => {
+    let nowMs = 2_000;
+    const requestStarts: number[] = [];
+    let releaseFirst!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let observeSecondStart!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      observeSecondStart = resolve;
+    });
+    const drawingResult = encodeFunctionResult({
+      abi: readAbi,
+      functionName: "currentDrawingId",
+      result: 7n,
+    });
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      minimumRequestIntervalMs: 20,
+      requestPacingClock: {
+        nowMs: () => nowMs,
+        sleep: async (milliseconds) => {
+          nowMs += milliseconds;
+        },
+      },
+      fetcher: (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        requestStarts.push(nowMs);
+        if (requestStarts.length === 1) return firstResponse;
+        observeSecondStart();
+        return Promise.resolve(rpcResponse(request.id, drawingResult));
+      },
+    });
+
+    const first = client.readCurrentDrawingId();
+    const second = client.readCurrentDrawingId();
+    await secondStarted;
+    expect(requestStarts).toEqual([2_000, 2_020]);
+    releaseFirst(rpcResponse("megapot:1:eth_call", drawingResult));
+    await expect(Promise.all([first, second])).resolves.toEqual([7n, 7n]);
   });
 
   test("classifies the exact solvency RPC stage without exposing provider details", async () => {
