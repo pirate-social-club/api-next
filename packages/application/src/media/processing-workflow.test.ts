@@ -273,14 +273,33 @@ class FakeStore implements MediaProcessingStore {
       return "stale";
     this.events.push("commit:publication+alignment");
     this.publications += 1;
-    if (this.current.lyrics !== null) this.alignmentLaunches += 1;
+    const lyrics = this.current.lyrics;
+    const nextWorkflowRevision =
+      lyrics === null ? this.current.workflowRevision : this.current.workflowRevision + 1;
+    if (lyrics !== null) {
+      this.alignmentLaunches += 1;
+      const outboxId = `media-alignment-outbox-${this.current.operationId}-r${nextWorkflowRevision}`;
+      this.outboxes.set(outboxId, {
+        outboxId,
+        eventType: "alignment",
+        submissionId: this.current.submissionId,
+        operationId: this.current.operationId,
+        workflowRevision: nextWorkflowRevision,
+        workflowInstanceId: `media-${this.current.operationId}-r${nextWorkflowRevision}`,
+        deliveryAttempts: 0,
+        state: "pending",
+        claimFence: 0,
+        claimOwner: null,
+      });
+    }
     this.current = {
       ...this.current,
       status: "published",
       phase: null,
       postId: `media-post-${this.current.operationId}`,
+      workflowRevision: nextWorkflowRevision,
       replacementSequence: 0,
-      publishedLyricsRevision: this.current.lyrics?.lyricsRevision ?? null,
+      publishedLyricsRevision: lyrics?.lyricsRevision ?? null,
     };
     return "committed";
   };
@@ -991,11 +1010,25 @@ describe("media processing workflow", () => {
       },
       decision: null,
     };
-    const prior = store.outboxes.get("outbox-1");
-    if (prior === undefined) throw new TypeError("lyrics wakeup outbox fixture is missing");
-    store.outboxes.set("outbox-1", { ...prior, eventType: "decision_wakeup" });
+    const outboxId = "lyrics-wakeup-outbox-2";
+    store.outboxes.set(outboxId, {
+      outboxId,
+      eventType: "decision_wakeup",
+      submissionId: store.current.submissionId,
+      operationId: store.current.operationId,
+      workflowRevision: store.current.workflowRevision,
+      workflowInstanceId: `media-${store.current.operationId}-r${store.current.workflowRevision}`,
+      deliveryAttempts: 0,
+      state: "delivered",
+      claimFence: 1,
+      claimOwner: null,
+    });
 
-    await runWorkflow(workflowPayload(store), "decision_wakeup", dependencies(store, provider));
+    await runWorkflow(
+      { ...workflowPayload(store), outboxId },
+      "decision_wakeup",
+      dependencies(store, provider),
+    );
     expect(store.current.analysis?.lyricsAnalysis).toMatchObject({
       status: "ready",
       lyricsRevision: 2,
@@ -1164,7 +1197,7 @@ describe("media processing workflow", () => {
     ).toEqual({ outcome: "published" });
     expect(
       await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
-    ).toEqual({ outcome: "published" });
+    ).toEqual({ outcome: "inert" });
     expect(store.publications).toBe(1);
     expect(store.alignmentLaunches).toBe(1);
   });
@@ -1240,22 +1273,16 @@ describe("media processing workflow", () => {
     const providerEvents: string[] = [];
     const provider = providers(providerEvents);
     await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider));
-    const alignmentOutbox = store.outboxes.get("outbox-1");
+    const alignmentOutbox = store.outboxes.get("media-alignment-outbox-operation-1-r2");
     if (alignmentOutbox === undefined) throw new TypeError("alignment outbox fixture is missing");
-    store.outboxes.set("outbox-1", {
-      ...alignmentOutbox,
-      eventType: "alignment",
-    });
-    const aligned = await runWorkflow(
-      workflowPayload(store),
-      "alignment",
-      dependencies(store, provider),
-    );
-    const replay = await runWorkflow(
-      workflowPayload(store),
-      "alignment",
-      dependencies(store, provider),
-    );
+    const alignmentPayload = {
+      outboxId: alignmentOutbox.outboxId,
+      submissionId: alignmentOutbox.submissionId,
+      operationId: alignmentOutbox.operationId,
+      workflowRevision: alignmentOutbox.workflowRevision,
+    };
+    const aligned = await runWorkflow(alignmentPayload, "alignment", dependencies(store, provider));
+    const replay = await runWorkflow(alignmentPayload, "alignment", dependencies(store, provider));
     expect(aligned).toEqual({ outcome: "alignment_recorded" });
     expect(replay).toEqual({ outcome: "alignment_recorded" });
     expect(store.alignments).toBe(1);
