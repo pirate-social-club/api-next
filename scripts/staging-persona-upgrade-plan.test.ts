@@ -4,11 +4,14 @@ import {
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan.ts";
 import {
+  applyStagingUpgradeInPhases,
   applyStagingUpgradeOnRehearsalBranch,
   assertStagingUpgradeReceipt,
   loadStagingUpgradeArtifacts,
+  STAGING_UPGRADE_CHECKPOINT_COUNT,
   STAGING_UPGRADE_ORDINALS,
   STAGING_UPGRADE_RELEASE,
+  StagingUpgradeApplyFailed,
   stagingUpgradeBaseLedger,
   stagingUpgradeReceipt,
 } from "./staging-persona-upgrade-plan.ts";
@@ -53,6 +56,35 @@ test("the base ledger is the full reconstructed plan, not the source prefix", ()
   expect(ledger[0]?.version).toBe(plan.migrations[0]?.version);
   expect(ledger.at(-1)?.version).toBe("0119_hns_root_health_renewal.sql");
   expect(ledger.at(-1)?.checksum).toBe(plan.migrations.at(-1)?.checksum);
+}, 120_000);
+
+test("a second-phase failure reports only the committed exact checkpoint", async () => {
+  let calls = 0;
+  const cause = new Error("second phase failed");
+  try {
+    await applyStagingUpgradeInPhases("postgres://fixture", async (input) => {
+      if (!input) throw new Error("missing migration input");
+      calls++;
+      if (calls === 2) throw cause;
+      return {
+        dryRun: false,
+        result: {
+          applied: input.migrations
+            ?.slice(input.expectedLedger?.length ?? 0)
+            .map(({ version }) => version),
+        },
+      } as never;
+    });
+    throw new Error("expected second phase failure");
+  } catch (error) {
+    expect(error).toBeInstanceOf(StagingUpgradeApplyFailed);
+    if (!(error instanceof StagingUpgradeApplyFailed)) throw error;
+    expect(error.appliedMigrations).toBe(STAGING_UPGRADE_CHECKPOINT_COUNT);
+    expect(error.upgradeSourceSha).toBe(STAGING_UPGRADE_RELEASE.sourceSha);
+    expect(error.upgradeManifestSha256).toBe(STAGING_UPGRADE_RELEASE.manifestSha256);
+    expect(error.cause).toBe(cause);
+  }
+  expect(calls).toBe(2);
 }, 120_000);
 
 test("the rehearsal applier accepts no caller target or connection", () => {

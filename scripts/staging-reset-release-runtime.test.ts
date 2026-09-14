@@ -8,8 +8,10 @@ import type {
 } from "./staging-karaoke-release-operation.ts";
 import { createReleaseMarker } from "./staging-persona-reset-marker.ts";
 import {
+  STAGING_UPGRADE_CHECKPOINT_COUNT,
   STAGING_UPGRADE_ORDINALS,
   STAGING_UPGRADE_RELEASE,
+  StagingUpgradeApplyFailed,
 } from "./staging-persona-upgrade-plan.ts";
 
 // The reset is mocked so the composition's ordering, marker lifecycle and
@@ -61,6 +63,7 @@ const plan = {
 async function harness(
   options: {
     upgradeFails?: boolean;
+    checkpointFailure?: boolean;
     badReceipt?: boolean;
     databaseFails?: boolean;
     completionInterrupts?: boolean;
@@ -133,6 +136,13 @@ async function harness(
       upgrade: {
         async apply() {
           calls.push("upgrade");
+          if (options.checkpointFailure)
+            throw new StagingUpgradeApplyFailed(
+              STAGING_UPGRADE_CHECKPOINT_COUNT,
+              STAGING_UPGRADE_RELEASE.sourceSha,
+              STAGING_UPGRADE_RELEASE.manifestSha256,
+              { cause: new Error("second phase failed") },
+            );
           if (options.upgradeFails) throw new Error("migration apply failed");
           if (options.badReceipt) return { ...receipt, applied: receipt.applied.slice(0, -1) };
           return receipt;
@@ -197,6 +207,35 @@ test("an upgrade failure preserves the fences, leaves the marker, and never reac
     // The database fence is already the reset's denied state; re-fencing it is
     // the executor's fixed-target policy, while ingress and producers were never
     // attempted and must not be touched.
+    expect(h.refenced).toEqual(["database"]);
+    await h.dispose();
+  }
+});
+
+test("a second-phase failure records the committed checkpoint and preserves the original cause", async () => {
+  const h = await harness({ checkpointFailure: true });
+  try {
+    await h.run();
+    throw new Error("expected a checkpoint failure");
+  } catch (error) {
+    expect(error).toBeInstanceOf(StagingUpgradeFailedRestoreRequired);
+    if (!(error instanceof StagingUpgradeFailedRestoreRequired)) throw error;
+    expect(error.stage).toBe("apply");
+    expect((error.cause as Error).message).toBe("second phase failed");
+    const marker = JSON.parse(await readFile(h.markerPath, "utf8")) as {
+      phase: string;
+      appliedMigrations: number;
+      upgradeSourceSha: string | null;
+      upgradeManifestSha256: string | null;
+    };
+    expect(marker).toMatchObject({
+      phase: "failed",
+      appliedMigrations: STAGING_UPGRADE_CHECKPOINT_COUNT,
+      upgradeSourceSha: STAGING_UPGRADE_RELEASE.sourceSha,
+      upgradeManifestSha256: STAGING_UPGRADE_RELEASE.manifestSha256,
+    });
+  } finally {
+    expect(h.calls).toEqual(["surface:versions", "reset:completion", "upgrade"]);
     expect(h.refenced).toEqual(["database"]);
     await h.dispose();
   }
