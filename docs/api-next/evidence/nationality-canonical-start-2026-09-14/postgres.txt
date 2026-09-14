@@ -1,0 +1,30 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/gates-v2-community-nationality.pg.test.ts:
+(pass) Gates v2 nationality provider alternatives and evidence loader > widened provider key stores both alternatives and rejects a duplicate provider row [1998.28ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > loads account-bound evidence for either provider and passes with a witness [1967.96ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > a revoked alternative cannot hide valid evidence and a pinned provider cannot substitute it [2013.27ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > enforcement serializes revalidation with its decision transaction [2170.99ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > treats an unchanged-requirement mismatch as missing evidence, not reuse [1933.54ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > expired evidence is actionable needs_evidence [1933.34ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > latest revalidation outcome gates reuse without disclosing a country [1982.20ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > ownership recovery to another account removes the evidence rather than failing it [1963.21ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > a current nationality policy with missing provider rows never becomes an open gate [2661.72ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > palm alone cannot admit to a nationality-gated community [2107.98ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > either document provider satisfies nationality alongside palm [2867.14ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > creator activation rejects without nationality evidence and passes with it [2855.35ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > creator activation is a no-op without a current nationality policy [2089.69ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > issues, fences, completes, and joins through the joiner nationality ceremony [3806.92ms]
+
+packages/platform-cf/src/community-creation-nationality-flow.pg.test.ts:
+(pass) Postgres 17 community creation nationality flow > reuses accepted account evidence for a composed commit [2558.84ms]
+(pass) Postgres 17 community creation nationality flow > issues, switches, completes, and commits the creator nationality ceremony [3945.80ms]
+(pass) Postgres 17 community creation nationality flow > rolls back the terminal commit when the creator lacks accepted evidence [2254.73ms]
+(pass) Postgres 17 community creation nationality flow > requires fresh proof when the allowlist changes and fences the old ceremony [2335.69ms]
+(pass) Postgres 17 community creation nationality flow > keeps Palm-only creation commit-ready and fails closed without authoring [1973.70ms]
+
+ 19 pass
+ 0 fail
+ 98 expect() calls
+Ran 19 tests across 2 files. [45.73s]
+Verified 2 fresh task-owned completion sentinels.

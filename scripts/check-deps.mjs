@@ -264,6 +264,7 @@ const VERIFICATION_EXPORTS = {
     ],
   },
   "packages/testing": {
+    "./nationality-start.ts": ["startNationalityFixture"],
     "./fake-provider.ts": [
       "FAKE_PROVIDER_MANIFEST",
       "FakeProviderMode",

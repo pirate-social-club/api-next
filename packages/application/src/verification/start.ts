@@ -164,11 +164,30 @@ function decodeInput(
   return Effect.succeed(decoded.value);
 }
 
-function decodeIntent(input: unknown) {
+const BoundCeremonyPlan = Schema.Struct({
+  ...VerificationProviderPlanInput.fields,
+  resolved_intent_id: Schema.NonEmptyString,
+});
+
+function decodeIntent(
+  input: unknown,
+): Effect.Effect<
+  { plan: VerificationProviderPlanInput; intentId: string | null },
+  VerificationStartRejected
+> {
+  if (typeof input === "object" && input !== null && Object.hasOwn(input, "resolved_intent_id")) {
+    const decoded = Schema.decodeUnknownOption(BoundCeremonyPlan, { onExcessProperty: "error" })(
+      input,
+    );
+    if (Option.isNone(decoded))
+      return Effect.fail(new VerificationStartRejected({ reason: "intent_unavailable" }));
+    const { resolved_intent_id, ...plan } = decoded.value;
+    return Effect.succeed({ plan, intentId: resolved_intent_id });
+  }
   const decoded = Schema.decodeUnknownOption(VerificationProviderPlanInput)(input);
   return Option.isNone(decoded)
     ? Effect.fail(new VerificationStartRejected({ reason: "intent_unavailable" }))
-    : Effect.succeed(decoded.value);
+    : Effect.succeed({ plan: decoded.value, intentId: null });
 }
 
 function canonicalJson(value: unknown): string {
@@ -191,7 +210,18 @@ export const startVerification = Effect.fn("startVerification")(function* (
 ): Effect.fn.Return<StartVerificationResult, StartVerificationFailure> {
   const input = yield* decodeInput(untrustedInput);
   const provider = yield* services.registry.resolve(input.provider_id);
-  const planInput = yield* services.intents.resolve(input).pipe(Effect.flatMap(decodeIntent));
+  const resolved = yield* services.intents.resolve(input).pipe(Effect.flatMap(decodeIntent));
+  if (resolved.intentId !== null && !("intent_id" in input)) {
+    return yield* new VerificationStartRejected({ reason: "intent_unavailable" });
+  }
+  // Provider switches issue a new server-owned child intent. Both reservation
+  // and the second authorization read must bind that child, not the stale id
+  // supplied to request the switch. The actor and provider stay unchanged.
+  const canonicalInput =
+    resolved.intentId !== null && "intent_id" in input
+      ? { ...input, intent_id: resolved.intentId }
+      : input;
+  const planInput = resolved.plan;
   const plan = yield* provider.plan(planInput);
   if (plan.status === "unsupported") {
     return yield* new VerificationStartRejected({ reason: "unsupported" });
@@ -200,7 +230,8 @@ export const startVerification = Effect.fn("startVerification")(function* (
     return yield* new VerificationStartRejected({ reason: "indeterminate" });
   }
 
-  const intentId = "intent_id" in input ? input.intent_id : input.ceremony_intent_id;
+  const intentId =
+    "intent_id" in canonicalInput ? canonicalInput.intent_id : canonicalInput.ceremony_intent_id;
   const hashInput = {
     actor_id: input.actor_id,
     intent_id: intentId,
@@ -260,13 +291,16 @@ export const startVerification = Effect.fn("startVerification")(function* (
   }
 
   const reservation = reservationOutcome.reservation;
-  const revalidatedPlanInput = yield* services.intents.resolve(input).pipe(
+  const revalidated = yield* services.intents.resolve(canonicalInput).pipe(
     Effect.flatMap(decodeIntent),
     Effect.tapError(() =>
       services.store.release(reservation).pipe(Effect.catch(() => Effect.succeed(undefined))),
     ),
   );
-  if (canonicalJson(revalidatedPlanInput) !== canonicalJson(planInput)) {
+  if (
+    (revalidated.intentId ?? intentId) !== intentId ||
+    canonicalJson(revalidated.plan) !== canonicalJson(planInput)
+  ) {
     yield* services.store.release(reservation).pipe(Effect.catch(() => Effect.succeed(undefined)));
     return yield* new VerificationStartRejected({ reason: "intent_unavailable" });
   }

@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { CommunityCreationIntentDocument } from "@pirate/application";
 import type { CommunityCreationDraftV2 } from "@pirate/contracts";
+import { startNationalityFixture } from "@pirate/testing/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -12,6 +13,7 @@ import {
 import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -185,6 +187,7 @@ async function seedCompletedNationalSession(
   admin: Client,
   input: Readonly<{
     readonly sessionId: string;
+    readonly alreadyStarted?: true;
     readonly actorId: string;
     readonly ceremonyIntentId: string;
     readonly provider: "self.pass" | "zkpassport";
@@ -196,8 +199,16 @@ async function seedCompletedNationalSession(
       : { protocol_version: "zkpassport-v2", reference: "test:zkpassport" };
   await admin.query("BEGIN");
   try {
-    await admin.query({
-      text: `INSERT INTO proof_sessions (
+    if (input.alreadyStarted) {
+      const pending = await admin.query({
+        text: `SELECT proof_session_id FROM proof_sessions WHERE proof_session_id=$1 AND actor_id=$2
+          AND intent_id=$3 AND provider_id=$4 AND status='pending'`,
+        values: [input.sessionId, input.actorId, input.ceremonyIntentId, input.provider],
+      });
+      expect(pending.rowCount).toBe(1);
+    } else {
+      await admin.query({
+        text: `INSERT INTO proof_sessions (
                proof_session_id, actor_id, intent_id, request_hash, provider_id,
                provider_configuration_kind, provider_configuration_ref,
                provider_configuration_version, method, issuer, scope_kind,
@@ -210,15 +221,16 @@ async function seedCompletedNationalSession(
                        '["nationality.allowed"]'::jsonb, 'establish', $6, 'test',
                        'pending', clock_timestamp() - interval '10 minutes',
                        clock_timestamp() + interval '1 hour')`,
-      values: [
-        input.sessionId,
-        input.actorId,
-        input.ceremonyIntentId,
-        input.provider,
-        provider.reference,
-        provider.protocol_version,
-      ],
-    });
+        values: [
+          input.sessionId,
+          input.actorId,
+          input.ceremonyIntentId,
+          input.provider,
+          provider.reference,
+          provider.protocol_version,
+        ],
+      });
+    }
     await admin.query({
       text: `WITH terminal(value) AS (SELECT clock_timestamp())
              UPDATE proof_sessions
@@ -502,28 +514,33 @@ suite("Postgres 17 community creation nationality flow", () => {
       });
 
       const resolver = resolverFor(connection);
-      await expect(
-        Effect.runPromise(
-          resolver.resolve({
-            actor_id: actor.userId,
-            intent_id: first.ceremony_intent_id ?? "",
-            provider_id: "self.pass",
-          }),
+      const selfStart = await startNationalityFixture(
+        makeControlPlaneVerificationSessionStartStore(
+          makeDirectPostgresControlPlaneLayer(connection),
         ),
-      ).resolves.toMatchObject({ protocol_version: "self-pass-v1" });
-
-      await expect(
-        Effect.runPromise(
-          resolver.resolve({
-            actor_id: actor.userId,
-            intent_id: first.ceremony_intent_id ?? "",
-            provider_id: "zkpassport",
-          }),
+        resolver,
+        nationality.policy,
+        {
+          actor_id: actor.userId,
+          intent_id: first.ceremony_intent_id ?? "",
+          provider_id: "self.pass",
+        },
+      );
+      expect(selfStart).toMatchObject({ provider_id: "self.pass", replayed: false });
+      const switchedStart = await startNationalityFixture(
+        makeControlPlaneVerificationSessionStartStore(
+          makeDirectPostgresControlPlaneLayer(connection),
         ),
-      ).resolves.toMatchObject({
-        protocol_version: "zkpassport-v2",
-        requested_claim_ids: ["nationality.allowed"],
-      });
+        resolver,
+        nationality.policy,
+        {
+          actor_id: actor.userId,
+          intent_id: first.ceremony_intent_id ?? "",
+          provider_id: "zkpassport",
+        },
+      );
+      expect(switchedStart).toMatchObject({ provider_id: "zkpassport", replayed: false });
+      expect(switchedStart.proof_session_id).not.toBe(selfStart.proof_session_id);
       const afterSwitch = await Effect.runPromise(store.get({ actor, intentId }));
       if (afterSwitch === null) throw new Error("expected the switched intent");
       const switched = nationalityProgress(afterSwitch);
@@ -534,11 +551,10 @@ suite("Postgres 17 community creation nationality flow", () => {
         generation: 2,
       });
       expect(switched.ceremony_intent_id).not.toBe(first.ceremony_intent_id);
-      expect(afterSwitch.next_action).toMatchObject({
-        kind: "start_verification",
+      expect(afterSwitch.next_action).toEqual({
+        kind: "wait",
         requirement: "nationality",
-        provider_id: "zkpassport",
-        generation: 2,
+        reason_code: "verification_pending",
       });
 
       await expect(
@@ -567,12 +583,13 @@ suite("Postgres 17 community creation nationality flow", () => {
       expect(early._tag).toBe("Failure");
 
       await seedCompletedNationalSession(admin, {
-        sessionId: "flow-session-stale",
+        sessionId: selfStart.proof_session_id,
+        alreadyStarted: true,
         actorId: actor.userId,
         ceremonyIntentId: first.ceremony_intent_id ?? "",
         provider: "self.pass",
       });
-      await expect(advance(connection, "flow-session-stale")).resolves.toMatchObject({
+      await expect(advance(connection, selfStart.proof_session_id)).resolves.toMatchObject({
         kind: "stale",
       });
       expect(await reloadNationalityState(admin, intentId)).toMatchObject({
@@ -581,12 +598,13 @@ suite("Postgres 17 community creation nationality flow", () => {
       });
 
       await seedCompletedNationalSession(admin, {
-        sessionId: "flow-session-current",
+        sessionId: switchedStart.proof_session_id,
+        alreadyStarted: true,
         actorId: actor.userId,
         ceremonyIntentId: switched.ceremony_intent_id ?? "",
         provider: "zkpassport",
       });
-      await expect(advance(connection, "flow-session-current")).resolves.toMatchObject({
+      await expect(advance(connection, switchedStart.proof_session_id)).resolves.toMatchObject({
         kind: "advanced",
         intent_id: intentId,
       });

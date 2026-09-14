@@ -16,6 +16,7 @@ import {
   VERY_WEB_PROVIDER_ID,
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
+import { startNationalityFixture } from "@pirate/testing/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -25,6 +26,7 @@ import { makeControlPlaneCommunityJoinIntentResolver } from "./community-join-in
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
 import { loadCuratedNationalityEvaluation } from "./gates-v2-community.ts";
 import { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -512,19 +514,9 @@ async function seedCompletedJoinNationalitySession(
 ): Promise<void> {
   await admin.query("BEGIN");
   try {
-    await admin.query({
-      text: `INSERT INTO proof_sessions (
-               proof_session_id, actor_id, intent_id, request_hash, provider_id,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version, method, issuer, scope_kind,
-               issuer_rp_scope, issuer_rp_action_scope, request_mode,
-               requested_requirements, requested_claim_ids, subject_binding_intent,
-               protocol_version, environment, status, started_at, expires_at
-             ) VALUES ($1, $2, $3, repeat('a', 64), 'zkpassport', 'dynamic', 'test:zkpassport',
-                       '1', 'document', 'zkpassport', 'issuer_rp_scope', 'test', NULL, 'dynamic',
-                       $4::jsonb, '["nationality.allowed"]'::jsonb, 'establish', 'zkpassport-v2',
-                       'test', 'pending', clock_timestamp() - interval '10 minutes',
-                       clock_timestamp() + interval '1 hour')`,
+    const pending = await admin.query({
+      text: `SELECT proof_session_id FROM proof_sessions WHERE proof_session_id=$1 AND actor_id=$2
+        AND intent_id=$3 AND status='pending' AND requested_requirements=$4::jsonb`,
       values: [
         input.sessionId,
         input.actorId,
@@ -532,6 +524,7 @@ async function seedCompletedJoinNationalitySession(
         JSON.stringify([input.requirement]),
       ],
     });
+    expect(pending.rowCount).toBe(1);
     await admin.query({
       text: `WITH terminal(value) AS (SELECT clock_timestamp())
              UPDATE proof_sessions
@@ -1023,30 +1016,33 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
         makeDirectPostgresControlPlaneLayer(connection),
         "test",
       );
-      await expect(
-        Effect.runPromise(
-          resolver.resolve({
-            actor_id: "user-a",
-            intent_id: ceremonyId,
-            provider_id: "self.pass",
-          }),
+      const selfStart = await startNationalityFixture(
+        makeControlPlaneVerificationSessionStartStore(
+          makeDirectPostgresControlPlaneLayer(connection),
         ),
-      ).resolves.toMatchObject({
-        method: "document",
-        protocol_version: "self-pass-v1",
-        requested_claim_ids: ["nationality.allowed"],
-        environment: "test",
-      });
-
-      await expect(
-        Effect.runPromise(
-          resolver.resolve({
-            actor_id: "user-a",
-            intent_id: ceremonyId,
-            provider_id: "zkpassport",
-          }),
+        resolver,
+        policy,
+        {
+          actor_id: "user-a",
+          intent_id: ceremonyId,
+          provider_id: "self.pass",
+        },
+      );
+      expect(selfStart).toMatchObject({ provider_id: "self.pass", replayed: false });
+      const switchedStart = await startNationalityFixture(
+        makeControlPlaneVerificationSessionStartStore(
+          makeDirectPostgresControlPlaneLayer(connection),
         ),
-      ).resolves.toMatchObject({ protocol_version: "zkpassport-v2" });
+        resolver,
+        policy,
+        {
+          actor_id: "user-a",
+          intent_id: ceremonyId,
+          provider_id: "zkpassport",
+        },
+      );
+      expect(switchedStart).toMatchObject({ provider_id: "zkpassport", replayed: false });
+      expect(switchedStart.proof_session_id).not.toBe(selfStart.proof_session_id);
 
       const state = await admin.query({
         text: `SELECT status, generation::int AS generation, current_provider_id,
@@ -1090,7 +1086,7 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
       }
 
       await seedCompletedJoinNationalitySession(admin, {
-        sessionId: "session-join-nationality",
+        sessionId: switchedStart.proof_session_id,
         actorId: "user-a",
         ceremonyIntentId: currentCeremonyId,
         requirement: policy.requirement,
@@ -1102,7 +1098,7 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
             return yield* db.withTransaction((transaction) =>
               advanceCommunityCreationVerificationInTransaction(transaction, {
                 actor_id: "user-a",
-                proof_session_id: "session-join-nationality",
+                proof_session_id: switchedStart.proof_session_id,
                 result_hash: JOIN_NATIONALITY_RESULT_HASH,
               }),
             );

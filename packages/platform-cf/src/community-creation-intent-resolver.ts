@@ -412,7 +412,7 @@ function resolveNationality(
       options.next_ceremony_intent_id === undefined
         ? {}
         : { nextCeremonyIntentId: options.next_ceremony_intent_id };
-    yield* resolveOrIssueNationalityCeremony(
+    const action = yield* resolveOrIssueNationalityCeremony(
       transaction,
       {
         actionKind: "community_creation",
@@ -454,7 +454,9 @@ function resolveNationality(
       environment: selected.environment,
       verification_purpose: { intent: "community_creation" },
     });
-    return Option.isSome(decoded) ? decoded.value : yield* Effect.fail(storageFailure());
+    return Option.isSome(decoded)
+      ? { ...decoded.value, resolved_intent_id: action.ceremonyIntentId }
+      : yield* Effect.fail(storageFailure());
   });
 }
 
