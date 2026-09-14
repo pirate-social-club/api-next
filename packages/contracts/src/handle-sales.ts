@@ -16,7 +16,10 @@ import {
 import {
   CreateHandleNationalityQualificationPolicy,
   GetHandleNationalityAuthoring,
+  GetHandleNationalityQualification,
   HandleNationalityQualificationPolicyRefV1,
+  HandleNationalityQuoteEligibilityV1,
+  HandleNationalityRequiredV1,
 } from "./handle-nationality.ts";
 import {
   BoundedIdentifier,
@@ -391,6 +394,24 @@ export const CreateHandleQuoteResultV2 = Schema.Union([
     reason: Schema.Literals(["evidence_required", "qualification_unsatisfied"]),
   }),
 ]);
+
+export const HandleQuoteV3 = Schema.Struct({
+  ...HandleQuoteV2.fields,
+  eligibility: HandleNationalityQuoteEligibilityV1,
+});
+export const HandleQuote = Schema.Union([HandleQuoteV2, HandleQuoteV3]);
+export type HandleQuote = Schema.Schema.Type<typeof HandleQuote>;
+export const CreateHandleQuoteResultV3 = Schema.Union([
+  HandleNationalityRequiredV1,
+  Schema.Struct({ kind: Schema.Literal("quoted"), quote: HandleQuote, replayed: Schema.Boolean }),
+  Schema.Struct({
+    kind: Schema.Literal("eligibility_required"),
+    offering_id: BoundedIdentifier,
+    owner_persona_id: PersonaIdV1,
+    reason: Schema.Literals(["evidence_required", "qualification_unsatisfied"]),
+  }),
+]);
+export type CreateHandleQuoteResultV3 = Schema.Schema.Type<typeof CreateHandleQuoteResultV3>;
 
 export const HandleReservationV2 = Schema.Struct({
   reservation_id: BoundedIdentifier,
@@ -791,7 +812,7 @@ export const CreateHandleQuote = endpoint({
       desired_label: HnsHandleLabelV2,
     }),
   },
-  response: CreateHandleQuoteResultV2,
+  response: CreateHandleQuoteResultV3,
   successStatus: [200, 201],
   errors: handleMutationErrors,
 });
@@ -871,6 +892,7 @@ export const GetPublicPersona = endpoint({
 
 export const handleSalesRegistry = {
   GetHandleNationalityAuthoring,
+  GetHandleNationalityQualification,
   CreateHandleNationalityQualificationPolicy,
   CreateHandleSaleNamespace,
   ReviseHandleSaleNamespace,

@@ -116,11 +116,15 @@ export const resolveOrIssueNationalityCeremony = Effect.fn("resolveOrIssueNation
     if (row.status === "pending") {
       const attempt = yield* transaction.execute<Row>({
         label: "nationality.ceremony.attempt.current",
-        text: `SELECT ceremony_intent_id, provider_id, generation
-                 FROM nationality_ceremony_attempts
-                WHERE action_kind = $1 AND intent_id = $2
-                  AND requirement_kind = 'nationality' AND generation = $3
-                  AND expires_at > clock_timestamp()`,
+        text: `SELECT attempt.ceremony_intent_id, attempt.provider_id, attempt.generation
+                 FROM nationality_ceremony_attempts attempt
+                 LEFT JOIN proof_sessions session ON session.intent_id=attempt.ceremony_intent_id
+                   AND session.actor_id=attempt.actor_id
+                WHERE attempt.action_kind = $1 AND attempt.intent_id = $2
+                  AND attempt.requirement_kind = 'nationality' AND attempt.generation = $3
+                  AND attempt.expires_at > clock_timestamp()
+                  AND (session.proof_session_id IS NULL OR session.status='completed'
+                    OR (session.status='pending' AND session.expires_at>clock_timestamp()))`,
         values: [input.actionKind, input.intentId, row.generation],
         readonly: false,
       });

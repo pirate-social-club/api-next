@@ -444,6 +444,8 @@ suite("community handle sales on PostgreSQL 17", () => {
         }),
       );
       if (quote.kind !== "quoted") throw new Error("expected an open quote");
+      if ("kind" in quote.quote.eligibility)
+        throw new Error("none_v1 must preserve v2 eligibility");
       expect(quote.quote.eligibility.evidence_use_ids).toEqual([]);
 
       const reservation = await run(

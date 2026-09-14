@@ -1,6 +1,7 @@
 import type {
   CommunityHandleOffering,
   CommunityHandleOfferingManagementItemV2,
+  CreateHandleQuoteResultV3,
   HandleClaimV2,
   HandleCuratedQualificationPolicyRefV1,
   HandleGrantPrivateV2,
@@ -256,7 +257,7 @@ export interface HandleSalesStore {
       quoteId: string;
       actionId: string;
     }>,
-  ) => Effect.Effect<CreateHandleQuoteResultV2, HandleSalesFailure>;
+  ) => Effect.Effect<CreateHandleQuoteResultV3, HandleSalesFailure>;
   readonly createReservation: (
     input: Readonly<{
       accountId: string;
@@ -465,3 +466,5 @@ export function makeHandleSalesService(store: HandleSalesStore) {
 }
 
 export type HandleGrantDocumentV2 = HandleGrantPrivateV2;
+
+export type { HandleNationalityQualificationStore } from "./nationality-qualification.ts";

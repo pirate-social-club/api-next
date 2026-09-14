@@ -1,5 +1,6 @@
 import {
   type HandleNationalityAuthoringStore,
+  type HandleNationalityQualificationStore,
   type HandleSalesFailure,
   IdGen,
   makeHandleNationalityAuthoringService,
@@ -11,6 +12,7 @@ import { type EndpointHandler, withEndpointResult } from "./transport.ts";
 export function makeHandleNationalityAuthoringHandlers(
   services: Readonly<{
     store: HandleNationalityAuthoringStore;
+    qualification?: HandleNationalityQualificationStore;
     ids: IdGen["Service"];
   }>,
 ): Readonly<Record<string, EndpointHandler>> {
@@ -20,6 +22,17 @@ export function makeHandleNationalityAuthoringHandlers(
       effect.pipe(Effect.provideService(IdGen, services.ids), Effect.mapError(wireFailure)),
     );
   return {
+    ...(services.qualification === undefined
+      ? {}
+      : {
+          GetHandleNationalityQualification: (request: Parameters<EndpointHandler>[0]) =>
+            run(
+              services.qualification!.getProgress({
+                accountId: accountId(request.principal),
+                intentId: (request.params as { intentId: string }).intentId,
+              }),
+            ),
+        }),
     GetHandleNationalityAuthoring: (request) => {
       const path = request.params as { communityId: string };
       return run(

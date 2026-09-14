@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   type HandleNationalityAuthoringStore,
+  type HandleNationalityQualificationStore,
   HandleSalesRejected,
 } from "@pirate/application/use-cases/handles/sales";
 import { Effect } from "effect";
@@ -31,11 +32,15 @@ const policy = {
   created_at: "2026-09-14T00:00:00.000Z",
   replayed: false,
 };
-const worker = (store: HandleNationalityAuthoringStore) =>
+const worker = (
+  store: HandleNationalityAuthoringStore,
+  qualification?: HandleNationalityQualificationStore,
+) =>
   createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
     handlers: makeHandleNationalityAuthoringHandlers({
       store,
+      ...(qualification === undefined ? {} : { qualification }),
       ids: { next: Effect.succeed("server-id") },
     }),
     authenticate: () => ({ kind: "user", subject: "authenticated-seller" }),
@@ -130,4 +135,31 @@ test("maps unavailable authoring to a safe failure without exposing provider con
   expect(await response.json()).toMatchObject({
     error: { details: { reason: "offering_unavailable" } },
   });
+});
+
+test("buyer qualification uses the session actor and never caches progress", async () => {
+  let observed: unknown;
+  const progress = {
+    kind: "handle_nationality_progress_v1" as const,
+    qualification_intent_id: "intent",
+    offering_id: "offering",
+    requirement_hash: reference,
+    accepted_provider_ids: ["self.pass", "zkpassport"] as const,
+    status: "qualified" as const,
+    next_action: { kind: "request_new_quote" as const },
+  };
+  const app = worker(
+    { getContext: () => Effect.succeed(context), createPolicy: () => Effect.succeed(policy) },
+    {
+      getProgress: (input) => {
+        observed = input;
+        return Effect.succeed(progress);
+      },
+    },
+  );
+  const response = await app.request("/handle-qualification-intents/intent", { headers });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toEqual(progress);
+  expect(observed).toEqual({ accountId: "authenticated-seller", intentId: "intent" });
 });

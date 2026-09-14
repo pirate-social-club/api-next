@@ -8,6 +8,13 @@ export type PostgresSentinel = {
 
 export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
   {
+    name: "handle nationality checkout",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_HANDLE_NATIONALITY_CHECKOUT_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-handle-nationality-checkout-suite-complete",
+    contents: "api-next-control-plane-postgres-handle-nationality-checkout-suite-complete\n",
+  },
+  {
     name: "handle nationality authoring",
     path:
       process.env.CONTROL_PLANE_POSTGRES_HANDLE_NATIONALITY_AUTHORING_SENTINEL ??

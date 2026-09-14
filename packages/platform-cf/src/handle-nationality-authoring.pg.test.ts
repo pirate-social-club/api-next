@@ -285,7 +285,8 @@ suite("handle nationality policy authoring", () => {
           }),
         ),
       );
-      expect(outcome._tag).toBe("Failure");
+      expect(outcome._tag).toBe("Success");
+      if (outcome._tag === "Success") expect(outcome.value.kind).toBe("nationality_required");
       expect(
         (await admin.query("SELECT count(*)::int AS count FROM handle_quotes")).rows[0].count,
       ).toBe(0);

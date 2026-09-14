@@ -1,6 +1,6 @@
 /** Proof settlement inside the caller-owned transaction; activation stays separate. */
-import { type ControlPlaneError, type ControlPlaneTransaction } from "@pirate/application";
-import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
+import type { ControlPlaneError, ControlPlaneTransaction } from "@pirate/application";
+import type { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import { CommunityCreationIntent as CommunityCreationIntentContract } from "@pirate/contracts";
 import {
   communityCreationProviderBindingHash,
@@ -194,6 +194,11 @@ export function advanceCommunityCreationVerificationInTransaction(
     // the join advance satisfies its own requirement state and every other
     // path treats the completion as not applicable.
     yield* advanceCommunityJoinNationalityVerificationInTransaction(transaction, input);
+    yield* advanceCommunityJoinNationalityVerificationInTransaction(
+      transaction,
+      input,
+      "handle_claim",
+    );
 
     const sessionResult = yield* transaction.execute<Row>({
       label: "community.creation.verification.lock-session",

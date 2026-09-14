@@ -35468,6 +35468,557 @@
         ]
       }
     },
+    "/handle-qualification-intents/{intentId}": {
+      "get": {
+        "operationId": "get_handleQualificationIntentsIntentId",
+        "parameters": [
+          {
+            "name": "intentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "handle_nationality_progress_v1"
+                          ]
+                        },
+                        "qualification_intent_id": {
+                          "type": "string"
+                        },
+                        "offering_id": {
+                          "type": "string"
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "accepted_provider_ids": {
+                          "$ref": "#/$defs/Arrays_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "qualified"
+                          ]
+                        },
+                        "next_action": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "request_new_quote"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "qualification_intent_id",
+                        "offering_id",
+                        "requirement_hash",
+                        "accepted_provider_ids",
+                        "status",
+                        "next_action"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "handle_nationality_progress_v1"
+                          ]
+                        },
+                        "qualification_intent_id": {
+                          "type": "string"
+                        },
+                        "offering_id": {
+                          "type": "string"
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "accepted_provider_ids": {
+                          "$ref": "#/$defs/Arrays_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_required"
+                          ]
+                        },
+                        "next_action": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "start_verification"
+                              ]
+                            },
+                            "provider_id": {
+                              "type": "string",
+                              "enum": [
+                                "self.pass",
+                                "zkpassport"
+                              ]
+                            },
+                            "intent_id": {
+                              "type": "string"
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "requirement": {
+                              "type": "string",
+                              "enum": [
+                                "nationality"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "provider_id",
+                            "intent_id",
+                            "generation",
+                            "requirement"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "qualification_intent_id",
+                        "offering_id",
+                        "requirement_hash",
+                        "accepted_provider_ids",
+                        "status",
+                        "next_action"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Arrays_": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "self.pass"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "zkpassport"
+                          ]
+                        }
+                      ],
+                      "maxItems": 2,
+                      "minItems": 2
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona_unavailable",
+                                    "public_linking_confirmation_required",
+                                    "offering_unavailable",
+                                    "platform_namespace_reserved",
+                                    "paid_offerings_disabled",
+                                    "invalid_handle",
+                                    "handle_unavailable",
+                                    "evidence_required",
+                                    "qualification_unsatisfied",
+                                    "quote_expired",
+                                    "reservation_expired",
+                                    "idempotency_conflict",
+                                    "claim_blocked",
+                                    "issuance_pending",
+                                    "issuance_failed",
+                                    "service_unavailable",
+                                    "not_found",
+                                    "not_offered",
+                                    "offering_not_applicable",
+                                    "account_grant_limit_reached",
+                                    "sale_namespace_inactive",
+                                    "dns_delegation_required"
+                                  ]
+                                },
+                                "effective_offering_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "reason"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona_unavailable",
+                                    "public_linking_confirmation_required",
+                                    "offering_unavailable",
+                                    "platform_namespace_reserved",
+                                    "paid_offerings_disabled",
+                                    "invalid_handle",
+                                    "handle_unavailable",
+                                    "evidence_required",
+                                    "qualification_unsatisfied",
+                                    "quote_expired",
+                                    "reservation_expired",
+                                    "idempotency_conflict",
+                                    "claim_blocked",
+                                    "issuance_pending",
+                                    "issuance_failed",
+                                    "service_unavailable",
+                                    "not_found",
+                                    "not_offered",
+                                    "offering_not_applicable",
+                                    "account_grant_limit_reached",
+                                    "sale_namespace_inactive",
+                                    "dns_delegation_required"
+                                  ]
+                                },
+                                "effective_offering_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "reason"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable",
+                        "details"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "handle_request_rejected",
+              "handle_request_rejected"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "HandleRequestRejected",
+          "RetryableHandleRequestRejected",
+          "RateLimited",
+          "InternalError"
+        ]
+      }
+    },
     "/communities/{communityId}/handle-nationality-qualification-policies": {
       "post": {
         "operationId": "post_communitiesCommunityIdHandleNationalityQualificationPolicies",
@@ -46568,105 +47119,58 @@
                         "kind": {
                           "type": "string",
                           "enum": [
+                            "nationality_required"
+                          ]
+                        },
+                        "offering_id": {
+                          "type": "string"
+                        },
+                        "owner_persona_id": {
+                          "type": "string"
+                        },
+                        "qualification_intent_id": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "evidence_required"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "offering_id",
+                        "owner_persona_id",
+                        "qualification_intent_id",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
                             "quoted"
                           ]
                         },
                         "quote": {
-                          "type": "object",
-                          "properties": {
-                            "quote_id": {
-                              "type": "string"
-                            },
-                            "quote_hash": {
-                              "type": "string"
-                            },
-                            "offering_id": {
-                              "type": "string"
-                            },
-                            "offering_revision": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "offering_hash": {
-                              "type": "string"
-                            },
-                            "sale_namespace_activation_id": {
-                              "type": "string"
-                            },
-                            "sale_namespace_activation_generation": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "fulfillment": {
+                          "anyOf": [
+                            {
                               "type": "object",
                               "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "hosted_persona_v1",
-                                    "delegated_zone_v1",
-                                    "spaces_native_v1"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "owner_persona_id": {
-                              "type": "string"
-                            },
-                            "handle": {
-                              "type": "object",
-                              "properties": {
-                                "family": {
-                                  "type": "string",
-                                  "enum": [
-                                    "hns",
-                                    "spaces"
-                                  ]
-                                },
-                                "namespace_root": {
+                                "quote_id": {
                                   "type": "string"
                                 },
-                                "handle_label": {
-                                  "type": "string"
-                                }
-                              },
-                              "required": [
-                                "family",
-                                "namespace_root",
-                                "handle_label"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "display_identifier": {
-                              "type": "string"
-                            },
-                            "pricing": {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "free_v1"
-                                  ]
-                                },
-                                "pricing_id": {
+                                "quote_hash": {
                                   "type": "string"
                                 },
-                                "pricing_revision": {
+                                "offering_id": {
+                                  "type": "string"
+                                },
+                                "offering_revision": {
                                   "type": "integer",
                                   "allOf": [
                                     {
@@ -46675,29 +47179,13 @@
                                     }
                                   ]
                                 },
-                                "pricing_hash": {
+                                "offering_hash": {
                                   "type": "string"
                                 },
-                                "atomic_amount": {
-                                  "type": "string",
-                                  "enum": [
-                                    "0"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "pricing_id",
-                                "pricing_revision",
-                                "pricing_hash",
-                                "atomic_amount"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "eligibility": {
-                              "type": "object",
-                              "properties": {
-                                "policy_revision": {
+                                "sale_namespace_activation_id": {
+                                  "type": "string"
+                                },
+                                "sale_namespace_activation_generation": {
                                   "type": "integer",
                                   "allOf": [
                                     {
@@ -46706,68 +47194,296 @@
                                     }
                                   ]
                                 },
-                                "policy_hash": {
+                                "fulfillment": {
+                                  "$ref": "#/$defs/Objects_"
+                                },
+                                "owner_persona_id": {
                                   "type": "string"
                                 },
-                                "decision": {
-                                  "type": "string",
-                                  "enum": [
-                                    "passed"
-                                  ]
+                                "handle": {
+                                  "$ref": "#/$defs/Objects_1"
                                 },
-                                "evidence_use_ids": {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string"
-                                  }
+                                "display_identifier": {
+                                  "type": "string"
                                 },
-                                "evaluated_at": {
+                                "pricing": {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                "eligibility": {
+                                  "type": "object",
+                                  "properties": {
+                                    "policy_revision": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    "policy_hash": {
+                                      "type": "string"
+                                    },
+                                    "decision": {
+                                      "type": "string",
+                                      "enum": [
+                                        "passed"
+                                      ]
+                                    },
+                                    "evidence_use_ids": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "evaluated_at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "policy_revision",
+                                    "policy_hash",
+                                    "decision",
+                                    "evidence_use_ids",
+                                    "evaluated_at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "status": {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                "quoted_at": {
+                                  "type": "string"
+                                },
+                                "expires_at": {
                                   "type": "string"
                                 }
                               },
                               "required": [
-                                "policy_revision",
-                                "policy_hash",
-                                "decision",
-                                "evidence_use_ids",
-                                "evaluated_at"
+                                "quote_id",
+                                "quote_hash",
+                                "offering_id",
+                                "offering_revision",
+                                "offering_hash",
+                                "sale_namespace_activation_id",
+                                "sale_namespace_activation_generation",
+                                "fulfillment",
+                                "owner_persona_id",
+                                "handle",
+                                "display_identifier",
+                                "pricing",
+                                "eligibility",
+                                "status",
+                                "quoted_at",
+                                "expires_at"
                               ],
                               "additionalProperties": false
                             },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "quoted",
-                                "expired",
-                                "consumed"
-                              ]
-                            },
-                            "quoted_at": {
-                              "type": "string"
-                            },
-                            "expires_at": {
-                              "type": "string"
+                            {
+                              "type": "object",
+                              "properties": {
+                                "quote_id": {
+                                  "type": "string"
+                                },
+                                "quote_hash": {
+                                  "type": "string"
+                                },
+                                "offering_id": {
+                                  "type": "string"
+                                },
+                                "offering_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "offering_hash": {
+                                  "type": "string"
+                                },
+                                "sale_namespace_activation_id": {
+                                  "type": "string"
+                                },
+                                "sale_namespace_activation_generation": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "fulfillment": {
+                                  "$ref": "#/$defs/Objects_"
+                                },
+                                "owner_persona_id": {
+                                  "type": "string"
+                                },
+                                "handle": {
+                                  "$ref": "#/$defs/Objects_1"
+                                },
+                                "display_identifier": {
+                                  "type": "string"
+                                },
+                                "pricing": {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                "eligibility": {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "curated_nationality_v1"
+                                      ]
+                                    },
+                                    "snapshot": {
+                                      "type": "object",
+                                      "properties": {
+                                        "decision": {
+                                          "type": "string",
+                                          "enum": [
+                                            "passed"
+                                          ]
+                                        },
+                                        "policy_revision": {
+                                          "type": "integer",
+                                          "allOf": [
+                                            {
+                                              "minimum": 1,
+                                              "maximum": 9007199254740991
+                                            }
+                                          ]
+                                        },
+                                        "policy_hash": {
+                                          "type": "string"
+                                        },
+                                        "requirement_hash": {
+                                          "type": "string"
+                                        },
+                                        "selected_provider_id": {
+                                          "type": "string",
+                                          "enum": [
+                                            "self.pass",
+                                            "zkpassport"
+                                          ]
+                                        },
+                                        "selected_provider_binding_hash": {
+                                          "type": "string"
+                                        },
+                                        "accepted_provider_ids": {
+                                          "type": "array",
+                                          "prefixItems": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "self.pass"
+                                              ]
+                                            },
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "zkpassport"
+                                              ]
+                                            }
+                                          ],
+                                          "maxItems": 2,
+                                          "minItems": 2
+                                        },
+                                        "lifetime": {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "max_age_seconds"
+                                              ]
+                                            },
+                                            "seconds": {
+                                              "type": "integer",
+                                              "allOf": [
+                                                {
+                                                  "minimum": 1,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "seconds"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "evidence_use_ids": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "allOf": [
+                                            {
+                                              "minItems": 1
+                                            }
+                                          ]
+                                        },
+                                        "evaluated_at": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "decision",
+                                        "policy_revision",
+                                        "policy_hash",
+                                        "requirement_hash",
+                                        "selected_provider_id",
+                                        "selected_provider_binding_hash",
+                                        "accepted_provider_ids",
+                                        "lifetime",
+                                        "evidence_use_ids",
+                                        "evaluated_at"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "snapshot"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "status": {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                "quoted_at": {
+                                  "type": "string"
+                                },
+                                "expires_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "quote_id",
+                                "quote_hash",
+                                "offering_id",
+                                "offering_revision",
+                                "offering_hash",
+                                "sale_namespace_activation_id",
+                                "sale_namespace_activation_generation",
+                                "fulfillment",
+                                "owner_persona_id",
+                                "handle",
+                                "display_identifier",
+                                "pricing",
+                                "eligibility",
+                                "status",
+                                "quoted_at",
+                                "expires_at"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "quote_id",
-                            "quote_hash",
-                            "offering_id",
-                            "offering_revision",
-                            "offering_hash",
-                            "sale_namespace_activation_id",
-                            "sale_namespace_activation_generation",
-                            "fulfillment",
-                            "owner_persona_id",
-                            "handle",
-                            "display_identifier",
-                            "pricing",
-                            "eligibility",
-                            "status",
-                            "quoted_at",
-                            "expires_at"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
                         "replayed": {
                           "type": "boolean"
@@ -46811,7 +47527,98 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "hosted_persona_v1",
+                            "delegated_zone_v1",
+                            "spaces_native_v1"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "family": {
+                          "type": "string",
+                          "enum": [
+                            "hns",
+                            "spaces"
+                          ]
+                        },
+                        "namespace_root": {
+                          "type": "string"
+                        },
+                        "handle_label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "family",
+                        "namespace_root",
+                        "handle_label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "free_v1"
+                          ]
+                        },
+                        "pricing_id": {
+                          "type": "string"
+                        },
+                        "pricing_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "pricing_hash": {
+                          "type": "string"
+                        },
+                        "atomic_amount": {
+                          "type": "string",
+                          "enum": [
+                            "0"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pricing_id",
+                        "pricing_revision",
+                        "pricing_hash",
+                        "atomic_amount"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "quoted",
+                        "expired",
+                        "consumed"
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -46828,105 +47635,58 @@
                         "kind": {
                           "type": "string",
                           "enum": [
+                            "nationality_required"
+                          ]
+                        },
+                        "offering_id": {
+                          "type": "string"
+                        },
+                        "owner_persona_id": {
+                          "type": "string"
+                        },
+                        "qualification_intent_id": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "evidence_required"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "offering_id",
+                        "owner_persona_id",
+                        "qualification_intent_id",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
                             "quoted"
                           ]
                         },
                         "quote": {
-                          "type": "object",
-                          "properties": {
-                            "quote_id": {
-                              "type": "string"
-                            },
-                            "quote_hash": {
-                              "type": "string"
-                            },
-                            "offering_id": {
-                              "type": "string"
-                            },
-                            "offering_revision": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "offering_hash": {
-                              "type": "string"
-                            },
-                            "sale_namespace_activation_id": {
-                              "type": "string"
-                            },
-                            "sale_namespace_activation_generation": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "fulfillment": {
+                          "anyOf": [
+                            {
                               "type": "object",
                               "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "hosted_persona_v1",
-                                    "delegated_zone_v1",
-                                    "spaces_native_v1"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "owner_persona_id": {
-                              "type": "string"
-                            },
-                            "handle": {
-                              "type": "object",
-                              "properties": {
-                                "family": {
-                                  "type": "string",
-                                  "enum": [
-                                    "hns",
-                                    "spaces"
-                                  ]
-                                },
-                                "namespace_root": {
+                                "quote_id": {
                                   "type": "string"
                                 },
-                                "handle_label": {
-                                  "type": "string"
-                                }
-                              },
-                              "required": [
-                                "family",
-                                "namespace_root",
-                                "handle_label"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "display_identifier": {
-                              "type": "string"
-                            },
-                            "pricing": {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "free_v1"
-                                  ]
-                                },
-                                "pricing_id": {
+                                "quote_hash": {
                                   "type": "string"
                                 },
-                                "pricing_revision": {
+                                "offering_id": {
+                                  "type": "string"
+                                },
+                                "offering_revision": {
                                   "type": "integer",
                                   "allOf": [
                                     {
@@ -46935,29 +47695,13 @@
                                     }
                                   ]
                                 },
-                                "pricing_hash": {
+                                "offering_hash": {
                                   "type": "string"
                                 },
-                                "atomic_amount": {
-                                  "type": "string",
-                                  "enum": [
-                                    "0"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "pricing_id",
-                                "pricing_revision",
-                                "pricing_hash",
-                                "atomic_amount"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "eligibility": {
-                              "type": "object",
-                              "properties": {
-                                "policy_revision": {
+                                "sale_namespace_activation_id": {
+                                  "type": "string"
+                                },
+                                "sale_namespace_activation_generation": {
                                   "type": "integer",
                                   "allOf": [
                                     {
@@ -46966,68 +47710,296 @@
                                     }
                                   ]
                                 },
-                                "policy_hash": {
+                                "fulfillment": {
+                                  "$ref": "#/$defs/Objects_"
+                                },
+                                "owner_persona_id": {
                                   "type": "string"
                                 },
-                                "decision": {
-                                  "type": "string",
-                                  "enum": [
-                                    "passed"
-                                  ]
+                                "handle": {
+                                  "$ref": "#/$defs/Objects_1"
                                 },
-                                "evidence_use_ids": {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string"
-                                  }
+                                "display_identifier": {
+                                  "type": "string"
                                 },
-                                "evaluated_at": {
+                                "pricing": {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                "eligibility": {
+                                  "type": "object",
+                                  "properties": {
+                                    "policy_revision": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    "policy_hash": {
+                                      "type": "string"
+                                    },
+                                    "decision": {
+                                      "type": "string",
+                                      "enum": [
+                                        "passed"
+                                      ]
+                                    },
+                                    "evidence_use_ids": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "evaluated_at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "policy_revision",
+                                    "policy_hash",
+                                    "decision",
+                                    "evidence_use_ids",
+                                    "evaluated_at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "status": {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                "quoted_at": {
+                                  "type": "string"
+                                },
+                                "expires_at": {
                                   "type": "string"
                                 }
                               },
                               "required": [
-                                "policy_revision",
-                                "policy_hash",
-                                "decision",
-                                "evidence_use_ids",
-                                "evaluated_at"
+                                "quote_id",
+                                "quote_hash",
+                                "offering_id",
+                                "offering_revision",
+                                "offering_hash",
+                                "sale_namespace_activation_id",
+                                "sale_namespace_activation_generation",
+                                "fulfillment",
+                                "owner_persona_id",
+                                "handle",
+                                "display_identifier",
+                                "pricing",
+                                "eligibility",
+                                "status",
+                                "quoted_at",
+                                "expires_at"
                               ],
                               "additionalProperties": false
                             },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "quoted",
-                                "expired",
-                                "consumed"
-                              ]
-                            },
-                            "quoted_at": {
-                              "type": "string"
-                            },
-                            "expires_at": {
-                              "type": "string"
+                            {
+                              "type": "object",
+                              "properties": {
+                                "quote_id": {
+                                  "type": "string"
+                                },
+                                "quote_hash": {
+                                  "type": "string"
+                                },
+                                "offering_id": {
+                                  "type": "string"
+                                },
+                                "offering_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "offering_hash": {
+                                  "type": "string"
+                                },
+                                "sale_namespace_activation_id": {
+                                  "type": "string"
+                                },
+                                "sale_namespace_activation_generation": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "fulfillment": {
+                                  "$ref": "#/$defs/Objects_"
+                                },
+                                "owner_persona_id": {
+                                  "type": "string"
+                                },
+                                "handle": {
+                                  "$ref": "#/$defs/Objects_1"
+                                },
+                                "display_identifier": {
+                                  "type": "string"
+                                },
+                                "pricing": {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                "eligibility": {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "curated_nationality_v1"
+                                      ]
+                                    },
+                                    "snapshot": {
+                                      "type": "object",
+                                      "properties": {
+                                        "decision": {
+                                          "type": "string",
+                                          "enum": [
+                                            "passed"
+                                          ]
+                                        },
+                                        "policy_revision": {
+                                          "type": "integer",
+                                          "allOf": [
+                                            {
+                                              "minimum": 1,
+                                              "maximum": 9007199254740991
+                                            }
+                                          ]
+                                        },
+                                        "policy_hash": {
+                                          "type": "string"
+                                        },
+                                        "requirement_hash": {
+                                          "type": "string"
+                                        },
+                                        "selected_provider_id": {
+                                          "type": "string",
+                                          "enum": [
+                                            "self.pass",
+                                            "zkpassport"
+                                          ]
+                                        },
+                                        "selected_provider_binding_hash": {
+                                          "type": "string"
+                                        },
+                                        "accepted_provider_ids": {
+                                          "type": "array",
+                                          "prefixItems": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "self.pass"
+                                              ]
+                                            },
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "zkpassport"
+                                              ]
+                                            }
+                                          ],
+                                          "maxItems": 2,
+                                          "minItems": 2
+                                        },
+                                        "lifetime": {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "max_age_seconds"
+                                              ]
+                                            },
+                                            "seconds": {
+                                              "type": "integer",
+                                              "allOf": [
+                                                {
+                                                  "minimum": 1,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "seconds"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "evidence_use_ids": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "allOf": [
+                                            {
+                                              "minItems": 1
+                                            }
+                                          ]
+                                        },
+                                        "evaluated_at": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "decision",
+                                        "policy_revision",
+                                        "policy_hash",
+                                        "requirement_hash",
+                                        "selected_provider_id",
+                                        "selected_provider_binding_hash",
+                                        "accepted_provider_ids",
+                                        "lifetime",
+                                        "evidence_use_ids",
+                                        "evaluated_at"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "snapshot"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "status": {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                "quoted_at": {
+                                  "type": "string"
+                                },
+                                "expires_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "quote_id",
+                                "quote_hash",
+                                "offering_id",
+                                "offering_revision",
+                                "offering_hash",
+                                "sale_namespace_activation_id",
+                                "sale_namespace_activation_generation",
+                                "fulfillment",
+                                "owner_persona_id",
+                                "handle",
+                                "display_identifier",
+                                "pricing",
+                                "eligibility",
+                                "status",
+                                "quoted_at",
+                                "expires_at"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "quote_id",
-                            "quote_hash",
-                            "offering_id",
-                            "offering_revision",
-                            "offering_hash",
-                            "sale_namespace_activation_id",
-                            "sale_namespace_activation_generation",
-                            "fulfillment",
-                            "owner_persona_id",
-                            "handle",
-                            "display_identifier",
-                            "pricing",
-                            "eligibility",
-                            "status",
-                            "quoted_at",
-                            "expires_at"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
                         "replayed": {
                           "type": "boolean"
@@ -47071,7 +48043,98 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "hosted_persona_v1",
+                            "delegated_zone_v1",
+                            "spaces_native_v1"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "family": {
+                          "type": "string",
+                          "enum": [
+                            "hns",
+                            "spaces"
+                          ]
+                        },
+                        "namespace_root": {
+                          "type": "string"
+                        },
+                        "handle_label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "family",
+                        "namespace_root",
+                        "handle_label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "free_v1"
+                          ]
+                        },
+                        "pricing_id": {
+                          "type": "string"
+                        },
+                        "pricing_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "pricing_hash": {
+                          "type": "string"
+                        },
+                        "atomic_amount": {
+                          "type": "string",
+                          "enum": [
+                            "0"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pricing_id",
+                        "pricing_revision",
+                        "pricing_hash",
+                        "atomic_amount"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "quoted",
+                        "expired",
+                        "consumed"
+                      ]
+                    }
+                  }
                 }
               }
             }

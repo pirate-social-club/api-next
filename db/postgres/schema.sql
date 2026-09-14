@@ -14812,6 +14812,12 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION reject_handle_nationality_decision_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN RAISE EXCEPTION 'handle nationality decisions and evidence uses are immutable'; END;
+$$;
+
 CREATE FUNCTION reject_handle_sales_append_only_change_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -18293,6 +18299,119 @@ BEGIN
     OR NEW.issued_at <> claim.created_at THEN
     RAISE EXCEPTION 'handle grant does not match its immutable claim';
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_action_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  document jsonb := to_jsonb(NEW);
+  quote handle_quotes%ROWTYPE;
+  decision handle_nationality_decisions%ROWTYPE;
+  policy_kind text;
+  expected_purpose text;
+  expected_resource text;
+BEGIN
+  IF TG_TABLE_NAME='handle_quotes' THEN
+    quote := NEW;
+    expected_purpose := 'quote'; expected_resource := NEW.quote_id;
+  ELSE
+    SELECT * INTO quote FROM handle_quotes WHERE quote_id=NEW.quote_id FOR SHARE;
+    expected_purpose := CASE WHEN TG_TABLE_NAME='handle_reservations' THEN 'reservation' ELSE 'claim' END;
+    expected_resource := document->>(expected_purpose || '_id');
+  END IF;
+  SELECT policy.policy_kind INTO policy_kind
+    FROM community_handle_offering_revisions offering
+    JOIN handle_qualification_policy_revisions policy
+      ON policy.policy_id=offering.qualification_policy_id AND policy.policy_revision=offering.qualification_policy_revision
+    WHERE offering.offering_id=quote.offering_id AND offering.offering_revision=quote.offering_revision;
+  IF policy_kind IS DISTINCT FROM 'curated_nationality_v1' THEN
+    IF document->>'nationality_decision_id' IS NOT NULL OR quote.nationality_qualification_pin IS NOT NULL
+      THEN RAISE EXCEPTION 'unqualified and private handles cannot carry nationality decisions'; END IF;
+    RETURN NEW;
+  END IF;
+  SELECT * INTO decision FROM handle_nationality_decisions WHERE decision_id=NEW.nationality_decision_id FOR SHARE;
+  IF decision.decision_id IS NULL OR decision.outcome<>'pass'
+    OR decision.purpose<>expected_purpose OR decision.resource_id<>expected_resource
+    OR decision.actor_account_id<>NEW.actor_account_id OR decision.offering_id<>quote.offering_id
+    OR decision.offering_revision<>quote.offering_revision OR decision.offering_hash<>quote.offering_hash
+    OR decision.qualification_policy_hash<>quote.eligibility_policy_hash
+    OR NOT EXISTS (SELECT 1 FROM handle_nationality_evidence_uses AS evidence_use WHERE evidence_use.decision_id=decision.decision_id)
+    THEN RAISE EXCEPTION 'handle action requires its own current nationality decision'; END IF;
+  IF expected_purpose='quote' AND (
+    quote.nationality_qualification_pin->>'offering_revision' IS DISTINCT FROM quote.offering_revision::text
+    OR quote.nationality_qualification_pin->>'offering_hash' IS DISTINCT FROM quote.offering_hash
+    OR quote.nationality_qualification_pin->'qualification'->>'policy_id' IS DISTINCT FROM decision.qualification_policy_id
+    OR quote.nationality_qualification_pin->'qualification'->>'policy_revision' IS DISTINCT FROM decision.qualification_policy_revision::text
+    OR quote.nationality_qualification_pin->'qualification'->>'policy_hash' IS DISTINCT FROM decision.qualification_policy_hash
+    OR quote.nationality_qualification_pin->'qualification'->>'requirement_hash' IS DISTINCT FROM decision.requirement_hash
+    OR quote.nationality_qualification_pin->'eligibility'->>'decision' IS DISTINCT FROM 'passed'
+    OR quote.nationality_qualification_pin->'eligibility'->'accepted_provider_ids' IS DISTINCT FROM '["self.pass","zkpassport"]'::jsonb
+    OR quote.nationality_qualification_pin->'eligibility'->>'policy_hash' IS DISTINCT FROM decision.qualification_policy_hash
+    OR quote.nationality_qualification_pin->'eligibility'->>'requirement_hash' IS DISTINCT FROM decision.requirement_hash
+    OR quote.nationality_qualification_pin->'eligibility'->>'selected_provider_id' IS DISTINCT FROM decision.selected_provider_id
+    OR quote.nationality_qualification_pin->'eligibility'->>'selected_provider_binding_hash' IS DISTINCT FROM decision.selected_provider_binding_hash
+    OR quote.nationality_qualification_pin->'eligibility'->'evidence_use_ids' IS DISTINCT FROM to_jsonb(quote.evidence_use_ids)
+  ) THEN RAISE EXCEPTION 'handle nationality quote snapshot differs from its decision'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_decision_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  offering community_handle_offering_revisions%ROWTYPE;
+  policy handle_qualification_policy_revisions%ROWTYPE;
+BEGIN
+  SELECT * INTO offering FROM community_handle_offering_revisions
+    WHERE offering_id=NEW.offering_id AND offering_revision=NEW.offering_revision FOR SHARE;
+  SELECT * INTO policy FROM handle_qualification_policy_revisions
+    WHERE policy_id=offering.qualification_policy_id AND policy_revision=offering.qualification_policy_revision FOR SHARE;
+  IF policy.policy_kind IS DISTINCT FROM 'curated_nationality_v1'
+    OR offering.offering_hash IS DISTINCT FROM NEW.offering_hash
+    OR policy.policy_id IS DISTINCT FROM NEW.qualification_policy_id
+    OR policy.policy_revision IS DISTINCT FROM NEW.qualification_policy_revision
+    OR policy.policy_hash IS DISTINCT FROM NEW.qualification_policy_hash
+    OR policy.nationality_policy->>'requirement_hash' IS DISTINCT FROM NEW.requirement_hash
+    OR (NEW.outcome='pass' AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(policy.nationality_policy->'provider_bindings') binding
+        WHERE binding->>'provider_id'=NEW.selected_provider_id
+    )) THEN RAISE EXCEPTION 'handle nationality decision does not match its offering policy'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_quote_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.result_kind='nationality_required' AND NOT EXISTS (
+    SELECT 1 FROM handle_nationality_qualification_intents intent
+    WHERE intent.qualification_intent_id=NEW.qualification_intent_id
+      AND intent.actor_account_id=NEW.actor_account_id AND intent.owner_persona_id=NEW.owner_persona_id
+      AND intent.offering_id=NEW.offering_id
+  ) THEN RAISE EXCEPTION 'nationality quote action does not match buyer context'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_use_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  decision handle_nationality_decisions%ROWTYPE;
+BEGIN
+  SELECT * INTO decision FROM handle_nationality_decisions WHERE decision_id=NEW.decision_id FOR SHARE;
+  IF decision.outcome IS DISTINCT FROM 'pass' OR decision.actor_account_id IS DISTINCT FROM NEW.actor_account_id
+    OR NOT EXISTS (SELECT 1 FROM assertions a JOIN evidence_receipts r ON r.evidence_receipt_id=a.evidence_receipt_id
+      WHERE a.assertion_id=NEW.assertion_id AND a.user_id=NEW.actor_account_id
+        AND a.evidence_receipt_id=NEW.evidence_receipt_id AND a.claim_id='nationality.allowed'
+        AND a.assertion_value='{"allowed":true}'::jsonb
+        AND r.provider_id=decision.selected_provider_id)
+    THEN RAISE EXCEPTION 'handle nationality evidence use does not match its decision'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -25095,6 +25214,7 @@ CREATE TABLE handle_claims (
     grant_id text,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
+    nationality_decision_id text,
     CONSTRAINT handle_claim_state_shape CHECK ((((state = 'issued'::text) AND (grant_id IS NOT NULL) AND (safe_reason IS NULL)) OR ((state = 'issuance_pending'::text) AND (grant_id IS NULL) AND (safe_reason = 'issuance_pending'::text)) OR ((state = ANY (ARRAY['blocked'::text, 'issuance_failed'::text])) AND (grant_id IS NULL) AND is_handle_sales_identifier_v1(safe_reason, 64)))),
     CONSTRAINT handle_claims_atomic_amount_check CHECK ((atomic_amount = (0)::numeric)),
     CONSTRAINT handle_claims_family_check CHECK ((family = 'hns'::text)),
@@ -25197,6 +25317,45 @@ CREATE TABLE handle_key_fences (
     CONSTRAINT handle_key_fence_shape CHECK (((live_reservation_id IS NOT NULL) OR (permanent_grant_id IS NOT NULL)))
 );
 
+CREATE TABLE handle_nationality_decisions (
+    decision_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    purpose text NOT NULL,
+    resource_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_revision bigint NOT NULL,
+    offering_hash text NOT NULL,
+    qualification_policy_id text NOT NULL,
+    qualification_policy_revision bigint NOT NULL,
+    qualification_policy_hash text NOT NULL,
+    requirement_hash text NOT NULL,
+    outcome text NOT NULL,
+    reason text,
+    selected_provider_id text,
+    selected_provider_binding_hash text,
+    evaluated_at timestamp with time zone NOT NULL,
+    CONSTRAINT handle_nationality_decisions_check CHECK ((((outcome = 'pass'::text) AND (reason IS NULL) AND (selected_provider_id IS NOT NULL) AND (selected_provider_binding_hash IS NOT NULL)) OR ((outcome <> 'pass'::text) AND (reason IS NOT NULL) AND (selected_provider_id IS NULL) AND (selected_provider_binding_hash IS NULL)))),
+    CONSTRAINT handle_nationality_decisions_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_outcome_check CHECK ((outcome = ANY (ARRAY['pass'::text, 'needs_evidence'::text, 'fail'::text, 'indeterminate'::text]))),
+    CONSTRAINT handle_nationality_decisions_purpose_check CHECK ((purpose = ANY (ARRAY['quote'::text, 'reservation'::text, 'claim'::text]))),
+    CONSTRAINT handle_nationality_decisions_qualification_policy_hash_check CHECK ((qualification_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_selected_provider_binding_ha_check CHECK ((selected_provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_selected_provider_id_check CHECK ((selected_provider_id = ANY (ARRAY['self.pass'::text, 'zkpassport'::text])))
+);
+
+CREATE TABLE handle_nationality_evidence_uses (
+    evidence_use_id text NOT NULL,
+    decision_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    assertion_id text NOT NULL,
+    evidence_receipt_id text NOT NULL,
+    subject_key_id text NOT NULL,
+    subject_binding_event_id text NOT NULL,
+    subject_binding_epoch bigint NOT NULL,
+    CONSTRAINT handle_nationality_evidence_uses_subject_binding_epoch_check CHECK ((subject_binding_epoch > 0))
+);
+
 CREATE TABLE handle_nationality_policy_actions (
     action_id text NOT NULL,
     actor_account_id text NOT NULL,
@@ -25212,6 +25371,20 @@ CREATE TABLE handle_nationality_policy_actions (
     CONSTRAINT handle_nationality_policy_actions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/handle-nationality-qualification-policies'::text)),
     CONSTRAINT handle_nationality_policy_actions_idempotency_key_check CHECK (is_handle_sales_identifier_v1(idempotency_key, 128)),
     CONSTRAINT handle_nationality_policy_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE handle_nationality_qualification_intents (
+    qualification_intent_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_revision bigint NOT NULL,
+    offering_hash text NOT NULL,
+    handle_label text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT handle_nationality_qualification_intents_check CHECK ((expires_at > created_at)),
+    CONSTRAINT handle_nationality_qualification_intents_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE handle_persona_link_confirmation_actions (
@@ -25326,11 +25499,12 @@ CREATE TABLE handle_quote_actions (
     owner_persona_id text NOT NULL,
     eligibility_reason text,
     committed_at timestamp with time zone NOT NULL,
-    CONSTRAINT handle_quote_action_result_shape CHECK ((((result_kind = 'quoted'::text) AND (quote_id IS NOT NULL) AND (eligibility_reason IS NULL)) OR ((result_kind = 'eligibility_required'::text) AND (quote_id IS NULL) AND (eligibility_reason IS NOT NULL)))),
+    qualification_intent_id text,
+    CONSTRAINT handle_quote_action_result_shape CHECK ((((result_kind = 'quoted'::text) AND (quote_id IS NOT NULL) AND (eligibility_reason IS NULL) AND (qualification_intent_id IS NULL)) OR ((result_kind = 'eligibility_required'::text) AND (quote_id IS NULL) AND (eligibility_reason IS NOT NULL) AND (qualification_intent_id IS NULL)) OR ((result_kind = 'nationality_required'::text) AND (quote_id IS NULL) AND (eligibility_reason IS NOT NULL) AND (qualification_intent_id IS NOT NULL)))),
     CONSTRAINT handle_quote_actions_eligibility_reason_check CHECK ((eligibility_reason = ANY (ARRAY['evidence_required'::text, 'qualification_unsatisfied'::text]))),
     CONSTRAINT handle_quote_actions_endpoint_template_check CHECK ((endpoint_template = '/handle-quotes'::text)),
     CONSTRAINT handle_quote_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quote_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['quoted'::text, 'eligibility_required'::text])))
+    CONSTRAINT handle_quote_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['quoted'::text, 'eligibility_required'::text, 'nationality_required'::text])))
 );
 
 CREATE TABLE handle_quotes (
@@ -25364,6 +25538,9 @@ CREATE TABLE handle_quotes (
     quoted_at timestamp with time zone NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     consumed_at timestamp with time zone,
+    nationality_qualification_pin jsonb,
+    nationality_decision_id text,
+    CONSTRAINT handle_nationality_quote_pin_pair CHECK ((((nationality_qualification_pin IS NULL) AND (nationality_decision_id IS NULL)) OR ((nationality_qualification_pin IS NOT NULL) AND (nationality_decision_id IS NOT NULL) AND (jsonb_typeof(nationality_qualification_pin) = 'object'::text)))),
     CONSTRAINT handle_quote_link_shape CHECK ((((public_link_confirmation_id IS NULL) AND (public_link_confirmation_hash IS NULL)) OR ((public_link_confirmation_id IS NOT NULL) AND (public_link_confirmation_hash ~ '^[0-9a-f]{64}$'::text)))),
     CONSTRAINT handle_quote_state_shape CHECK ((((status = 'quoted'::text) AND (consumed_at IS NULL)) OR ((status = 'consumed'::text) AND (consumed_at IS NOT NULL)) OR ((status = 'expired'::text) AND (consumed_at IS NULL)))),
     CONSTRAINT handle_quote_time_order CHECK (((expires_at > quoted_at) AND (evaluated_at = quoted_at))),
@@ -25410,6 +25587,7 @@ CREATE TABLE handle_reservations (
     reserved_at timestamp with time zone NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     transitioned_at timestamp with time zone,
+    nationality_decision_id text,
     CONSTRAINT handle_reservation_state_shape CHECK ((((status = 'reserved'::text) AND (transitioned_at IS NULL)) OR ((status <> 'reserved'::text) AND (transitioned_at IS NOT NULL)))),
     CONSTRAINT handle_reservation_time_order CHECK ((expires_at > reserved_at)),
     CONSTRAINT handle_reservations_family_check CHECK ((family = 'hns'::text)),
@@ -31768,11 +31946,23 @@ ALTER TABLE ONLY handle_issuance_driver_revisions
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fences_pkey PRIMARY KEY (family, namespace_root, handle_label);
 
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_pkey PRIMARY KEY (decision_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_u_decision_id_assertion_id_evid_key UNIQUE (decision_id, assertion_id, evidence_receipt_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_uses_pkey PRIMARY KEY (evidence_use_id);
+
 ALTER TABLE ONLY handle_nationality_policy_actions
     ADD CONSTRAINT handle_nationality_policy_act_actor_account_id_endpoint_tem_key UNIQUE (actor_account_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY handle_nationality_policy_actions
     ADD CONSTRAINT handle_nationality_policy_actions_pkey PRIMARY KEY (action_id);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualification_intents_pkey PRIMARY KEY (qualification_intent_id);
 
 ALTER TABLE ONLY handle_persona_link_confirmation_actions
     ADD CONSTRAINT handle_persona_link_confirmation_action_replay_unique UNIQUE (actor_account_id, endpoint_template, idempotency_key);
@@ -34101,11 +34291,29 @@ CREATE TRIGGER handle_grant_public_linkage_advance AFTER INSERT ON handle_grants
 
 CREATE TRIGGER handle_issuance_driver_revisions_append_only BEFORE DELETE OR UPDATE ON handle_issuance_driver_revisions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
+CREATE TRIGGER handle_nationality_claim_insert_guard BEFORE INSERT ON handle_claims FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_action_insert();
+
+CREATE TRIGGER handle_nationality_decision_insert_guard BEFORE INSERT ON handle_nationality_decisions FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_decision_insert();
+
+CREATE TRIGGER handle_nationality_decisions_immutable BEFORE DELETE OR UPDATE ON handle_nationality_decisions FOR EACH ROW EXECUTE FUNCTION reject_handle_nationality_decision_mutation();
+
+CREATE TRIGGER handle_nationality_evidence_use_insert_guard BEFORE INSERT ON handle_nationality_evidence_uses FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_use_insert();
+
+CREATE TRIGGER handle_nationality_evidence_uses_immutable BEFORE DELETE OR UPDATE ON handle_nationality_evidence_uses FOR EACH ROW EXECUTE FUNCTION reject_handle_nationality_decision_mutation();
+
 CREATE TRIGGER handle_nationality_policy_action_insert_guard BEFORE INSERT ON handle_nationality_policy_actions FOR EACH ROW EXECUTE FUNCTION guard_handle_nationality_authoring_v1();
 
 CREATE TRIGGER handle_nationality_policy_actions_append_only BEFORE DELETE OR UPDATE ON handle_nationality_policy_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER handle_nationality_policy_insert_guard BEFORE INSERT ON handle_qualification_policy_revisions FOR EACH ROW EXECUTE FUNCTION guard_handle_nationality_authoring_v1();
+
+CREATE TRIGGER handle_nationality_qualification_intents_immutable BEFORE DELETE OR UPDATE ON handle_nationality_qualification_intents FOR EACH ROW EXECUTE FUNCTION reject_handle_nationality_decision_mutation();
+
+CREATE TRIGGER handle_nationality_quote_action_guard BEFORE INSERT ON handle_quote_actions FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_quote_action();
+
+CREATE TRIGGER handle_nationality_quote_insert_guard BEFORE INSERT ON handle_quotes FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_action_insert();
+
+CREATE TRIGGER handle_nationality_reservation_insert_guard BEFORE INSERT ON handle_reservations FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_action_insert();
 
 CREATE TRIGGER handle_persona_link_confirmation_actions_append_only BEFORE DELETE OR UPDATE ON handle_persona_link_confirmation_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
@@ -35714,6 +35922,9 @@ ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claims_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_claims
+    ADD CONSTRAINT handle_claims_nationality_decision_id_fkey FOREIGN KEY (nationality_decision_id) REFERENCES handle_nationality_decisions(decision_id);
+
+ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claims_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES handle_quotes(quote_id);
 
 ALTER TABLE ONLY handle_claims
@@ -35755,6 +35966,24 @@ ALTER TABLE ONLY handle_key_fences
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fences_live_reservation_id_fkey FOREIGN KEY (live_reservation_id) REFERENCES handle_reservations(reservation_id);
 
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_offering_id_offering_revision_fkey FOREIGN KEY (offering_id, offering_revision) REFERENCES community_handle_offering_revisions(offering_id, offering_revision);
+
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_qualification_policy_id_quali_fkey FOREIGN KEY (qualification_policy_id, qualification_policy_revision) REFERENCES handle_qualification_policy_revisions(policy_id, policy_revision);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_u_assertion_id_actor_account_i_fkey FOREIGN KEY (assertion_id, actor_account_id) REFERENCES assertions(assertion_id, user_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_u_evidence_receipt_id_subject__fkey FOREIGN KEY (evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, actor_account_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_uses_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES handle_nationality_decisions(decision_id);
+
 ALTER TABLE ONLY handle_nationality_policy_actions
     ADD CONSTRAINT handle_nationality_policy_action_policy_id_policy_revision_fkey FOREIGN KEY (policy_id, policy_revision) REFERENCES handle_qualification_policy_revisions(policy_id, policy_revision);
 
@@ -35763,6 +35992,15 @@ ALTER TABLE ONLY handle_nationality_policy_actions
 
 ALTER TABLE ONLY handle_nationality_policy_actions
     ADD CONSTRAINT handle_nationality_policy_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualificat_offering_id_offering_revisio_fkey FOREIGN KEY (offering_id, offering_revision) REFERENCES community_handle_offering_revisions(offering_id, offering_revision);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualification_intents_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualification_intents_owner_persona_id_fkey FOREIGN KEY (owner_persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY handle_persona_link_confirmation_actions
     ADD CONSTRAINT handle_persona_link_confirmation_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
@@ -35807,6 +36045,9 @@ ALTER TABLE ONLY handle_quote_actions
     ADD CONSTRAINT handle_quote_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_quote_actions
+    ADD CONSTRAINT handle_quote_actions_qualification_intent_id_fkey FOREIGN KEY (qualification_intent_id) REFERENCES handle_nationality_qualification_intents(qualification_intent_id);
+
+ALTER TABLE ONLY handle_quote_actions
     ADD CONSTRAINT handle_quote_actions_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES handle_quotes(quote_id);
 
 ALTER TABLE ONLY handle_quotes
@@ -35822,6 +36063,9 @@ ALTER TABLE ONLY handle_quotes
     ADD CONSTRAINT handle_quotes_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_quotes
+    ADD CONSTRAINT handle_quotes_nationality_decision_id_fkey FOREIGN KEY (nationality_decision_id) REFERENCES handle_nationality_decisions(decision_id);
+
+ALTER TABLE ONLY handle_quotes
     ADD CONSTRAINT handle_quotes_public_link_confirmation_id_fkey FOREIGN KEY (public_link_confirmation_id) REFERENCES handle_persona_link_confirmations(confirmation_id);
 
 ALTER TABLE ONLY handle_reservation_actions
@@ -35835,6 +36079,9 @@ ALTER TABLE ONLY handle_reservations
 
 ALTER TABLE ONLY handle_reservations
     ADD CONSTRAINT handle_reservations_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_reservations
+    ADD CONSTRAINT handle_reservations_nationality_decision_id_fkey FOREIGN KEY (nationality_decision_id) REFERENCES handle_nationality_decisions(decision_id);
 
 ALTER TABLE ONLY handle_reservations
     ADD CONSTRAINT handle_reservations_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES handle_quotes(quote_id);

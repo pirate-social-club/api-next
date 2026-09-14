@@ -77,6 +77,10 @@ import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authori
 import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeControlPlaneHandleNationalityAuthoringStore } from "@pirate/platform-cf/handle-nationality-authoring-repository";
+import {
+  makeControlPlaneHandleNationalityIntentResolver,
+  makeControlPlaneHandleNationalityQualificationStore,
+} from "@pirate/platform-cf/handle-nationality-qualification-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
 import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
@@ -1032,6 +1036,7 @@ export async function createProductionHttpWorker(
       nationalityAuthoring === null ? {} : { nationality_authoring: nationalityAuthoring },
     ),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneHandleNationalityIntentResolver(controlPlane),
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
   ]);
   const verificationHandlers = makeVerificationHandlers({
@@ -1322,6 +1327,7 @@ export async function createProductionHttpWorker(
   })();
   const handleNationalityAuthoringHandlers = makeHandleNationalityAuthoringHandlers({
     store: makeControlPlaneHandleNationalityAuthoringStore(controlPlane, nationalityAuthoring),
+    qualification: makeControlPlaneHandleNationalityQualificationStore(controlPlane),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
   });
   const handleSalesHandlers = makeHandleSalesHandlers({

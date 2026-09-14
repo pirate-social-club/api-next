@@ -649,6 +649,7 @@ const HANDLE_SALES_MANAGEMENT_PATH =
   /^\/communities\/[^/]+\/(?:handle-sales-management(?:\/(?:sale-namespaces|offerings))?|handle-nationality-(?:authoring|qualification-policies))$/u;
 const CANONICAL_ONLY_ENDPOINTS = new Set([
   "GetHandleNationalityAuthoring",
+  "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
   "DeliverHnsEdgeAlert",
   "GetHandleSalesManagement",
@@ -657,6 +658,7 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "GetHandleNationalityAuthoring",
+  "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
   "RegisterIdentity",
   "ListMyPersonas",

@@ -50,6 +50,7 @@ export function advanceCommunityJoinNationalityVerificationInTransaction(
     readonly proof_session_id: string;
     readonly result_hash: string;
   }>,
+  actionKind: "community_join" | "handle_claim" = "community_join",
 ): Effect.Effect<
   CommunityJoinNationalityAdvanceOutcome,
   VerificationCompletionStorageFailed | ControlPlaneError
@@ -94,10 +95,10 @@ export function advanceCommunityJoinNationalityVerificationInTransaction(
                 AND state.requirement_kind = attempt.requirement_kind
               WHERE attempt.ceremony_intent_id = $1
                 AND attempt.actor_id = $2
-                AND attempt.action_kind = 'community_join'
+                AND attempt.action_kind = $3
                 AND attempt.requirement_kind = 'nationality'
               FOR UPDATE OF attempt, state`,
-      values: [sessionIntentId, input.actor_id],
+      values: [sessionIntentId, input.actor_id, actionKind],
       readonly: false,
     });
     const attempt = oneRow(attemptResult.rows);
@@ -109,18 +110,21 @@ export function advanceCommunityJoinNationalityVerificationInTransaction(
     const completedAt = asTimestamp(session.completed_at);
     const terminalAt = asTimestamp(session.terminal_at);
     const sessionExpiresAt = asTimestamp(session.expires_at);
+    const attemptExpiresAt = asTimestamp(attempt.expires_at);
     if (
       attemptGeneration === null ||
       stateGeneration === null ||
       completedAt === null ||
       terminalAt === null ||
       sessionExpiresAt === null ||
+      attemptExpiresAt === null ||
       attemptGeneration <= 0 ||
       session.status !== "completed" ||
       asString(session.completion_result_hash) !== input.result_hash ||
       asString(session.completion_idempotency_key) === null ||
       completedAt !== terminalAt ||
       Date.parse(completedAt) >= Date.parse(sessionExpiresAt) ||
+      Date.parse(completedAt) >= Date.parse(attemptExpiresAt) ||
       attemptGeneration !== stateGeneration ||
       asString(attempt.current_ceremony_intent_id) !== sessionIntentId ||
       attempt.requirement_status !== "pending"
@@ -134,11 +138,18 @@ export function advanceCommunityJoinNationalityVerificationInTransaction(
       label: "community.join.nationality.satisfy-requirement",
       text: `UPDATE nationality_requirement_states
                 SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
-              WHERE action_kind = 'community_join' AND intent_id = $2
+              WHERE action_kind = $6 AND intent_id = $2
                 AND requirement_kind = 'nationality' AND actor_id = $3
                 AND status = 'pending' AND generation = $4
                 AND current_ceremony_intent_id = $5`,
-      values: [completedAt, intentId, input.actor_id, attemptGeneration, sessionIntentId],
+      values: [
+        completedAt,
+        intentId,
+        input.actor_id,
+        attemptGeneration,
+        sessionIntentId,
+        actionKind,
+      ],
       readonly: false,
     });
     if (satisfied.rowCount !== 1) {

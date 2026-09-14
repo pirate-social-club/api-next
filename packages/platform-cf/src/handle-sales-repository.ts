@@ -5,6 +5,7 @@ import {
   type ControlPlaneTransaction,
   HandleDirectGrantRecipientUnavailable,
   HandleSalesPageRejected,
+  HandleSalesRejected,
   type HandleSalesStore,
 } from "@pirate/application";
 import type {
@@ -12,6 +13,7 @@ import type {
   CommunityHandleOfferingManagementItemV2,
   HandleClaimV2,
   HandleGrantPrivateV2,
+  HandleQuote,
   HandleQuoteV2,
   HandleReservationV2,
   HandleSaleNamespaceCandidateV1,
@@ -21,6 +23,7 @@ import type {
   PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
 } from "@pirate/contracts";
+import { HandleNationalityQuotePinV1 } from "@pirate/contracts";
 import {
   assertCanonicalHnsHandleLabelV2,
   assertHandleOfferingCombinationV3,
@@ -38,12 +41,15 @@ import {
   handlePersonaPublicIdentityHash,
   handleQuoteRequestHash,
   handleQuoteV2Hash,
+  handleQuoteV3Hash,
   handleReservationRequestHash,
   handleReservationV2Hash,
   handleSaleNamespaceActivationHash,
   resolvedHandleAccountCap,
 } from "@pirate/domain";
-import { Effect, type Layer } from "effect";
+import { Effect, type Layer, Schema } from "effect";
+import { evaluateHandleNationality } from "./handle-nationality-decisions.ts";
+import { issueHandleNationalityQualification } from "./handle-nationality-qualification-repository.ts";
 import { handleQualificationPolicyRefFromRow } from "./handle-qualification-policy.ts";
 import {
   advisoryLock,
@@ -372,40 +378,47 @@ const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagem
   };
 };
 
-const quoteFromRow = (row: Row): HandleQuoteV2 => ({
-  quote_id: text(row, "quote_id"),
-  quote_hash: text(row, "quote_hash"),
-  offering_id: text(row, "offering_id"),
-  offering_revision: integer(row, "offering_revision"),
-  offering_hash: text(row, "offering_hash"),
-  sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
-  sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
-  fulfillment: { kind: "hosted_persona_v1" },
-  owner_persona_id: text(row, "owner_persona_id"),
-  handle: {
-    family: "hns",
-    namespace_root: text(row, "namespace_root"),
-    handle_label: text(row, "handle_label"),
-  },
-  display_identifier: text(row, "display_identifier"),
-  pricing: {
-    kind: "free_v1",
-    pricing_id: text(row, "pricing_id"),
-    pricing_revision: integer(row, "pricing_revision"),
-    pricing_hash: text(row, "pricing_hash"),
-    atomic_amount: "0",
-  },
-  eligibility: {
-    policy_revision: integer(row, "eligibility_policy_revision"),
-    policy_hash: text(row, "eligibility_policy_hash"),
-    decision: "passed",
-    evidence_use_ids: [...stringArray(row.evidence_use_ids)],
-    evaluated_at: instant(row.evaluated_at),
-  },
-  status: text(row, "status") as HandleQuoteV2["status"],
-  quoted_at: instant(row.quoted_at),
-  expires_at: instant(row.expires_at),
-});
+const quoteFromRow = (row: Row): HandleQuote => {
+  const quote: HandleQuoteV2 = {
+    quote_id: text(row, "quote_id"),
+    quote_hash: text(row, "quote_hash"),
+    offering_id: text(row, "offering_id"),
+    offering_revision: integer(row, "offering_revision"),
+    offering_hash: text(row, "offering_hash"),
+    sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
+    sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
+    fulfillment: { kind: "hosted_persona_v1" },
+    owner_persona_id: text(row, "owner_persona_id"),
+    handle: {
+      family: "hns",
+      namespace_root: text(row, "namespace_root"),
+      handle_label: text(row, "handle_label"),
+    },
+    display_identifier: text(row, "display_identifier"),
+    pricing: {
+      kind: "free_v1",
+      pricing_id: text(row, "pricing_id"),
+      pricing_revision: integer(row, "pricing_revision"),
+      pricing_hash: text(row, "pricing_hash"),
+      atomic_amount: "0",
+    },
+    eligibility: {
+      policy_revision: integer(row, "eligibility_policy_revision"),
+      policy_hash: text(row, "eligibility_policy_hash"),
+      decision: "passed",
+      evidence_use_ids: [...stringArray(row.evidence_use_ids)],
+      evaluated_at: instant(row.evaluated_at),
+    },
+    status: text(row, "status") as HandleQuoteV2["status"],
+    quoted_at: instant(row.quoted_at),
+    expires_at: instant(row.expires_at),
+  };
+  if (row.nationality_qualification_pin == null) return quote;
+  const pin = Schema.decodeUnknownSync(HandleNationalityQuotePinV1, { onExcessProperty: "error" })(
+    row.nationality_qualification_pin,
+  );
+  return { ...quote, eligibility: { kind: "curated_nationality_v1", snapshot: pin.eligibility } };
+};
 
 const reservationFromRow = (row: Row): HandleReservationV2 => ({
   reservation_id: text(row, "reservation_id"),
@@ -2462,6 +2475,14 @@ export function makeControlPlaneHandleSalesRepository() {
                 const action = replay.rows[0];
                 if (text(action, "request_hash") !== hash)
                   return yield* reject("idempotency_conflict");
+                if (text(action, "result_kind") === "nationality_required")
+                  return {
+                    kind: "nationality_required" as const,
+                    offering_id: text(action, "offering_id"),
+                    owner_persona_id: text(action, "owner_persona_id"),
+                    qualification_intent_id: text(action, "qualification_intent_id"),
+                    reason: "evidence_required" as const,
+                  };
                 if (text(action, "result_kind") === "eligibility_required") {
                   return {
                     kind: "eligibility_required" as const,
@@ -2562,18 +2583,58 @@ export function makeControlPlaneHandleSalesRepository() {
                   classification.offering.offering_id,
                 );
               }
-              const now = instant(
+              let now = instant(
                 one((yield* currentDatabaseTime(transaction)).rows, "database clock").database_now,
               );
               const policyRow = requested.rows[0];
               const policyKind = text(policyRow, "policy_kind");
-              // Fail closed until the nationality quote and claim transaction is connected.
-              if (policyKind === "curated_nationality_v1")
-                return yield* reject("qualification_unsatisfied");
+              const nationality =
+                policyKind === "curated_nationality_v1"
+                  ? yield* evaluateHandleNationality(transaction, {
+                      actorId: input.accountId,
+                      purpose: "quote",
+                      resourceId: input.quoteId,
+                      offering: policyRow,
+                    })
+                  : null;
+              if (nationality?.kind === "qualified") now = nationality.pin.eligibility.evaluated_at;
+              const nationalityMissing = nationality?.kind === "unqualified";
+              if (nationalityMissing) {
+                const intentId = yield* issueHandleNationalityQualification(transaction, {
+                  accountId: input.accountId,
+                  personaId: input.personaId,
+                  intentId: `handle-qualification_${input.actionId}`,
+                  offering: policyRow,
+                  desiredLabel: input.desiredLabel,
+                });
+                yield* transaction.execute({
+                  label: "handle-sales.quote.action-nationality-required.insert",
+                  text: `INSERT INTO handle_quote_actions (action_id,actor_account_id,endpoint_template,idempotency_key,request_hash,result_kind,quote_id,offering_id,owner_persona_id,eligibility_reason,committed_at,qualification_intent_id) VALUES ($1,$2,$3,$4,$5,'nationality_required',NULL,$6,$7,'evidence_required',$8::timestamptz,$9)`,
+                  values: [
+                    input.actionId,
+                    input.accountId,
+                    endpoint,
+                    input.idempotencyKey,
+                    hash,
+                    input.offeringId,
+                    input.personaId,
+                    now,
+                    intentId,
+                  ],
+                  readonly: false,
+                });
+                return {
+                  kind: "nationality_required" as const,
+                  offering_id: input.offeringId,
+                  owner_persona_id: input.personaId,
+                  qualification_intent_id: intentId,
+                  reason: "evidence_required" as const,
+                };
+              }
               const human =
-                policyKind === "none_v1"
-                  ? undefined
-                  : yield* activeHumanEvidence(transaction, input.accountId, now);
+                policyKind === "curated_policy_v1"
+                  ? yield* activeHumanEvidence(transaction, input.accountId, now)
+                  : undefined;
               const humanMissing = human !== undefined && human.rows[0] === undefined;
               const qualificationMismatch =
                 policyKind === "curated_policy_v1" &&
@@ -2658,8 +2719,11 @@ export function makeControlPlaneHandleSalesRepository() {
                 confirmationId = text(confirmation.rows[0], "confirmation_id");
                 confirmationHash = text(confirmation.rows[0], "confirmation_hash");
               }
-              const evidenceIds = human?.rows.map((row) => text(row, "evidence_receipt_id")) ?? [];
-              const quoteHash = handleQuoteV2Hash({
+              const evidenceIds =
+                nationality?.kind === "qualified"
+                  ? nationality.pin.eligibility.evidence_use_ids
+                  : (human?.rows.map((row) => text(row, "evidence_receipt_id")) ?? []);
+              const quoteHashInput = {
                 quote_id: input.quoteId,
                 offering_id: requestedOffering.offering_id,
                 offering_revision: requestedOffering.offering_revision,
@@ -2684,7 +2748,17 @@ export function makeControlPlaneHandleSalesRepository() {
                 expires_at: new Date(
                   Date.parse(now) + requestedOffering.quote_ttl_seconds * 1_000,
                 ).toISOString(),
-              }).sha256;
+              } as const;
+              const quoteHash =
+                nationality?.kind === "qualified"
+                  ? handleQuoteV3Hash({
+                      ...quoteHashInput,
+                      eligibility: {
+                        kind: "curated_nationality_v1",
+                        snapshot: nationality.pin.eligibility,
+                      },
+                    }).sha256
+                  : handleQuoteV2Hash(quoteHashInput).sha256;
               yield* transaction.execute({
                 label: "handle-sales.quote.insert",
                 text: `INSERT INTO handle_quotes (
@@ -2694,11 +2768,11 @@ export function makeControlPlaneHandleSalesRepository() {
                          display_root,handle_label,display_identifier,pricing_id,pricing_revision,
                          pricing_hash,atomic_amount,eligibility_policy_revision,eligibility_policy_hash,
                          evidence_use_ids,evaluated_at,public_link_confirmation_id,
-                         public_link_confirmation_hash,status,quoted_at,expires_at
+                         public_link_confirmation_hash,status,quoted_at,expires_at,nationality_qualification_pin,nationality_decision_id
                        ) VALUES (
                          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'hosted_persona_v1','hns',$11,$12,$13,
                          $14,$15,$16,$17,0,$18,$19,$20,$21::timestamptz,$22,$23,'quoted',
-                         $21::timestamptz,$21::timestamptz + make_interval(secs=>$24)
+                         $21::timestamptz,$21::timestamptz + make_interval(secs=>$24),$25::jsonb,$26
                        )`,
                 values: [
                   input.quoteId,
@@ -2725,6 +2799,8 @@ export function makeControlPlaneHandleSalesRepository() {
                   confirmationId,
                   confirmationHash,
                   requestedOffering.quote_ttl_seconds,
+                  nationality?.kind === "qualified" ? JSON.stringify(nationality.pin) : null,
+                  nationality?.kind === "qualified" ? nationality.decisionId : null,
                 ],
                 readonly: false,
               });
@@ -2868,7 +2944,7 @@ export function makeControlPlaneHandleSalesRepository() {
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               revision.sale_namespace_activation_id,$3::timestamptz
                             )
-                          )`,
+                           ) FOR SHARE OF current_offering`,
                 values: [text(quoteRow, "offering_id"), text(quoteRow, "offering_hash"), now],
                 readonly: false,
               });
@@ -2884,10 +2960,20 @@ export function makeControlPlaneHandleSalesRepository() {
               });
               if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
               const policyKind = text(quoteRow, "policy_kind");
-              // Fail closed until the nationality quote and claim transaction is connected.
-              if (policyKind === "curated_nationality_v1")
-                return yield* reject("qualification_unsatisfied");
-              if (policyKind !== "none_v1") {
+              const nationality =
+                policyKind === "curated_nationality_v1"
+                  ? yield* evaluateHandleNationality(transaction, {
+                      actorId: input.accountId,
+                      purpose: "reservation",
+                      resourceId: input.reservationId,
+                      offering: quoteRow,
+                      pin: Schema.decodeUnknownSync(HandleNationalityQuotePinV1, {
+                        onExcessProperty: "error",
+                      })(quoteRow.nationality_qualification_pin),
+                    })
+                  : null;
+              if (nationality?.kind === "unqualified") return reject("qualification_unsatisfied");
+              if (policyKind === "curated_policy_v1") {
                 const human = yield* activeHumanEvidence(transaction, input.accountId, now);
                 if (human.rows[0] === undefined) return yield* reject("evidence_required");
               }
@@ -2986,9 +3072,9 @@ export function makeControlPlaneHandleSalesRepository() {
                          reservation_id,reservation_hash,request_hash,actor_account_id,owner_persona_id,
                          quote_id,quote_hash,offering_id,offering_hash,sale_namespace_activation_id,
                          sale_namespace_activation_generation,fulfillment_kind,family,namespace_root,
-                         handle_label,status,reserved_at,expires_at,transitioned_at
+                         handle_label,status,reserved_at,expires_at,transitioned_at,nationality_decision_id
                        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'hosted_persona_v1','hns',
-                                 $12,$13,'reserved',$14::timestamptz,$15::timestamptz,NULL)`,
+                                 $12,$13,'reserved',$14::timestamptz,$15::timestamptz,NULL,$16)`,
                 values: [
                   input.reservationId,
                   reservationHash,
@@ -3005,6 +3091,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   text(quoteRow, "handle_label"),
                   now,
                   expiresAt,
+                  nationality?.kind === "qualified" ? nationality.decisionId : null,
                 ],
                 readonly: false,
               });
@@ -3061,6 +3148,10 @@ export function makeControlPlaneHandleSalesRepository() {
               };
             }),
           ),
+        ).pipe(
+          Effect.flatMap((result) =>
+            result instanceof HandleSalesRejected ? Effect.fail(result) : Effect.succeed(result),
+          ),
         );
       }),
     submitFreeClaim: (input: Parameters<HandleSalesStore["submitFreeClaim"]>[0]) =>
@@ -3113,7 +3204,7 @@ export function makeControlPlaneHandleSalesRepository() {
               const reservationResult = yield* transaction.execute<Row>({
                 label: "handle-sales.claim.reservation.lock",
                 text: `SELECT reservation.*,quote.display_identifier,quote.pricing_revision,
-                              quote.pricing_hash,quote.atomic_amount,quote.offering_revision,
+                              quote.pricing_hash,quote.atomic_amount,quote.offering_revision,quote.nationality_qualification_pin,
                               revision.max_active_grants_per_account,revision.community_id,
                               policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,policy.subject_account_id
                          FROM handle_reservations AS reservation
@@ -3178,7 +3269,7 @@ export function makeControlPlaneHandleSalesRepository() {
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               revision.sale_namespace_activation_id,$3::timestamptz
                             )
-                          )`,
+                           ) FOR SHARE OF current_offering`,
                 values: [text(row, "offering_id"), text(row, "offering_hash"), now],
                 readonly: false,
               });
@@ -3197,10 +3288,20 @@ export function makeControlPlaneHandleSalesRepository() {
               if (persona.rows[0] === undefined || persona.rows[0]?.binding_eligible !== true)
                 return yield* reject("persona_unavailable");
               const policyKind = text(row, "policy_kind");
-              // Fail closed until the nationality quote and claim transaction is connected.
-              if (policyKind === "curated_nationality_v1")
-                return yield* reject("qualification_unsatisfied");
-              if (policyKind !== "none_v1") {
+              const nationality =
+                policyKind === "curated_nationality_v1"
+                  ? yield* evaluateHandleNationality(transaction, {
+                      actorId: input.accountId,
+                      purpose: "claim",
+                      resourceId: input.claimId,
+                      offering: row,
+                      pin: Schema.decodeUnknownSync(HandleNationalityQuotePinV1, {
+                        onExcessProperty: "error",
+                      })(row.nationality_qualification_pin),
+                    })
+                  : null;
+              if (nationality?.kind === "unqualified") return reject("qualification_unsatisfied");
+              if (policyKind === "curated_policy_v1") {
                 const human = yield* activeHumanEvidence(transaction, input.accountId, now);
                 if (human.rows[0] === undefined) return yield* reject("evidence_required");
               }
@@ -3283,11 +3384,11 @@ export function makeControlPlaneHandleSalesRepository() {
                          sale_namespace_activation_id,sale_namespace_activation_generation,
                          fulfillment_kind,family,namespace_root,handle_label,display_identifier,
                          pricing_revision,pricing_hash,atomic_amount,payment_status,state,safe_reason,
-                         issuance_operation_id,grant_finalize_hash,grant_id,created_at,updated_at
+                         issuance_operation_id,grant_finalize_hash,grant_id,created_at,updated_at,nationality_decision_id
                        ) VALUES (
                          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'hosted_persona_v1','hns',$12,$13,
                          $14,$15,$16,0,'not_applicable','issued',NULL,$17,$18,$19,
-                         $20::timestamptz,$20::timestamptz
+                         $20::timestamptz,$20::timestamptz,$21
                        )`,
                 values: [
                   input.claimId,
@@ -3310,6 +3411,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   finalizeHash,
                   input.grantId,
                   now,
+                  nationality?.kind === "qualified" ? nationality.decisionId : null,
                 ],
                 readonly: false,
               });
@@ -3395,6 +3497,10 @@ export function makeControlPlaneHandleSalesRepository() {
               });
               return { claim: claimFromRow(one(result.rows, "created claim")), replayed: false };
             }),
+          ),
+        ).pipe(
+          Effect.flatMap((result) =>
+            result instanceof HandleSalesRejected ? Effect.fail(result) : Effect.succeed(result),
           ),
         );
       }),
