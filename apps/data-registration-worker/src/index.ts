@@ -69,13 +69,15 @@ export function makeDataRegistrationWorkflowRunner<Env extends DataRegistrationW
     event: Readonly<{ payload: DataRegistrationWorkflowPayload; instanceId: string }>,
     step: DataRegistrationWorkflowStep,
   ): Promise<DataRegistrationWorkflowResult> => {
-    const composition = withPosture(env, resolve(env));
     let sequence = 0;
     while (true) {
       const result = await step.do(
         `data-registration-${sequence}`,
         SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
-        async () => advanceDataRegistrationWorkflow(event.payload, composition.workflow),
+        async () => {
+          const composition = withPosture(env, resolve(env));
+          return advanceDataRegistrationWorkflow(event.payload, composition.workflow);
+        },
       );
       if (
         result.outcome === "registered" ||
