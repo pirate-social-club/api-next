@@ -1,5 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import type { CommunityStore } from "@pirate/application";
+import type {
+  CommunityStore,
+  ControlPlaneError,
+  ControlPlaneTransaction,
+} from "@pirate/application";
+import { VerificationStartStorageFailed } from "@pirate/application/verification";
 import {
   COMMUNITY_GATE_COMPILER_VERSION,
   CURATED_AGE_18_POLICY,
@@ -786,14 +791,29 @@ suite("Gates v2 curated age community vertical", () => {
       if (intentId === null) throw new Error("expected a Very join intent");
 
       const resolver = makeCommunityJoinIntentResolver(
-        <Row>(statement: { readonly text: string; readonly values: readonly unknown[] }) =>
-          Effect.promise(async () => {
-            const result = await admin.query({
-              text: statement.text,
-              values: [...statement.values],
-            });
-            return { rows: result.rows as readonly Row[], rowCount: result.rowCount ?? 0 };
-          }),
+        {
+          withTransaction: <A>(
+            use: (
+              transaction: ControlPlaneTransaction,
+            ) => Effect.Effect<A, ControlPlaneError | VerificationStartStorageFailed>,
+          ) =>
+            use({
+              execute: <ResultRow>(statement: {
+                readonly text: string;
+                readonly values: readonly unknown[];
+              }) =>
+                Effect.promise(async () => {
+                  const result = await admin.query({
+                    text: statement.text,
+                    values: [...statement.values],
+                  });
+                  return {
+                    rows: result.rows as readonly ResultRow[],
+                    rowCount: result.rowCount ?? 0,
+                  };
+                }),
+            }).pipe(Effect.mapError(() => new VerificationStartStorageFailed())),
+        },
         "test",
       );
       await expect(

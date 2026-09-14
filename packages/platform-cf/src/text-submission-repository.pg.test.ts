@@ -598,12 +598,14 @@ suite("Postgres 17 terminal text submission repository", () => {
         platform_policy: string;
         community_policy: string;
         evidence_count: number;
+        rating_rule_revision: string;
       }>(
         `SELECT submission.evidence_ref,
                   submission.policy_revision_id AS provider_policy,
                   submission.platform_policy_revision_id AS platform_policy,
                   submission.community_policy_revision_id AS community_policy,
-                  count(evidence.evidence_ref)::int AS evidence_count
+                  count(evidence.evidence_ref)::int AS evidence_count,
+                  min(evidence.rating_rule_revision) AS rating_rule_revision
              FROM text_content_submissions AS submission
              JOIN text_moderation_evidence AS evidence
                ON evidence.evidence_ref = submission.evidence_ref
@@ -619,8 +621,146 @@ suite("Postgres 17 terminal text submission repository", () => {
           platform_policy: "moderation-platform-floor-v1",
           community_policy: "community-moderation-policy:text-community:r1",
           evidence_count: 1,
+          rating_rule_revision: "accepted-adult-signals-v2",
         },
       ]);
+
+      // Reproduce a retained accepted adult signal whose old caller stored the
+      // permit-only general floor. The accepted provider evidence stays intact.
+      const createHistorical = async (key: string) => {
+        const historicalBody = { ...body, idempotency_key: key };
+        const historicalHash = await Effect.runPromise(
+          canonicalBodyHash({ community_id: "text-community", body: historicalBody }),
+        );
+        return await runStore(connection, (store) =>
+          Effect.gen(function* () {
+            const moderated = yield* evaluateTextModerationV2({
+              communityId: "text-community",
+              moderationInput: input,
+              inputSha256: inputSha,
+              store,
+              provider: {
+                evaluate: () =>
+                  Effect.succeed({
+                    provider_id: "openai" as const,
+                    requested_model: "omni-moderation-2024-09-26",
+                    returned_model: "omni-moderation-2024-09-26",
+                    input_sha256: inputSha,
+                    matched_categories: ["sexual"],
+                    inputs: [
+                      {
+                        input_sha256: inputSha,
+                        categories: { ...categoryRecord(false), sexual: true },
+                        scores: { ...categoryRecord(0), sexual: 1 },
+                        applied_input_types: categoryRecord([] as readonly ("text" | "image")[]),
+                      },
+                    ],
+                  }),
+              },
+            });
+            if (moderated.restrictedEvidence === undefined)
+              throw new Error("missing accepted adult evidence");
+            return yield* store.commitTerminal({
+              communityId: "text-community",
+              actor,
+              personaId: actorPersonaId,
+              body: historicalBody,
+              moderationInput: input,
+              idempotencyKey: historicalBody.idempotency_key,
+              requestHash: historicalHash,
+              operationId: `operation_${key.replaceAll("-", "_")}`,
+              evaluation: { ...moderated.evaluation, resulting_content_rating: "general" },
+              restrictedEvidence: moderated.restrictedEvidence,
+            });
+          }),
+        );
+      };
+      const historical = await createHistorical("historical-adult-floor");
+      expect(historical.kind).toBe("created");
+      const before = (
+        await admin.query(
+          "SELECT status,resulting_content_rating,response_snapshot_sha256 FROM text_content_submissions WHERE operation_id='operation_historical_adult_floor'",
+        )
+      ).rows[0];
+      expect(before).toMatchObject({
+        status: "manual_review",
+        resulting_content_rating: "general",
+      });
+      const publishedHistorical = await createHistorical("historical-published-floor");
+      expect(publishedHistorical.kind).toBe("created");
+      const publishedBefore = (
+        await admin.query(
+          "SELECT submission_id,review_ref,response_snapshot_sha256 FROM text_content_submissions WHERE operation_id='operation_historical_published_floor'",
+        )
+      ).rows[0];
+      await admin.query("BEGIN");
+      await admin.query(
+        "INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,body,created_at,updated_at) VALUES('text-community','historical-published-post',$1,$2,'text','published','public','historical fixture',now(),now())",
+        [actor.userId, actorPersonaId],
+      );
+      await admin.query(
+        "INSERT INTO home_feed_projection(community_id,feed_item_id,post_id,rank_score,projected_at) VALUES('text-community','historical-feed','historical-published-post',0,now())",
+      );
+      await admin.query(
+        "UPDATE text_moderation_cases SET status='approved',resolved_by_user_id='moderator-order5',updated_at=clock_timestamp()+interval '1 millisecond' WHERE case_id=$1",
+        [publishedBefore.review_ref],
+      );
+      await admin.query(
+        "UPDATE text_content_submissions SET status='published',public_reason_code=NULL,published_post_id='historical-published-post',review_ref=NULL,updated_at=clock_timestamp()+interval '1 millisecond' WHERE submission_id=$1",
+        [publishedBefore.submission_id],
+      );
+      await admin.query("COMMIT");
+      // A publication later hidden by moderation keeps its historical submission
+      // status. Raising its floor must neither reject that history nor republish it.
+      await admin.query(
+        "UPDATE posts SET status='hidden' WHERE post_id='historical-published-post'",
+      );
+      const proposed = (
+        await admin.query("SELECT content_rating_reconciliation_plan_v1(100) AS plan")
+      ).rows[0].plan;
+      expect(proposed.items.map((item: { outcome: string }) => item.outcome).sort()).toEqual([
+        "adult_18",
+        "adult_18",
+        "general",
+      ]);
+      await admin.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await admin.query("SELECT apply_content_rating_reconciliation_v1($1,100)", [
+        proposed.plan_hash,
+      ]);
+      await admin.query("COMMIT");
+      expect(
+        (
+          await admin.query(
+            "SELECT status,resulting_content_rating,response_snapshot_sha256 FROM text_content_submissions WHERE operation_id='operation_historical_adult_floor'",
+          )
+        ).rows[0],
+      ).toEqual({ ...before, resulting_content_rating: "adult_18" });
+      expect(
+        (
+          await admin.query(
+            "SELECT resulting_content_rating,response_snapshot_sha256 FROM text_content_submissions WHERE submission_id=$1",
+            [publishedBefore.submission_id],
+          )
+        ).rows[0],
+      ).toEqual({
+        resulting_content_rating: "adult_18",
+        response_snapshot_sha256: publishedBefore.response_snapshot_sha256,
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT content_rating FROM posts WHERE post_id='historical-published-post'",
+          )
+        ).rows[0].content_rating,
+      ).toBe("adult_18");
+      expect(
+        (await admin.query("SELECT status FROM posts WHERE post_id='historical-published-post'"))
+          .rows[0].status,
+      ).toBe("hidden");
+      expect(
+        (await admin.query("SELECT content_rating_reconciliation_plan_v1(100) AS plan")).rows[0]
+          .plan.items,
+      ).toEqual([]);
     }, migrations);
   }, 30_000);
 
@@ -945,6 +1085,22 @@ suite("Postgres 17 terminal text submission repository", () => {
         Result.isSuccess(otherActorFailure) ? otherActorFailure.success : undefined,
       ).toMatchObject({ _tag: "NotFound" });
 
+      await admin.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      const unresolvedPlan = (
+        await admin.query("SELECT content_rating_reconciliation_plan_v1(100) AS plan")
+      ).rows[0].plan;
+      await admin.query("SELECT apply_content_rating_reconciliation_v1($1,100)", [
+        unresolvedPlan.plan_hash,
+      ]);
+      await admin.query("SAVEPOINT moderator_attempt");
+      await expect(
+        admin.query(
+          "UPDATE text_content_submissions SET status='published',public_reason_code=NULL,published_post_id='text-order5-approved',review_ref=NULL,updated_at=clock_timestamp()+interval '1 millisecond' WHERE submission_id=$1",
+          [storedRow.submission_id],
+        ),
+      ).rejects.toThrow("current rating evidence is unresolved");
+      await admin.query("ROLLBACK TO SAVEPOINT moderator_attempt");
+      await admin.query("ROLLBACK");
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO posts (

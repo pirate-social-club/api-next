@@ -167,19 +167,20 @@ suite("installed anonymous Community feed", () => {
           )
         ).body.items,
       ).toEqual([locked]);
-      await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='locked-post'");
-      const rerated = await read("public-only", path, GetPublicCommunityThreads.response);
-      expect(rerated.body.items).toHaveLength(1);
-      expect(JSON.stringify(rerated.body)).toContain("locked-post");
+      await expect(
+        admin.query("UPDATE posts SET content_rating='general' WHERE post_id='locked-post'"),
+      ).rejects.toMatchObject({ code: "23514" });
+      const retainedLock = await read("retained-lock", path, GetPublicCommunityThreads.response);
+      expect(retainedLock.body.items).toEqual([locked]);
       expect(
         (
           await read(
-            "home-rerated",
+            "home-retained-lock",
             "/feed/home/public?sort=new&time_range=all",
             GetPublicHomeFeed.response,
           )
-        ).body.items.find((item) => "post" in item)?.post.post.id,
-      ).toBe("locked-post");
+        ).body.items,
+      ).toEqual([locked]);
       await admin.query("ALTER TABLE posts RENAME TO unavailable_posts_fixture");
       const failed = await read("failed", path, errorResponse);
       expect(failed.response.status).toBe(500);

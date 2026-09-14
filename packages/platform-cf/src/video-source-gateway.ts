@@ -1,3 +1,6 @@
+import type { MediaObjectIdentityKind } from "./media-object-identity.ts";
+import { normalizeObjectEtag } from "./media-object-identity.ts";
+
 const SOURCE_PATH_PREFIX = "/.well-known/pirate/video-source/v1/";
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
@@ -28,6 +31,12 @@ export type VideoSourceGrant = Readonly<{
   expiresAtMs: number;
   object: Readonly<{
     key: string;
+    /**
+     * How this object's identity is validated: an ordinary upload by its
+     * upload version and ETag, a rendered master by its normalized content
+     * ETag, because the storage APIs expose different version fields for it.
+     */
+    identity: MediaObjectIdentityKind;
     version: string;
     etag: string;
     size: number;
@@ -63,10 +72,13 @@ function hasBody(
 
 function objectMatches(grant: VideoSourceGrant, object: VideoSourceObject): boolean {
   const sha256 = object.checksums?.sha256;
+  const identityMatches =
+    grant.object.identity === "upload_version"
+      ? object.version === grant.object.version && object.etag === grant.object.etag
+      : normalizeObjectEtag(object.etag) === grant.object.etag;
   return (
     object.key === grant.object.key &&
-    object.version === grant.object.version &&
-    object.etag === grant.object.etag &&
+    identityMatches &&
     object.size === grant.object.size &&
     object.httpMetadata?.contentType === grant.object.contentType &&
     (sha256 === undefined || bytesToHex(sha256) === grant.object.canonicalSha256)

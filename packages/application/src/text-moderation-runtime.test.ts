@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   INITIAL_COMMUNITY_MODERATION_POLICY_V1,
   MODERATION_PLATFORM_FLOOR_V1,
+  MODERATION_RATING_RULE_V2,
 } from "@pirate/domain";
 import { Effect } from "effect";
 import { TextModerationProviderError } from "./ports.ts";
@@ -66,6 +67,55 @@ const store = {
 };
 
 describe("text moderation V2 runtime", () => {
+  test("binds the successor rating rule to evidence for allowed, reviewed, and blocked adult signals", async () => {
+    for (const decision of ["permit", "review", "block"] as const) {
+      const result = await Effect.runPromise(
+        evaluateTextModerationV2({
+          communityId: "community-1",
+          moderationInput: input,
+          inputSha256,
+          store: {
+            readModerationPolicy: () =>
+              Effect.succeed({
+                ...snapshot,
+                community_policy: { ...snapshot.community_policy, sexual: decision },
+              }),
+          },
+          provider: { evaluate: () => Effect.succeed(providerResult(["sexual"])) },
+        }),
+      );
+      expect(result.evaluation.resulting_content_rating).toBe("adult_18");
+      expect(result.evaluation.decision).toBe(
+        decision === "permit" ? "allow" : decision === "review" ? "manual_review" : "blocked",
+      );
+      const evidence = result.restrictedEvidence;
+      if (evidence === undefined) throw new Error("missing accepted evidence");
+      expect(evidence.rating_rule_revision).toBe(MODERATION_RATING_RULE_V2);
+      const preimage = [
+        "text-moderation-restricted-evidence-v2",
+        MODERATION_RATING_RULE_V2,
+        evidence.provider_id,
+        evidence.requested_model,
+        evidence.returned_model,
+        evidence.input_sha256,
+        evidence.community_id,
+        evidence.policy_revision,
+        evidence.policy_hash,
+        evidence.platform_policy_revision,
+        evidence.platform_policy_hash,
+        evidence.community_policy_revision,
+        evidence.community_policy_hash,
+        evidence.inputs,
+      ];
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(JSON.stringify(preimage)),
+      );
+      expect(evidence.evidence_hash).toBe(
+        [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join(""),
+      );
+    }
+  });
   test("resolves Boolean category matches through the current community policy", async () => {
     const result = await Effect.runPromise(
       evaluateTextModerationV2({

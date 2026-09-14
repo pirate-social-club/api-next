@@ -115,6 +115,18 @@ describe("DATA registration Queue and recovery", () => {
     expect(state.calls.at(-1)).toBe("fail");
   });
 
+  test("does not replace when the authority recheck finds an existing instance", async () => {
+    for (const status of ["present", "finished", "indeterminate"] as const) {
+      const state = harness();
+      const outcome = await replaceLostDataRegistrationWorkflow(OPERATION_ID, 1n, {
+        store: state.store,
+        workflow: { ...state.workflow, get: async () => status },
+      });
+      expect(outcome).toBe(status);
+      expect(state.calls).toEqual([]);
+    }
+  });
+
   test("increments the persisted revision before replacement launch", async () => {
     const state = harness();
     expect(

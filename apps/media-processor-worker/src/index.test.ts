@@ -216,6 +216,7 @@ describe("media processor Worker posture", () => {
       operationId: "operation-1",
       workflowRevision: 1,
       status: "published",
+      replacementSequence: 0,
       publishedLyricsRevision: 1,
     } as MediaProcessingAuthority;
     const store = {

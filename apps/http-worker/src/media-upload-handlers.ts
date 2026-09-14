@@ -21,6 +21,9 @@ type MediaReservationCommand = Readonly<{
 }>;
 
 export type MediaUploadHandlerServices = Readonly<{
+  readonly preflightSongVideo: (
+    input: Readonly<{ communityId: string; actor: MediaHandlerActor; body: unknown }>,
+  ) => unknown | Promise<unknown>;
   readonly reserve: (
     input: Readonly<{ communityId: string; actor: MediaHandlerActor; body: unknown }>,
   ) => unknown | Promise<unknown>;
@@ -42,6 +45,7 @@ export type MediaUploadHandlerServices = Readonly<{
 }>;
 
 export type MediaUploadHandlers = Readonly<{
+  readonly PreflightSongVideoInterval: EndpointHandler;
   readonly CreateMediaUploadReservation: EndpointHandler;
   readonly CreateMediaPostSubmission: EndpointHandler;
   readonly BindMediaPostSubmissionTerms: EndpointHandler;
@@ -69,6 +73,14 @@ function actor(principal: Principal | null): MediaHandlerActor {
 
 export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): MediaUploadHandlers {
   return {
+    PreflightSongVideoInterval: (request) => {
+      const path = request.params as { readonly communityId: string };
+      return services.preflightSongVideo({
+        communityId: path.communityId,
+        actor: actor(request.principal),
+        body: request.body,
+      });
+    },
     CreateMediaUploadReservation: async (request) => {
       const path = request.params as { readonly communityId: string };
       return withEndpointResult(

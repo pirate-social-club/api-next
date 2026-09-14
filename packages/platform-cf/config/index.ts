@@ -302,6 +302,21 @@ export const HttpWorkerConfig = Config.all({
     "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL",
   ).pipe(Config.withDefault("")),
   ZKPASSPORT_DEV_MODE: Config.boolean("ZKPASSPORT_DEV_MODE").pipe(Config.withDefault(false)),
+  /**
+   * The creator nationality authoring group. Disabled unless explicitly
+   * enabled; enabling requires an explicit evidence lifetime and policy
+   * revision, and both document providers enabled, because a partial group
+   * must fail before route construction rather than invent a lifetime.
+   */
+  NATIONALITY_AUTHORING_ENABLED: Config.boolean("NATIONALITY_AUTHORING_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  NATIONALITY_AUTHORING_POLICY_REVISION: Config.int("NATIONALITY_AUTHORING_POLICY_REVISION").pipe(
+    Config.withDefault(0),
+  ),
+  NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS: Config.int(
+    "NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS",
+  ).pipe(Config.withDefault(0)),
   VERY_OAUTH_ENABLED: Config.boolean("VERY_OAUTH_ENABLED").pipe(Config.withDefault(false)),
   VERY_OAUTH_AUTHORIZATION_ENDPOINT: Config.string("VERY_OAUTH_AUTHORIZATION_ENDPOINT").pipe(
     Config.withDefault(""),

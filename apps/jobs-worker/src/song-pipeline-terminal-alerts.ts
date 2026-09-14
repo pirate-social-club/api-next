@@ -1,8 +1,10 @@
 import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import type { Effect as EffectType, Layer } from "effect";
 import { Effect } from "effect";
+import { mediaRecoveryRequiredSql } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import type { AlertSink } from "../../../packages/platform-cf/src/alerts.ts";
 import { alertTick } from "../../../packages/platform-cf/src/alerts.ts";
+import { isWorkflowInstanceMissingError } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import {
   type CloudflareDataRegistrationWorkflowBinding,
   makeCloudflareDataRegistrationWorkflowLauncher,
@@ -12,7 +14,10 @@ import {
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 import type { SongPipelineEnablement } from "./song-pipeline-outbox-alerts.ts";
-import { SONG_WORKFLOW_MAX_REVISION } from "./song-workflow-recovery-policy.ts";
+import {
+  DATA_WORKFLOW_MAX_REVISION,
+  SONG_WORKFLOW_MAX_REPLACEMENTS,
+} from "./song-workflow-recovery-policy.ts";
 
 type Subsystem = "media" | "data";
 
@@ -64,6 +69,14 @@ const DATA_RECONCILIATION_ALERT_SQL = `SELECT operation.registration_operation_i
  ORDER BY operation.updated_at,operation.registration_operation_id
  LIMIT 50`;
 
+const MEDIA_TERMINAL_UNCONVERGED_ALERT_SQL = `SELECT submission.operation_id,
+       submission.workflow_revision::text AS workflow_revision
+  FROM media_post_submissions submission
+ WHERE submission.status='processing_failed'
+   AND submission.failure_code='workflow_terminal_unconverged'
+ ORDER BY submission.updated_at,submission.operation_id
+ LIMIT 50`;
+
 const MEDIA_PROVIDER_FAILURE_ALERT_SQL = `SELECT submission.operation_id,
        submission.workflow_revision::text AS workflow_revision,
        attempt.attempt_id,
@@ -102,9 +115,9 @@ const MEDIA_WORKFLOW_CEILING_ALERT_SQL = `SELECT submission.operation_id,
     ON launch.submission_id=submission.submission_id
    AND launch.operation_id=submission.operation_id
    AND launch.workflow_revision=submission.workflow_revision
-   AND launch.event_type IN ('analysis_launch','workflow_replacement')
- WHERE submission.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
-   AND submission.status IN ('processing','action_required','manual_review')
+   AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
+ WHERE submission.workflow_replacement_sequence>=${SONG_WORKFLOW_MAX_REPLACEMENTS}
+   AND ${mediaRecoveryRequiredSql("submission")}
    AND launch.state IN ('delivered','exhausted')
  ORDER BY submission.updated_at,submission.operation_id
  LIMIT 25`;
@@ -117,7 +130,7 @@ const DATA_WORKFLOW_CEILING_ALERT_SQL = `SELECT operation.registration_operation
     ON launch.registration_operation_id=operation.registration_operation_id
    AND launch.workflow_revision=operation.workflow_revision
    AND launch.workflow_instance_id=operation.workflow_instance_id
- WHERE operation.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+ WHERE operation.workflow_revision>=${DATA_WORKFLOW_MAX_REVISION}
    AND operation.state NOT IN ('registered','failed','reconciliation_required')
    AND launch.state IN ('delivered','exhausted')
  ORDER BY operation.updated_at,operation.registration_operation_id
@@ -134,7 +147,7 @@ const dlqSql = (subsystem: Subsystem): string =>
           AND submission.workflow_revision=outbox.workflow_revision
         WHERE outbox.outbox_event_id=$1
           AND outbox.state<>'delivered'
-          AND submission.status IN ('processing','action_required','manual_review')
+          AND ${mediaRecoveryRequiredSql("submission")}
         LIMIT 1`
     : `SELECT operation.registration_operation_id AS operation_id,outbox.outbox_id,
               operation.workflow_revision::text AS workflow_revision,outbox.failure_code
@@ -158,6 +171,19 @@ const dataReconciliationAlert = (row: ReconciliationRow) => ({
   operation_id: row.operation_id,
   workflow_revision: Number(row.workflow_revision),
   failure_class: "reconciliation_required",
+  outcome: "terminal" as const,
+});
+
+const mediaTerminalUnconvergedAlert = (row: ReconciliationRow) => ({
+  key: "song-pipeline:media-workflow-terminal-unconverged",
+  severity: "high" as const,
+  body: "A media Workflow ended without durable completion and is recorded as workflow_terminal_unconverged; the submission is terminal and non-retryable. Resolution requires an operator-reviewed reprocess decision, not an automatic retry.",
+  entity: `media:${row.operation_id}:r${row.workflow_revision}`,
+  subsystem: "media" as const,
+  operation: "media-analysis" as const,
+  operation_id: row.operation_id,
+  workflow_revision: Number(row.workflow_revision),
+  failure_class: "workflow_terminal_unconverged",
   outcome: "terminal" as const,
 });
 
@@ -229,11 +255,17 @@ async function workflowIsMissing(
   try {
     if (subsystem === "media") {
       if (bindings.media === undefined) return null;
-      const workflow = makeCloudflareMediaProcessingWorkflowLauncher(bindings.media, () => false);
+      const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
+        bindings.media,
+        isWorkflowInstanceMissingError,
+      );
       return (await workflow.get(row.workflow_instance_id)) === "missing";
     }
     if (bindings.data === undefined) return null;
-    const workflow = makeCloudflareDataRegistrationWorkflowLauncher(bindings.data, () => false);
+    const workflow = makeCloudflareDataRegistrationWorkflowLauncher(
+      bindings.data,
+      isWorkflowInstanceMissingError,
+    );
     return (await workflow.get(row.workflow_instance_id)) === "missing";
   } catch {
     report(`song-pipeline ${subsystem} Workflow observation unavailable`);
@@ -307,6 +339,23 @@ export function collectSongPipelineTerminalAlerts(
             continue;
           }
           yield* collector.emit(mediaProviderFailureAlert(row));
+          emitted += 1;
+        }
+
+        const unconverged = yield* safeRows(
+          db
+            .execute<ReconciliationRow>({
+              label: "song-pipeline.terminal.media-terminal-unconverged",
+              text: MEDIA_TERMINAL_UNCONVERGED_ALERT_SQL,
+              values: [],
+              readonly: true,
+            })
+            .pipe(Effect.map((result) => result.rows)),
+          "song-pipeline media terminal-unconverged alert query unavailable",
+        );
+        for (const row of unconverged) {
+          if (!validIdentity(row.operation_id) || !validRevision(row.workflow_revision)) continue;
+          yield* collector.emit(mediaTerminalUnconvergedAlert(row));
           emitted += 1;
         }
       }

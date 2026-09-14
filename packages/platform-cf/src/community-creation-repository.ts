@@ -1,7 +1,6 @@
 import {
   type CommitCommunityCreationIntentResult,
   type CommunityCreationIntentDocument,
-  CommunityCreationRepositoryError,
   type CommunityCreationRepositoryFailure,
   type CommunityCreationStore,
   type CommunityCreationStoreService,
@@ -10,8 +9,6 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
   type CreateCommunityCreationIntentResult,
-  publicCommunityCreationRequirements,
-  publicOptionalRouteCommunityCreationRequirements,
 } from "@pirate/application";
 import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import {
@@ -25,20 +22,20 @@ import {
   UpdateCommunityCreationIntent,
 } from "@pirate/contracts";
 import {
-  COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
+  COMMUNITY_GATE_COMPILER_VERSION,
   type CommunityCreationIntentState,
   type CommunityCreationProviderBinding,
-  type CreationRequirementProgress,
   CURATED_HUMAN_MEMBERSHIP_POLICY,
-  canonicalRouteView,
-  communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,
   compileCommunityGatePolicy,
+  compileCommunityGatePolicyV2,
   creationNextAction,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+  type NationalityEvaluation,
+  type NationalityPolicy,
+  nationalityProviderBindingHash,
   type SupportedCommunityGateCompilation,
   transitionCommunityCreationIntent,
-  transitionCreationRequirement,
   VERY_WEB_CONFIGURATION_REFERENCE,
   VERY_WEB_CONFIGURATION_VERSION,
   VERY_WEB_ISSUER,
@@ -48,46 +45,46 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
+import {
+  asNonNegativeInteger,
+  asPositiveInteger,
+  asString,
+  asTimestamp,
+  type CommitEvidence,
+  documentFromRow,
+  exactCanonicalJson,
+  failure,
+  HUMAN_MEMBERSHIP_CLAIM_IDS,
+  HUMAN_MEMBERSHIP_REQUIREMENTS,
+  insertRevision,
+  jsonValue,
+  loadCommitEvidence,
+  loadLockedIntent,
+  oneRow,
+  type Row,
+  reserveNextCreationRequirement,
+  SHA256_HEX,
+  TERMINAL_STATUSES,
+  validId,
+  verificationStorageFailure,
+} from "./community-creation-internals.ts";
 import { reserveCommunityOwner } from "./community-owner-reservation.ts";
-
-type Row = Readonly<Record<string, unknown>>;
+import {
+  GatesV2CommunityDataInvalid,
+  loadCuratedNationalityEvaluation,
+  loadCuratedNationalityPolicy,
+  persistNationalityEnforceDecision,
+} from "./gates-v2-community.ts";
+import {
+  NationalityCeremonyDataInvalid,
+  resolveOrIssueNationalityCeremony,
+} from "./nationality-ceremony-store.ts";
 
 export const COMMUNITY_CREATION_INTENT_TTL_SECONDS = 24 * 60 * 60;
-const SHA256_HEX = /^[0-9a-f]{64}$/u;
+
 const UNRESOLVED_PROVIDER_ID = "unresolved";
+
 const UNRESOLVED_PROVIDER_CONFIGURATION = "unresolved";
-const VERY_WEB_EVIDENCE_KIND = "very.web.server-verified.v1";
-const TERMINAL_STATUSES = new Set([
-  "committed",
-  "quota_exceeded",
-  "gate_unsupported",
-  "expired",
-  "cancelled",
-]);
-
-const HUMAN_MEMBERSHIP_REQUIREMENTS = [
-  { claim_id: "credential.subject_unique" },
-  { claim_id: "human.personhood" },
-] as const;
-const HUMAN_MEMBERSHIP_CLAIM_IDS = ["credential.subject_unique", "human.personhood"] as const;
-
-export type CommunityCreationVerificationAdvanceOutcome =
-  | Readonly<{ readonly kind: "advanced"; readonly intent_id: string; readonly revision: number }>
-  | Readonly<{
-      readonly kind: "already_ready";
-      readonly intent_id: string;
-      readonly revision: number;
-    }>
-  | Readonly<{ readonly kind: "not_applicable" }>
-  | Readonly<{
-      readonly kind: "stale";
-      readonly reason:
-        | "intent_expired"
-        | "intent_terminal"
-        | "intent_not_verification_required"
-        | "session_binding_drift"
-        | "evidence_invalid";
-    }>;
 
 /** Spec 012 creator-requirement removal amendment: the account-scoped creation cap. */
 export const OPTIONAL_ROUTE_ACCOUNT_COMMUNITY_CAP = 100;
@@ -103,6 +100,12 @@ export type CommunityCreationRepositoryOptions = Readonly<{
   readonly next_route_authority_grant_id?: () => string;
   readonly next_subject_claim_id?: () => string;
   readonly next_ceremony_intent_id?: () => string;
+  /**
+   * Server-resolved nationality authoring (revision, explicit lifetime, both
+   * provider bindings). Absent means a nationality draft fails closed; no
+   * lifetime default may be invented here.
+   */
+  readonly nationality_authoring?: unknown;
 }>;
 
 type IntentBinding = Readonly<{
@@ -112,69 +115,141 @@ type IntentBinding = Readonly<{
   readonly configurationVersion: string;
 }>;
 
+type CompiledNationalityDraft = Readonly<{
+  readonly policy: NationalityPolicy;
+  readonly requirementHash: string;
+  readonly providerBindings: NationalityPolicy["provider_bindings"];
+  readonly compiledPlan: string;
+}>;
+
 type CompiledHumanDraft = Readonly<{
   readonly status: "verification_required" | "gate_unsupported";
   readonly canonicalPolicyHash: string;
   readonly verificationRequirementHash: string;
   readonly binding: IntentBinding;
   readonly humanProviderBindingHash: string;
+  readonly nationality?: CompiledNationalityDraft;
 }>;
 
-function failure(
-  operation: "create" | "get" | "update" | "commit",
-  reason: "not-found" | "idempotency-conflict" | "revision-conflict" | "constraint" | "invalid-row",
-): CommunityCreationRepositoryError {
-  return new CommunityCreationRepositoryError({ operation, reason });
+/**
+ * The canonical v1 Palm compilation constants, used as the human half of a
+ * composed community's policy rows. Byte-identical to the v1 compiler output
+ * except for the unused canonical hash of the composed draft.
+ */
+function supportedHumanCompilation(): SupportedCommunityGateCompilation {
+  const providerBinding = {
+    provider_id: VERY_WEB_PROVIDER_ID,
+    provider_configuration: {
+      kind: "dynamic" as const,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
+    },
+    method: VERY_WEB_METHOD,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
+    scope: {
+      kind: "named" as const,
+      scope_semantics: "issuer_rp_scope" as const,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
+    },
+  };
+  return {
+    kind: "supported",
+    canonical_policy: CURATED_HUMAN_MEMBERSHIP_POLICY,
+    canonical_policy_hash: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_hash,
+    verification_requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+    provider_binding: providerBinding,
+    compiled_plan: {
+      compiler_version: COMMUNITY_GATE_COMPILER_VERSION,
+      evaluator: "curated-human-membership-v1",
+      provider_binding: providerBinding,
+    },
+  };
 }
 
-function validId(value: string): boolean {
-  return value.length > 0 && value.trim() === value && !value.includes("\u0000");
+function policyCarriesNationalityRequirement(policy: unknown): boolean {
+  if (policy === null || typeof policy !== "object" || Array.isArray(policy)) return false;
+  const record = policy as Record<string, unknown>;
+  if (!Array.isArray(record.accessPaths)) return false;
+  return record.accessPaths.some(
+    (path) =>
+      path !== null &&
+      typeof path === "object" &&
+      !Array.isArray(path) &&
+      Array.isArray((path as Record<string, unknown>).requirements) &&
+      ((path as Record<string, unknown>).requirements as unknown[]).some(
+        (requirement) =>
+          requirement !== null &&
+          typeof requirement === "object" &&
+          !Array.isArray(requirement) &&
+          (requirement as Record<string, unknown>).requirement === "nationality-allowed",
+      ),
+  );
 }
 
-function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function asPositiveInteger(value: unknown): number | null {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && /^[0-9]+$/u.test(value)
-        ? Number(value)
-        : Number.NaN;
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function asNonNegativeInteger(value: unknown): number | null {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && /^[0-9]+$/u.test(value)
-        ? Number(value)
-        : Number.NaN;
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-}
-
-function asTimestamp(value: unknown): string | null {
-  const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
-  return date !== null && Number.isFinite(date.getTime()) ? date.toISOString() : null;
-}
-
-function jsonValue(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
+/**
+ * Compiles the wizard draft policy. A draft carrying a nationality
+ * requirement selects the composed v2 compiler, which needs the explicit
+ * server-resolved authoring input; without a valid lifetime or both provider
+ * bindings the draft fails closed as gate-unsupported. Human-only drafts
+ * keep the frozen v1 path byte-identical.
+ */
+export function compileOptionalRouteDraft(
+  policy: unknown,
+  nationalityAuthoring?: unknown,
+): CompiledHumanDraft | null {
+  if (policyCarriesNationalityRequirement(policy)) {
+    const composed = compileCommunityGatePolicyV2(policy, nationalityAuthoring);
+    if (composed.kind === "unsupported") {
+      return {
+        status: "gate_unsupported",
+        canonicalPolicyHash: composed.canonical_policy_hash,
+        verificationRequirementHash: composed.verification_requirement_hash,
+        binding: {
+          providerId: UNRESOLVED_PROVIDER_ID,
+          configurationKind: "dynamic",
+          configurationReference: UNRESOLVED_PROVIDER_CONFIGURATION,
+          configurationVersion: "1",
+        },
+        humanProviderBindingHash: "",
+      };
+    }
+    const humanBinding: CommunityCreationProviderBinding = {
+      requirement: "human_identity",
+      family: null,
+      provider_id: VERY_WEB_PROVIDER_ID,
+      provider_configuration: {
+        kind: "dynamic",
+        reference: VERY_WEB_CONFIGURATION_REFERENCE,
+        version: VERY_WEB_CONFIGURATION_VERSION,
+      },
+      protocol_version: VERY_WEB_PROTOCOL_VERSION,
+    };
+    let humanProviderBindingHash: string;
+    try {
+      humanProviderBindingHash = communityCreationProviderBindingHash(humanBinding);
+    } catch {
+      return null;
+    }
+    return {
+      status: "verification_required",
+      canonicalPolicyHash: composed.canonical_policy_hash,
+      verificationRequirementHash: composed.human_verification_requirement_hash,
+      binding: {
+        providerId: humanBinding.provider_id,
+        configurationKind: humanBinding.provider_configuration.kind,
+        configurationReference: humanBinding.provider_configuration.reference,
+        configurationVersion: humanBinding.provider_configuration.version,
+      },
+      humanProviderBindingHash,
+      nationality: {
+        policy: composed.canonical_policy.nationality,
+        requirementHash: composed.compiled_plan.nationality_requirement_hash,
+        providerBindings: composed.compiled_plan.nationality_provider_bindings,
+        compiledPlan: JSON.stringify(composed.compiled_plan),
+      },
+    };
   }
-}
-
-function oneRow(rows: readonly Row[]): Row | null | undefined {
-  if (rows.length > 1) return undefined;
-  return rows[0] ?? null;
-}
-
-function compileOptionalRouteDraft(policy: unknown): CompiledHumanDraft | null {
   const compilation = compileCommunityGatePolicy(policy);
   const humanBinding: CommunityCreationProviderBinding = {
     requirement: "human_identity",
@@ -215,270 +290,6 @@ function requirementFreeStatus(compiled: CompiledHumanDraft): "commit_ready" | "
   return compiled.status === "gate_unsupported" ? "gate_unsupported" : "commit_ready";
 }
 
-function requirementFromValue(
-  value: unknown,
-  requirement: "human_identity" | "namespace_ownership",
-): CreationRequirementProgress | null {
-  const record = jsonValue(value);
-  if (record === null || typeof record !== "object" || Array.isArray(record)) return null;
-  const row = record as Row;
-  const generation = asNonNegativeInteger(row.generation);
-  const satisfiedAt = row.satisfied_at === null ? null : asTimestamp(row.satisfied_at);
-  const progress: CreationRequirementProgress = {
-    requirement,
-    status: asString(row.status) as CreationRequirementProgress["status"],
-    requirement_hash: asString(row.requirement_hash) ?? "",
-    provider_id: asString(row.provider_id) ?? "",
-    provider_binding_hash: asString(row.provider_binding_hash) ?? "",
-    generation: generation ?? -1,
-    ceremony_intent_id:
-      row.current_ceremony_intent_id === null
-        ? null
-        : (asString(row.current_ceremony_intent_id) ?? ""),
-    satisfied_at: satisfiedAt,
-  };
-  try {
-    return publicCommunityCreationRequirements({
-      human_identity:
-        requirement === "human_identity"
-          ? progress
-          : {
-              ...progress,
-              requirement: "human_identity",
-            },
-      namespace_ownership:
-        requirement === "namespace_ownership"
-          ? progress
-          : {
-              ...progress,
-              requirement: "namespace_ownership",
-            },
-    })
-      ? progress
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function nextActionFromRequirements(
-  row: Row,
-  input: Readonly<{
-    readonly intentId: string;
-    readonly status: string;
-    readonly contractVersion: "route_v1" | "optional_route_v2";
-    readonly human: CreationRequirementProgress | null;
-    readonly namespace: CreationRequirementProgress | null;
-  }>,
-) {
-  if (input.status === "draft") {
-    return { kind: "wait", requirement: null, reason_code: "operation_pending" } as const;
-  }
-  if (input.status === "verification_required") {
-    // A requirement-free intent never waits on a creator ceremony.
-    if (input.human === null) return null;
-    const requirements: readonly (readonly [
-      "human_identity" | "namespace_ownership",
-      CreationRequirementProgress,
-      boolean,
-    ])[] =
-      input.contractVersion === "optional_route_v2"
-        ? [["human_identity", input.human, row.human_started === true]]
-        : [
-            ["human_identity", input.human, row.human_started === true],
-            [
-              "namespace_ownership",
-              input.namespace as CreationRequirementProgress,
-              row.namespace_started === true,
-            ],
-          ];
-    for (const [requirement, progress, started] of requirements) {
-      if (progress.status !== "pending") continue;
-      return started
-        ? ({
-            kind: "wait",
-            requirement,
-            reason_code: "verification_pending",
-          } as const)
-        : ({
-            kind: "start_verification",
-            requirement,
-            provider_id: progress.provider_id,
-            creation_intent_id: input.intentId,
-            ceremony_intent_id: progress.ceremony_intent_id ?? "",
-            generation: progress.generation,
-          } as const);
-    }
-    return { kind: "wait", requirement: null, reason_code: "reconciliation_pending" } as const;
-  }
-  if (input.status === "commit_ready") {
-    if (
-      input.contractVersion === "optional_route_v2" &&
-      typeof row.minted_persona_id === "string" &&
-      row.creator_persona_status !== "active"
-    ) {
-      return { kind: "activate_profile", persona_id: row.minted_persona_id } as const;
-    }
-    return { kind: "commit" } as const;
-  }
-  if (input.status === "quota_exceeded" || input.status === "gate_unsupported") {
-    return { kind: "blocked", reason: input.status } as const;
-  }
-  if (input.status === "committed" || input.status === "expired" || input.status === "cancelled") {
-    return { kind: "none", reason: input.status } as const;
-  }
-  return null;
-}
-
-function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
-  const intentId = asString(row.intent_id);
-  const revision = asPositiveInteger(row.revision);
-  const status = asString(row.status);
-  const canonicalPolicyRevision = asPositiveInteger(row.canonical_policy_revision);
-  const canonicalPolicyHash = asString(row.canonical_policy_hash);
-  const requirementHash = asString(row.verification_requirement_hash);
-  const providerId = asString(row.verification_provider_id);
-  const expiresAt = asTimestamp(row.expires_at);
-  const contractVersion = asString(row.creation_contract_version);
-  const publicPersona = Schema.decodeUnknownOption(PublicPersonaV1)(
-    jsonValue(row.persona_projection),
-  );
-  // A create_new draft has no persona until the terminal creation commit
-  // mints one; its presentation stays null until then (spec 014 11.2).
-  const draftPersonaKind = jsonValue(row.draft);
-  const createNewOwner =
-    draftPersonaKind !== null &&
-    typeof draftPersonaKind === "object" &&
-    "persona" in draftPersonaKind &&
-    draftPersonaKind.persona !== null &&
-    typeof draftPersonaKind.persona === "object" &&
-    "kind" in draftPersonaKind.persona &&
-    draftPersonaKind.persona.kind === "create_new";
-  const human = requirementFromValue(row.human_requirement, "human_identity");
-  const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
-  // Post-amendment optional-route intents carry no creator authority and no
-  // requirement row; grandfathered and route-v1 intents carry both.
-  const requirementFree =
-    contractVersion === "optional_route_v2" &&
-    requirementHash === null &&
-    providerId === null &&
-    row.human_requirement === null;
-  if (
-    intentId === null ||
-    revision === null ||
-    status === null ||
-    canonicalPolicyRevision === null ||
-    canonicalPolicyHash === null ||
-    (!requirementFree && (requirementHash === null || providerId === null || human === null)) ||
-    expiresAt === null ||
-    (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
-    (contractVersion === "route_v1" && namespace === null) ||
-    (contractVersion === "optional_route_v2" && row.namespace_requirement !== null) ||
-    (contractVersion === "optional_route_v2" && Option.isNone(publicPersona) && !createNewOwner)
-  ) {
-    return null;
-  }
-  const personaRolePresentation =
-    contractVersion === "optional_route_v2" &&
-    Option.isSome(publicPersona) &&
-    (row.minted_persona_id === null || row.creator_persona_status === "active")
-      ? ({ role: "owner" as const, persona: publicPersona.value } as const)
-      : null;
-  const nextAction = nextActionFromRequirements(row, {
-    intentId,
-    status,
-    contractVersion,
-    human,
-    namespace,
-  });
-  if (nextAction === null) return null;
-  let committedResource: CommunityCreationIntentDocument["committed_resource"] = null;
-  let committedStateResource: CommunityCreationIntentState["committed_resource"] = null;
-  if (row.committed_community_id !== null || row.committed_resource_href !== null) {
-    const communityId = asString(row.committed_community_id);
-    const resourceHref = asString(row.committed_resource_href);
-    if (communityId === null || resourceHref === null) return null;
-    committedStateResource = { community_id: communityId, href: resourceHref };
-    if (contractVersion === "optional_route_v2") {
-      if (personaRolePresentation === null) return null;
-      committedResource = {
-        authority_version: "optional_route_v2",
-        community_id: communityId,
-        href: resourceHref,
-        canonical_route: null,
-        persona_role_presentation: personaRolePresentation,
-      };
-    } else {
-      const family = asString(row.committed_route_family);
-      const rootLabel = asString(row.committed_route_root_label);
-      const rootLabelDisplay = asString(row.committed_route_root_label_display);
-      const pathSegment = asString(row.committed_route_path_segment);
-      const href = asString(row.committed_route_href);
-      if (
-        (family !== "hns" && family !== "spaces") ||
-        rootLabel === null ||
-        rootLabelDisplay === null ||
-        pathSegment === null ||
-        href === null
-      ) {
-        return null;
-      }
-      committedResource = {
-        community_id: communityId,
-        href: resourceHref,
-        canonical_route: canonicalRouteView(
-          {
-            family,
-            root_label: rootLabel,
-            root_label_display: rootLabelDisplay,
-            path_segment: pathSegment,
-            href,
-          },
-          row.committed_app_host_healthy === true,
-        ),
-      };
-    }
-  }
-  const state: CommunityCreationIntentState = {
-    intent_id: intentId,
-    revision,
-    status: status as CommunityCreationIntentState["status"],
-    canonical_policy_revision: canonicalPolicyRevision,
-    canonical_policy_hash: canonicalPolicyHash,
-    verification_requirement_hash: requirementHash,
-    verification_provider_id: providerId,
-    expires_at: expiresAt,
-    committed_resource: committedStateResource,
-  };
-  if (contractVersion === "route_v1" && (human === null || namespace === null)) return null;
-  const publicIntent = {
-    ...(contractVersion === "optional_route_v2"
-      ? { creation_contract_version: "optional_route_v2" as const }
-      : {}),
-    intent_id: state.intent_id,
-    revision: state.revision,
-    status: state.status,
-    draft: jsonValue(row.draft),
-    canonical_policy_revision: state.canonical_policy_revision,
-    canonical_policy_hash: state.canonical_policy_hash,
-    requirements:
-      contractVersion === "optional_route_v2"
-        ? publicOptionalRouteCommunityCreationRequirements(human)
-        : publicCommunityCreationRequirements({
-            human_identity: human as CreationRequirementProgress,
-            namespace_ownership: namespace as CreationRequirementProgress,
-          }),
-    next_action: nextAction,
-    expires_at: state.expires_at,
-    ...(contractVersion === "optional_route_v2"
-      ? { persona_role_presentation: personaRolePresentation }
-      : {}),
-    committed_resource: committedResource,
-  };
-  const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)(publicIntent);
-  return Option.isSome(decoded) ? decoded.value : null;
-}
-
 /** The stored creator authority and the projected requirement map must agree. */
 function creatorAuthorityMatches(
   document: CommunityCreationIntentDocument,
@@ -493,6 +304,8 @@ function stateFromDocument(
   document: CommunityCreationIntentDocument,
   providerId: string | null,
 ): CommunityCreationIntentState {
+  const nationalityRequirement =
+    "creation_contract_version" in document ? document.requirements.nationality : undefined;
   return {
     intent_id: document.intent_id,
     revision: document.revision,
@@ -506,79 +319,28 @@ function stateFromDocument(
         : document.requirements.human_identity.provider_id || providerId,
     expires_at: document.expires_at,
     committed_resource: document.committed_resource,
+    ...(nationalityRequirement === undefined
+      ? {}
+      : {
+          nationality: {
+            status:
+              nationalityRequirement.status === "satisfied"
+                ? ("satisfied" as const)
+                : ("pending" as const),
+            requirement_hash: nationalityRequirement.requirement_hash,
+            provider_id: nationalityRequirement.provider_id,
+            generation: nationalityRequirement.generation,
+            ceremony_intent_id: nationalityRequirement.ceremony_intent_id ?? "",
+            satisfied_at: nationalityRequirement.satisfied_at,
+            started: false,
+          },
+        }),
   };
 }
 
 function decodeSnapshot(value: unknown): CommunityCreationIntentDocument | null {
   const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)(jsonValue(value));
   return Option.isSome(decoded) ? decoded.value : null;
-}
-
-function rowColumns(prefix = ""): string {
-  const column = (name: string) => `${prefix}${name}`;
-  return `${column("intent_id")}, ${column("actor_id")}, ${column("create_idempotency_key")}, ${column("create_request_hash")},
-          ${column("revision")}, ${column("status")}, ${column("draft")}, ${column("canonical_policy_revision")},
-          ${column("canonical_policy_hash")}, ${column("verification_requirement_hash")},
-          ${column("verification_provider_id")}, ${column("provider_configuration_kind")},
-          ${column("provider_configuration_ref")}, ${column("provider_configuration_version")},
-          ${column("expires_at")}, ${column("committed_community_id")}, ${column("committed_resource_href")},
-          ${column("minted_persona_id")},
-          ${column("creation_contract_version")}`;
-}
-
-function routeV1ProjectionColumns(intentAlias: string): string {
-  const requirement = (kind: "human_identity" | "namespace_ownership") => `(
-    SELECT jsonb_build_object(
-      'status', state.status,
-      'requirement_hash', state.requirement_hash,
-      'provider_id', state.provider_id,
-      'provider_binding_hash', state.provider_binding_hash,
-      'generation', state.generation,
-      'current_ceremony_intent_id', state.current_ceremony_intent_id,
-      'satisfied_at', state.satisfied_at
-    )
-      FROM community_creation_requirement_states AS state
-     WHERE state.intent_id = ${intentAlias}.intent_id
-       AND state.requirement_kind = '${kind}'
-  )`;
-  return `${requirement("human_identity")} AS human_requirement,
-          ${requirement("namespace_ownership")} AS namespace_requirement,
-          (
-            SELECT public_persona_projection(persona.persona_id)
-              FROM personas AS persona
-             WHERE persona.account_id = ${intentAlias}.actor_id
-               AND persona.persona_id = COALESCE(
-                 ${intentAlias}.draft -> 'persona' ->> 'persona_id',
-                 ${intentAlias}.minted_persona_id
-               )
-          ) AS persona_projection,
-          (SELECT persona.status FROM personas AS persona
-            WHERE persona.account_id = ${intentAlias}.actor_id
-              AND persona.persona_id = ${intentAlias}.minted_persona_id) AS creator_persona_status,
-          EXISTS (
-            SELECT 1 FROM proof_sessions AS proof
-             WHERE proof.creation_ceremony_intent_id = (
-               SELECT state.current_ceremony_intent_id
-                 FROM community_creation_requirement_states AS state
-                WHERE state.intent_id = ${intentAlias}.intent_id
-                  AND state.requirement_kind = 'human_identity'
-             )
-          ) AS human_started,
-          EXISTS (
-            SELECT 1 FROM namespace_ownership_sessions AS namespace_session
-             WHERE namespace_session.ceremony_intent_id = (
-               SELECT state.current_ceremony_intent_id
-                 FROM community_creation_requirement_states AS state
-                WHERE state.intent_id = ${intentAlias}.intent_id
-                  AND state.requirement_kind = 'namespace_ownership'
-             )
-          ) AS namespace_started,
-          binding.family AS committed_route_family,
-          binding.root_label AS committed_route_root_label,
-          binding.root_label_display AS committed_route_root_label_display,
-          binding.path_segment AS committed_route_path_segment,
-          binding.href AS committed_route_href,
-          host.health_status = 'healthy' AS committed_app_host_healthy`;
 }
 
 function lockActor(
@@ -622,39 +384,6 @@ function lockActiveOwnedPersona(
     if (row === null || row.persona_id !== personaId) {
       return yield* Effect.fail(failure(operation, "constraint"));
     }
-  });
-}
-
-function loadLockedIntent(
-  transaction: ControlPlaneTransaction,
-  actorId: string,
-  intentId: string,
-  operation: "create" | "get" | "update" | "commit",
-  databaseNow?: string,
-) {
-  return Effect.gen(function* () {
-    const result = yield* transaction.execute<Row>({
-      label: `community.creation.${operation}.lock-intent`,
-      text: `SELECT ${rowColumns("intent.")},
-                    ${routeV1ProjectionColumns("intent")},
-                    intent.expires_at <= COALESCE($3::timestamptz, clock_timestamp()) AS expired
-               FROM community_creation_intents AS intent
-               LEFT JOIN communities AS committed_community
-                 ON committed_community.community_id = intent.committed_community_id
-               LEFT JOIN community_canonical_route_bindings AS binding
-                 ON binding.route_binding_id = committed_community.canonical_route_binding_id
-                AND binding.community_id = committed_community.community_id
-               LEFT JOIN community_route_app_host_health AS host
-                 ON host.route_binding_id = binding.route_binding_id
-              WHERE intent.intent_id = $1 AND intent.actor_id = $2
-                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
-              FOR UPDATE OF intent`,
-      values: [intentId, actorId, databaseNow ?? null],
-      readonly: false,
-    });
-    const row = oneRow(result.rows);
-    if (row === undefined) return yield* Effect.fail(failure(operation, "invalid-row"));
-    return row;
   });
 }
 
@@ -702,204 +431,6 @@ function replayByKey(
   });
 }
 
-function insertRevision(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly intent: CommunityCreationIntentDocument;
-    readonly actorId: string;
-    readonly operation: "create" | "update" | "verification" | "commit" | "expire";
-    readonly idempotencyKey?: string;
-    readonly requestHash: string;
-  }>,
-) {
-  return transaction.execute({
-    label: `community.creation.${input.operation}.insert-revision`,
-    text: `INSERT INTO community_creation_intent_revisions (
-             intent_id, revision, actor_id, operation_kind, idempotency_key,
-             request_hash, status, state_snapshot
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-    values: [
-      input.intent.intent_id,
-      input.intent.revision,
-      input.actorId,
-      input.operation,
-      input.idempotencyKey ?? null,
-      input.requestHash,
-      input.intent.status,
-      JSON.stringify(input.intent),
-    ],
-    readonly: false,
-  });
-}
-
-function reserveNextCreationRequirement(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actorId: string;
-    readonly intentId: string;
-    readonly ceremonyIntentId: string;
-    readonly operation: "get" | "update";
-  }>,
-): Effect.Effect<"reserved" | "pending" | "complete", CommunityCreationRepositoryFailure> {
-  return Effect.gen(function* () {
-    const result = yield* transaction.execute<Row>({
-      label: `community.creation.${input.operation}.lock-requirements`,
-      text: `SELECT state.requirement_kind, state.status, state.requirement_hash, state.provider_id,
-                    state.provider_binding_hash, state.provider_configuration_kind,
-                    state.provider_configuration_ref, state.provider_configuration_version,
-                    state.route_family, state.route_root_label, state.route_root_label_display,
-                    state.route_path_segment, state.generation, state.current_ceremony_intent_id,
-                    intent.creation_contract_version
-               FROM community_creation_requirement_states AS state
-               JOIN community_creation_intents AS intent
-                 ON intent.intent_id = state.intent_id AND intent.actor_id = state.actor_id
-              WHERE state.intent_id = $1 AND state.actor_id = $2
-              ORDER BY CASE requirement_kind
-                WHEN 'human_identity' THEN 1
-                WHEN 'namespace_ownership' THEN 2
-              END
-              FOR UPDATE`,
-      values: [input.intentId, input.actorId],
-      readonly: false,
-    });
-    const contractVersion = asString(result.rows[0]?.creation_contract_version);
-    const expectedRequirementCount = contractVersion === "optional_route_v2" ? 1 : 2;
-    if (
-      (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
-      result.rows.length !== expectedRequirementCount ||
-      result.rows.some((row) => row.creation_contract_version !== contractVersion)
-    ) {
-      return yield* Effect.fail(failure(input.operation, "invalid-row"));
-    }
-    if (result.rows.some((row) => row.status === "pending")) return "pending";
-    const selected = result.rows.find((row) => row.status !== "satisfied");
-    if (selected === undefined) return "complete";
-
-    const requirement = asString(selected.requirement_kind);
-    const generation = asNonNegativeInteger(selected.generation);
-    const requirementHash = asString(selected.requirement_hash);
-    const providerId = asString(selected.provider_id);
-    const providerBindingHash = asString(selected.provider_binding_hash);
-    const configurationKind = asString(selected.provider_configuration_kind);
-    const configurationReference = asString(selected.provider_configuration_ref);
-    const configurationVersion = asString(selected.provider_configuration_version);
-    if (
-      (requirement !== "human_identity" && requirement !== "namespace_ownership") ||
-      generation === null ||
-      requirementHash === null ||
-      providerId === null ||
-      providerBindingHash === null ||
-      (configurationKind !== "managed" && configurationKind !== "dynamic") ||
-      configurationReference === null ||
-      configurationVersion === null ||
-      !validId(input.ceremonyIntentId)
-    ) {
-      return yield* Effect.fail(failure(input.operation, "invalid-row"));
-    }
-    const route =
-      requirement === "namespace_ownership"
-        ? {
-            family: asString(selected.route_family) as "hns" | "spaces",
-            root_label: asString(selected.route_root_label) ?? "",
-            root_label_display: asString(selected.route_root_label_display) ?? "",
-            path_segment: asString(selected.route_path_segment) ?? "",
-          }
-        : null;
-    if (
-      route !== null &&
-      (route.family !== "hns" ||
-        route.root_label.length === 0 ||
-        route.root_label_display.length === 0 ||
-        route.path_segment.length === 0)
-    ) {
-      return yield* Effect.fail(failure(input.operation, "constraint"));
-    }
-    const nextGeneration = generation + 1;
-    const reservation = {
-      actor_id: input.actorId,
-      creation_intent_id: input.intentId,
-      ceremony_intent_id: input.ceremonyIntentId,
-      requirement,
-      generation: nextGeneration,
-      requirement_hash: requirementHash,
-      provider_id: providerId,
-      provider_binding_hash: providerBindingHash,
-      route,
-    } as const;
-    let reservationHash: string;
-    try {
-      reservationHash = communityCreationCeremonyReservationHash(reservation);
-    } catch {
-      return yield* Effect.fail(failure(input.operation, "constraint"));
-    }
-    yield* transaction.execute({
-      label: `community.creation.${input.operation}.reserve-ceremony`,
-      text: `INSERT INTO community_creation_ceremony_attempts (
-               ceremony_intent_id, actor_id, intent_id, requirement_kind,
-               generation, requirement_hash, provider_id, provider_binding_hash,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version, route_family, route_root_label,
-               route_root_label_display, route_path_segment,
-               reservation_request_hash, reservation_request, expires_at
-             )
-             SELECT $1, state.actor_id, state.intent_id, state.requirement_kind,
-                    $2, state.requirement_hash, state.provider_id,
-                    state.provider_binding_hash, state.provider_configuration_kind,
-                    state.provider_configuration_ref, state.provider_configuration_version,
-                    state.route_family, state.route_root_label,
-                    state.route_root_label_display, state.route_path_segment,
-                    $3, $4::jsonb, intent.expires_at
-               FROM community_creation_requirement_states AS state
-               JOIN community_creation_intents AS intent
-                 ON intent.intent_id = state.intent_id AND intent.actor_id = state.actor_id
-              WHERE state.intent_id = $5 AND state.actor_id = $6
-                AND state.requirement_kind = $7
-                AND state.status IN ('unmet', 'failed', 'expired')
-                AND state.generation = $8
-                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
-                AND intent.expires_at > clock_timestamp()`,
-      values: [
-        input.ceremonyIntentId,
-        nextGeneration,
-        reservationHash,
-        JSON.stringify({
-          ...reservation,
-          version: COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
-        }),
-        input.intentId,
-        input.actorId,
-        requirement,
-        generation,
-      ],
-      readonly: false,
-    });
-    const advanced = yield* transaction.execute({
-      label: `community.creation.${input.operation}.advance-requirement`,
-      text: `UPDATE community_creation_requirement_states
-                SET status = 'pending', generation = $1,
-                    current_ceremony_intent_id = $2, satisfied_at = NULL,
-                    updated_at = clock_timestamp()
-              WHERE intent_id = $3 AND actor_id = $4
-                AND requirement_kind = $5
-                AND status IN ('unmet', 'failed', 'expired')
-                AND generation = $6`,
-      values: [
-        nextGeneration,
-        input.ceremonyIntentId,
-        input.intentId,
-        input.actorId,
-        requirement,
-        generation,
-      ],
-      readonly: false,
-    });
-    if (advanced.rowCount !== 1) {
-      return yield* Effect.fail(failure(input.operation, "invalid-row"));
-    }
-    return "reserved";
-  });
-}
-
 function replaceCreationRequirementBindings(
   transaction: ControlPlaneTransaction,
   input: Readonly<{
@@ -943,699 +474,321 @@ function replaceCreationRequirementBindings(
   });
 }
 
-function verificationStorageFailure(): VerificationCompletionStorageFailed {
-  return new VerificationCompletionStorageFailed();
-}
-
-function exactCanonicalJson(value: unknown, expected: unknown): boolean {
-  return JSON.stringify(jsonValue(value)) === JSON.stringify(expected);
-}
-
-type CommitEvidence = Readonly<{
-  readonly proofSessionId: string;
-  readonly evidenceReceiptId: string;
-  readonly evidenceDigest: string;
-  readonly subjectKeyId: string;
-  readonly subjectDigest: string;
-  readonly receiptExpiresAt: string | null;
-  readonly assertionExpiresAt: string | null;
+type LockedCreationNationalityState = Readonly<{
+  readonly status: string;
+  readonly requirementHash: string;
+  readonly generation: number;
+  readonly ceremonyIntentId: string;
+  readonly providerId: string | null;
+  readonly providerBindingHash: string | null;
+  readonly configurationKind: string | null;
+  readonly configurationReference: string | null;
+  readonly configurationVersion: string | null;
 }>;
 
-function loadCommitEvidence(
+function lockCreationNationalityState(
   transaction: ControlPlaneTransaction,
-  input: Readonly<{ readonly actorId: string; readonly proofSessionId: string }>,
-): Effect.Effect<CommitEvidence | null, ControlPlaneError> {
+  actorId: string,
+  intentId: string,
+  operation: "create" | "update",
+): Effect.Effect<LockedCreationNationalityState | null, CommunityCreationRepositoryFailure> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
-      label: "community.creation.commit.validate-evidence",
-      text: `SELECT
-               MIN(receipt.evidence_receipt_id) AS evidence_receipt_id,
-               MIN(receipt.evidence_hash) AS evidence_digest,
-               MIN(receipt.subject_key_id) AS subject_key_id,
-               MIN(subject.subject_digest) AS subject_digest,
-               MIN(receipt.expires_at) AS receipt_expires_at,
-               MIN(assertion.expires_at) AS assertion_expires_at,
-               (
-                 COUNT(DISTINCT receipt.evidence_receipt_id) = 1
-                 AND COUNT(DISTINCT receipt.subject_key_id) = 1
-                 AND COUNT(assertion.assertion_id) = 2
-                 AND COUNT(DISTINCT assertion.binding_group_id) = 1
-                 AND COUNT(*) FILTER (
-                   WHERE assertion.claim_id = 'human.personhood'
-                     AND assertion.assertion_value = '{"personhood": true}'::jsonb
-                     AND assertion.assurance = 'provider_attested'
-                 ) = 1
-                 AND COUNT(*) FILTER (
-                   WHERE assertion.claim_id = 'credential.subject_unique'
-                     AND assertion.assertion_value = '{"subject_unique": true}'::jsonb
-                     AND assertion.assurance = 'provider_attested'
-                 ) = 1
-                 AND BOOL_AND(
-                   receipt.user_id = session.actor_id
-                   AND receipt.provider_id = session.provider_id
-                   AND receipt.provider_configuration_kind = session.provider_configuration_kind
-                   AND receipt.provider_configuration_ref = session.provider_configuration_ref
-                   AND receipt.provider_configuration_version = session.provider_configuration_version
-                   AND receipt.issuer = session.issuer
-                   AND receipt.method = session.method
-                   AND receipt.scope_kind = session.scope_kind
-                   AND receipt.issuer_rp_scope IS NOT DISTINCT FROM session.issuer_rp_scope
-                   AND receipt.issuer_rp_action_scope IS NOT DISTINCT FROM session.issuer_rp_action_scope
-                   AND receipt.protocol_version = session.protocol_version
-                   AND receipt.environment = session.environment
-                   AND receipt.provenance_kind = 'proof_session'
-                   AND receipt.evidence_kind = $2
-                   AND receipt.subject_key_id IS NOT NULL
-                   AND receipt.subject_binding_event_id IS NOT NULL
-                   AND receipt.subject_binding_epoch IS NOT NULL
-                   AND receipt.observed_at <= session.terminal_at
-                   AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
-                   AND active_binding.subject_key_id = receipt.subject_key_id
-                   AND active_binding.binding_event_id = receipt.subject_binding_event_id
-                   AND active_binding.binding_epoch = receipt.subject_binding_epoch
-                   AND active_binding.user_id = session.actor_id
-                   AND subject.subject_key_id = receipt.subject_key_id
-                   AND assertion.user_id = session.actor_id
-                   AND assertion.evidence_receipt_id = receipt.evidence_receipt_id
-                   AND assertion.subject_key_id = receipt.subject_key_id
-                   AND assertion.observed_at <= session.terminal_at
-                   AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
-                   AND assertion_binding.user_id = session.actor_id
-                   AND assertion_binding.binding_mode = 'same_subject'
-                   AND assertion_binding.subject_key_id = receipt.subject_key_id
-                   AND assertion_binding.evidence_receipt_id IS NULL
-                   AND assertion_binding.subject_binding_event_id = receipt.subject_binding_event_id
-                   AND assertion_binding.subject_binding_epoch = receipt.subject_binding_epoch
-                 )
-               ) AS evidence_valid
-          FROM proof_sessions AS session
-          LEFT JOIN evidence_receipts AS receipt
-            ON receipt.proof_session_id = session.proof_session_id
-          LEFT JOIN assertions AS assertion
-            ON assertion.evidence_receipt_id = receipt.evidence_receipt_id
-          LEFT JOIN assertion_bindings AS assertion_binding
-            ON assertion_binding.binding_group_id = assertion.binding_group_id
-          LEFT JOIN active_subject_key_bindings AS active_binding
-            ON active_binding.subject_key_id = receipt.subject_key_id
-          LEFT JOIN subject_keys AS subject
-            ON subject.subject_key_id = receipt.subject_key_id
-         WHERE session.proof_session_id = $1
-           AND session.actor_id = $3`,
-      values: [input.proofSessionId, VERY_WEB_EVIDENCE_KIND, input.actorId],
+      label: "community.creation.nationality.lock-state",
+      text: `SELECT status, requirement_hash, generation, current_ceremony_intent_id,
+                    current_provider_id, current_provider_binding_hash,
+                    current_provider_configuration_kind, current_provider_configuration_ref,
+                    current_provider_configuration_version
+               FROM nationality_requirement_states
+              WHERE action_kind = 'community_creation' AND intent_id = $1
+                AND requirement_kind = 'nationality' AND actor_id = $2
+              FOR UPDATE`,
+      values: [intentId, actorId],
       readonly: false,
     });
     const row = oneRow(result.rows);
-    if (row === undefined || row === null || row.evidence_valid !== true) return null;
-    const evidenceReceiptId = asString(row.evidence_receipt_id);
-    const evidenceDigest = asString(row.evidence_digest);
-    const subjectKeyId = asString(row.subject_key_id);
-    const subjectDigest = asString(row.subject_digest);
-    const receiptExpiresAt =
-      row.receipt_expires_at === null ? null : asTimestamp(row.receipt_expires_at);
-    const assertionExpiresAt =
-      row.assertion_expires_at === null ? null : asTimestamp(row.assertion_expires_at);
+    if (row === undefined) return yield* Effect.fail(failure(operation, "invalid-row"));
+    if (row === null) return null;
+    const status = asString(row.status);
+    const requirementHash = asString(row.requirement_hash);
+    const generation = asNonNegativeInteger(row.generation);
+    const ceremonyIntentId = asString(row.current_ceremony_intent_id);
     if (
-      evidenceReceiptId === null ||
-      !SHA256_HEX.test(evidenceDigest ?? "") ||
-      subjectKeyId === null ||
-      !SHA256_HEX.test(subjectDigest ?? "") ||
-      (row.receipt_expires_at !== null && receiptExpiresAt === null) ||
-      (row.assertion_expires_at !== null && assertionExpiresAt === null)
+      status === null ||
+      requirementHash === null ||
+      generation === null ||
+      ceremonyIntentId === null
     ) {
-      return null;
+      return yield* Effect.fail(failure(operation, "invalid-row"));
     }
     return {
-      proofSessionId: input.proofSessionId,
-      evidenceReceiptId,
-      evidenceDigest: evidenceDigest ?? "",
-      subjectKeyId,
-      subjectDigest: subjectDigest ?? "",
-      receiptExpiresAt,
-      assertionExpiresAt,
+      status,
+      requirementHash,
+      generation,
+      ceremonyIntentId,
+      providerId: asString(row.current_provider_id),
+      providerBindingHash: asString(row.current_provider_binding_hash),
+      configurationKind: asString(row.current_provider_configuration_kind),
+      configurationReference: asString(row.current_provider_configuration_ref),
+      configurationVersion: asString(row.current_provider_configuration_version),
     };
   });
 }
 
+function deleteCreationNationalityState(
+  transaction: ControlPlaneTransaction,
+  actorId: string,
+  intentId: string,
+): Effect.Effect<void, CommunityCreationRepositoryFailure> {
+  return transaction
+    .execute({
+      label: "community.creation.nationality.delete-state",
+      text: `DELETE FROM nationality_requirement_states
+              WHERE action_kind = 'community_creation' AND intent_id = $1
+                AND requirement_kind = 'nationality' AND actor_id = $2`,
+      values: [intentId, actorId],
+      readonly: false,
+    })
+    .pipe(Effect.asVoid);
+}
+
 /**
- * Settle a completed canonical Very ceremony against its creation intent.
- *
- * The helper deliberately preserves valid generic/stale evidence: only a
- * storage or constraint failure aborts the surrounding completion transaction.
- * Replays may call it again to repair a completion produced before the intent
- * revision was appended.
+ * Replaces a superseded requirement state without touching append-only
+ * attempts. A changed allowlist cannot rewrite requirement identity, so the
+ * old row is retired at its generation count and the new row starts from the
+ * next unused generation; the previous attempt rows remain evidence.
  */
-export function advanceCommunityCreationVerificationInTransaction(
+function resetCreationNationalityState(
   transaction: ControlPlaneTransaction,
   input: Readonly<{
-    readonly actor_id: string;
-    readonly proof_session_id: string;
-    readonly result_hash: string;
+    readonly actorId: string;
+    readonly intentId: string;
+    readonly requirementHash: string;
+    readonly previous: LockedCreationNationalityState | null;
   }>,
-): Effect.Effect<
-  CommunityCreationVerificationAdvanceOutcome,
-  VerificationCompletionStorageFailed | ControlPlaneError
-> {
+): Effect.Effect<void, CommunityCreationRepositoryFailure> {
   return Effect.gen(function* () {
+    yield* deleteCreationNationalityState(transaction, input.actorId, input.intentId);
+    const previous = input.previous;
+    const generation = previous?.generation ?? 0;
+    const carried =
+      generation > 0 && previous !== null
+        ? {
+            ceremonyIntentId: previous.ceremonyIntentId,
+            providerId: previous.providerId,
+            providerBindingHash: previous.providerBindingHash,
+            configurationKind: previous.configurationKind,
+            configurationReference: previous.configurationReference,
+            configurationVersion: previous.configurationVersion,
+          }
+        : null;
     if (
-      !validId(input.actor_id) ||
-      !validId(input.proof_session_id) ||
-      !SHA256_HEX.test(input.result_hash)
+      carried !== null &&
+      (carried.providerId === null ||
+        carried.providerBindingHash === null ||
+        carried.configurationKind === null ||
+        carried.configurationReference === null ||
+        carried.configurationVersion === null)
     ) {
-      return yield* Effect.fail(verificationStorageFailure());
+      return yield* Effect.fail(failure("update", "invalid-row"));
     }
-
-    const sessionResult = yield* transaction.execute<Row>({
-      label: "community.creation.verification.lock-session",
-      text: `SELECT proof_session_id, actor_id, intent_id, provider_id,
-                    provider_configuration_kind, provider_configuration_ref,
-                    provider_configuration_version, method, issuer, scope_kind,
-                    issuer_rp_scope, issuer_rp_action_scope, request_mode,
-                    requested_requirements, requested_claim_ids,
-                    subject_binding_intent, protocol_version, environment,
-                    status, expires_at, completed_at, terminal_at,
-                    completion_idempotency_key, completion_result_hash,
-                    creation_ceremony_intent_id
-               FROM proof_sessions
-              WHERE proof_session_id = $1 AND actor_id = $2
-              FOR UPDATE`,
-      values: [input.proof_session_id, input.actor_id],
-      readonly: false,
-    });
-    const session = oneRow(sessionResult.rows);
-    if (session === undefined) return yield* Effect.fail(verificationStorageFailure());
-    if (session === null) return { kind: "not_applicable" } as const;
-
-    const ceremonyIntentId = asString(session.creation_ceremony_intent_id);
-    const completedAt = asTimestamp(session.completed_at);
-    const terminalAt = asTimestamp(session.terminal_at);
-    const sessionExpiresAt = asTimestamp(session.expires_at);
-    if (
-      ceremonyIntentId === null ||
-      session.proof_session_id !== input.proof_session_id ||
-      session.actor_id !== input.actor_id ||
-      session.intent_id !== ceremonyIntentId ||
-      session.status !== "completed" ||
-      session.completion_result_hash !== input.result_hash ||
-      asString(session.completion_idempotency_key) === null ||
-      completedAt === null ||
-      terminalAt === null ||
-      sessionExpiresAt === null ||
-      completedAt !== terminalAt ||
-      Date.parse(completedAt) >= Date.parse(sessionExpiresAt)
-    ) {
-      return { kind: "stale", reason: "session_binding_drift" } as const;
-    }
-
-    const authorityResult = yield* transaction.execute<Row>({
-      label: "community.creation.verification.lock-authority",
-      text: `SELECT attempt.intent_id,
-                    attempt.requirement_kind AS attempt_requirement_kind,
-                    attempt.generation AS attempt_generation,
-                    attempt.requirement_hash AS attempt_requirement_hash,
-                    attempt.provider_id AS attempt_provider_id,
-                    attempt.provider_binding_hash AS attempt_provider_binding_hash,
-                    attempt.provider_configuration_kind AS attempt_configuration_kind,
-                    attempt.provider_configuration_ref AS attempt_configuration_ref,
-                    attempt.provider_configuration_version AS attempt_configuration_version,
-                    attempt.route_family AS attempt_route_family,
-                    attempt.expires_at AS attempt_expires_at,
-                    state.status AS requirement_status,
-                    state.generation AS requirement_generation,
-                    state.requirement_hash,
-                    state.provider_id,
-                    state.provider_binding_hash,
-                    state.provider_configuration_kind,
-                    state.provider_configuration_ref,
-                    state.provider_configuration_version,
-                    state.current_ceremony_intent_id,
-                    state.route_family
-               FROM community_creation_ceremony_attempts AS attempt
-               JOIN community_creation_requirement_states AS state
-                 ON state.intent_id = attempt.intent_id
-                AND state.actor_id = attempt.actor_id
-                AND state.requirement_kind = attempt.requirement_kind
-              WHERE attempt.ceremony_intent_id = $1
-                AND attempt.actor_id = $2
-                AND attempt.requirement_kind = 'human_identity'
-              FOR UPDATE OF attempt, state`,
-      values: [ceremonyIntentId, input.actor_id],
-      readonly: false,
-    });
-    const authority = oneRow(authorityResult.rows);
-    if (authority === undefined) return yield* Effect.fail(verificationStorageFailure());
-    if (authority === null) return { kind: "not_applicable" } as const;
-    const intentId = asString(authority.intent_id);
-    const generation = asPositiveInteger(authority.attempt_generation);
-    const requirementHash = asString(authority.attempt_requirement_hash);
-    const providerId = asString(authority.attempt_provider_id);
-    const providerBindingHash = asString(authority.attempt_provider_binding_hash);
-    const configurationVersion = asString(authority.attempt_configuration_version);
-    const attemptExpiresAt = asTimestamp(authority.attempt_expires_at);
-    const expectedProviderBindingHash = communityCreationProviderBindingHash({
-      requirement: "human_identity",
-      family: null,
-      provider_id: VERY_WEB_PROVIDER_ID,
-      provider_configuration: {
-        kind: "dynamic",
-        reference: VERY_WEB_CONFIGURATION_REFERENCE,
-        version: VERY_WEB_CONFIGURATION_VERSION,
-      },
-      protocol_version: VERY_WEB_PROTOCOL_VERSION,
-    });
-    if (
-      intentId === null ||
-      generation === null ||
-      requirementHash !== HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH ||
-      providerId !== VERY_WEB_PROVIDER_ID ||
-      providerBindingHash !== expectedProviderBindingHash ||
-      configurationVersion !== VERY_WEB_CONFIGURATION_VERSION ||
-      attemptExpiresAt === null ||
-      Date.parse(completedAt) >= Date.parse(attemptExpiresAt) ||
-      authority.attempt_requirement_kind !== "human_identity" ||
-      authority.attempt_configuration_kind !== "dynamic" ||
-      authority.attempt_configuration_ref !== VERY_WEB_CONFIGURATION_REFERENCE ||
-      authority.attempt_route_family !== null ||
-      Number(authority.requirement_generation) !== generation ||
-      authority.requirement_hash !== requirementHash ||
-      authority.provider_id !== providerId ||
-      authority.provider_binding_hash !== providerBindingHash ||
-      authority.provider_configuration_kind !== authority.attempt_configuration_kind ||
-      authority.provider_configuration_ref !== authority.attempt_configuration_ref ||
-      authority.provider_configuration_version !== configurationVersion ||
-      authority.current_ceremony_intent_id !== ceremonyIntentId ||
-      authority.route_family !== null
-    ) {
-      return { kind: "stale", reason: "session_binding_drift" } as const;
-    }
-
-    const intentRow = yield* loadLockedIntent(transaction, input.actor_id, intentId, "get").pipe(
-      Effect.mapError(() => verificationStorageFailure()),
-    );
-    if (intentRow === null) return { kind: "not_applicable" } as const;
-    const document = documentFromRow(intentRow);
-    if (document === null) {
-      return yield* Effect.fail(verificationStorageFailure());
-    }
-    if (TERMINAL_STATUSES.has(document.status)) {
-      return { kind: "stale", reason: "intent_terminal" } as const;
-    }
-    if (intentRow.expired === true) {
-      return { kind: "stale", reason: "intent_expired" } as const;
-    }
-
-    if (document.requirements.human_identity === undefined) {
-      return { kind: "stale", reason: "intent_not_verification_required" } as const;
-    }
-    const exactBinding =
-      document.requirements.human_identity.requirement_hash ===
-        HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
-      session.provider_id === providerId &&
-      session.provider_configuration_kind === authority.attempt_configuration_kind &&
-      session.provider_configuration_ref === authority.attempt_configuration_ref &&
-      session.provider_configuration_version === configurationVersion &&
-      session.method === VERY_WEB_METHOD &&
-      session.issuer === VERY_WEB_ISSUER &&
-      session.scope_kind === "issuer_rp_scope" &&
-      session.issuer_rp_scope === VERY_WEB_RP_SCOPE &&
-      session.issuer_rp_action_scope === null &&
-      session.request_mode === "dynamic" &&
-      exactCanonicalJson(session.requested_requirements, HUMAN_MEMBERSHIP_REQUIREMENTS) &&
-      exactCanonicalJson(session.requested_claim_ids, HUMAN_MEMBERSHIP_CLAIM_IDS) &&
-      session.subject_binding_intent === "establish" &&
-      session.protocol_version === VERY_WEB_PROTOCOL_VERSION &&
-      asString(session.environment) !== null;
-    if (!exactBinding) {
-      return { kind: "stale", reason: "session_binding_drift" } as const;
-    }
-
-    if (authority.requirement_status === "satisfied") {
-      if (document.status !== "verification_required" && document.status !== "commit_ready") {
-        return { kind: "stale", reason: "intent_not_verification_required" } as const;
-      }
-      const replayResult = yield* transaction.execute<Row>({
-        label: "community.creation.verification.load-result-replay",
-        text: `SELECT proof_session_id, callback_idempotency_key, callback_request_hash,
-                      outcome_status, result_hash, terminal_at, satisfied_at
-                 FROM community_creation_ceremony_results
-                WHERE ceremony_intent_id = $1 AND actor_id = $2`,
-        values: [ceremonyIntentId, input.actor_id],
-        readonly: false,
-      });
-      const replay = oneRow(replayResult.rows);
-      if (
-        replay === undefined ||
-        replay === null ||
-        replay.proof_session_id !== input.proof_session_id ||
-        replay.callback_idempotency_key !== session.completion_idempotency_key ||
-        replay.callback_request_hash !== input.result_hash ||
-        replay.outcome_status !== "satisfied" ||
-        replay.result_hash !== input.result_hash ||
-        asTimestamp(replay.terminal_at) !== completedAt ||
-        asTimestamp(replay.satisfied_at) !== completedAt
-      ) {
-        return { kind: "stale", reason: "session_binding_drift" } as const;
-      }
-      return {
-        kind: "already_ready",
-        intent_id: document.intent_id,
-        revision: document.revision,
-      } as const;
-    }
-    if (document.status !== "verification_required") {
-      return { kind: "stale", reason: "intent_not_verification_required" } as const;
-    }
-    if (authority.requirement_status !== "pending") {
-      return { kind: "stale", reason: "intent_not_verification_required" } as const;
-    }
-
-    const evidenceResult = yield* transaction.execute<Row>({
-      label: "community.creation.verification.validate-evidence",
-      text: `SELECT (
-               COUNT(DISTINCT receipt.evidence_receipt_id) = 1
-               AND COUNT(assertion.assertion_id) = 2
-               AND COUNT(DISTINCT assertion.binding_group_id) = 1
-               AND COUNT(*) FILTER (
-                 WHERE assertion.claim_id = 'human.personhood'
-                   AND assertion.assertion_value = '{"personhood": true}'::jsonb
-                   AND assertion.assurance = 'provider_attested'
-               ) = 1
-               AND COUNT(*) FILTER (
-                 WHERE assertion.claim_id = 'credential.subject_unique'
-                   AND assertion.assertion_value = '{"subject_unique": true}'::jsonb
-                   AND assertion.assurance = 'provider_attested'
-               ) = 1
-               AND BOOL_AND(
-                 receipt.user_id = session.actor_id
-                 AND receipt.provider_id = session.provider_id
-                 AND receipt.provider_configuration_kind = session.provider_configuration_kind
-                 AND receipt.provider_configuration_ref = session.provider_configuration_ref
-                 AND receipt.provider_configuration_version = session.provider_configuration_version
-                 AND receipt.issuer = session.issuer
-                 AND receipt.method = session.method
-                 AND receipt.scope_kind = session.scope_kind
-                 AND receipt.issuer_rp_scope IS NOT DISTINCT FROM session.issuer_rp_scope
-                 AND receipt.issuer_rp_action_scope IS NOT DISTINCT FROM session.issuer_rp_action_scope
-                 AND receipt.protocol_version = session.protocol_version
-                 AND receipt.environment = session.environment
-                 AND receipt.provenance_kind = 'proof_session'
-                 AND receipt.evidence_kind = $2
-                 AND receipt.subject_key_id IS NOT NULL
-                 AND receipt.subject_binding_event_id IS NOT NULL
-                 AND receipt.subject_binding_epoch IS NOT NULL
-                 AND receipt.observed_at <= session.terminal_at
-                 AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
-                 AND active_binding.subject_key_id = receipt.subject_key_id
-                 AND active_binding.binding_event_id = receipt.subject_binding_event_id
-                 AND active_binding.binding_epoch = receipt.subject_binding_epoch
-                 AND active_binding.user_id = session.actor_id
-                 AND assertion.user_id = session.actor_id
-                 AND assertion.evidence_receipt_id = receipt.evidence_receipt_id
-                 AND assertion.subject_key_id = receipt.subject_key_id
-                 AND assertion.observed_at <= session.terminal_at
-                 AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
-                 AND assertion_binding.user_id = session.actor_id
-                 AND assertion_binding.binding_mode = 'same_subject'
-                 AND assertion_binding.subject_key_id = receipt.subject_key_id
-                 AND assertion_binding.evidence_receipt_id IS NULL
-                 AND assertion_binding.subject_binding_event_id = receipt.subject_binding_event_id
-                 AND assertion_binding.subject_binding_epoch = receipt.subject_binding_epoch
-               )
-             ) AS evidence_valid
-        FROM proof_sessions AS session
-        LEFT JOIN evidence_receipts AS receipt
-          ON receipt.proof_session_id = session.proof_session_id
-        LEFT JOIN assertions AS assertion
-          ON assertion.evidence_receipt_id = receipt.evidence_receipt_id
-        LEFT JOIN assertion_bindings AS assertion_binding
-          ON assertion_binding.binding_group_id = assertion.binding_group_id
-        LEFT JOIN active_subject_key_bindings AS active_binding
-          ON active_binding.subject_key_id = receipt.subject_key_id
-       WHERE session.proof_session_id = $1
-         AND session.actor_id = $3`,
-      values: [input.proof_session_id, VERY_WEB_EVIDENCE_KIND, input.actor_id],
-      readonly: false,
-    });
-    const evidenceRow = oneRow(evidenceResult.rows);
-    if (evidenceRow === undefined || evidenceRow === null) {
-      return yield* Effect.fail(verificationStorageFailure());
-    }
-    if (evidenceRow.evidence_valid !== true) {
-      return { kind: "stale", reason: "evidence_invalid" } as const;
-    }
-
-    const evidence = yield* loadCommitEvidence(transaction, {
-      actorId: input.actor_id,
-      proofSessionId: input.proof_session_id,
-    });
-    if (evidence === null) {
-      return { kind: "stale", reason: "evidence_invalid" } as const;
-    }
-
-    const transitioned = transitionCreationRequirement(
-      {
-        requirement: "human_identity",
-        status: "pending",
-        requirement_hash: requirementHash,
-        provider_id: providerId,
-        provider_binding_hash: providerBindingHash,
-        generation,
-        ceremony_intent_id: ceremonyIntentId,
-        satisfied_at: null,
-      },
-      {
-        type: "ceremony_satisfied",
-        generation,
-        ceremony_intent_id: ceremonyIntentId,
-        satisfied_at: completedAt,
-      },
-    );
-    if (transitioned.kind === "rejected") {
-      return yield* Effect.fail(verificationStorageFailure());
-    }
-    const insertedResult = yield* transaction.execute({
-      label: "community.creation.verification.insert-result",
-      text: `INSERT INTO community_creation_ceremony_results (
-               ceremony_intent_id, actor_id, intent_id, requirement_kind,
-               generation, requirement_hash, provider_id, provider_binding_hash,
-               provider_configuration_version, callback_idempotency_key,
-               callback_request_hash, outcome_status, result_hash, proof_session_id,
-               evidence_receipt_id, evidence_ref, evidence_digest,
-               provider_identity_digest, terminal_at, satisfied_at
+    const inserted = yield* transaction.execute({
+      label: "community.creation.nationality.reset-state",
+      text: `INSERT INTO nationality_requirement_states (
+               action_kind, intent_id, requirement_kind, actor_id, status,
+               requirement_hash, accepted_provider_ids, generation,
+               current_ceremony_intent_id, current_provider_id,
+               current_provider_binding_hash, current_provider_configuration_kind,
+               current_provider_configuration_ref, current_provider_configuration_version,
+               satisfied_at
              ) VALUES (
-               $1, $2, $3, 'human_identity', $4, $5, $6, $7, $8, $9,
-               $10, 'satisfied', $10, $11, $12, $12, $13, $14, $15, $15
+               'community_creation', $1, 'nationality', $2, $3, $4,
+               '["self.pass","zkpassport"]'::jsonb, $5, $6, $7, $8, $9, $10, $11, NULL
              )`,
       values: [
-        ceremonyIntentId,
-        input.actor_id,
-        intentId,
+        input.intentId,
+        input.actorId,
+        carried === null ? "unmet" : "expired",
+        input.requirementHash,
         generation,
-        requirementHash,
-        providerId,
-        providerBindingHash,
-        configurationVersion,
-        session.completion_idempotency_key,
-        input.result_hash,
-        input.proof_session_id,
-        evidence.evidenceReceiptId,
-        evidence.evidenceDigest,
-        evidence.subjectDigest,
-        completedAt,
+        carried?.ceremonyIntentId ?? null,
+        carried?.providerId ?? null,
+        carried?.providerBindingHash ?? null,
+        carried?.configurationKind ?? null,
+        carried?.configurationReference ?? null,
+        carried?.configurationVersion ?? null,
       ],
       readonly: false,
     });
-    if (insertedResult.rowCount !== 1) return yield* Effect.fail(verificationStorageFailure());
-    const satisfied = yield* transaction.execute({
-      label: "community.creation.verification.satisfy-human-requirement",
-      text: `UPDATE community_creation_requirement_states
-                SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
-              WHERE intent_id = $2 AND actor_id = $3
-                AND requirement_kind = 'human_identity'
-                AND status = 'pending' AND generation = $4
-                AND current_ceremony_intent_id = $5`,
-      values: [completedAt, intentId, input.actor_id, generation, ceremonyIntentId],
-      readonly: false,
-    });
-    if (satisfied.rowCount !== 1) return yield* Effect.fail(verificationStorageFailure());
-
-    const requirementProgress = yield* reserveNextCreationRequirement(transaction, {
-      actorId: input.actor_id,
-      intentId,
-      ceremonyIntentId: `community-creation-ceremony-${crypto.randomUUID()}`,
-      operation: "get",
-    }).pipe(Effect.mapError(() => verificationStorageFailure()));
-    const nextStatus =
-      requirementProgress === "complete" ? "commit_ready" : "verification_required";
-    const nextRevision = document.revision + 1;
-    const updated = yield* transaction.execute({
-      label: "community.creation.verification.persist-intent",
-      text: `UPDATE community_creation_intents
-                SET revision = $1, status = $2, updated_at = clock_timestamp()
-              WHERE intent_id = $3 AND actor_id = $4 AND revision = $5
-                AND status = 'verification_required'
-                AND expires_at > clock_timestamp()`,
-      values: [nextRevision, nextStatus, intentId, input.actor_id, document.revision],
-      readonly: false,
-    });
-    if (updated.rowCount === 0) {
-      return { kind: "stale", reason: "intent_expired" } as const;
+    if (inserted.rowCount !== 1) {
+      return yield* Effect.fail(failure("update", "invalid-row"));
     }
-    if (updated.rowCount !== 1) return yield* Effect.fail(verificationStorageFailure());
-    const nextRow = yield* loadLockedIntent(transaction, input.actor_id, intentId, "get").pipe(
-      Effect.mapError(() => verificationStorageFailure()),
-    );
-    const next = nextRow === null ? null : documentFromRow(nextRow);
-    if (next === null) return yield* Effect.fail(verificationStorageFailure());
-    yield* insertRevision(transaction, {
-      intent: next,
-      actorId: input.actor_id,
-      operation: "verification",
-      requestHash: input.result_hash,
-    });
-    return { kind: "advanced", intent_id: intentId, revision: next.revision } as const;
   });
 }
 
-export function advanceCommunityCreationNamespaceVerificationInTransaction(
+/**
+ * Evaluates the creator's account-bound nationality evidence against the
+ * compiled draft policy and keeps the requirement satisfied without a
+ * ceremony when accepted evidence already covers it. Otherwise the first
+ * policy binding is reserved as the currently bound session; switching
+ * providers later advances the generation through the ceremony store.
+ */
+function ensureCreationNationalityRequirement(
   transaction: ControlPlaneTransaction,
   input: Readonly<{
-    readonly actor_id: string;
-    readonly intent_id: string;
-    readonly result_hash: string;
-    readonly database_now: string;
+    readonly actorId: string;
+    readonly intentId: string;
+    readonly operation: "create" | "update";
+    readonly compiled: CompiledHumanDraft;
+    readonly ttlSeconds: number;
+    readonly evaluation: NationalityEvaluation | null;
   }>,
-): Effect.Effect<
-  CommunityCreationVerificationAdvanceOutcome,
-  VerificationCompletionStorageFailed | ControlPlaneError
-> {
+): Effect.Effect<"satisfied" | "pending" | "none", CommunityCreationRepositoryFailure> {
   return Effect.gen(function* () {
-    if (
-      !validId(input.actor_id) ||
-      !validId(input.intent_id) ||
-      !SHA256_HEX.test(input.result_hash)
-    ) {
-      return yield* Effect.fail(verificationStorageFailure());
-    }
-    const intentRow = yield* loadLockedIntent(
-      transaction,
-      input.actor_id,
-      input.intent_id,
-      "get",
-      input.database_now,
-    ).pipe(Effect.mapError(() => verificationStorageFailure()));
-    if (intentRow === null) return { kind: "not_applicable" } as const;
-    const document = documentFromRow(intentRow);
-    if (document === null) return yield* Effect.fail(verificationStorageFailure());
-    if (TERMINAL_STATUSES.has(document.status)) {
-      return { kind: "stale", reason: "intent_terminal" } as const;
-    }
-    if (intentRow.expired === true) {
-      return { kind: "stale", reason: "intent_expired" } as const;
-    }
-    if (document.status === "commit_ready") {
-      return {
-        kind: "already_ready",
-        intent_id: document.intent_id,
-        revision: document.revision,
-      } as const;
-    }
-    if (document.status !== "verification_required") {
-      return { kind: "stale", reason: "intent_not_verification_required" } as const;
+    const nationality = input.compiled.nationality;
+    if (nationality === undefined) return "none" as const;
+
+    const evaluation =
+      input.evaluation ??
+      (yield* loadCuratedNationalityEvaluation(transaction, {
+        userId: input.actorId,
+        policy: nationality.policy,
+      }));
+    if (evaluation.outcome === "pass") {
+      // Accepted evidence is reused for the exact requirement; no requirement
+      // row is recorded, and activation re-evaluates it before any grant.
+      yield* deleteCreationNationalityState(transaction, input.actorId, input.intentId);
+      return "satisfied" as const;
     }
 
-    const authorityResult = yield* transaction.execute<Row>({
-      label: "community.creation.namespace-verification.lock-authority",
-      text: `SELECT state.requirement_kind, state.status, state.generation,
-                    state.current_ceremony_intent_id, state.satisfied_at,
-                    result.outcome_status, result.result_hash,
-                    result.satisfied_at AS result_satisfied_at
-               FROM community_creation_requirement_states AS state
-               JOIN community_creation_ceremony_results AS result
-                 ON result.ceremony_intent_id = state.current_ceremony_intent_id
-                AND result.actor_id = state.actor_id
-                AND result.intent_id = state.intent_id
-                AND result.requirement_kind = state.requirement_kind
-                AND result.generation = state.generation
-              WHERE state.intent_id = $1 AND state.actor_id = $2
-              ORDER BY CASE state.requirement_kind
-                WHEN 'human_identity' THEN 1
-                WHEN 'namespace_ownership' THEN 2
-              END
-              FOR UPDATE OF state, result`,
-      values: [input.intent_id, input.actor_id],
-      readonly: false,
-    });
-    if (authorityResult.rows.length !== 2) {
-      return { kind: "stale", reason: "session_binding_drift" } as const;
-    }
-    const human = authorityResult.rows[0];
-    const namespace = authorityResult.rows[1];
-    const namespaceSatisfiedAt = asTimestamp(namespace?.satisfied_at);
-    if (
-      human?.requirement_kind !== "human_identity" ||
-      namespace?.requirement_kind !== "namespace_ownership" ||
-      human.status !== "satisfied" ||
-      namespace.status !== "satisfied" ||
-      human.outcome_status !== "satisfied" ||
-      namespace.outcome_status !== "satisfied" ||
-      asPositiveInteger(human.generation) === null ||
-      asPositiveInteger(namespace.generation) === null ||
-      asString(human.current_ceremony_intent_id) === null ||
-      asString(namespace.current_ceremony_intent_id) === null ||
-      asTimestamp(human.satisfied_at) !== asTimestamp(human.result_satisfied_at) ||
-      namespaceSatisfiedAt === null ||
-      namespaceSatisfiedAt !== asTimestamp(namespace.result_satisfied_at) ||
-      namespace.result_hash !== input.result_hash
-    ) {
-      return { kind: "stale", reason: "session_binding_drift" } as const;
+    const existing = yield* lockCreationNationalityState(
+      transaction,
+      input.actorId,
+      input.intentId,
+      input.operation,
+    );
+    const existingBinding =
+      existing === null || existing.providerId === null
+        ? null
+        : (nationality.providerBindings.find(
+            (binding) => binding.provider_id === existing.providerId,
+          ) ?? null);
+    const reusable =
+      existing !== null &&
+      existingBinding !== null &&
+      existing.status === "pending" &&
+      existing.requirementHash === nationality.requirementHash &&
+      existing.providerBindingHash === nationalityProviderBindingHash(existingBinding) &&
+      existing.configurationKind === existingBinding.provider_configuration.kind &&
+      existing.configurationReference === existingBinding.provider_configuration.reference &&
+      existing.configurationVersion === existingBinding.provider_configuration.version;
+
+    if (!reusable) {
+      yield* resetCreationNationalityState(transaction, {
+        actorId: input.actorId,
+        intentId: input.intentId,
+        requirementHash: nationality.requirementHash,
+        previous: existing,
+      });
     }
 
-    const nextRevision = document.revision + 1;
-    const ready = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
-      ...document,
-      revision: nextRevision,
-      status: "commit_ready",
-      next_action: { kind: "commit" },
+    const selected =
+      reusable && existingBinding !== null ? existingBinding : nationality.providerBindings[0];
+    const selectedBindingHash = nationalityProviderBindingHash(selected);
+    yield* resolveOrIssueNationalityCeremony(transaction, {
+      actionKind: "community_creation",
+      intentId: input.intentId,
+      actorId: input.actorId,
+      requirementHash: nationality.requirementHash,
+      acceptedProviderIds: ["self.pass", "zkpassport"],
+      selectedProviderId: selected.provider_id,
+      selectedBinding: {
+        bindingHash: selectedBindingHash,
+        configurationKind: selected.provider_configuration.kind,
+        configurationRef: selected.provider_configuration.reference,
+        configurationVersion: selected.provider_configuration.version,
+      },
+      reservationRequest: {
+        action_kind: "community_creation",
+        actor_id: input.actorId,
+        intent_id: input.intentId,
+        requirement_hash: nationality.requirementHash,
+        provider_id: selected.provider_id,
+        provider_binding_hash: selectedBindingHash,
+      },
+      ttlSeconds: input.ttlSeconds,
     });
-    if (Option.isNone(ready)) return yield* Effect.fail(verificationStorageFailure());
-    const updated = yield* transaction.execute({
-      label: "community.creation.namespace-verification.persist-intent",
-      text: `UPDATE community_creation_intents
-                SET revision = $1, status = 'commit_ready', updated_at = $5::timestamptz
-              WHERE intent_id = $2 AND actor_id = $3 AND revision = $4
-                AND status = 'verification_required'
-                AND creation_contract_version = 'route_v1'
-                AND expires_at > $5::timestamptz`,
-      values: [
-        nextRevision,
-        input.intent_id,
-        input.actor_id,
-        document.revision,
-        input.database_now,
-      ],
-      readonly: false,
-    });
-    if (updated.rowCount !== 1) return yield* Effect.fail(verificationStorageFailure());
-    const storedRow = yield* loadLockedIntent(
-      transaction,
-      input.actor_id,
-      input.intent_id,
-      "get",
-      input.database_now,
-    ).pipe(Effect.mapError(() => verificationStorageFailure()));
-    const stored = storedRow === null ? null : documentFromRow(storedRow);
-    if (stored === null || JSON.stringify(stored) !== JSON.stringify(ready.value)) {
-      return yield* Effect.fail(verificationStorageFailure());
-    }
-    yield* insertRevision(transaction, {
-      intent: stored,
-      actorId: input.actor_id,
-      operation: "verification",
-      requestHash: input.result_hash,
-    });
-    return { kind: "advanced", intent_id: stored.intent_id, revision: stored.revision } as const;
-  });
+    return "pending" as const;
+  }).pipe(
+    Effect.mapError((error) => {
+      if (
+        error instanceof GatesV2CommunityDataInvalid ||
+        error instanceof NationalityCeremonyDataInvalid
+      ) {
+        return failure(input.operation, "invalid-row");
+      }
+      return error;
+    }),
+  );
 }
+
+function loadCreationNationalityEvaluation(
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{
+    readonly actorId: string;
+    readonly policy: NationalityPolicy;
+    readonly operation: "create" | "update";
+  }>,
+) {
+  return loadCuratedNationalityEvaluation(transaction, {
+    userId: input.actorId,
+    policy: input.policy,
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof GatesV2CommunityDataInvalid
+        ? failure(input.operation, "invalid-row")
+        : error,
+    ),
+  );
+}
+
+/**
+ * Creator activation under the composed member policy: the creator must
+ * satisfy the community's current nationality policy exactly like a joining
+ * member, with no owner exemption. Returns true when activation may proceed
+ * and fails the transaction when the policy exists and the creator's
+ * nationality evidence does not pass. A community without a current
+ * nationality policy is a no-op, so Palm-only creation is unchanged until
+ * composed authoring lands.
+ */
+export const enforceCreatorNationalityPolicy = Effect.fn("enforceCreatorNationalityPolicy")(
+  function* (
+    transaction: ControlPlaneTransaction,
+    input: Readonly<{ readonly communityId: string; readonly userId: string }>,
+  ): Effect.fn.Return<
+    boolean,
+    VerificationCompletionStorageFailed | GatesV2CommunityDataInvalid | ControlPlaneError
+  > {
+    const policy = yield* loadCuratedNationalityPolicy(transaction, input.communityId);
+    if (policy === null) return true;
+    const evaluation = yield* loadCuratedNationalityEvaluation(transaction, {
+      userId: input.userId,
+      policy,
+      lockEvidence: true,
+    });
+    yield* persistNationalityEnforceDecision(transaction, {
+      communityId: input.communityId,
+      userId: input.userId,
+      requestId: `creation-${globalThis.crypto.randomUUID()}`,
+      policy,
+      evaluation,
+    });
+    if (evaluation.outcome !== "pass") {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    return true;
+  },
+);
 
 function exactCreateBody(value: unknown) {
   return Schema.decodeUnknownOption(CreateCommunityCreationIntent.request.body, {
@@ -1723,7 +876,7 @@ export function makeControlPlaneCommunityCreationRepository(
       const body = decodedBody.value;
       const intentId = nextIntentId();
       if (!validId(intentId)) return yield* Effect.fail(failure("create", "constraint"));
-      const compiled = compileOptionalRouteDraft(body.draft.policy);
+      const compiled = compileOptionalRouteDraft(body.draft.policy, options.nationality_authoring);
       if (compiled === null) return yield* Effect.fail(failure("create", "constraint"));
       const canonicalDraft = body.draft;
       const db = yield* ControlPlaneDb;
@@ -1746,8 +899,27 @@ export function makeControlPlaneCommunityCreationRepository(
           });
           if (replay !== null) return { document: replay, outcome: "replayed" as const };
 
+          // Composed drafts evaluate the creator's nationality evidence before
+          // the durable status is chosen: accepted evidence needs no ceremony,
+          // anything else reserves the first policy binding as verification.
+          const nationality = compiled.nationality;
+          const nationalityEvaluation =
+            nationality === undefined
+              ? null
+              : yield* loadCreationNationalityEvaluation(transaction, {
+                  actorId: input.actor.userId,
+                  policy: nationality.policy,
+                  operation: "create",
+                });
+          const initialStatus =
+            nationality === undefined
+              ? requirementFreeStatus(compiled)
+              : nationalityEvaluation?.outcome === "pass"
+                ? ("commit_ready" as const)
+                : ("verification_required" as const);
+
           // Creator-requirement removal amendment: a new intent carries no
-          // creator authority, no requirement row, and no ceremony reservation.
+          // human authority, no requirement row, and no ceremony reservation.
           const inserted = yield* transaction.execute({
             label: "community.creation.create.insert-intent",
             text: `INSERT INTO community_creation_intents (
@@ -1767,7 +939,7 @@ export function makeControlPlaneCommunityCreationRepository(
               input.actor.userId,
               body.idempotency_key,
               input.requestHash,
-              requirementFreeStatus(compiled),
+              initialStatus,
               JSON.stringify(canonicalDraft),
               compiled.canonicalPolicyHash,
               null,
@@ -1781,6 +953,16 @@ export function makeControlPlaneCommunityCreationRepository(
           });
           if (inserted.rowCount !== 1) {
             return yield* Effect.fail(failure("create", "invalid-row"));
+          }
+          if (nationality !== undefined) {
+            yield* ensureCreationNationalityRequirement(transaction, {
+              actorId: input.actor.userId,
+              intentId,
+              operation: "create",
+              compiled,
+              ttlSeconds: intentTtlSeconds,
+              evaluation: nationalityEvaluation,
+            });
           }
           const row = yield* loadLockedIntent(transaction, input.actor.userId, intentId, "create");
           if (row === null) return yield* Effect.fail(failure("create", "invalid-row"));
@@ -1867,7 +1049,7 @@ export function makeControlPlaneCommunityCreationRepository(
         return yield* Effect.fail(failure("update", "constraint"));
       }
       const body = decodedBody.value;
-      const compiled = compileOptionalRouteDraft(body.draft.policy);
+      const compiled = compileOptionalRouteDraft(body.draft.policy, options.nationality_authoring);
       if (compiled === null) return yield* Effect.fail(failure("update", "constraint"));
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
@@ -1921,9 +1103,45 @@ export function makeControlPlaneCommunityCreationRepository(
             return yield* Effect.fail(failure("update", "constraint"));
           }
           const requirementFree = document.requirements.human_identity === undefined;
+          const nationality = compiled.nationality;
+          if (nationality === undefined) {
+            // The new draft no longer carries a representable nationality
+            // requirement; retire any previous state without touching attempts.
+            if (document.requirements.nationality !== undefined) {
+              yield* deleteCreationNationalityState(
+                transaction,
+                input.actor.userId,
+                input.intentId,
+              );
+            }
+          }
+          const nationalityEvaluation =
+            nationality === undefined
+              ? null
+              : yield* loadCreationNationalityEvaluation(transaction, {
+                  actorId: input.actor.userId,
+                  policy: nationality.policy,
+                  operation: "update",
+                });
+          const nationalityOutcome =
+            nationality === undefined
+              ? ("none" as const)
+              : yield* ensureCreationNationalityRequirement(transaction, {
+                  actorId: input.actor.userId,
+                  intentId: input.intentId,
+                  operation: "update",
+                  compiled,
+                  ttlSeconds: intentTtlSeconds,
+                  evaluation: nationalityEvaluation,
+                });
           let nextStatus: "commit_ready" | "gate_unsupported" | "verification_required";
           if (requirementFree) {
-            nextStatus = requirementFreeStatus(compiled);
+            nextStatus =
+              compiled.status === "gate_unsupported"
+                ? "gate_unsupported"
+                : nationalityOutcome === "pending"
+                  ? "verification_required"
+                  : requirementFreeStatus(compiled);
           } else {
             // Grandfathered intents keep their pre-amendment creator ceremony.
             yield* replaceCreationRequirementBindings(transaction, {
@@ -1948,7 +1166,9 @@ export function makeControlPlaneCommunityCreationRepository(
               compiled.status === "gate_unsupported"
                 ? "gate_unsupported"
                 : selection === "complete"
-                  ? "commit_ready"
+                  ? nationalityOutcome === "pending"
+                    ? "verification_required"
+                    : "commit_ready"
                   : "verification_required";
           }
           const canonicalDraft = body.draft;
@@ -2076,6 +1296,7 @@ export function makeControlPlaneCommunityCreationRepository(
       readonly approvalExpiresAt: string | null;
       readonly requirementHash: string;
     }> | null,
+    nationality: CompiledNationalityDraft | null,
   ) =>
     Effect.gen(function* () {
       const activationClockResult = yield* transaction.execute<Row>({
@@ -2102,6 +1323,31 @@ export function makeControlPlaneCommunityCreationRepository(
           Date.parse(claim.approvalExpiresAt) <= Date.parse(activationNow))
       ) {
         return yield* Effect.fail(failure("commit", "constraint"));
+      }
+
+      if (nationality !== null) {
+        const nationalityStateResult = yield* transaction.execute<Row>({
+          label: "community.creation.commit-v2.lock-nationality-state",
+          text: `SELECT actor_id, status, requirement_hash
+                   FROM nationality_requirement_states
+                  WHERE action_kind = 'community_creation' AND intent_id = $1
+                    AND requirement_kind = 'nationality'
+                  FOR UPDATE`,
+          values: [input.intentId],
+          readonly: false,
+        });
+        const nationalityState = oneRow(nationalityStateResult.rows);
+        if (nationalityState === undefined) {
+          return yield* Effect.fail(failure("commit", "invalid-row"));
+        }
+        if (
+          nationalityState !== null &&
+          (nationalityState.actor_id !== input.actor.userId ||
+            nationalityState.status !== "satisfied" ||
+            nationalityState.requirement_hash !== nationality.requirementHash)
+        ) {
+          return yield* Effect.fail(failure("commit", "constraint"));
+        }
       }
 
       let mintedPersonaId: string | null = null;
@@ -2378,6 +1624,84 @@ export function makeControlPlaneCommunityCreationRepository(
         ],
         readonly: false,
       });
+      if (nationality !== null) {
+        yield* transaction.execute({
+          label: "community.creation.commit-v2.insert-nationality-policy",
+          text: `INSERT INTO policy_versions (
+                   policy_version_id, community_id, policy_key, revision,
+                   policy_hash, policy, compiled_plan, compiler_version,
+                   uniqueness_model, created_by_user_id, published_at,
+                   policy_purpose
+                 ) VALUES (
+                   'curated-nationality-v1', $1, 'curated-nationality', $2,
+                   $3, $4::jsonb, $5::jsonb, 'community-gate-compiler-v2',
+                   '{"kind":"none"}'::jsonb, $6, $7::timestamptz, 'access'
+                 )`,
+          values: [
+            communityId,
+            nationality.policy.policy_revision,
+            nationality.policy.policy_hash,
+            JSON.stringify(nationality.policy),
+            nationality.compiledPlan,
+            input.actor.userId,
+            activationNow,
+          ],
+          readonly: false,
+        });
+        for (const binding of nationality.providerBindings) {
+          yield* transaction.execute({
+            label: "community.creation.commit-v2.insert-nationality-binding",
+            text: `INSERT INTO community_policy_provider_bindings (
+                     community_id, policy_key, policy_version_id,
+                     verification_requirement_hash, provider_id,
+                     provider_configuration_kind, provider_configuration_ref,
+                     provider_configuration_version, method, protocol_version,
+                     issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+                     request_mode, evaluator_id
+                   ) VALUES (
+                     $1, 'curated-nationality', 'curated-nationality-v1',
+                     $2, $3, $4, $5, $6, $7, $8, $9, 'issuer_rp_scope', $10, $11,
+                     'dynamic', 'curated-nationality-v1'
+                   )`,
+            values: [
+              communityId,
+              nationality.requirementHash,
+              binding.provider_id,
+              binding.provider_configuration.kind,
+              binding.provider_configuration.reference,
+              binding.provider_configuration.version,
+              binding.method,
+              binding.protocol_version,
+              binding.scope.issuer,
+              binding.scope.rp_scope,
+              "action_scope" in binding.scope ? binding.scope.action_scope : null,
+            ],
+            readonly: false,
+          });
+        }
+        yield* transaction.execute({
+          label: "community.creation.commit-v2.insert-current-nationality-policy",
+          text: `INSERT INTO community_policy_current (
+                   community_id, policy_key, policy_version_id, activated_at
+                 ) VALUES ($1, 'curated-nationality', 'curated-nationality-v1', $2::timestamptz)`,
+          values: [communityId, activationNow],
+          readonly: false,
+        });
+      }
+      yield* enforceCreatorNationalityPolicy(transaction, {
+        communityId,
+        userId: input.actor.userId,
+      }).pipe(
+        Effect.mapError((error) => {
+          if (error instanceof VerificationCompletionStorageFailed) {
+            return failure("commit", "constraint");
+          }
+          if (error instanceof GatesV2CommunityDataInvalid) {
+            return failure("commit", "invalid-row");
+          }
+          return error;
+        }),
+      );
       if (claim !== null && subjectClaimId !== null) {
         // Pre-amendment intents keep the verified-subject quota ledger.
         yield* transaction.execute({
@@ -2470,16 +1794,24 @@ export function makeControlPlaneCommunityCreationRepository(
         );
       }
       const creatorRequirement = document.requirements.human_identity;
-      const compilation = compileCommunityGatePolicy(document.draft.policy);
+      const compiledDraft = compileOptionalRouteDraft(
+        document.draft.policy,
+        options.nationality_authoring,
+      );
+      const composed = compiledDraft !== null && compiledDraft.nationality !== undefined;
+      const compilation = composed ? null : compileCommunityGatePolicy(document.draft.policy);
       if (creatorRequirement === undefined) {
         // Creator-requirement removal amendment: no creator evidence exists, so
         // commit rechecks the member policy, persona ownership (locked above),
         // and the account-scoped creation cap only.
-        if (
-          providerId !== null ||
-          compilation.kind !== "supported" ||
-          compilation.canonical_policy_hash !== document.canonical_policy_hash
-        ) {
+        const policyAgrees = composed
+          ? compiledDraft !== null &&
+            compiledDraft.status !== "gate_unsupported" &&
+            compiledDraft.canonicalPolicyHash === document.canonical_policy_hash
+          : compilation !== null &&
+            compilation.kind === "supported" &&
+            compilation.canonical_policy_hash === document.canonical_policy_hash;
+        if (providerId !== null || !policyAgrees) {
           return yield* Effect.fail(failure("commit", "constraint"));
         }
         const createdResult = yield* transaction.execute<Row>({
@@ -2495,19 +1827,25 @@ export function makeControlPlaneCommunityCreationRepository(
         if (created >= accountCommunityCap) {
           return yield* settleQuotaExceeded(transaction, input, body, document, providerId);
         }
+        const activationCompilation = composed ? supportedHumanCompilation() : compilation;
+        if (activationCompilation === null || activationCompilation.kind !== "supported") {
+          return yield* Effect.fail(failure("commit", "constraint"));
+        }
         return yield* activateOptionalRouteV2(
           transaction,
           input,
           body,
           document,
           providerId,
-          compilation,
+          activationCompilation,
           null,
+          compiledDraft?.nationality ?? null,
         );
       }
       if (providerId === null) return yield* Effect.fail(failure("commit", "constraint"));
-      const compiledDraft = compileOptionalRouteDraft(document.draft.policy);
       if (
+        compilation === null ||
+        composed ||
         compilation.kind !== "supported" ||
         compiledDraft === null ||
         compiledDraft.status !== "verification_required" ||
@@ -2804,6 +2142,7 @@ export function makeControlPlaneCommunityCreationRepository(
           approvalExpiresAt,
           requirementHash: creatorRequirement.requirement_hash,
         },
+        null,
       );
     });
 

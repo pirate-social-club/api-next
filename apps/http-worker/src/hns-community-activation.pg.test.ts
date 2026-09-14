@@ -205,7 +205,7 @@ pgTest(
       expect(response.status).toBe(409);
       await expectUntouched(ready);
       const refreshJobs = await ready.admin.query<{ count: number }>(
-        "SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs WHERE root_import_session_id=$1 AND job_kind='observe_readiness'",
+        "SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs WHERE root_import_session_id=$1 AND job_kind='observe_readiness' AND state IN ('queued','leased')",
         [ready.sessionId],
       );
       expect(refreshJobs.rows[0]?.count).toBe(0);

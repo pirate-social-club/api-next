@@ -51,6 +51,8 @@ import {
   NotFound,
   ProviderUnavailable,
 } from "@pirate/contracts";
+import { compileAccountAgeVerificationPolicy } from "@pirate/domain";
+import { makeControlPlaneAccountAgeVerification } from "@pirate/platform-cf/account-age-verification";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { makeCommentThreadStore } from "@pirate/platform-cf/comment-thread-repository";
@@ -76,6 +78,11 @@ import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-reposi
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
 import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
+import { makeControlPlaneHandleNationalityAuthoringStore } from "@pirate/platform-cf/handle-nationality-authoring-repository";
+import {
+  makeControlPlaneHandleNationalityIntentResolver,
+  makeControlPlaneHandleNationalityQualificationStore,
+} from "@pirate/platform-cf/handle-nationality-qualification-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
 import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
@@ -128,6 +135,7 @@ import {
   makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "@pirate/platform-cf/namespace-ownership-start-repository";
+import { resolveNationalityAuthoring } from "@pirate/platform-cf/nationality-authoring";
 import {
   makeOpenAiTextModerationProvider,
   OPENAI_MODERATION_BASE_URL,
@@ -167,6 +175,7 @@ import {
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
+import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
 import {
   type CloudflareStudyGenerationWorkflowBinding,
   makeCloudflareStudyGenerationWorkflowLauncher,
@@ -185,6 +194,7 @@ import {
   makeStaticVerificationIntentResolver,
 } from "@pirate/platform-cf/verification-intent-resolver";
 import {
+  documentProviderBindings,
   makePlatformVerificationProviderRegistry,
   validVeryOauthOptions,
   validVeryWebOptions,
@@ -210,6 +220,7 @@ import { makeDanceAttemptHandlers } from "./dance-attempt-handlers.ts";
 import { makeProductionDanceAttemptServices } from "./dance-attempt-production-composition.ts";
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
+import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-authoring-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
@@ -263,6 +274,15 @@ export interface HttpWorkerBindings
   readonly HNS_ACTIVATION_CURRENT_VIEW_ENABLED?: string;
   readonly HNS_AUTHORITY_HSD_RPC_URL?: string;
   readonly HNS_AUTHORITY_HSD_AUTHORIZATION?: string;
+  /**
+   * The private HSD read route. A Cloudflare VPC service binding; its fetch
+   * must be invoked on the binding, so composition passes it bound. Absent
+   * keeps the derived observer on global fetch, which only works when the
+   * configuration points at a publicly reachable endpoint.
+   */
+  readonly HNS_AUTHORITY_HSD?: {
+    readonly fetch: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
+  };
   readonly HNS_AUTHORITY_CHAIN_NETWORK?: string;
   readonly HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH?: string;
   readonly HNS_AUTHORITY_TREE_INTERVAL_BLOCKS?: string;
@@ -289,6 +309,9 @@ export interface HttpWorkerBindings
   readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID?: string;
   readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL?: string;
   readonly ZKPASSPORT_DEV_MODE?: string;
+  readonly NATIONALITY_AUTHORING_ENABLED?: string;
+  readonly NATIONALITY_AUTHORING_POLICY_REVISION?: string;
+  readonly NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS?: string;
   readonly VERY_OAUTH_ENABLED?: string;
   readonly VERY_OAUTH_AUTHORIZATION_ENDPOINT?: string;
   readonly VERY_OAUTH_TOKEN_ENDPOINT?: string;
@@ -356,6 +379,12 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
+  /**
+   * Song-backed video (Spec 013 §5A). Off unless exactly "true". The request path
+   * after reservation is not composed yet, so enabling this alone lets a client
+   * preflight and reserve but not start a submission.
+   */
+  readonly VIDEO_SONG_REFERENCE_ENABLED?: string;
   readonly MEDIA_INGRESS_R2_ACCOUNT_ID?: string;
   readonly MEDIA_INGRESS_R2_BUCKET_NAME?: string;
   readonly MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID?: string;
@@ -474,6 +503,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL:
       bindings.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
     ZKPASSPORT_DEV_MODE: bindings.ZKPASSPORT_DEV_MODE,
+    NATIONALITY_AUTHORING_ENABLED: bindings.NATIONALITY_AUTHORING_ENABLED,
+    NATIONALITY_AUTHORING_POLICY_REVISION: bindings.NATIONALITY_AUTHORING_POLICY_REVISION,
+    NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS:
+      bindings.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS,
     VERY_OAUTH_ENABLED: bindings.VERY_OAUTH_ENABLED,
     VERY_OAUTH_AUTHORIZATION_ENDPOINT: bindings.VERY_OAUTH_AUTHORIZATION_ENDPOINT,
     VERY_OAUTH_TOKEN_ENDPOINT: bindings.VERY_OAUTH_TOKEN_ENDPOINT,
@@ -787,7 +820,30 @@ export async function createProductionHttpWorker(
   });
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
-  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane);
+  const selfPassOrigin = publicHttpsOrigin(config.PIRATE_API_PUBLIC_ORIGIN);
+  const nationalityAuthoring = resolveNationalityAuthoring({
+    enabled: config.NATIONALITY_AUTHORING_ENABLED,
+    policyRevision:
+      config.NATIONALITY_AUTHORING_POLICY_REVISION > 0
+        ? config.NATIONALITY_AUTHORING_POLICY_REVISION
+        : null,
+    evidenceLifetimeSeconds:
+      config.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS > 0
+        ? config.NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS
+        : null,
+    environment: config.API_NEXT_ENV,
+    selfPass:
+      config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
+        ? { callbackOrigin: selfPassOrigin, mockPassport: config.SELF_PASS_MOCK_PASSPORT }
+        : null,
+    zkPassport: config.ZKPASSPORT_ENABLED
+      ? { domain: config.ZKPASSPORT_DOMAIN, devMode: config.ZKPASSPORT_DEV_MODE }
+      : null,
+  });
+  const communityCreationStore = makeControlPlaneCommunityCreationStore(
+    controlPlane,
+    nationalityAuthoring === null ? {} : { nationality_authoring: nationalityAuthoring },
+  );
   const personaStore = makeControlPlanePersonaStore(controlPlane);
   const mediaServices =
     dependencies.media_services ??
@@ -824,6 +880,16 @@ export async function createProductionHttpWorker(
       sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
       personaServices: { personaStore },
       nowIso: () => new Date().toISOString(),
+      ...(bindings.VIDEO_SONG_REFERENCE_ENABLED === "true"
+        ? {
+            songInterval: {
+              store: makeControlPlaneSongVideoIntervalStore(controlPlane),
+              // The post read as the viewer: the same access rule as the post
+              // endpoint and video playback.
+              contentStore: makeControlPlaneContentStore(controlPlane),
+            },
+          }
+        : {}),
     } satisfies VideoPublicationServices;
   })();
   const mediaHandlers =
@@ -879,7 +945,6 @@ export async function createProductionHttpWorker(
   const callbackCredentialHeaderNames = callbackCredentialHeaders(
     config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
   );
-  const selfPassOrigin = publicHttpsOrigin(config.PIRATE_API_PUBLIC_ORIGIN);
   if (
     config.SELF_PASS_ENABLED &&
     (selfPassOrigin === undefined ||
@@ -966,10 +1031,40 @@ export async function createProductionHttpWorker(
       callback_credential_headers: callbackCredentialHeaderNames,
     }),
   );
+  const ageProvidersReady =
+    selfPassOrigin !== undefined &&
+    ["self.pass", "zkpassport"].every((provider) =>
+      verificationRegistry.list().some((manifest) => manifest.provider_id === provider),
+    ) &&
+    !(
+      config.API_NEXT_ENV === "production" &&
+      (config.SELF_PASS_MOCK_PASSPORT || config.ZKPASSPORT_DEV_MODE)
+    );
+  const accountAgeVerification = makeControlPlaneAccountAgeVerification(
+    controlPlane,
+    ageProvidersReady && selfPassOrigin !== undefined
+      ? compileAccountAgeVerificationPolicy(
+          documentProviderBindings({
+            environment: config.API_NEXT_ENV,
+            self_pass: {
+              callback_origin: selfPassOrigin,
+              mock_passport: config.SELF_PASS_MOCK_PASSPORT,
+            },
+            zkpassport: { domain: config.ZKPASSPORT_DOMAIN, dev_mode: config.ZKPASSPORT_DEV_MODE },
+          }),
+        )
+      : null,
+  );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
-    makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneCommunityCreationIntentResolver(
+      controlPlane,
+      config.API_NEXT_ENV,
+      nationalityAuthoring === null ? {} : { nationality_authoring: nationalityAuthoring },
+    ),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneHandleNationalityIntentResolver(controlPlane),
+    accountAgeVerification.intents,
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
   ]);
   const verificationHandlers = makeVerificationHandlers({
@@ -995,6 +1090,7 @@ export async function createProductionHttpWorker(
     identityStore,
     moderationStore,
     ageAccessStore,
+    ageVerificationStore: accountAgeVerification.store,
   });
   const communityCreationHandlers = makeCommunityCreationHandlers({
     communityCreationStore,
@@ -1052,6 +1148,9 @@ export async function createProductionHttpWorker(
   const activationCurrentView = makeProductionHnsActivationCurrentView(
     controlPlane,
     config.HNS_ACTIVATION_CURRENT_VIEW,
+    bindings.HNS_AUTHORITY_HSD === undefined
+      ? undefined
+      : bindings.HNS_AUTHORITY_HSD.fetch.bind(bindings.HNS_AUTHORITY_HSD),
   );
   const hnsCommunityServices:
     | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">
@@ -1255,6 +1354,11 @@ export async function createProductionHttpWorker(
         ),
     });
   })();
+  const handleNationalityAuthoringHandlers = makeHandleNationalityAuthoringHandlers({
+    store: makeControlPlaneHandleNationalityAuthoringStore(controlPlane, nationalityAuthoring),
+    qualification: makeControlPlaneHandleNationalityQualificationStore(controlPlane),
+    ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+  });
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -1409,6 +1513,7 @@ export async function createProductionHttpWorker(
       ...learnerAudioHandlers,
       ...hnsEdgeStatusHandlers,
       ...handleSalesHandlers,
+      ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
       ...songOwnerVideoPolicyHandlers,

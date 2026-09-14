@@ -1,0 +1,635 @@
+{
+  "api_commit": "4b9e84e6ab5b44ea433d8b23a84783054f0a098f",
+  "database": "disposable localhost:55437/song_local_e2e",
+  "rows": [
+    {
+      "version": "0001_v1_product_slice.sql",
+      "checksum": "6592c575801a7964dc5f051a611ec823a44db966759622d82a12ef964df71e93"
+    },
+    {
+      "version": "0002_identity.sql",
+      "checksum": "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112"
+    },
+    {
+      "version": "0003_m2_community_content.sql",
+      "checksum": "7201fac3e446d8f22056e412e938f595a17a71489cff83b74aec5440ee33007b"
+    },
+    {
+      "version": "0004_post_comment_lock.sql",
+      "checksum": "c14be1d97828bf424305860080a845953827babb36fd523d167cade523cef4cd"
+    },
+    {
+      "version": "0005_m2_behavior_invariants.sql",
+      "checksum": "707bbc14af35783fd4f41f351122a55815e62b92680351ff671e94da554142e9"
+    },
+    {
+      "version": "0006_public_profile_handle_index.sql",
+      "checksum": "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522"
+    },
+    {
+      "version": "0007_public_profile_handle_invariants.sql",
+      "checksum": "bd7f740d0003f3897cf8b508138fcdf470a8d0f102032af484244ac32466aeb1"
+    },
+    {
+      "version": "0008_community_route_slug.sql",
+      "checksum": "58b5e111b59eb094d976498646ff1269f6e8e5393774055c82872de8fa51bbf8"
+    },
+    {
+      "version": "0009_gates_v2_foundation.sql",
+      "checksum": "39a5312194ee479f92c31fdb4d0ddfcc6e4616b235203b45d43fa94afd29cbf0"
+    },
+    {
+      "version": "0010_proof_session_provenance.sql",
+      "checksum": "ad796f966ef55c4b3d9a7bb51978278d55387e7302e133fc7f15f6965b76c3ce"
+    },
+    {
+      "version": "0011_verification_start_reservations.sql",
+      "checksum": "691628fe1be5fbfbd2e48ad227952560020c395b4776d0c2f70d056c34138159"
+    },
+    {
+      "version": "0012_verification_completion_attempts.sql",
+      "checksum": "d04d65a642931cd62909986276779f6dd6ed84eb7ebd418cf04f085830211b32"
+    },
+    {
+      "version": "0013_m3_community_purchase_funding_journal.sql",
+      "checksum": "a3bb7deed76d76c1642220cf54b5dd277cbbaf0239946cd6a9967328e2e277a3"
+    },
+    {
+      "version": "0014_m3_community_purchase_funding_plans.sql",
+      "checksum": "a60a534038ef9e56e5e8fb50ae10c92a74b7333f97c289cf8cc298676673ec98"
+    },
+    {
+      "version": "0015_identity_credentials.sql",
+      "checksum": "c903d74fdc282b1ab3b0c0be3d46758ba1c50f30282c0d02976b52c43b92966f"
+    },
+    {
+      "version": "0016_identity_credential_invariants.sql",
+      "checksum": "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220"
+    },
+    {
+      "version": "0017_identity_credential_delete_guard.sql",
+      "checksum": "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa"
+    },
+    {
+      "version": "0018_m3_funding_dormancy_and_retention.sql",
+      "checksum": "c19f6ec203846697d3a46f959b329e1e97fc3e4c603f653038017ab42074ec40"
+    },
+    {
+      "version": "0019_m3_reconciliation_attempts.sql",
+      "checksum": "d7813cbab52d4bd14cc9d6eee7ac52e3715969fbc1f1edd6c79b75425aeb9434"
+    },
+    {
+      "version": "0020_m3_reconciliation_finalization.sql",
+      "checksum": "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f"
+    },
+    {
+      "version": "0021_m3_community_purchase_commerce.sql",
+      "checksum": "1342c73b093b0f5411d50abd56f351ea3d933e98965a4cc3228acd17fcee7a85"
+    },
+    {
+      "version": "0022_m3_community_purchase_immutability.sql",
+      "checksum": "98cf64d09d6f1e4d7b476bc012e9e02bca20a8a083b0376fd80dca5fef89cbb8"
+    },
+    {
+      "version": "0023_community_creation_intents.sql",
+      "checksum": "e3e045fb07a89325212bab96bef59370d2a3d414b443157963498fb3b8eeaea1"
+    },
+    {
+      "version": "0024_community_creation_preflight_transition.sql",
+      "checksum": "8f258b91b338efdca83e687e71189459709e4dfd4e649079092660ad1de08a39"
+    },
+    {
+      "version": "0025_community_creation_storage_identity.sql",
+      "checksum": "5e08dc481492e40cd6bd9fcda916221f257cd379c20d02af4231b136209be53d"
+    },
+    {
+      "version": "0026_text_moderation_foundation.sql",
+      "checksum": "08fe7eba04014d148a515f9a4c6074fd727ec58358678f1434d05c9a8bd0f703"
+    },
+    {
+      "version": "0027_community_routes_and_creation_requirements.sql",
+      "checksum": "7cc43a77e074e5ac14669815d033a3677c82a75a261700a693477a82d58aaf11"
+    },
+    {
+      "version": "0028_community_creation_requirement_result_guard.sql",
+      "checksum": "bb67fa0b7a8c4bcab14d500cbf46a990e4e78c8171956075cf433c15ef977ad8"
+    },
+    {
+      "version": "0029_namespace_ownership_persistence.sql",
+      "checksum": "4fcc989911f8dd07e05bcc490af4b0f63ba9c161487df3508471b5e01ccd96c2"
+    },
+    {
+      "version": "0030_namespace_ownership_completion_expiry.sql",
+      "checksum": "002e4da17a07f22d71c47b7486e1e7d5ce103fe2ab6da698ad6e9386be44af67"
+    },
+    {
+      "version": "0031_community_creation_route_contract.sql",
+      "checksum": "d4f01fb04463f9003dd70e3eabfd01a23b9192031d44eb1cae5049ec29e8e984"
+    },
+    {
+      "version": "0032_route_authority_version.sql",
+      "checksum": "4986031d6a8a300f688c98916b60e38152bb3d6ed1c5c484a39f77b1c1843a71"
+    },
+    {
+      "version": "0033_namespace_ownership_challenge_topologies.sql",
+      "checksum": "8c61977312fa80550d2cd725c2907aaf4052b24b3b61f4081b8664ad3d67e843"
+    },
+    {
+      "version": "0034_effective_active_route.sql",
+      "checksum": "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d"
+    },
+    {
+      "version": "0035_route_revalidation_persistence.sql",
+      "checksum": "a6a076e6b6edb734923145f1d3b4ab22c6cfcd956aba9075e0aaf9814e5d67de"
+    },
+    {
+      "version": "0036_route_revalidation_completion_outcome_guard.sql",
+      "checksum": "b4af7d73fe2cf540d10b44cd2f063f2f7f0168fee380aacb79333d5659941d4b"
+    },
+    {
+      "version": "0037_text_submission_response_snapshot.sql",
+      "checksum": "2bf8fcff4b86d40a2d9f86c0b4f9f56b2c962dacbb19ccaea3e3dd2afd55b581"
+    },
+    {
+      "version": "0038_community_creation_very_web_evidence.sql",
+      "checksum": "a8473ffa7623357cac90a7364fe7a0c237bdae419d0feb35714b495be2721a20"
+    },
+    {
+      "version": "0039_comments_replies_runtime.sql",
+      "checksum": "66089597fce8c360698ef11b8757926e1ca6eddfb59019c3bad6f86ca7c8d095"
+    },
+    {
+      "version": "0040_post_vote_actions.sql",
+      "checksum": "5fc51ad2ab08717fce95fae558e4ac1fad06e01bd952c4bdc5e307f4fa1e9df7"
+    },
+    {
+      "version": "0041_community_route_database_expiry.sql",
+      "checksum": "1c1cce2549d8568843c44e1ab0025ef90129a2feb01cf1c929454887ed52de9a"
+    },
+    {
+      "version": "0042_hns_control_observer_persistence.sql",
+      "checksum": "7366dd7df2e5d628406d1a638ea5217199044e84e1e03592be12698b545dc186"
+    },
+    {
+      "version": "0043_song_media_submission.sql",
+      "checksum": "f9f3413a9f77d4f44c5ac465d0d620f965eea4703b7941c7531d6944d0b732c7"
+    },
+    {
+      "version": "0044_optional_route_v2.sql",
+      "checksum": "c2c16da7523f604e4d85e242ac0a43bbce9c95aa73215c2fd07d179b9d12e328"
+    },
+    {
+      "version": "0045_hns_owner_authority_custody.sql",
+      "checksum": "54c1a874bfe1800abe1c4f6e6189be35f960f5247da7fda3bf2603bbf6bf8d71"
+    },
+    {
+      "version": "0046_account_persona_wallet_privacy.sql",
+      "checksum": "f9b16c3b24d193436064afb6603d4d8fa6f25708d7f711da3e47f9b7f915110a"
+    },
+    {
+      "version": "0047_hns_operator_managed_routes.sql",
+      "checksum": "12fb282449f8dd26894635afd22a3fdc575b64a7e707315873453db2a511a567"
+    },
+    {
+      "version": "0048_hns_first_party_host_persistence.sql",
+      "checksum": "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5"
+    },
+    {
+      "version": "0049_bare_hns_community_route_v2.sql",
+      "checksum": "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c"
+    },
+    {
+      "version": "0050_song_lyrics_foundation.sql",
+      "checksum": "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57"
+    },
+    {
+      "version": "0051_activity_qualification.sql",
+      "checksum": "6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7"
+    },
+    {
+      "version": "0052_media_finalize_fence.sql",
+      "checksum": "2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644"
+    },
+    {
+      "version": "0053_rewards_song_offers.sql",
+      "checksum": "5c6175c5e684f6adb0742cb75141e528810ab8b2cb44b1a90391dc72dc730cc0"
+    },
+    {
+      "version": "0054_community_handle_sales.sql",
+      "checksum": "869f13813fb28af2f850b17865057f532500a94a997c9b47587bbe499d6713bf"
+    },
+    {
+      "version": "0055_megapot_claim_reconciliation.sql",
+      "checksum": "7080bc0156f8dfb36202c3e67321bf8bcc7fd4a6d5bd9ccf5710a26aabb7c552"
+    },
+    {
+      "version": "0056_media_processing_runtime_bridge.sql",
+      "checksum": "52b7e2075d87ff91274774bafd94270744847728ada07deb2ff7a6aa35f4f054"
+    },
+    {
+      "version": "0057_data_registration_persistence.sql",
+      "checksum": "a11f28beba567660b4350ab6de117a3999c495e70ecc51a5897aa2638d1e1921"
+    },
+    {
+      "version": "0058_data_ipfs_and_signing_intent_repair.sql",
+      "checksum": "550be77e955da377a0de24df9496e0d1a37a0b1f4ad133d1ff309d34647aed07"
+    },
+    {
+      "version": "0059_community_moderation_authority_policy.sql",
+      "checksum": "0ff247fc81ea719bf90e40c693613cb456e46648c668ab10314b4ab527937f90"
+    },
+    {
+      "version": "0060_persona_wallet_provisioning.sql",
+      "checksum": "1c07a066a155c65bcd0d7326dcb66ae39d92d27dd86b535586a0e4236e66c9ba"
+    },
+    {
+      "version": "0061_openai_moderation_driver_cutover.sql",
+      "checksum": "77a2409573f48881abc047e552a5e449eaaa6fd2aede89aa7e1cf5508a9d99a3"
+    },
+    {
+      "version": "0062_global_pirate_handle_cleanup_rename.sql",
+      "checksum": "c1ff78018c39632d8f36637a3b5b46d9a788b1d120f5777d4b129168314f1ea5"
+    },
+    {
+      "version": "0063_community_moderation_owner_runtime.sql",
+      "checksum": "5bfb22c32a6bc7d7fcaa92bd4297cbb919a48c41d6ea7699f4b4edbd21da7abe"
+    },
+    {
+      "version": "0064_media_persona_recipient_trigger.sql",
+      "checksum": "6fff6043e2236061e77f3b87ee312ec6cca98a5dc9e2228660f38b6cedbae015"
+    },
+    {
+      "version": "0065_text_ratings_age_access.sql",
+      "checksum": "29cc1bad5973a01647fd74000d4feaf10dcd0a1077ebe7af4dc50cc805e9e065"
+    },
+    {
+      "version": "0066_song_ratings_age_access.sql",
+      "checksum": "2a62aed69cabd1f7786aa3d6f5baf8cd3b555320c67bf850b199211d4c0fe09f"
+    },
+    {
+      "version": "0067_hns_authority_resolver_search_path.sql",
+      "checksum": "8e8b7bb9b39de801f224c174ae51643ee6c43e97e2caf06a24e48aead8f0cd38"
+    },
+    {
+      "version": "0068_general_audience_song_covers.sql",
+      "checksum": "131a3f48ad834650154085d691ef76e44be89e3a7317b45180c1481e082738e1"
+    },
+    {
+      "version": "0069_media_analysis_snapshot_recovery.sql",
+      "checksum": "7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca"
+    },
+    {
+      "version": "0070_localization_content_foundation.sql",
+      "checksum": "efd415fde354fa2e46c4aef53e8a7be0fef3f0f731495d1f265f5d08870e7905"
+    },
+    {
+      "version": "0071_canonical_lyric_line_lifecycle.sql",
+      "checksum": "9e8e11f14384f8ff5eeaccdb8ff55de60917c6103de205f921aa0b75fc9601b5"
+    },
+    {
+      "version": "0072_private_language_preferences.sql",
+      "checksum": "fcb1f6a349a1db0a7f6e67056c3c9269cec4e69c0bba1f1557c12f8d285b7af6"
+    },
+    {
+      "version": "0073_immutable_lyrics_revision_line_anchor.sql",
+      "checksum": "0e8ddf6480c3fdb81c2d72a205c7add48dbed7e979e5bb03fef8f41afefd5eae"
+    },
+    {
+      "version": "0074_study_v2_foundation.sql",
+      "checksum": "680b30cd8aeec54c931aa156cbedf88a6e23d929e97c22b646f8e063492acf5b"
+    },
+    {
+      "version": "0075_study_v2_identity_fencing.sql",
+      "checksum": "c5f62eee72522399510d2c3f04e861387cccc896d3a2e199c681c9009b83b3ea"
+    },
+    {
+      "version": "0076_study_v2_idempotency_fencing.sql",
+      "checksum": "69586d61e0e22b9e3e13fa0be4de7fc2dd4c87133c30e1e136850cea78151b38"
+    },
+    {
+      "version": "0077_reserved_ordinal.sql",
+      "checksum": "fa1134d6f90385b18b73473e891edfa8d8112aaa2a52a8e1b20ef0d0d23f5f97"
+    },
+    {
+      "version": "0078_study_runtime_amendment.sql",
+      "checksum": "3af2be51ad26c344347a99c5bda3732b008160a0989ce16d30447f1c00893fb0"
+    },
+    {
+      "version": "0079_karaoke_readiness_policy_v2.sql",
+      "checksum": "0cfd96ba9106bb2ac46931b91bb0da7ca034e0d646b215a42cb987019b3e0953"
+    },
+    {
+      "version": "0080_study_lesson_engine.sql",
+      "checksum": "91030aebbbbccbabec6cf198dfff9ad7abbe9a81074ea5a43187103e215e7f52"
+    },
+    {
+      "version": "0081_karaoke_realtime_runtime.sql",
+      "checksum": "59e41e7ee44ccbed70057bc1edd694a67ecfdde6726b46ca9b8254a4d4344f52"
+    },
+    {
+      "version": "0082_study_translation_exercises.sql",
+      "checksum": "f21cb37b7f83dccf085906a69104e915f0142ff0a29e944c87cd2d0b266d4f69"
+    },
+    {
+      "version": "0083_learner_audio_deletion.sql",
+      "checksum": "e64265e6bf794319c544dfa7d803b84b381d6489c3128d981b2fe54fa681158b"
+    },
+    {
+      "version": "0084_study_language_profile_proper_names.sql",
+      "checksum": "f99d486922b84a85e05333aa4ceb83a2793bb8fe11de66f5d8b10fd768529dfa"
+    },
+    {
+      "version": "0085_rewards_prebroadcast_purchase_terminal.sql",
+      "checksum": "9290143e9edbdf61a366d45065d65e48e2589127cc28b0230826f307732e1022"
+    },
+    {
+      "version": "0086_rewards_drawing_offer_window_guard.sql",
+      "checksum": "4bebbf006bd365c843c63ef691d1f76fa172f3629d91d78476fa71d9d1af0d48"
+    },
+    {
+      "version": "0087_study_unit_exercise_eligibility.sql",
+      "checksum": "80902f630f4db0e0dc135c9f5ec027a20ea71c5e391f375e90b3ecb259d04984"
+    },
+    {
+      "version": "0088_rewards_song_asset_bonus.sql",
+      "checksum": "549e78987df022b877ff365601c21146819a630d658b014b80ad35018fe09371"
+    },
+    {
+      "version": "0089_hns_app_host_active_refresh.sql",
+      "checksum": "a2b620bf31ef26f9ca7004fac2db4c385ce67ab6cd5d931fb8119b0caf08efad"
+    },
+    {
+      "version": "0090_hns_operator_route_control_promotion.sql",
+      "checksum": "6015d7ff968adc93d433b1cce9ab39ee8a653db9071005a1e7581f8f3239d191"
+    },
+    {
+      "version": "0091_study_runtime_seam_hardening.sql",
+      "checksum": "c43c90ac75b30d5189c8930427027c130fab6d02226f94b3f876039c6e3ba006"
+    },
+    {
+      "version": "0092_hns_sale_namespace_active_refresh.sql",
+      "checksum": "3719f3e50ae0823c0b59aff93ca0c21161558403b626b410717de71b2ee2729d"
+    },
+    {
+      "version": "0093_study_spoken_phonetic_parity.sql",
+      "checksum": "011eed958c509fafcad6a3c2dc1bcc1ea72d54486c37354665fb6e43c61db0c7"
+    },
+    {
+      "version": "0094_dance_reference_shadow.sql",
+      "checksum": "af0c57a819ccd1d95e6d2f8d512ede1131ad64f95bbd4b415747cda808dfd4a3"
+    },
+    {
+      "version": "0095_hns_outer_operations.sql",
+      "checksum": "739d115516286cadec790eb6623e4321336aed655ab6d9a07f7a4923c1b93bb3"
+    },
+    {
+      "version": "0096_study_translation_prompt_v3.sql",
+      "checksum": "30cf9030e7f63d82c26d22db43dcd3d13b8670b198ab4084596f6b7b7958a946"
+    },
+    {
+      "version": "0097_hns_operator_evidence_recovery.sql",
+      "checksum": "028c89be72a2f001ef3d502ffb6204e0a43e9c86f94844461453630797443ecc"
+    },
+    {
+      "version": "0098_hns_dns_evidence_lease_window.sql",
+      "checksum": "2a0ab79bce1eeca59b69363952cbda3a71df4adfbf00c47118688b71be08984a"
+    },
+    {
+      "version": "0099_hns_root_import_foundation.sql",
+      "checksum": "2d416fd997b4c5d924f614ae809ace47403a48449d0d194d0bf76e9464d46d9b"
+    },
+    {
+      "version": "0100_rewards_megapot_prize_pool_projection.sql",
+      "checksum": "1c2c7a4dba458b33a89f26ccfa8c7abfe9aea775d9e4ea95118ebecb82f4c8e6"
+    },
+    {
+      "version": "0101_hns_root_import_production_readiness.sql",
+      "checksum": "b7e0a1a056ea4e9859eead9ae724ed1967bc799c35f78961273f5acf81e8f6f9"
+    },
+    {
+      "version": "0102_dance_attempt_shadow.sql",
+      "checksum": "53975b928b5416017376a14ba32f5cf70e976f00153bffb6fab7ead9c8c21f40"
+    },
+    {
+      "version": "0103_public_post_slug_aliases.sql",
+      "checksum": "75c36d6615851a18e5dc0841aed778a3c935812a6da018b8a49170ddca5fdcf1"
+    },
+    {
+      "version": "0104_text_held_revision_visibility.sql",
+      "checksum": "9df8df4b7459ee4ada09879da7c9aff35cb3ff9b3d11553604704cb11b6569b8"
+    },
+    {
+      "version": "0105_karaoke_finalization_recovery.sql",
+      "checksum": "b5752e67ee87c1389994a68ac74bec3e51424ec81bea790bfa50aa8df717f52f"
+    },
+    {
+      "version": "0106_hns_root_import_name_signature_proof.sql",
+      "checksum": "e61e700c45b98320993f7a4f5f72570c074d505162ebeb8d94bc7f2d7357e1c5"
+    },
+    {
+      "version": "0107_song_owner_video_policy.sql",
+      "checksum": "f228772b3f6dd4c48edec3d4631731f45c413859c0ab7a6bd1edc021e3bb7233"
+    },
+    {
+      "version": "0108_song_reward_leg_policy_freeze.sql",
+      "checksum": "c4f7bb18d83d8a22a3f3b189babb834f81a54098f5c1d1a28e50398bc8e87509"
+    },
+    {
+      "version": "0109_creation_requirement_removal.sql",
+      "checksum": "e31e348370e1d55273a0d47366695f4fa0dd097f5e688c8ab523fc60204a8138"
+    },
+    {
+      "version": "0110_persona_community_bindings.sql",
+      "checksum": "a7d7746c78955dc6b417303484f7c35cf09d13e0709a73210a303919830f29f3"
+    },
+    {
+      "version": "0111_community_creation_create_new_persona.sql",
+      "checksum": "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94"
+    },
+    {
+      "version": "0112_community_membership_follow_invariant.sql",
+      "checksum": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941"
+    },
+    {
+      "version": "0113_account_community_membership_discovery.sql",
+      "checksum": "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92"
+    },
+    {
+      "version": "0114_video_original_audio_publication.sql",
+      "checksum": "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54"
+    },
+    {
+      "version": "0115_hns_community_root_import.sql",
+      "checksum": "06fdb46edb803867a074b40af3e4d1506bd43c0cb67268f2d1dc91a7834ac899"
+    },
+    {
+      "version": "0116_hns_community_root_import_transitions.sql",
+      "checksum": "d33231aa5084f885e5529b392d3534f7439336e6f12b402cdbe385d2527cb3f1"
+    },
+    {
+      "version": "0117_hns_route_attachment_completion.sql",
+      "checksum": "fac26341f2a5717157a9db77702f0fd5abab220858c181a4c23198c4c5ba8ba3"
+    },
+    {
+      "version": "0118_hns_community_root_activation.sql",
+      "checksum": "f49062df910eb1fe89c44a1ac0bcad08857ab3d7978fcbd7480a084dc90838f2"
+    },
+    {
+      "version": "0119_hns_root_health_renewal.sql",
+      "checksum": "1870db49b6e76c6cd748889e8bdb2a64a2283e2af0515b14c65f1f89d45cc73a"
+    },
+    {
+      "version": "0120_hns_root_health_renewal_recovery.sql",
+      "checksum": "c4cf5757d3c6951502186637398504df7b9be02ecbff1b7c30819bb226ada399"
+    },
+    {
+      "version": "0121_hns_imported_inventory_renewal.sql",
+      "checksum": "3d83fb50b91572af79780bd80deff588aa4d5a8b00f14c3f410793d57bca2977"
+    },
+    {
+      "version": "0122_video_workflow_execution.sql",
+      "checksum": "cbaba4484fa88ceed38e3ac8149e70e9309e0308d4e71f215f576038f6db5446"
+    },
+    {
+      "version": "0123_video_source_grants.sql",
+      "checksum": "2cbee9ae295db74ca1c01cf70c9e5c1c4dcfa72d821bf22db702a533df956214"
+    },
+    {
+      "version": "0124_video_safety_evidence.sql",
+      "checksum": "1def57d4bddd8e1f218f3eb8e0111c1acb0fb9ecbb417b581265eba6d456d4bf"
+    },
+    {
+      "version": "0125_video_publication_failure_reasons.sql",
+      "checksum": "3e2d858364ac3ff1f672485c28322d8a9b0ff398d53dd3c7e696ab4fa1c966a4"
+    },
+    {
+      "version": "0126_hns_renewal_execution_privileges.sql",
+      "checksum": "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36"
+    },
+    {
+      "version": "0127_video_delivery_ingest.sql",
+      "checksum": "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8"
+    },
+    {
+      "version": "0128_hns_provisional_community_import.sql",
+      "checksum": "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2"
+    },
+    {
+      "version": "0129_community_owner_activation.sql",
+      "checksum": "1ea84e5253c85487a6200876cae1bd3caaf19da521afba8ab2a09f0677255424"
+    },
+    {
+      "version": "0130_hns_publication_continuation.sql",
+      "checksum": "3fef5b0a9a29ffa126a46e5e27108c573501287c9cbad448af126c373c6ddc48"
+    },
+    {
+      "version": "0131_community_telegram.sql",
+      "checksum": "a0609b08f195fa61681893db007f2b88ba3d750a57d36806f2c27988237dcd77"
+    },
+    {
+      "version": "0132_song_reference_decision_wakeup.sql",
+      "checksum": "87616f9efad291b5c18475b0d472427616028ceaa8d8ede709ed2cad9b7c406e"
+    },
+    {
+      "version": "0133_song_reference_publication_resume.sql",
+      "checksum": "d8645cf1a114e82e6c0978403f8e2b61328dca85d481f10a62044615b89ea691"
+    },
+    {
+      "version": "0134_reward_qualification_terms.sql",
+      "checksum": "c4e42b5a044e36b56f212d7f33bcee10e126ab616757022f24b40b76f368b828"
+    },
+    {
+      "version": "0135_song_source_recording_authority.sql",
+      "checksum": "fdef3c6d12c22db8b9bb508510252b6e3c5c0dd3156b44ff97247eaced05e96c"
+    },
+    {
+      "version": "0136_hns_existing_name_attachment.sql",
+      "checksum": "52daabc2ac8d8efc5138dad17c6f5e1e06f89e62880bd476e1dac82c2a35a621"
+    },
+    {
+      "version": "0137_hns_root_import_lifecycle.sql",
+      "checksum": "d815181433623ed83fc32b7cb639ffb9238d19deff24ab8a8347f8fd186f6889"
+    },
+    {
+      "version": "0138_hns_lifecycle_execution_privileges.sql",
+      "checksum": "451b07af678160d77eaebe828aeb78f986553d4a3b6aa5b55877c2df358421d7"
+    },
+    {
+      "version": "0139_hns_lifecycle_readiness_invalidation.sql",
+      "checksum": "2aa962f9c7066d87c53ca63a70f5252985b31de8c6bcb95630c8126d3c9ca090"
+    },
+    {
+      "version": "0140_hns_retention_reviews.sql",
+      "checksum": "9aab02e9eaffea826ed9c564344b4c76d1053fed94356171ed8c5bef258bf23c"
+    },
+    {
+      "version": "0141_hns_lifecycle_execution_ownership.sql",
+      "checksum": "ee714304522f96e893e904f7b301332fa8e83ae61a3807c9d6fae220133a62e0"
+    },
+    {
+      "version": "0142_hns_retention_reviewer.sql",
+      "checksum": "2b2c48f4415e033576f0a49e4cdf20197fb0303042c441e6528b66351a569869"
+    },
+    {
+      "version": "0143_hns_lifecycle_observation_evidence.sql",
+      "checksum": "6363eb1608bca212fd4af7e687681f92774050284e67bc2e2bb1ec7a672abf0a"
+    },
+    {
+      "version": "0144_hns_incident_recovery.sql",
+      "checksum": "39a16e4f38b1af75262cd7ee3bff9438d4877af63e3c618a17924931792e2c37"
+    },
+    {
+      "version": "0145_hns_recovery_and_observation_fences.sql",
+      "checksum": "d42cf6f897d45f789a1c3cbd68634b74f8252a35d2ac5ecb2036f88d8e8bfa3c"
+    },
+    {
+      "version": "0146_hns_recovery_adoption.sql",
+      "checksum": "d040bcbe054543970778d7dab041136a617f01d521fb1624c76216d43bcd8a04"
+    },
+    {
+      "version": "0147_hns_withdraw_readiness_ownership.sql",
+      "checksum": "8ac8896a7140fdc48d11d508609e0261215e2af6068e24cd8b079377543a7068"
+    },
+    {
+      "version": "0148_hns_observation_decision_fence_and_adoption_replay.sql",
+      "checksum": "86e87ec877a999008f9d15f9e86896e8414b266569a76afe4f40bd97f1792f76"
+    },
+    {
+      "version": "0149_hns_observation_provenance_fence.sql",
+      "checksum": "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700"
+    },
+    {
+      "version": "0150_hns_readiness_ownership_handover.sql",
+      "checksum": "4e4b6436b2c483453fce346723909803b0f1df09d34d54b20ed2dab341a8ddf0"
+    },
+    {
+      "version": "0151_hns_readiness_ownership_corrections.sql",
+      "checksum": "9de4683d329d386da963c9b442313e41c71c28b07da93348eec89f24863afbad"
+    },
+    {
+      "version": "0152_hns_lifecycle_activation.sql",
+      "checksum": "9ac2995e6a552c8d99a2fbeccdf7587d2af929c1f845bc609833513b83f77342"
+    },
+    {
+      "version": "0153_hns_activation_policy.sql",
+      "checksum": "525b67fc6e379ecc33183cad0bc3451f2bcf96820d86984033daa3ffded7821c"
+    },
+    {
+      "version": "0154_hns_expiry_consumers.sql",
+      "checksum": "2cd4977a1f2f02e167d5ab38a2517c4531483e93109dd88f6496fbdb0776072a"
+    },
+    {
+      "version": "0155_hns_expiry_consumers_legacy.sql",
+      "checksum": "97dd927ef8710e26bcafbe46d80e7a3cb54594527a88a01eea6eae5d76de3db3"
+    },
+    {
+      "version": "0156_hns_readiness_deadline_guard_removal.sql",
+      "checksum": "e33e1eb284ca2ebb15957db9fdf72336b42b0c992f5c24110623d1545205f001"
+    },
+    {
+      "version": "0157_recovery_inspection_cursors.sql",
+      "checksum": "9a50753f346f224f65faaf77db3f34965ce88d394dd525c64d341233f0257bb4"
+    }
+  ],
+  "checksum_match": true
+}

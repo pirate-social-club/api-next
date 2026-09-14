@@ -1,6 +1,9 @@
 /** Pure Spec 013 song creation state machine. */
 
-import type { ModerationPolicyCategoryV1 } from "./content/community-moderation-policy.ts";
+import {
+  MODERATION_RATING_RULE_V2,
+  type ModerationPolicyCategoryV1,
+} from "./content/community-moderation-policy.ts";
 
 export type SongType = "original" | "remix";
 export type MediaSubmissionPhase =
@@ -147,6 +150,8 @@ export type TrustedSongAnalysis = Readonly<{
     }> | null;
   }>;
   contentModeration?: Readonly<{
+    /** Omitted only by retained predecessor evaluations. */
+    ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
     decision: "allow" | "manual_review" | "blocked";
     resultingContentRating: "general" | "adult_18";
     inputSha256: string;
@@ -183,6 +188,7 @@ export type ProcessingFailureCode =
   | "hash_failed"
   | "transform_failed"
   | "publication_failed"
+  | "workflow_terminal_unconverged"
   | "upload_seal_conflict";
 export type ProcessingFailure = Readonly<{
   code: ProcessingFailureCode;
@@ -657,7 +663,9 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
     return false;
   if (
     analysis.contentModeration !== undefined &&
-    (!["allow", "manual_review", "blocked"].includes(analysis.contentModeration.decision) ||
+    ((analysis.contentModeration.ratingRuleRevision !== undefined &&
+      analysis.contentModeration.ratingRuleRevision !== MODERATION_RATING_RULE_V2) ||
+      !["allow", "manual_review", "blocked"].includes(analysis.contentModeration.decision) ||
       !["general", "adult_18"].includes(analysis.contentModeration.resultingContentRating) ||
       !validId(analysis.contentModeration.inputSha256) ||
       !validId(analysis.contentModeration.policyRevision) ||
@@ -732,7 +740,18 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
     !sameReference(state.analysis.boundReference, state.boundReference)
   )
     return "reference_projection";
-  if ((state.decisionRevision === 0) !== (state.decision === null)) return "decision_presence";
+  // Recovery retains the historical decision counter while requiring a new
+  // decision for the new creation revision. A counter alone never permits publish.
+  if (
+    (state.decisionRevision === 0 && state.decision !== null) ||
+    (state.decisionRevision > 0 &&
+      state.decision === null &&
+      !(
+        state.status === "processing" &&
+        (state.phase === "analysis" || state.phase === "decision")
+      ))
+  )
+    return "decision_presence";
   if (
     state.decision !== null &&
     (state.decision.decisionRevision !== state.decisionRevision ||
@@ -1011,7 +1030,7 @@ export function transitionMediaSubmission(
         analysis: command.analysis,
         boundReference: command.analysis.boundReference ?? current.boundReference,
         decision: null,
-        decisionRevision: 0,
+        decisionRevision: current.decision === null ? current.decisionRevision : 0,
         status: "processing",
         phase:
           command.analysis.acr.decision === "inconclusive"

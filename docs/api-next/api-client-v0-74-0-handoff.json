@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.74.0",
+  "sourceBranch": "feat/nationality-gated-join-and-handle-qualification",
+  "wireContract": "Additive over 0.73.0: GET /communities/:communityId/join-eligibility now returns a discriminated union. Composed communities (a current curated-nationality policy) emit join_eligibility_version=provider_choice_v2 with requirements.human_identity, an optional requirements.nationality carrying requirement_hash, the currently bound provider_id, accepted_provider_ids [self.pass, zkpassport], ceremony_intent_id and generation, and a requirement-typed next_action whose start action names the requirement, the bound provider, and the server-issued ceremony intent id. Palm-only and membership states keep the v1 projection unchanged. A 0.73.0 consumer fails strict decoding when a provider_choice_v2 payload arrives, so the Solid consumer must move to 0.74.0 before composed join eligibility is advertised.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.74.0.tgz",
+    "sha256": "0ad3ee9e95537994bf18893b3a80a96a89a4c5005df71dab2460cff3bca929a7"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.74.0",
+    "sourceIdentifier": "api-next-contracts@4275750bb88c6206085956ff90cca55d25a0b390f20512f7f5e7443196bae422",
+    "openapiSha256": "4275750bb88c6206085956ff90cca55d25a0b390f20512f7f5e7443196bae422",
+    "clientSha256": "d0e6bd2cd87f232541dce23e710be004bef967447e2806d37604a4fa1712153c"
+  },
+  "verification": {
+    "status": "Cut from the nationality lane with the composed join eligibility contract and provider-choice projection; the focused PostgreSQL suite proves issuance, either-provider starts, generation-fenced switching, completion, and the separate evidence-rechecked join. No consumer-side update is included in this lane, and the Solid upgrade remains a separate coordinated step."
+  }
+}

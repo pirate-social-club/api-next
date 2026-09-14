@@ -52,6 +52,7 @@ describe("video Post projection contracts", () => {
         song_title: "Referenced song",
         song_author_persona_id: "persona-song-1",
       },
+      render_mode: "canonical_replace",
     } as const;
     expect(Schema.decodeUnknownSync(VideoSoundtrackProjectionV1, exact)(soundtrack)).toEqual(
       soundtrack,

@@ -646,14 +646,20 @@ const requestId = (context: HttpContext): string => {
 // by unbounded intermediary caching. Well under any sane rotation interval.
 const PUBLIC_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 const HANDLE_SALES_MANAGEMENT_PATH =
-  /^\/communities\/[^/]+\/handle-sales-management(?:\/(?:sale-namespaces|offerings))?$/u;
+  /^\/communities\/[^/]+\/(?:handle-sales-management(?:\/(?:sale-namespaces|offerings))?|handle-nationality-(?:authoring|qualification-policies))$/u;
 const CANONICAL_ONLY_ENDPOINTS = new Set([
+  "GetHandleNationalityAuthoring",
+  "GetHandleNationalityQualification",
+  "CreateHandleNationalityQualificationPolicy",
   "DeliverHnsEdgeAlert",
   "GetHandleSalesManagement",
   "ListHandleSaleNamespaceManagement",
   "ListCommunityHandleOfferingManagement",
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "GetHandleNationalityAuthoring",
+  "GetHandleNationalityQualification",
+  "CreateHandleNationalityQualificationPolicy",
   "RegisterIdentity",
   "ListMyPersonas",
   "ListMyPendingPersonaWallets",
@@ -992,6 +998,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             !isPublic(binding.endpoint) ||
             binding.name === "GetPublicPersona" ||
             binding.name === "GetPublicCommunityThreads" ||
+            binding.name === "GetPublicHomeFeed" ||
+            binding.name === "GetPublicPostSitemap" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||

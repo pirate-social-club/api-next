@@ -1,11 +1,11 @@
 import { afterEach, expect } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { verifyKaraokeReconciliation } from "../packages/platform-cf/src/karaoke-reconciliation.ts";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import { KARAOKE_RESET_OBJECT_IDS } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
 import { makeKaraokeCollectorFixture } from "../packages/testing/src/karaoke-collector-fixture.ts";
+import { makeProcessLifetimeTestDirectory } from "../packages/testing/src/process-lifetime-directory.ts";
 import {
   appendKaraokeMaintenanceEvent,
   type KaraokeJournalTrust,
@@ -23,8 +23,8 @@ afterEach(() => {
 });
 function fixture() {
   const f = makeKaraokeCollectorFixture(KARAOKE_RESET_OBJECT_IDS, reconciliationDigest);
-  const journalDirectory = mkdtempSync(join(tmpdir(), "karaoke-signer-journal-test-"));
-  cleanup.push(f.dispose, () => rmSync(journalDirectory, { recursive: true, force: true }));
+  const journalDirectory = makeProcessLifetimeTestDirectory("karaoke-signer-journal-test-");
+  cleanup.push(f.dispose);
   const privateKeyPem = f.signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const journal: KaraokeJournalTrust = {
     directory: journalDirectory,

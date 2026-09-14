@@ -1002,6 +1002,29 @@ describe("contracts-generated HTTP worker", () => {
     expect(cookieResponse.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("never caches anonymous content projections across a rating change", async () => {
+    let hidden = false;
+    const app = createHttpWorker({
+      handlers: {
+        GetPublicHomeFeed: () => feed,
+        GetPublicPostSitemap: () => ({
+          object: "public_post_sitemap_page",
+          items: hidden ? [] : [{ canonical_path: "/posts/pre-review" }],
+          next_cursor: null,
+        }),
+      },
+    });
+    for (const path of ["/feed/home/public", "/public/posts/sitemap"]) {
+      const response = await app.request(`http://worker.test${path}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+    hidden = true;
+    const refreshed = await app.request("http://worker.test/public/posts/sitemap");
+    expect(refreshed.headers.get("cache-control")).toBe("no-store");
+    expect(await refreshed.json()).toMatchObject({ items: [] });
+  });
+
   it("keeps public profile bodies viewer-invariant and disables bearer caching", async () => {
     const publicProfile = {
       profile: {

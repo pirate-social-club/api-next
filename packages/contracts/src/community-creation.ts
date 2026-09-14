@@ -160,7 +160,7 @@ export type CreationNextActionV1 = Schema.Schema.Type<typeof CreationNextActionV
 export const CommunityCreationNextActionV2 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("start_verification"),
-    requirement: Schema.Literal("human_identity"),
+    requirement: Schema.Literals(["human_identity", "nationality"]),
     provider_id: Schema.NonEmptyString,
     creation_intent_id: Schema.NonEmptyString,
     ceremony_intent_id: Schema.NonEmptyString,
@@ -170,7 +170,7 @@ export const CommunityCreationNextActionV2 = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("commit") }),
   Schema.Struct({
     kind: Schema.Literal("wait"),
-    requirement: Schema.NullOr(Schema.Literal("human_identity")),
+    requirement: Schema.NullOr(Schema.Literals(["human_identity", "nationality"])),
     reason_code: NextActionWaitReasonCode,
     retry_after_seconds: Schema.optional(PositiveInteger),
   }),
@@ -366,26 +366,34 @@ export const CommunityCreationIntentV2 = Schema.Struct({
       return "Non-committed intents cannot expose a committed resource";
     }
     if (intent.status === "verification_required") {
-      const progress = intent.requirements.human_identity;
+      const requested =
+        intent.next_action.kind === "start_verification" || intent.next_action.kind === "wait"
+          ? intent.next_action.requirement
+          : null;
+      const progress =
+        requested === "nationality"
+          ? intent.requirements.nationality
+          : intent.requirements.human_identity;
       if (progress === undefined) {
         return "Requirement-free intents never require verification";
       }
       if (intent.next_action.kind === "start_verification") {
         return intent.next_action.creation_intent_id === intent.intent_id &&
-          progress.requirement === "human_identity" &&
+          progress.requirement === intent.next_action.requirement &&
           progress.status === "pending" &&
           progress.provider_id === intent.next_action.provider_id &&
           progress.ceremony_intent_id === intent.next_action.ceremony_intent_id &&
           progress.generation === intent.next_action.generation
           ? undefined
-          : "Verification start action must match its reserved human requirement";
+          : "Verification start action must match its reserved requirement";
       }
       if (intent.next_action.kind === "wait") {
-        return intent.next_action.requirement === null || progress.status === "pending"
+        return intent.next_action.requirement === null ||
+          (progress.requirement === intent.next_action.requirement && progress.status === "pending")
           ? undefined
-          : "Verification wait action must name the pending human requirement";
+          : "Verification wait action must name a pending requirement";
       }
-      return "Verification-required intents require a typed human verification action";
+      return "Verification-required intents require a typed verification action";
     }
     if (intent.status === "commit_ready") {
       return intent.next_action.kind === "commit" ||

@@ -262,6 +262,7 @@ export function services(input: {
     createReservation: unused,
     getReservationForAuthor: unused,
     getReservationForAccount: unused,
+    getReservationSongPlan: unused,
     renewParts: unused,
     createSubmission: unused,
     getSubmissionForAccount: unused,
@@ -285,6 +286,9 @@ export function services(input: {
       };
     },
     publish: async ({ state }) => ({ ...initial, state }),
+    observeSongReferencePolicy: unused,
+    attachSongVideoMaster: unused,
+    publishSongReference: unused,
     retryPoster: unused,
     retryTechnical: unused,
     cancel: unused,

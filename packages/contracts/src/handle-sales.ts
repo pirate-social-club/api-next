@@ -13,60 +13,25 @@ import {
   RateLimited,
   RetryableHandleRequestRejected,
 } from "./errors.ts";
+import {
+  CreateHandleNationalityQualificationPolicy,
+  GetHandleNationalityAuthoring,
+  GetHandleNationalityQualification,
+  HandleNationalityQualificationPolicyRefV1,
+  HandleNationalityQuoteEligibilityV1,
+  HandleNationalityRequiredV1,
+} from "./handle-nationality.ts";
+import {
+  BoundedIdentifier,
+  CanonicalInstant,
+  HnsRoot,
+  IdempotencyKey,
+  NonNegativeInteger,
+  PositiveInteger,
+  Sha256Hex,
+} from "./handle-sales-scalars.ts";
 import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
 
-const BoundedIdentifier = Schema.String.check(
-  Schema.makeFilter((value) =>
-    value.length > 0 &&
-    value.length <= 256 &&
-    value === value.trim() &&
-    ![...value].some((character) => {
-      const code = character.charCodeAt(0);
-      return code < 0x20 || code === 0x7f;
-    })
-      ? undefined
-      : "Expected a bounded identifier",
-  ),
-);
-const IdempotencyKey = Schema.String.check(
-  Schema.makeFilter((value) =>
-    value.length > 0 &&
-    value.length <= 128 &&
-    value === value.trim() &&
-    ![...value].some((character) => {
-      const code = character.charCodeAt(0);
-      return code < 0x20 || code === 0x7f;
-    })
-      ? undefined
-      : "Expected a bounded idempotency key",
-  ),
-);
-const Sha256Hex = Schema.String.check(
-  Schema.makeFilter((value) =>
-    /^[0-9a-f]{64}$/u.test(value) ? undefined : "Expected a lowercase SHA-256 digest",
-  ),
-);
-const PositiveInteger = Schema.Int.check(
-  Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
-);
-const NonNegativeInteger = Schema.Int.check(
-  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-);
-const CanonicalInstant = Schema.String.check(
-  Schema.makeFilter((value) => {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
-      ? undefined
-      : "Expected a canonical ISO instant";
-  }),
-);
-const HnsRoot = Schema.String.check(
-  Schema.makeFilter((value) =>
-    new TextEncoder().encode(value).byteLength <= 63 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
-      ? undefined
-      : "Expected a canonical HNS root",
-  ),
-);
 export const HnsHandleLabelV2 = Schema.String.check(
   Schema.makeFilter((value) => {
     const length = new TextEncoder().encode(value).byteLength;
@@ -252,6 +217,23 @@ export const CommunityHandleOfferingV2 = Schema.Struct({
 });
 export type CommunityHandleOfferingV2 = Schema.Schema.Type<typeof CommunityHandleOfferingV2>;
 
+export const HandleQualificationPolicyRefV2 = Schema.Union([
+  HandleQualificationPolicyRefV1,
+  HandleNationalityQualificationPolicyRefV1,
+]);
+export type HandleQualificationPolicyRefV2 = Schema.Schema.Type<
+  typeof HandleQualificationPolicyRefV2
+>;
+export const CommunityHandleOfferingV3 = Schema.Struct({
+  ...CommunityHandleOfferingV2.fields,
+  qualification_policy: HandleNationalityQualificationPolicyRefV1,
+});
+export const CommunityHandleOffering = Schema.Union([
+  CommunityHandleOfferingV2,
+  CommunityHandleOfferingV3,
+]);
+export type CommunityHandleOffering = Schema.Schema.Type<typeof CommunityHandleOffering>;
+
 export const HandleSaleNamespaceCandidateV1 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("ready_v1"),
@@ -344,6 +326,14 @@ export type CommunityHandleOfferingManagementItemV1 = Schema.Schema.Type<
   typeof CommunityHandleOfferingManagementItemV1
 >;
 
+export const CommunityHandleOfferingManagementItemV2 = Schema.Struct({
+  ...CommunityHandleOfferingManagementItemV1.fields,
+  offering: CommunityHandleOffering,
+});
+export type CommunityHandleOfferingManagementItemV2 = Schema.Schema.Type<
+  typeof CommunityHandleOfferingManagementItemV2
+>;
+
 const HandleOfferingTermsCommandV2 = Schema.Struct({
   sale_namespace_activation_id: BoundedIdentifier,
   expected_sale_namespace_activation_generation: PositiveInteger,
@@ -362,8 +352,8 @@ const HandleOfferingTermsCommandV2 = Schema.Struct({
 });
 export type HandleOfferingTermsCommandV2 = Schema.Schema.Type<typeof HandleOfferingTermsCommandV2>;
 
-const MutateHandleOfferingResultV2 = Schema.Struct({
-  offering: CommunityHandleOfferingV2,
+const MutateHandleOfferingResultV3 = Schema.Struct({
+  offering: CommunityHandleOffering,
   replayed: Schema.Boolean,
 });
 
@@ -404,6 +394,24 @@ export const CreateHandleQuoteResultV2 = Schema.Union([
     reason: Schema.Literals(["evidence_required", "qualification_unsatisfied"]),
   }),
 ]);
+
+export const HandleQuoteV3 = Schema.Struct({
+  ...HandleQuoteV2.fields,
+  eligibility: HandleNationalityQuoteEligibilityV1,
+});
+export const HandleQuote = Schema.Union([HandleQuoteV2, HandleQuoteV3]);
+export type HandleQuote = Schema.Schema.Type<typeof HandleQuote>;
+export const CreateHandleQuoteResultV3 = Schema.Union([
+  HandleNationalityRequiredV1,
+  Schema.Struct({ kind: Schema.Literal("quoted"), quote: HandleQuote, replayed: Schema.Boolean }),
+  Schema.Struct({
+    kind: Schema.Literal("eligibility_required"),
+    offering_id: BoundedIdentifier,
+    owner_persona_id: PersonaIdV1,
+    reason: Schema.Literals(["evidence_required", "qualification_unsatisfied"]),
+  }),
+]);
+export type CreateHandleQuoteResultV3 = Schema.Schema.Type<typeof CreateHandleQuoteResultV3>;
 
 export const HandleReservationV2 = Schema.Struct({
   reservation_id: BoundedIdentifier,
@@ -700,7 +708,7 @@ export const CreateCommunityHandleOffering = endpoint({
     path: CommunityPath,
     body: Schema.Struct({ idempotency_key: IdempotencyKey, terms: HandleOfferingTermsCommandV2 }),
   },
-  response: MutateHandleOfferingResultV2,
+  response: MutateHandleOfferingResultV3,
   successStatus: [200, 201],
   errors: handleMutationErrors,
 });
@@ -718,7 +726,7 @@ export const ReviseCommunityHandleOffering = endpoint({
       terms: HandleOfferingTermsCommandV2,
     }),
   },
-  response: MutateHandleOfferingResultV2,
+  response: MutateHandleOfferingResultV3,
   successStatus: [200, 201],
   errors: handleMutationErrors,
 });
@@ -728,7 +736,7 @@ export const ListCommunityHandleOfferings = endpoint({
   path: "/communities/:communityId/handle-offerings",
   auth: Auth.public(),
   request: { path: CommunityPath, query: PageQuery },
-  response: page(CommunityHandleOfferingV2),
+  response: page(CommunityHandleOffering),
   errors: [BadRequest, InternalError],
 });
 
@@ -757,7 +765,7 @@ export const ListCommunityHandleOfferingManagement = endpoint({
   path: "/communities/:communityId/handle-sales-management/offerings",
   auth: Auth.userOrAdmin(),
   request: { path: CommunityPath, query: PageQuery },
-  response: page(CommunityHandleOfferingManagementItemV1),
+  response: page(CommunityHandleOfferingManagementItemV2),
   errors: handleManagementReadErrors,
 });
 
@@ -804,7 +812,7 @@ export const CreateHandleQuote = endpoint({
       desired_label: HnsHandleLabelV2,
     }),
   },
-  response: CreateHandleQuoteResultV2,
+  response: CreateHandleQuoteResultV3,
   successStatus: [200, 201],
   errors: handleMutationErrors,
 });
@@ -883,6 +891,9 @@ export const GetPublicPersona = endpoint({
 });
 
 export const handleSalesRegistry = {
+  GetHandleNationalityAuthoring,
+  GetHandleNationalityQualification,
+  CreateHandleNationalityQualificationPolicy,
   CreateHandleSaleNamespace,
   ReviseHandleSaleNamespace,
   ListHandleSaleNamespaces,

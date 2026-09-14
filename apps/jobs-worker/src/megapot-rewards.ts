@@ -52,9 +52,6 @@ import {
 
 export {
   MEGAPOT_REWARDS_CYCLE_JOB,
-  MEGAPOT_REWARDS_CYCLE_LANE,
-  MEGAPOT_REWARDS_CYCLE_SCHEDULE,
-  MEGAPOT_REWARDS_CYCLE_TIMEOUT,
   type MegapotRewardsCycleSummary,
   type MegapotRewardsRuntime,
   runMegapotRewardsCycle,

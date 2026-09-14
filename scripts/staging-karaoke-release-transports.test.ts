@@ -8,7 +8,10 @@ import {
   makeKaraokeIngressRelease,
 } from "./staging-karaoke-release-ingress.ts";
 import { KaraokeReleasePlan } from "./staging-karaoke-release-operation.ts";
-import { makeKaraokeProducerRelease } from "./staging-karaoke-release-producers.ts";
+import {
+  makeKaraokeProducerRelease,
+  makeKaraokeVersionRelease,
+} from "./staging-karaoke-release-producers.ts";
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
 
 const accountId = "08a4c22cf52e2ecae883e36f80a33f4a";
@@ -20,7 +23,7 @@ const names = [
 ];
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const plan: KaraokeReleasePlan = {
-  version: "staging-karaoke-release-plan-v1",
+  version: "staging-karaoke-release-plan-v2",
   ingressApplicationId: "a".repeat(32),
   resumeQueues: names.map((name, index) => ({ name, id: String(index + 1).repeat(32) })),
   servingWorkers: STAGING_PRODUCER_WORKERS.map((worker, index) => ({
@@ -28,7 +31,7 @@ const plan: KaraokeReleasePlan = {
     versionId: uuid(index + 1),
   })),
   reviewedGrantDigest: "d".repeat(64),
-  surfaceOrder: ["database", "producers", "ingress"],
+  surfaceOrder: ["versions", "database", "ingress", "producers"],
 };
 const now = () => new Date().toISOString();
 const schedules = STAGING_PRODUCER_WORKERS.map((worker) => ({ worker, crons: ["*/5 * * * *"] }));
@@ -99,17 +102,42 @@ function producerFixture() {
     apiToken: "fixture",
     fetch,
   });
-  const directive = { resumeQueues: plan.resumeQueues, servingWorkers: plan.servingWorkers };
-  return { state, producer, directive };
+  const versions = makeKaraokeVersionRelease({ plan, accountId, apiToken: "fixture", fetch });
+  const directive = { resumeQueues: plan.resumeQueues };
+  const versionsDirective = { servingWorkers: plan.servingWorkers };
+  return { state, producer, versions, directive, versionsDirective };
 }
 
-test("producer release proves deployment IDs and queue readbacks and retains provider evidence", async () => {
+test("version release deploys the reviewed pair and leaves the producer fence held", async () => {
   const f = producerFixture();
+  const receipt = await f.versions.execute(f.versionsDirective, now);
+  expect(f.state.writes).toHaveLength(4);
+  expect(f.state.writes.every((url) => url.endsWith("/deployments"))).toBe(true);
+  expect(receipt.surface).toBe("versions");
+  expect(receipt.receipt).toBe(reconciliationDigest(receipt.providerEvidence ?? ""));
+  // The queues are still paused and no schedule is restored, so the deployed
+  // pair can be accepted before anything acts on it.
+  expect(await f.versions.observeRestored()).toBe("restored");
+  expect(await f.producer.observeRestored()).toBe("uncertain");
+});
+
+test("producer release proves queue and schedule readbacks and retains provider evidence", async () => {
+  const f = producerFixture();
+  await f.versions.execute(f.versionsDirective, now);
   const receipt = await f.producer.execute(f.directive, now);
   expect(f.state.writes).toHaveLength(12);
   expect(f.state.writes.slice(0, 4).every((url) => url.endsWith("/deployments"))).toBe(true);
+  expect(f.state.writes.slice(4, 8).every((url) => url.includes("/queues/"))).toBe(true);
+  expect(receipt.surface).toBe("producers");
   expect(receipt.receipt).toBe(reconciliationDigest(receipt.providerEvidence ?? ""));
   expect(await f.producer.observeRestored()).toBe("restored");
+});
+
+test("resuming delivery refuses while the reviewed versions are not serving", async () => {
+  const f = producerFixture();
+  f.state.stale = true;
+  await expect(f.producer.execute(f.directive, now)).rejects.toThrow();
+  expect(f.state.writes).toHaveLength(0);
 });
 
 test("a provider acknowledgement with stale deployed versions produces no receipt", async () => {
@@ -169,6 +197,24 @@ test("foreign producer pins refuse at construction", () => {
   ).toThrow("pins_incomplete");
 });
 
+test("the scoped transport admits the collection create path the reversal needs", async () => {
+  const calls: string[] = [];
+  const http = makeKaraokeReleaseHttp({
+    accountId,
+    apiToken: "fixture",
+    fetch: (async (raw: string | URL | Request) => {
+      calls.push(String(raw));
+      return Response.json({ success: true, result: { id: "a".repeat(32) } });
+    }) as unknown as typeof globalThis.fetch,
+  });
+  await http("/access/apps", "POST", { name: "fence" });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toContain("/access/apps");
+  await expect(http("/queues/../access/apps", "POST", {})).rejects.toThrow("path_denied");
+  await expect(http("//evil.example/access/apps", "POST", {})).rejects.toThrow("path_denied");
+  await expect(http("/access/policies", "GET")).rejects.toThrow("path_denied");
+});
+
 test("provider transport rejects redirects without forwarding the token", async () => {
   let calls = 0;
   const fetch = (async () => {
@@ -183,7 +229,12 @@ test("provider transport rejects redirects without forwarding the token", async 
 test("complete restoration directives are bound into the plan digest", () => {
   const restoration = {
     ingress: { kind: "remove-fence-application", remainingApplicationsDigest: "b".repeat(64) },
-    database: { targetBindingDigest: "c".repeat(64), restoreRuntimeConnect: true },
+    database: {
+      targetBindingDigest: "c".repeat(64),
+      restoreRuntimeConnect: true,
+      runtimeRole: "fixture_runtime",
+      runtimeIdentityEvidence: "d".repeat(64),
+    },
     producers: { schedules },
   };
   const boundPlan = Schema.decodeUnknownSync(KaraokeReleasePlan)({
@@ -197,9 +248,10 @@ test("complete restoration directives are bound into the plan digest", () => {
     restoration,
   };
   expect(validateKaraokeReleaseConfiguration(config).plan.surfaceOrder).toEqual([
+    "versions",
     "database",
-    "producers",
     "ingress",
+    "producers",
   ]);
   restoration.ingress.remainingApplicationsDigest = "e".repeat(64);
   expect(() => validateKaraokeReleaseConfiguration(config)).toThrow("approved_plan_changed");

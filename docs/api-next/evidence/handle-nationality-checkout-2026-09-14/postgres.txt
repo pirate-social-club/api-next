@@ -1,0 +1,61 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/handle-nationality-authoring.pg.test.ts:
+(pass) handle nationality policy authoring > requires actual sales authority and explicit enabled authoring before exposing a reference [2039.17ms]
+(pass) handle nationality policy authoring > normalizes the seller allowlist, pins both providers, and replays one immutable policy [1962.53ms]
+(pass) handle nationality policy authoring > serializes duplicate commands and refuses changed requests or stale server references [2076.63ms]
+(pass) handle nationality policy authoring > rolls back policy insertion when action persistence fails and makes accepted rows immutable [2053.07ms]
+(pass) handle nationality policy authoring > authors an independent nationality offering without issuing an unqualified quote [2123.60ms]
+
+packages/platform-cf/src/gates-v2-community-nationality.pg.test.ts:
+(pass) Gates v2 nationality provider alternatives and evidence loader > widened provider key stores both alternatives and rejects a duplicate provider row [1934.23ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > loads account-bound evidence for either provider and passes with a witness [1971.95ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > a revoked alternative cannot hide valid evidence and a pinned provider cannot substitute it [2058.50ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > enforcement serializes revalidation with its decision transaction [2176.08ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > treats an unchanged-requirement mismatch as missing evidence, not reuse [1909.75ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > expired evidence is actionable needs_evidence [2026.18ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > latest revalidation outcome gates reuse without disclosing a country [1964.77ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > ownership recovery to another account removes the evidence rather than failing it [1975.62ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > a current nationality policy with missing provider rows never becomes an open gate [2336.06ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > palm alone cannot admit to a nationality-gated community [2169.54ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > either document provider satisfies nationality alongside palm [2892.25ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > creator activation rejects without nationality evidence and passes with it [2963.18ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > creator activation is a no-op without a current nationality policy [3857.84ms]
+(pass) Gates v2 nationality provider alternatives and evidence loader > issues, fences, completes, and joins through the joiner nationality ceremony [3215.69ms]
+
+packages/platform-cf/src/community-creation-nationality-flow.pg.test.ts:
+(pass) Postgres 17 community creation nationality flow > reuses accepted account evidence for a composed commit [2106.60ms]
+(pass) Postgres 17 community creation nationality flow > issues, switches, completes, and commits the creator nationality ceremony [2980.43ms]
+(pass) Postgres 17 community creation nationality flow > rolls back the terminal commit when the creator lacks accepted evidence [2730.76ms]
+(pass) Postgres 17 community creation nationality flow > requires fresh proof when the allowlist changes and fences the old ceremony [2033.77ms]
+(pass) Postgres 17 community creation nationality flow > keeps Palm-only creation commit-ready and fails closed without authoring [1972.33ms]
+
+packages/platform-cf/src/nationality-ceremony-store.pg.test.ts:
+(pass) nationality ceremony store > issues generation one, replays the same provider as wait, and switches provider at generation two [1959.32ms]
+(pass) nationality ceremony store > retires an expired attempt before issuing the next generation [3446.67ms]
+(pass) nationality ceremony store > rejects a foreign actor on an owned intent and an unknown provider [2452.50ms]
+(pass) nationality ceremony store > keeps join, claim, and creator ceremonies separate per action intent [1946.13ms]
+
+packages/platform-cf/src/handle-nationality-checkout.pg.test.ts:
+(pass) handle nationality checkout > qualifies a nonmember with self.pass and issues only the requested handle [2133.80ms]
+(pass) handle nationality checkout > qualifies a nonmember with zkpassport and issues only the requested handle [2165.77ms]
+(pass) handle nationality checkout > expires between reservation and claim without issuing a grant [4185.19ms]
+(pass) handle nationality checkout > starts either provider, fences a switched child, and returns for a fresh quote without a grant [2331.35ms]
+(pass) handle nationality checkout > a changed allowlist invalidates the quote and asks for fresh evidence [2168.36ms]
+(pass) handle nationality checkout > rolls back the decision, claim and reservation consumption when grant insertion fails [2146.59ms]
+(pass) handle nationality checkout > membership does not qualify a buyer without nationality evidence [2121.37ms]
+(pass) handle nationality checkout > records missing evidence without issuing a quote [2071.74ms]
+(pass) handle nationality checkout > refuses evidence revoked between quote and reservation without changing the pin [2098.96ms]
+
+packages/platform-cf/src/handle-sales-repository.pg.test.ts:
+(pass) community handle sales on PostgreSQL 17 > backfills one deterministic sales authority for an existing community [1193.76ms]
+(pass) community handle sales on PostgreSQL 17 > issues a none-qualified free handle without human evidence [2586.72ms]
+(pass) community handle sales on PostgreSQL 17 > authors a private direct-grant policy and issues a replay-safe free hosted grant [7965.38ms]
+(pass) community handle sales on PostgreSQL 17 > activates an unrouted HNS root and fails delegation drift and terminal revocation closed [8790.91ms]
+(pass) community handle sales on PostgreSQL 17 > keeps seller-management paging on its first-page revision snapshot [3243.03ms]
+
+ 42 pass
+ 0 fail
+ 300 expect() calls
+Ran 42 tests across 6 files. [110.88s]
+Verified 6 fresh task-owned completion sentinels.

@@ -34,6 +34,8 @@ import {
 
 export type { VideoPublicationServices } from "@pirate/application/video/publication";
 
+import { preflightSongVideoInterval } from "@pirate/application/video/song-interval";
+import { BadRequest } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
 import {
   MediaSubmissionRepositoryError,
@@ -236,6 +238,21 @@ export function makeMediaUploadApplicationCommands(
       actorAccountId: input.actor.userId,
     })) !== null;
   return {
+    // Song-backed video exists only where it is composed; elsewhere the
+    // preflight is refused as an unavailable capability, like the reservation.
+    preflightSongVideo: (input: Parameters<typeof preflightSongVideoInterval>[0]) => {
+      if (videoServices?.songInterval === undefined) {
+        throw new BadRequest({
+          message: "Video capability is unavailable",
+          details: {
+            reason_code: "capability_unavailable",
+            track: "video",
+            capability: "song_reference",
+          },
+        });
+      }
+      return preflightSongVideoInterval(input, videoServices.songInterval);
+    },
     reserve: (input: Parameters<typeof reserveMediaUpload>[0]) =>
       videoServices !== undefined && objectBody(input.body)?.track === "video"
         ? reserveVideoUpload(input, videoServices)

@@ -2,6 +2,15 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/use-cases/age-verification": new URL(
+    "../../packages/application/src/use-cases/age-verification.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/account-age-verification": new URL(
+    "../../packages/platform-cf/src/account-age-verification.ts",
+    import.meta.url,
+  ).pathname,
+
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,
@@ -213,5 +222,9 @@ export default defineConfig({
   resolve: { alias },
   test: {
     include: ["tests/workerd-http/**/*.test.ts"],
+    // Each file imports the full HTTP Worker graph. Keep those transforms serial
+    // instead of multiplying the same graph across concurrent worker processes.
+    fileParallelism: false,
+    maxWorkers: 1,
   },
 });

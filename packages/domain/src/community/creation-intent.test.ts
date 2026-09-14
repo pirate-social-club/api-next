@@ -255,4 +255,61 @@ describe("community creation intent state machine", () => {
     });
     expect(expired.kind === "accepted" && expired.state.status).toBe("expired");
   });
+
+  test("reports a pending creator nationality requirement after the human authority is gone", () => {
+    const nationality = {
+      status: "pending" as const,
+      requirement_hash: "e".repeat(64),
+      provider_id: "self.pass",
+      generation: 2,
+      ceremony_intent_id: "nationality-ceremony-2",
+      satisfied_at: null,
+      started: false,
+    };
+    const pending = {
+      ...state("verification_required"),
+      verification_requirement_hash: null,
+      verification_provider_id: null,
+      nationality,
+    };
+    expect(communityCreationIntentInvariant(pending)).toBeNull();
+    expect(creationNextAction(pending)).toEqual({
+      kind: "start_verification",
+      requirement: "nationality",
+      provider_id: "self.pass",
+      creation_intent_id: "community-creation-intent-1",
+      ceremony_intent_id: "nationality-ceremony-2",
+      generation: 2,
+    });
+    expect(
+      creationNextAction({ ...pending, nationality: { ...nationality, started: true } }),
+    ).toEqual({ kind: "wait", requirement: "nationality", reason_code: "verification_pending" });
+
+    const satisfied = {
+      ...state("commit_ready"),
+      nationality: {
+        ...nationality,
+        status: "satisfied" as const,
+        satisfied_at: "2026-08-20T12:00:00.000Z",
+      },
+    };
+    expect(communityCreationIntentInvariant(satisfied)).toBeNull();
+    expect(creationNextAction(satisfied)).toEqual({ kind: "commit" });
+
+    expect(
+      communityCreationIntentInvariant({
+        ...pending,
+        nationality: { ...nationality, status: "satisfied", satisfied_at: null },
+      }),
+    ).toBe("nationality_satisfied_at");
+    expect(communityCreationIntentInvariant({ ...pending, status: "commit_ready" })).toBe(
+      "nationality_pending_status",
+    );
+    expect(
+      communityCreationIntentInvariant({
+        ...pending,
+        nationality: { ...nationality, generation: 0 },
+      }),
+    ).toBe("nationality_generation");
+  });
 });

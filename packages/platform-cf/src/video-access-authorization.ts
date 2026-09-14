@@ -2,7 +2,16 @@ import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import type { VideoAccessAuthorizationServices } from "@pirate/application/video/access-authorization";
 import { Effect, type Layer } from "effect";
 
-/** No evidence fields leave this query. Both delivery paths use the same live policy. */
+/**
+ * No evidence fields leave this query. Both delivery paths use the same live policy.
+ *
+ * A publication rests on one decision: the projection's `decision_revision`
+ * names the creation revision whose decision, moderator approvals and safety
+ * evidence authorize it. A publication-only retry publishes at a later creation
+ * revision on that same decision, so those facts are read at the decision's
+ * revision, and any hold or platform hold recorded from then up to the
+ * publication's own revision still denies.
+ */
 const authorizePublication = Effect.fn("authorizeVideoPublication")(function* (
   input: Readonly<{ postId: string; communityId: string; viewerUserId?: string }>,
 ) {
@@ -17,12 +26,15 @@ const authorizePublication = Effect.fn("authorizeVideoPublication")(function* (
       JOIN media_post_submissions s
         ON s.submission_id=pub.submission_id AND s.operation_id=pub.operation_id
        AND s.community_id=pub.community_id AND s.post_id=pub.post_id
-       AND s.media_kind='video' AND s.video_intent='original_audio' AND s.status='published'
+       AND s.media_kind='video' AND s.video_intent IN ('original_audio','song_reference')
+       AND s.status='published'
        AND s.creation_revision=pub.creation_revision AND s.video_revision=pub.video_revision
       JOIN media_video_publication_decisions d
-        ON d.submission_id=pub.submission_id AND d.creation_revision=pub.creation_revision
+        ON d.submission_id=pub.submission_id AND d.creation_revision=pub.decision_revision
        AND d.video_revision=pub.video_revision AND d.analysis_revision=pub.analysis_revision
-      JOIN media_video_rights r ON r.submission_id=pub.submission_id AND r.rights_basis='original'
+       AND pub.decision_revision<=pub.creation_revision
+      JOIN media_video_rights r ON r.submission_id=pub.submission_id
+       AND r.rights_basis=CASE s.video_intent WHEN 'song_reference' THEN 'derivative' ELSE 'original' END
       WHERE p.post_id=$1 AND p.community_id=$2 AND p.post_type='video' AND p.status='published'
         AND (p.visibility='public' OR (p.visibility='members_only' AND EXISTS (
           SELECT 1 FROM community_memberships m
@@ -34,16 +46,18 @@ const authorizePublication = Effect.fn("authorizeVideoPublication")(function* (
           SELECT 1 FROM media_video_safety_evidence safety
           WHERE safety.submission_id=pub.submission_id
             AND safety.video_revision=pub.video_revision
-            AND safety.creation_revision=pub.creation_revision AND safety.platform_held
+            AND safety.creation_revision BETWEEN pub.decision_revision AND pub.creation_revision
+            AND safety.platform_held
         )
         AND (d.outcome='publish' OR (d.outcome='review' AND EXISTS (
           SELECT 1 FROM media_video_review_holds h
-          WHERE h.submission_id=pub.submission_id AND h.creation_revision=pub.creation_revision
+          WHERE h.submission_id=pub.submission_id AND h.creation_revision=pub.decision_revision
             AND h.status='approved'
         )))
         AND NOT EXISTS (
           SELECT 1 FROM media_video_review_holds h
-          WHERE h.submission_id=pub.submission_id AND h.creation_revision=pub.creation_revision
+          WHERE h.submission_id=pub.submission_id
+            AND h.creation_revision BETWEEN pub.decision_revision AND pub.creation_revision
             AND h.status<>'approved'
         )
     ) AS allowed`,

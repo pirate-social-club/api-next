@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assertCanonicalHnsHandleLabelV2,
   assertHandleOfferingCombinationV2,
+  assertHandleOfferingCombinationV3,
   assertRequestedOfferingIsEffectiveV2,
   classifyEffectiveHandleOfferingV2,
   classifyHandleSaleActivationRevisionV1,
@@ -18,6 +19,7 @@ import {
   handleGrantFinalizeV2Hash,
   handleOfferingRevisionV1Hash,
   handleOfferingRevisionV2Hash,
+  handleOfferingRevisionV3Hash,
   handlePersonaLinkConfirmationRequestHash,
   handlePersonaPublicIdentityHash,
   handleQuoteRequestHash,
@@ -837,4 +839,66 @@ describe("handle sales policy", () => {
       }),
     ).toThrow("Only an active");
   });
+});
+
+test("freezes nationality offering identity and confines it to free first-come hosted allocation", () => {
+  const qualification = {
+    kind: "curated_nationality_v1" as const,
+    policy_id: "nationality_policy_01",
+    policy_revision: 1,
+    policy_hash: two,
+    requirement_hash: three,
+    provider_binding_hashes: [four, "5".repeat(64)] as const,
+    lifetime: { kind: "max_age_seconds" as const, seconds: 31_536_000 },
+  };
+  const input = {
+    offering_id: "offering_nationality_01",
+    offering_revision: 1,
+    community_id: "community_pokemon",
+    family: "hns" as const,
+    namespace_root: "charizard",
+    sale_namespace_activation_id: "sale_namespace_activation_01",
+    sale_namespace_activation_generation: 3,
+    label_scope: broadScope,
+    allocation_kind: "first_come_v1" as const,
+    max_active_grants_per_account: 1,
+    fulfillment_kind: "hosted_persona_v1" as const,
+    qualification_policy: qualification,
+    pricing,
+    issuance_driver_id: "hosted_persona-local",
+    issuance_driver_version: "1",
+    quote_ttl_seconds: 120,
+    reservation_ttl_seconds: 300,
+  };
+  expect(() =>
+    handleOfferingRevisionV2Hash(
+      input as unknown as Parameters<typeof handleOfferingRevisionV2Hash>[0],
+    ),
+  ).toThrow();
+  expect(handleOfferingRevisionV3Hash(input).sha256).toBe(
+    "91ffc8290cb2ab6bb877977bb1e4b614f7f8ceb5a423d591705b2bd406765bb4",
+  );
+  expect(
+    handleOfferingRevisionV3Hash({
+      ...input,
+      qualification_policy: { ...qualification, provider_binding_hashes: [four, "6".repeat(64)] },
+    }).sha256,
+  ).not.toBe(handleOfferingRevisionV3Hash(input).sha256);
+  const combination = {
+    label_scope: broadScope,
+    allocation_kind: "first_come_v1" as const,
+    fulfillment_kind: "hosted_persona_v1" as const,
+    qualification_kind: "curated_nationality_v1" as const,
+    pricing_kind: "free_v1",
+    atomic_amount: "0",
+  };
+  expect(() => assertHandleOfferingCombinationV3(combination)).not.toThrow();
+  expect(() =>
+    assertHandleOfferingCombinationV3({
+      ...combination,
+      label_scope: exactScope,
+      allocation_kind: "direct_grant_v1",
+    }),
+  ).toThrow();
+  expect(() => assertHandleOfferingCombinationV3({ ...combination, atomic_amount: "1" })).toThrow();
 });

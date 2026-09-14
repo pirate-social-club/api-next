@@ -1,4 +1,5 @@
 export const reusablePostgresTestSuites = [
+  "packages/platform-cf/src/content-rating-reconciliation.pg.test.ts",
   "packages/platform-cf/src/telegram-store.pg.test.ts",
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
@@ -25,10 +26,12 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
   "packages/platform-cf/src/video-thumbnail-repository.pg.test.ts",
   "scripts/community-purchase-funding-plans.pg.test.ts",
+  "scripts/song-video-composed-flow.pg.test.ts",
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "packages/platform-cf/src/account-age-verification.pg.test.ts",
   "packages/platform-cf/src/comment-thread-repository.pg.test.ts",
   "apps/http-worker/src/hns-community-publication.pg.test.ts",
   "apps/http-worker/src/hns-community-activation.pg.test.ts",
@@ -42,7 +45,14 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/dance-attempt-persistence.pg.test.ts",
   "packages/platform-cf/src/data-registration-repository.pg.test.ts",
   "packages/platform-cf/src/gates-v2-community.pg.test.ts",
+  "packages/platform-cf/src/community-join-intent-fulfillment.pg.test.ts",
+  "packages/platform-cf/src/community-creation-nationality-completion.pg.test.ts",
+  "packages/platform-cf/src/community-creation-nationality-flow.pg.test.ts",
+  "packages/platform-cf/src/gates-v2-community-nationality.pg.test.ts",
+  "packages/platform-cf/src/nationality-ceremony-store.pg.test.ts",
   "packages/platform-cf/src/handle-sales-repository.pg.test.ts",
+  "packages/platform-cf/src/handle-nationality-authoring.pg.test.ts",
+  "packages/platform-cf/src/handle-nationality-checkout.pg.test.ts",
   "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
   "packages/platform-cf/src/hns-community-root-import-repository.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",
@@ -60,6 +70,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-lifecycle-projection.pg.test.ts",
   "packages/platform-cf/src/hns-observation-fence.pg.test.ts",
   "packages/platform-cf/src/hns-readiness-ownership.pg.test.ts",
+  "packages/platform-cf/src/hns-single-owner-readiness-cutover.pg.test.ts",
   "packages/platform-cf/src/hns-reconciliation-routing.pg.test.ts",
   "packages/platform-cf/src/hns-incident-recovery.pg.test.ts",
   // Creates its own schema and additionally needs a reachable regtest node;
@@ -75,16 +86,21 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/optional-route-v2-migration.pg.test.ts",
   "packages/platform-cf/src/persona-repository.pg.test.ts",
   "packages/platform-cf/src/public-community-threads-repository.pg.test.ts",
+  "packages/platform-cf/src/song-video-interval-repository.pg.test.ts",
+  "packages/platform-cf/src/song-video-render-repository.pg.test.ts",
   "packages/platform-cf/src/study-v2-foundation.pg.test.ts",
+  "packages/platform-cf/src/study-v2-lifecycle.pg.test.ts",
   "packages/platform-cf/src/study-translation-repository.pg.test.ts",
   "packages/platform-cf/src/verification-completion-repository.pg.test.ts",
   "packages/platform-cf/src/verification-start-repository.pg.test.ts",
   "scripts/public-post-slug-backfill.pg.test.ts",
   "scripts/public-profile-backfill.pg.test.ts",
+  "scripts/song-video-render-host.pg.test.ts",
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
   "scripts/staging-karaoke-release-database.pg.test.ts",
+  "scripts/staging-persona-prepare-reset.pg.test.ts",
   "scripts/staging-persona-reset-denied-grants.pg.test.ts",
   "scripts/staging-persona-recovery.pg.test.ts",
   "scripts/staging-persona-dependency-scan.pg.test.ts",
@@ -96,6 +112,8 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-reset-replay.pg.test.ts",
   "scripts/staging-persona-reconstruct.pg.test.ts",
   "scripts/staging-persona-phased-reset.pg.test.ts",
+  "scripts/staging-reset-release-live-runtime.pg.test.ts",
+  "scripts/staging-hns-post-migration-entry.pg.test.ts",
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
   "packages/platform-cf/src/hns-admission-privileges.pg.test.ts",
   "packages/platform-cf/src/video-reconciliation-operator.pg.test.ts",

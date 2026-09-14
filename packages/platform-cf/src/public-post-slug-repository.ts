@@ -333,8 +333,7 @@ const baseLookupSelect = `SELECT a.slug AS alias_slug,
                           AND viewer_membership.user_id = $2
                           AND viewer_membership.status = 'member'
                      )) AS viewer_is_member,
-                (p.content_rating IS NULL
-                  OR can_account_view_content_rating_v1($2, p.content_rating)) AS rating_view_allowed
+                can_account_view_content_rating_v1($2, p.content_rating) AS rating_view_allowed
            FROM post_slug_aliases AS a
            JOIN posts AS p ON p.post_id = a.post_id
            JOIN communities AS c ON c.community_id = p.community_id`;

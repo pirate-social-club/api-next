@@ -1,4 +1,5 @@
 export * from "./age-access.ts";
+export * from "./age-verification.ts";
 export * from "./auth.ts";
 export * from "./codegen.ts";
 export * from "./comment-thread.ts";
@@ -13,6 +14,7 @@ export * from "./dance.ts";
 export * from "./dance-attempt.ts";
 export * from "./endpoint.ts";
 export * from "./errors.ts";
+export * from "./handle-nationality.ts";
 export * from "./handle-sales.ts";
 export * from "./hns-edge-alerts.ts";
 export * from "./hns-edge-status.ts";

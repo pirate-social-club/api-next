@@ -850,3 +850,28 @@ describe("HTTP product handlers", () => {
     ).rejects.toMatchObject({ code: "internal_error" });
   });
 });
+
+test("age ceremony authority cannot be selected by a request body or read anonymously", async () => {
+  const accounts: string[] = [];
+  const handlers = makeProductHandlers({
+    ...stores(),
+    ageVerificationStore: {
+      getVerification: ({ accountId }) => {
+        accounts.push(accountId);
+        return Effect.succeed({
+          version: "account-age-verification-v1",
+          minimum_age: 18,
+          status: "unavailable",
+        } as const);
+      },
+    },
+  });
+  expect(
+    await handlers.GetMyAgeVerification(
+      request({ body: { account_id: "foreign", content_id: "private" } }),
+    ),
+  ).toMatchObject({ status: "unavailable" });
+  expect(accounts).toEqual(["user-a"]);
+  expect(() => handlers.GetMyAgeVerification(request({ principal: null }))).toThrow();
+  expect(accounts).toEqual(["user-a"]);
+});

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.71.0",
+  "sourceBranch": "feat/song-video-persistence-publication",
+  "wireContract": "Adds the PreflightSongVideoInterval operation, POST /communities/:communityId/song-video-interval-preflights, which 0.69.0's handoff described but neither 0.69.0 nor 0.70.0 contained: the endpoint was declared and handled but never registered, so no route was installed and no client operation was generated. Additive only; everything in 0.70.0 is unchanged. The operation answers capability_unavailable while song-backed video stays disabled.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.71.0.tgz",
+    "sha256": "0e07e2a0f5ddc4026be6589fa066c6e233dbdbd55d3285303f7f15f8071bf964"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.71.0",
+    "sourceIdentifier": "api-next-contracts@3a799d04d09ea455bc42e7002d66d4b51eb439e5ce11e91589ac2a675af54861",
+    "openapiSha256": "3a799d04d09ea455bc42e7002d66d4b51eb439e5ce11e91589ac2a675af54861",
+    "clientSha256": "559c70e2df3995a2ff05729b4038b5cee88e15a929343efe84766f72c4726311"
+  },
+  "verification": {
+    "status": "The v1 registry test, contract generation and verify:api-client passed locally; the full required gates and release are pending. Version 0.71.0 may collide with another lane cutting a release concurrently; whichever lands second takes the next version."
+  }
+}

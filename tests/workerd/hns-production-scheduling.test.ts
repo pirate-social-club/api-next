@@ -3,11 +3,13 @@
 import { env as testEnv } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
+import {
+  HNS_ROOT_HEALTH_RENEWAL_JOB,
+  HNS_ROOT_HEALTH_RENEWAL_LANE,
+} from "../../apps/jobs-worker/src/hns-root-health-renewal";
 import jobsWorker, {
   buildJobRegistry,
   groupDueJobsByLane,
-  HNS_ROOT_HEALTH_RENEWAL_JOB,
-  HNS_ROOT_HEALTH_RENEWAL_LANE,
   type JobsWorkerEnv,
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,

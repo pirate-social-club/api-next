@@ -5,10 +5,12 @@ import {
   encodeHnsRootImportReadinessResultV1,
   HNS_AUTHORITY_INVENTORY_VERSION,
   HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
+  HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
   type HnsChainAuthorityRecord,
   type HnsChainObservationResultV1,
   type HnsRootDelegationDsV1,
   type HnsRootImportPublishPlanV1,
+  type HnsRootReadinessObservationRequestV1,
   type HnsRootResourceRecordV1,
   hnsAuthorityCapabilitySetDigest,
   hnsObservedResourceMatchesEncodedPlanV1,
@@ -23,21 +25,6 @@ import {
   type HnsAuthorityZoneResult,
   type HnsZoneMutationLease,
 } from "./provision-root.ts";
-
-export const HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION =
-  "pirate-hns-root-readiness-observation-request-v1" as const;
-
-export type HnsRootReadinessObservationRequestV1 = Readonly<{
-  readonly version: typeof HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION;
-  readonly root_import_session_id: string;
-  readonly namespace_session_id: string;
-  readonly root_label: string;
-  readonly challenge_txt_value: string;
-  readonly ownership_result_sha256: string;
-  readonly publish_plan_sha256: string;
-  readonly provision_result_sha256: string;
-  readonly expires_at: string;
-}>;
 
 export type HnsRootReadinessObservationPorts = Readonly<{
   /** Typed current-view chain observation (anchor-bracketed, safe=false). */

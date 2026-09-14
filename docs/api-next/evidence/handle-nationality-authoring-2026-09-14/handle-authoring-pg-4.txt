@@ -1,0 +1,22 @@
+Running as unit: run-rfb406313bc144010b90edefaaa21c4d1.scope; invocation ID: 115a250b7ec24c9fb2f999c311e8a242
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/handle-nationality-authoring.pg.test.ts:
+(pass) handle nationality policy authoring > requires actual sales authority and explicit enabled authoring before exposing a reference [1985.64ms]
+(pass) handle nationality policy authoring > normalizes the seller allowlist, pins both providers, and replays one immutable policy [1956.42ms]
+(pass) handle nationality policy authoring > serializes duplicate commands and refuses changed requests or stale server references [2008.13ms]
+(pass) handle nationality policy authoring > rolls back policy insertion when action persistence fails and makes accepted rows immutable [2046.46ms]
+(pass) handle nationality policy authoring > authors an independent nationality offering without issuing an unqualified quote [2045.19ms]
+
+packages/platform-cf/src/handle-sales-repository.pg.test.ts:
+(pass) community handle sales on PostgreSQL 17 > backfills one deterministic sales authority for an existing community [1209.04ms]
+(pass) community handle sales on PostgreSQL 17 > issues a none-qualified free handle without human evidence [2173.36ms]
+(pass) community handle sales on PostgreSQL 17 > authors a private direct-grant policy and issues a replay-safe free hosted grant [6981.02ms]
+(pass) community handle sales on PostgreSQL 17 > activates an unrouted HNS root and fails delegation drift and terminal revocation closed [8012.82ms]
+(pass) community handle sales on PostgreSQL 17 > keeps seller-management paging on its first-page revision snapshot [2365.29ms]
+
+ 10 pass
+ 0 fail
+ 137 expect() calls
+Ran 10 tests across 2 files. [31.11s]
+Verified 2 fresh task-owned completion sentinels.

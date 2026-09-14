@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import type {
   MediaTransformVideoAttemptContext,
   MediaTransformVideoAudioInput,
+  MediaTransformVideoBinding,
   MediaTransformVideoCapabilities,
   MediaTransformVideoFrame,
   MediaTransformVideoFramesInput,
@@ -22,6 +22,12 @@ import type {
 } from "@pirate/application/video/analysis";
 import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect } from "effect";
+import {
+  DEFAULT_TOOL_TIMEOUT_MS,
+  makePinnedVersionCheck,
+  runPinnedTool as runTool,
+  withVerifiedTempSource,
+} from "./pinned-ffmpeg.ts";
 
 export const LOCAL_VIDEO_FFMPEG_REVISION = "ffmpeg-6.1.1-video-analysis-v1";
 export const LOCAL_VIDEO_PROBE_REVISION = "ffprobe-6.1.1-video-analysis-v1";
@@ -30,8 +36,7 @@ export const LOCAL_VIDEO_FRAME_EXTRACTION_POLICY = "video-jpeg-three-frame-v1";
 const EXPECTED_VERSION_PREFIX = "ffmpeg version 6.1.1";
 const EXPECTED_PROBE_VERSION_PREFIX = "ffprobe version 6.1.1";
 const MAXIMUM_SOURCE_BYTES = 500 * 1024 * 1024;
-const MAXIMUM_DIAGNOSTIC_BYTES = 64 * 1024;
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
 
 export interface LocalVideoSourceReader {
   readonly read: (source: MediaTransformVideoSource) => Promise<Uint8Array>;
@@ -71,54 +76,6 @@ function validSource(source: MediaTransformVideoSource): boolean {
     Number.isSafeInteger(source.byteLength) &&
     source.byteLength > 0
   );
-}
-
-async function readBoundedText(stream: ReadableStream<Uint8Array> | null): Promise<string> {
-  if (stream === null) return "";
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  while (true) {
-    const next = await reader.read();
-    if (next.done) break;
-    size += next.value.byteLength;
-    if (size > MAXIMUM_DIAGNOSTIC_BYTES) throw new Error("video tool diagnostics exceeded limit");
-    chunks.push(next.value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-async function runTool(
-  command: readonly string[],
-  timeoutMs: number,
-): Promise<Readonly<{ stdout: string; stderr: string }>> {
-  const child = Bun.spawn([...command], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("video tool timed out"));
-    }, timeoutMs);
-  });
-  try {
-    const [exitCode, stdout, stderr] = await Promise.race([
-      Promise.all([child.exited, readBoundedText(child.stdout), readBoundedText(child.stderr)]),
-      timeout,
-    ]);
-    if (exitCode !== 0) throw new Error("video tool failed");
-    return { stdout, stderr };
-  } catch (error) {
-    child.kill();
-    throw error;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 }
 
 function parsePositiveNumber(value: unknown): number {
@@ -232,21 +189,14 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
     throw new TypeError("local video source limit must be bounded");
   }
 
-  let versionCheck: Promise<void> | undefined;
-  const assertPinnedVersion = (): Promise<void> => {
-    versionCheck ??= Promise.all([
-      runTool([ffmpeg, "-version"], timeoutMs),
-      runTool([ffprobe, "-version"], timeoutMs),
-    ]).then(([ffmpegResult, ffprobeResult]) => {
-      if (
-        !ffmpegResult.stdout.startsWith(EXPECTED_VERSION_PREFIX) ||
-        !ffprobeResult.stdout.startsWith(EXPECTED_PROBE_VERSION_PREFIX)
-      ) {
-        throw new Error("local video engine is not pinned FFmpeg 6.1.1");
-      }
-    });
-    return versionCheck;
-  };
+  const assertPinnedVersion = makePinnedVersionCheck({
+    ffmpeg,
+    ffprobe,
+    timeoutMs,
+    ffmpegVersionPrefix: EXPECTED_VERSION_PREFIX,
+    ffprobeVersionPrefix: EXPECTED_PROBE_VERSION_PREFIX,
+    failureMessage: "local video engine is not pinned FFmpeg 6.1.1",
+  });
 
   const withSource = async <T>(
     source: MediaTransformVideoSource,
@@ -257,20 +207,21 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
     }
     await assertPinnedVersion();
     const bytes = await options.sourceReader.read(source);
-    if (bytes.byteLength !== source.byteLength || bytes.byteLength > maximumSourceBytes) {
+    if (bytes.byteLength > maximumSourceBytes) {
       throw new Error("local video source length mismatch");
     }
-    if ((await mediaSha256Bytes(bytes)) !== source.sha256) {
-      throw new Error("local video source hash mismatch");
-    }
-    const directory = await mkdtemp(join(tmpdir(), "pirate-video-analysis-"));
-    const inputPath = join(directory, "source.mp4");
-    try {
-      await writeFile(inputPath, bytes, { flag: "wx" });
-      return await use(inputPath, bytes, directory);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    return withVerifiedTempSource(
+      {
+        bytes,
+        expectedByteLength: source.byteLength,
+        expectedSha256: source.sha256,
+        fileName: "source.mp4",
+        workspacePrefix: "pirate-video-analysis-",
+        lengthMismatchMessage: "local video source length mismatch",
+        digestMismatchMessage: "local video source hash mismatch",
+      },
+      (inputPath, directory) => use(inputPath, bytes, directory),
+    );
   };
 
   const engine: MediaTransformVideoCapabilities & Pick<VideoAnalysisProviders, "hash"> = {
@@ -368,7 +319,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
               const bytes = new Uint8Array(await readFile(outputPath));
               const canonicalSha256 = await mediaSha256Bytes(bytes);
               const stored = await options.artifactWriter.write({
-                artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/soundtrack.m4a`,
+                artifactKey: `${artifactPrefix(input.binding)}/soundtrack.m4a`,
                 bytes,
                 mediaType: "audio/mp4",
                 canonicalSha256,
@@ -457,7 +408,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
                 }
                 const canonicalSha256 = await mediaSha256Bytes(bytes);
                 const stored = await options.artifactWriter.write({
-                  artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/${request.role}.jpg`,
+                  artifactKey: `${artifactPrefix(input.binding)}/${request.role}.jpg`,
                   bytes,
                   mediaType: "image/jpeg",
                   canonicalSha256,
@@ -493,6 +444,14 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
           ),
   };
   return engine;
+}
+
+/**
+ * The same derived-artifact naming the production transform uses, so what the
+ * local engine seals resolves through the same poster and artifact authority.
+ */
+function artifactPrefix(binding: MediaTransformVideoBinding): string {
+  return `video-analysis/${binding.operationId}/v${binding.videoRevision}/c${binding.creationRevision}/a${binding.analysisRevision}`;
 }
 
 function validIdentifier(value: unknown): value is string {

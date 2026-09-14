@@ -118,6 +118,7 @@
     "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
     "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
     "MEDIA_UPLOADS_ENABLED": "false",
+    "VIDEO_SONG_REFERENCE_ENABLED": "false",
     "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
     "MEDIA_INGRESS_R2_BUCKET_NAME": "",
     "REGISTRATION_IP_LIMIT": "5",
@@ -274,6 +275,7 @@
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "MEDIA_UPLOADS_ENABLED": "true",
+        "VIDEO_SONG_REFERENCE_ENABLED": "false",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-staging",
         "REGISTRATION_IP_LIMIT": "50",
@@ -284,9 +286,9 @@
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next-staging.pirate.sc",
         "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
-        // Staging is the developer-document environment. A separately
-        // authorized live-document deployment is required for physical proof.
-        "SELF_PASS_MOCK_PASSPORT": "true",
+        // The nationality/adult acceptance window uses physical documents.
+        // Never reuse sessions minted under the former developer-document mode.
+        "SELF_PASS_MOCK_PASSPORT": "false",
         "VERY_OAUTH_ENABLED": "false",
         "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
@@ -325,7 +327,12 @@
         // one reviewed change. The inactive path is intentionally undeclared.
         "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID": "",
         "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL": "",
-        "ZKPASSPORT_DEV_MODE": "true",
+        "ZKPASSPORT_DEV_MODE": "false",
+        // Keep authoring off for the compatibility deployment. Enable it only
+        // after the compatible Solid/API pair and real-provider checks pass.
+        "NATIONALITY_AUTHORING_ENABLED": "false",
+        "NATIONALITY_AUTHORING_POLICY_REVISION": "1",
+        "NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS": "31536000",
         "PIRATE_APP_JWT_ISSUER": "api-next-session-staging",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-staging",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-staging",
@@ -478,6 +485,7 @@
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "MEDIA_UPLOADS_ENABLED": "false",
+        "VIDEO_SONG_REFERENCE_ENABLED": "false",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-production",
         "REGISTRATION_IP_LIMIT": "5",

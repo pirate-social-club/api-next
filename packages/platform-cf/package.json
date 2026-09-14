@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./account-age-verification": "./src/account-age-verification.ts",
     "./karaoke-reset-caller": "./src/karaoke-reset-caller.ts",
     ".": "./src/index.ts",
     "./cloudflare-access-jwt": "./src/cloudflare-access-jwt.ts",
@@ -19,6 +20,7 @@
     "./hns-forwarder-replay-store-do": "./src/hns-forwarder-replay-store-do.ts",
     "./hns-authority-successor-postgres": "./src/hns-authority-successor-postgres.ts",
     "./hns-host-persistence-repository": "./src/hns-host-persistence-repository.ts",
+    "./hns-root-import-lifecycle-observability": "./src/hns-root-import-lifecycle-observability.ts",
     "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
     "./hns-community-publication-queue": "./src/hns-community-publication-queue.ts",
     "./hns-community-root-import-repository": "./src/hns-community-root-import-repository.ts",
@@ -33,6 +35,7 @@
     "./community-join-intent-resolver": "./src/community-join-intent-resolver.ts",
     "./community-creation-intent-resolver": "./src/community-creation-intent-resolver.ts",
     "./community-creation-repository": "./src/community-creation-repository.ts",
+    "./nationality-authoring": "./src/nationality-authoring.ts",
     "./community-purchase-funding-repository": "./src/community-purchase-funding-repository.ts",
     "./community-purchase-funding-chain-reader": "./src/community-purchase-funding-chain-reader.ts",
     "./custody-solvency-coordinator": "./src/custody-solvency-coordinator.ts",
@@ -93,6 +96,9 @@
     "./video-poster-stream": "./src/video-poster-stream.ts",
     "./video-multipart-r2": "./src/video-multipart-r2.ts",
     "./video-publication-repository": "./src/video-publication-repository.ts",
+    "./song-video-interval-repository": "./src/song-video-interval-repository.ts",
+    "./song-video-worker-render": "./src/song-video-worker-render.ts",
+    "./song-video-master-store": "./src/song-video-master-store.ts",
     "./video-analysis-outbox-repository": "./src/video-analysis-outbox-repository.ts",
     "./video-analysis-workflow-cloudflare": "./src/video-analysis-workflow-cloudflare.ts",
     "./megapot-approval-coordinator": "./src/megapot-approval-coordinator.ts",
@@ -159,7 +165,9 @@
     "./video-safety-provider": "./src/video-safety-provider.ts",
     "./video-safety-frame-reader": "./src/video-safety-frame-reader.ts",
     "./video-safety-evidence-repository": "./src/video-safety-evidence-repository.ts",
-    "./comment-thread-repository": "./src/comment-thread-repository.ts"
+    "./comment-thread-repository": "./src/comment-thread-repository.ts",
+    "./handle-nationality-authoring-repository": "./src/handle-nationality-authoring-repository.ts",
+    "./handle-nationality-qualification-repository": "./src/handle-nationality-qualification-repository.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",

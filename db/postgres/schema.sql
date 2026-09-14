@@ -537,6 +537,84 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION apply_content_rating_reconciliation_v1(expected_plan_hash text, requested_limit integer) RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE plan jsonb; saved content_rating_reconciliation_operations%ROWTYPE; item jsonb;
+  kind text; community text; target text; outcome text; prior_status text; prior_rating text;
+  before_rows jsonb:='[]'; final_row record; event_key text;
+BEGIN
+  IF current_setting('transaction_isolation')<>'serializable' THEN RAISE EXCEPTION 'rating reconciliation requires a serializable transaction'; END IF;
+  IF expected_plan_hash IS NULL OR expected_plan_hash !~ '^[0-9a-f]{64}$' THEN RAISE EXCEPTION 'invalid rating reconciliation plan hash'; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('content-rating-reconciliation-v1',0));
+  SELECT * INTO saved FROM content_rating_reconciliation_operations WHERE plan_hash=expected_plan_hash;
+  IF FOUND THEN
+    IF saved.batch_limit IS DISTINCT FROM requested_limit THEN RAISE EXCEPTION 'rating reconciliation replay differs'; END IF;
+    RETURN jsonb_build_object('status','replayed','plan_hash',expected_plan_hash,'resources',jsonb_array_length(saved.plan));
+  END IF;
+  plan:=content_rating_reconciliation_plan_v1(requested_limit);
+  IF plan->>'plan_hash'<>expected_plan_hash THEN RAISE EXCEPTION 'rating reconciliation plan changed'; END IF;
+  INSERT INTO content_rating_reconciliation_operations(plan_hash,batch_limit,plan)
+    VALUES (expected_plan_hash,requested_limit,plan->'items');
+  FOR item IN SELECT value FROM jsonb_array_elements(plan->'items') LOOP
+    kind:=item->>'target_kind'; community:=item->>'community_id'; target:=item->>'target_id'; outcome:=item->>'outcome';
+    CASE kind
+      WHEN 'post' THEN SELECT status,content_rating INTO prior_status,prior_rating FROM posts WHERE community_id=community AND post_id=target FOR UPDATE;
+      WHEN 'comment' THEN SELECT status,content_rating INTO prior_status,prior_rating FROM comments WHERE community_id=community AND comment_id=target FOR UPDATE;
+      WHEN 'text_submission' THEN SELECT status,resulting_content_rating INTO prior_status,prior_rating FROM text_content_submissions WHERE community_id=community AND submission_id=target FOR UPDATE;
+      WHEN 'media_submission' THEN SELECT status,resulting_content_rating INTO prior_status,prior_rating FROM media_post_submissions WHERE community_id=community AND submission_id=target FOR UPDATE;
+    END CASE;
+    IF prior_status IS NULL THEN RAISE EXCEPTION 'rating reconciliation target disappeared'; END IF;
+    before_rows:=before_rows || jsonb_build_array(item || jsonb_build_object('prior_status',prior_status,'prior_rating',prior_rating));
+    IF outcome='adult_18' THEN
+      CASE kind
+        WHEN 'post' THEN
+          UPDATE posts SET content_rating='adult_18' WHERE community_id=community AND post_id=target AND content_rating IS DISTINCT FROM 'adult_18';
+          UPDATE text_content_submissions SET resulting_content_rating='adult_18' WHERE community_id=community AND published_post_id=target AND resulting_content_rating='general';
+          -- Also repair old adult parents whose children predate the new cascade.
+          UPDATE comments SET content_rating='adult_18' WHERE community_id=community AND post_id=target AND content_rating<>'adult_18';
+          UPDATE posts child SET content_rating='adult_18' FROM media_video_song_references r
+            JOIN media_post_submissions s ON s.submission_id=r.submission_id
+            WHERE r.song_community_id=community AND r.song_post_id=target
+              AND child.community_id=s.community_id AND child.post_id=r.post_id AND child.content_rating<>'adult_18';
+        WHEN 'comment' THEN
+          UPDATE comments SET content_rating='adult_18' WHERE community_id=community AND comment_id=target AND content_rating<>'adult_18';
+          UPDATE text_content_submissions SET resulting_content_rating='adult_18' WHERE community_id=community AND published_comment_id=target AND resulting_content_rating='general';
+        WHEN 'text_submission' THEN UPDATE text_content_submissions SET resulting_content_rating='adult_18' WHERE community_id=community AND submission_id=target AND resulting_content_rating='general';
+        WHEN 'media_submission' THEN UPDATE media_post_submissions SET resulting_content_rating='adult_18' WHERE community_id=community AND submission_id=target AND resulting_content_rating='general';
+      END CASE;
+    ELSIF outcome='held' THEN
+      IF kind='post' THEN
+        UPDATE posts SET status='hidden' WHERE community_id=community AND post_id=target AND status='published';
+        UPDATE posts child SET status='hidden' FROM media_video_song_references r JOIN media_post_submissions s ON s.submission_id=r.submission_id
+          WHERE r.song_community_id=community AND r.song_post_id=target AND child.community_id=s.community_id AND child.post_id=r.post_id AND child.status='published';
+        UPDATE comments c SET status='hidden' WHERE c.status='published' AND ((c.community_id=community AND c.post_id=target)
+          OR EXISTS (SELECT 1 FROM media_video_song_references r JOIN media_post_submissions s ON s.submission_id=r.submission_id
+            WHERE r.song_community_id=community AND r.song_post_id=target AND c.community_id=s.community_id AND c.post_id=r.post_id));
+      ELSIF kind='comment' THEN
+        WITH RECURSIVE descendants AS (
+          SELECT comment_id FROM comments WHERE community_id=community AND comment_id=target
+          UNION SELECT c.comment_id FROM comments c JOIN descendants d ON c.parent_comment_id=d.comment_id WHERE c.community_id=community
+        ) UPDATE comments c SET status='hidden' FROM descendants d WHERE c.community_id=community AND c.comment_id=d.comment_id AND c.status='published';
+      END IF;
+    END IF;
+  END LOOP;
+  -- Resolve all fingerprints after cascades. The reviewed outcomes must stay exact.
+  FOR item IN SELECT value FROM jsonb_array_elements(before_rows) LOOP
+    SELECT * INTO STRICT final_row FROM content_rating_reconciliation_candidates_v1
+      WHERE target_kind=item->>'target_kind' AND community_id=item->>'community_id' AND target_id=item->>'target_id';
+    IF final_row.outcome<>item->>'outcome' THEN RAISE EXCEPTION 'rating reconciliation outcome changed'; END IF;
+    event_key:=encode(sha256(convert_to(jsonb_build_array(expected_plan_hash,final_row.target_kind,final_row.community_id,final_row.target_id)::text,'UTF8')),'hex');
+    INSERT INTO content_rating_reconciliation_events(event_id,plan_hash,target_kind,community_id,target_id,source_hash,outcome,prior_status,prior_rating)
+      VALUES(event_key,expected_plan_hash,final_row.target_kind,final_row.community_id,final_row.target_id,final_row.source_hash,final_row.outcome,item->>'prior_status',item->>'prior_rating');
+    INSERT INTO content_rating_reconciliation_current(target_kind,community_id,target_id,event_id)
+      VALUES(final_row.target_kind,final_row.community_id,final_row.target_id,event_key)
+      ON CONFLICT (target_kind,community_id,target_id) DO UPDATE SET event_id=EXCLUDED.event_id;
+  END LOOP;
+  RETURN jsonb_build_object('status','applied','plan_hash',expected_plan_hash,'resources',jsonb_array_length(plan->'items'));
+END;
+$_$;
+
 CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, revision bigint, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -1529,111 +1607,6 @@ BEGIN
 END;
 $_$;
 
-CREATE FUNCTION begin_hns_root_import_readiness_ownership_v1(input_evidence_ref text) RETURNS TABLE(outcome text, dispositioned_jobs bigint, queued_jobs bigint, enabled_at timestamp with time zone)
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
-DECLARE
-  marker hns_root_import_execution_ownership%ROWTYPE;
-  database_now TIMESTAMPTZ := clock_timestamp();
-  dispositioned BIGINT := 0;
-  queued BIGINT := 0;
-BEGIN
-  IF input_evidence_ref IS NULL
-    OR btrim(input_evidence_ref) IS DISTINCT FROM input_evidence_ref
-    OR octet_length(input_evidence_ref) NOT BETWEEN 1 AND 512
-  THEN
-    RAISE EXCEPTION 'invalid HNS readiness handover evidence';
-  END IF;
-
-  SELECT * INTO marker FROM hns_root_import_execution_ownership
-   WHERE responsibility = 'readiness'
-   FOR UPDATE;
-  IF NOT FOUND THEN
-    RETURN QUERY SELECT 'marker_absent'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
-    RETURN;
-  END IF;
-  IF marker.enabled THEN
-    RETURN QUERY SELECT 'already_enabled'::TEXT, 0::BIGINT, 0::BIGINT, marker.enabled_at;
-    RETURN;
-  END IF;
-
-  -- The marker's FOR UPDATE is held for the rest of this transaction, and
-  -- every claim takes FOR SHARE on the same row, so no claim can be granted
-  -- between this check and the marker update below.
-  IF EXISTS (
-    SELECT 1
-      FROM hns_root_import_observation_jobs AS job
-      JOIN hns_root_import_lifecycle AS lifecycle
-        ON lifecycle.root_import_session_id = job.root_import_session_id
-     WHERE job.operation_kind = 'observe_root_v1'
-       AND job.state = 'leased'
-       AND job.lease_expires_at > database_now
-  ) OR EXISTS (
-    SELECT 1 FROM hns_root_import_lifecycle_jobs AS job
-     WHERE job.state = 'leased'
-       AND job.lease_expires_at > database_now
-       AND job.job_kind IN ('observe_current', 'observe_safe', 'observe_readiness')
-  ) THEN
-    RETURN QUERY SELECT 'live_lease_present'::TEXT, 0::BIGINT, 0::BIGINT, NULL::TIMESTAMPTZ;
-    RETURN;
-  END IF;
-
-  UPDATE hns_root_import_observation_jobs AS job
-     SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
-         failure_code = 'readiness_ownership_transferred', completed_at = database_now,
-         updated_at = database_now
-   WHERE job.operation_kind = 'observe_root_v1'
-     AND (
-       job.state = 'queued'
-       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
-     )
-     AND EXISTS (
-       SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
-        WHERE lifecycle.root_import_session_id = job.root_import_session_id
-     );
-  GET DIAGNOSTICS dispositioned = ROW_COUNT;
-
-  -- Replacement work for the current generation exactly once. Readiness is
-  -- the next evidence in `checking_authority`, and a `ready` operation with
-  -- absent or stale readiness needs the refresh the disposed legacy row would
-  -- have performed.
-  INSERT INTO hns_root_import_lifecycle_jobs (
-    root_import_session_id, job_kind, due_at, generation
-  )
-  SELECT lifecycle.root_import_session_id, 'observe_readiness',
-         database_now, lifecycle.generation
-    FROM hns_root_import_lifecycle AS lifecycle
-   WHERE (
-       lifecycle.phase = 'checking_authority'
-       OR (
-         lifecycle.phase = 'ready'
-         AND (
-           lifecycle.readiness_observed_at IS NULL
-           OR lifecycle.readiness_observed_at <= database_now - interval '1800 seconds'
-         )
-       )
-     )
-     AND NOT EXISTS (
-       SELECT 1 FROM hns_root_import_lifecycle_jobs AS pending
-        WHERE pending.root_import_session_id = lifecycle.root_import_session_id
-          AND pending.job_kind = 'observe_readiness'
-          AND pending.generation = lifecycle.generation
-          AND pending.state IN ('queued', 'leased')
-     );
-  GET DIAGNOSTICS queued = ROW_COUNT;
-
-  UPDATE hns_root_import_execution_ownership
-     SET enabled = TRUE,
-         enabled_at = database_now,
-         evidence_ref = input_evidence_ref,
-         updated_at = database_now
-   WHERE responsibility = 'readiness';
-
-  RETURN QUERY SELECT 'enabled'::TEXT, dispositioned, queued, database_now;
-END;
-$$;
-
 CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, target_rating text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -1643,6 +1616,34 @@ CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, targe
       THEN current_account_age_capability_v1(target_account_id) = 'adult_18'
     ELSE FALSE
   END;
+$$;
+
+CREATE FUNCTION cascade_current_content_rating_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.content_rating IS DISTINCT FROM 'adult_18' THEN RETURN NEW; END IF;
+  IF TG_TABLE_NAME='posts' THEN
+    UPDATE comments SET content_rating='adult_18',updated_at=GREATEST(updated_at,NEW.updated_at)
+      WHERE community_id=NEW.community_id AND post_id=NEW.post_id AND content_rating<>'adult_18';
+    UPDATE media_post_submissions s SET resulting_content_rating='adult_18'
+      FROM media_publication_projections p
+      WHERE p.community_id=NEW.community_id AND p.post_id=NEW.post_id
+        AND s.submission_id=p.submission_id AND s.resulting_content_rating<>'adult_18';
+    UPDATE media_publication_projections SET content_rating='adult_18'
+      WHERE community_id=NEW.community_id AND post_id=NEW.post_id AND content_rating<>'adult_18';
+    UPDATE posts video SET content_rating='adult_18',updated_at=GREATEST(video.updated_at,NEW.updated_at)
+      FROM media_video_song_references r JOIN media_post_submissions s ON s.submission_id=r.submission_id
+      WHERE r.song_community_id=NEW.community_id AND r.song_post_id=NEW.post_id
+        AND video.community_id=s.community_id AND video.post_id=r.post_id AND video.content_rating<>'adult_18';
+  ELSE
+    UPDATE comments SET content_rating='adult_18',updated_at=GREATEST(updated_at,NEW.updated_at)
+      WHERE community_id=NEW.community_id AND parent_comment_id=NEW.comment_id AND content_rating<>'adult_18';
+    UPDATE comment_publication_projection SET content_rating='adult_18',updated_at=GREATEST(updated_at,NEW.updated_at)
+      WHERE community_id=NEW.community_id AND comment_id=NEW.comment_id AND content_rating<>'adult_18';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION change_hns_community_app_host_status_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_expected_activation_generation bigint, input_target_status text, input_reason_code text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
@@ -1943,11 +1944,13 @@ DECLARE
   candidate hns_root_health_renewal_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
-  observation hns_root_import_observation_jobs%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
   current_generation BIGINT;
   latest_health_generation BIGINT;
   app_generation BIGINT;
   sale_generation BIGINT;
+  renewal_request_bytes BYTEA;
+  renewal_request_sha256 TEXT;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
   IF NOT is_hns_host_persistence_identity(input_executor_id, 256)
@@ -1978,8 +1981,11 @@ BEGIN
     WHERE hns_root_import_sessions.root_import_session_id = candidate.root_import_session_id FOR SHARE;
   SELECT * INTO provision FROM hns_authority_provision_jobs
     WHERE hns_authority_provision_jobs.root_import_session_id = candidate.root_import_session_id;
-  SELECT * INTO observation FROM hns_root_import_observation_jobs
-    WHERE hns_root_import_observation_jobs.root_import_session_id = candidate.root_import_session_id;
+  -- The lifecycle row is authoritative where it exists; a pre-lifecycle
+  -- operation retains its session-only path.
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+    WHERE hns_root_import_lifecycle.root_import_session_id = candidate.root_import_session_id
+    FOR SHARE;
   SELECT dns.current_generation INTO current_generation
     FROM hns_dns_zone_activation_current AS dns
     WHERE dns.dns_zone_activation_id = candidate.dns_zone_activation_id FOR SHARE;
@@ -1996,19 +2002,85 @@ BEGIN
   IF session.status IS DISTINCT FROM 'activated'
     OR current_generation IS DISTINCT FROM candidate.activation_generation
     OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-    OR app_generation IS NULL OR sale_generation IS NULL
-    OR provision.state IS DISTINCT FROM 'completed'
-    OR observation.state IS DISTINCT FROM 'completed'
   THEN
+    -- Genuinely obsolete work stays terminal. A session that is no longer
+    -- activated and a superseded DNS or health generation have no repair path
+    -- under this job identity, and a terminal job keeps occupying its
+    -- generation so the scheduler never recreates it.
     UPDATE hns_root_health_renewal_jobs SET state = 'terminal', next_attempt_at = NULL,
-      failure_code = CASE WHEN session.status IS DISTINCT FROM 'activated'
-        THEN 'session_not_activated'
-        WHEN current_generation IS DISTINCT FROM candidate.activation_generation
-          OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
-        THEN 'generation_superseded' ELSE 'evidence_mismatch' END,
+      failure_code = CASE
+        WHEN session.status IS DISTINCT FROM 'activated' THEN 'session_not_activated'
+        ELSE 'generation_superseded' END,
       completed_at = database_now, updated_at = database_now
     WHERE renewal_job_id = candidate.renewal_job_id;
     RETURN;
+  END IF;
+
+  IF app_generation IS NULL OR sale_generation IS NULL
+    OR provision.state IS DISTINCT FROM 'completed'
+    OR provision.publish_plan_sha256 IS NULL
+    OR provision.result_sha256 IS NULL
+    OR session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256
+    OR session.readiness_result_sha256 IS NULL
+    OR session.readiness_result_bytes IS NULL
+    OR session.ownership_result_sha256 IS NULL
+    OR (
+      lifecycle.root_import_session_id IS NOT NULL
+      AND (
+        lifecycle.phase IS DISTINCT FROM 'activated'
+        OR lifecycle.readiness_observed_at IS NULL
+        OR lifecycle.readiness_accepted_at IS NULL
+        OR lifecycle.plan_encoded_resource_sha256 IS NULL
+      )
+    )
+  THEN
+    -- Repairable evidence absence is not obsolescence. The named condition is
+    -- persisted as a delayed disposition so the same job identity retries
+    -- under the 0120 delay policy once the operator restores the binding or
+    -- accepted readiness through its supported writer; the scheduler requeues
+    -- the same row when due instead of creating a replacement.
+    UPDATE hns_root_health_renewal_jobs SET state = 'delayed', leased_by = NULL,
+      lease_expires_at = NULL, completed_at = NULL,
+      attempt_count = LEAST(candidate.attempt_count + 1, 1024),
+      failure_code = CASE
+        WHEN provision.state IS DISTINCT FROM 'completed'
+          OR provision.publish_plan_sha256 IS NULL
+          OR provision.result_sha256 IS NULL
+        THEN 'plan_binding_missing'
+        WHEN session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256
+        THEN 'plan_binding_mismatch'
+        WHEN lifecycle.root_import_session_id IS NOT NULL
+          AND lifecycle.plan_encoded_resource_sha256 IS NULL
+        THEN 'plan_binding_missing'
+        WHEN (
+          lifecycle.root_import_session_id IS NOT NULL
+          AND (
+            lifecycle.phase IS DISTINCT FROM 'activated'
+            OR lifecycle.readiness_observed_at IS NULL
+            OR lifecycle.readiness_accepted_at IS NULL
+          )
+        )
+          OR session.readiness_result_sha256 IS NULL
+          OR session.readiness_result_bytes IS NULL
+        THEN 'readiness_evidence_missing'
+        WHEN session.ownership_result_sha256 IS NULL
+        THEN 'ownership_evidence_missing'
+        ELSE 'activation_evidence_missing' END,
+      next_attempt_at = database_now
+        + hns_root_health_renewal_delay_v1(LEAST(candidate.attempt_count + 1, 1024)),
+      updated_at = database_now
+    WHERE renewal_job_id = candidate.renewal_job_id;
+    RETURN;
+  END IF;
+
+  -- The renewal envelope is derived from the retained session and provision
+  -- evidence and bound to the claimed authority generation. It no longer
+  -- depends on the retired observation job's request row.
+  SELECT encoded.request_bytes, encoded.request_sha256
+    INTO renewal_request_bytes, renewal_request_sha256
+    FROM encode_hns_root_readiness_observation_request_v1(session.root_import_session_id) AS encoded;
+  IF renewal_request_bytes IS NULL THEN
+    RAISE EXCEPTION 'HNS renewal request envelope is unavailable';
   END IF;
 
   database_now := clock_timestamp();
@@ -2017,11 +2089,12 @@ BEGIN
         lease_fence = candidate.lease_fence + 1, leased_by = input_executor_id,
         lease_expires_at = database_now + input_lease_seconds * interval '1 second',
         expected_app_generation=app_generation, expected_sale_generation=sale_generation,
+        request_bytes = renewal_request_bytes, request_sha256 = renewal_request_sha256,
         failure_code = NULL, next_attempt_at = NULL, updated_at = database_now
   WHERE job.renewal_job_id = candidate.renewal_job_id;
 
   RETURN QUERY SELECT candidate.renewal_job_id, candidate.root_import_session_id,
-    'renew_health_v1'::text, observation.request_bytes, observation.request_sha256,
+    'renew_health_v1'::text, renewal_request_bytes, renewal_request_sha256,
     provision.publish_plan_bytes, provision.publish_plan_sha256,
     provision.result_bytes, provision.result_sha256, candidate.lease_fence + 1,
     database_now + input_lease_seconds * interval '1 second';
@@ -2035,7 +2108,6 @@ CREATE FUNCTION claim_hns_root_import_lifecycle_job_v1(input_executor_id text, i
 DECLARE
   candidate hns_root_import_lifecycle_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
-  readiness_enabled BOOLEAN;
 BEGIN
   IF input_executor_id IS NULL
     OR btrim(input_executor_id) IS DISTINCT FROM input_executor_id
@@ -2046,16 +2118,6 @@ BEGIN
     RAISE EXCEPTION 'invalid HNS lifecycle job claim';
   END IF;
 
-  -- The common lock order with the handover transaction. FOR SHARE admits
-  -- concurrent claims and excludes the handover's FOR UPDATE, so a claim
-  -- cannot be granted in the window between the handover's lease check and
-  -- its marker update.
-  SELECT ownership.enabled INTO readiness_enabled
-    FROM hns_root_import_execution_ownership AS ownership
-   WHERE ownership.responsibility = 'readiness'
-   FOR SHARE;
-  readiness_enabled := coalesce(readiness_enabled, FALSE);
-
   UPDATE hns_root_import_lifecycle_jobs AS stale
      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
          failure_code = 'generation_superseded', completed_at = database_now,
@@ -2065,7 +2127,8 @@ BEGIN
        FROM hns_root_import_lifecycle_jobs AS job
        JOIN hns_root_import_lifecycle AS lifecycle
          ON lifecycle.root_import_session_id = job.root_import_session_id
-      WHERE job.generation < lifecycle.generation
+      WHERE NOT lifecycle.synthetic
+        AND job.generation < lifecycle.generation
         AND (
           job.state = 'queued'
           OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
@@ -2080,7 +2143,7 @@ BEGIN
    WHERE ((job.state = 'queued' AND job.due_at <= database_now)
       OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
      AND job.generation = lifecycle.generation
-     AND (job.job_kind <> 'observe_readiness' OR readiness_enabled)
+     AND NOT lifecycle.synthetic
      AND NOT EXISTS (
        SELECT 1 FROM hns_root_import_observation_jobs AS legacy
         WHERE legacy.root_import_session_id = job.root_import_session_id
@@ -2114,12 +2177,10 @@ CREATE FUNCTION claim_hns_root_import_observation_job_v1(input_executor_id text,
     SET search_path FROM CURRENT
     AS $$
 DECLARE
-  candidate hns_root_import_observation_jobs%ROWTYPE;
   teardown hns_root_import_teardown_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
-  readiness_enabled BOOLEAN;
 BEGIN
   IF btrim(input_executor_id) <> input_executor_id
     OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
@@ -2128,14 +2189,6 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid HNS root observation claim';
   END IF;
-
-  -- The common lock order with the handover transaction, shared with the
-  -- lifecycle claim so both executors serialize on the same ownership fact.
-  SELECT ownership.enabled INTO readiness_enabled
-    FROM hns_root_import_execution_ownership AS ownership
-   WHERE ownership.responsibility = 'readiness'
-   FOR SHARE;
-  readiness_enabled := coalesce(readiness_enabled, FALSE);
 
   SELECT job.* INTO teardown
     FROM hns_root_import_teardown_jobs AS job
@@ -2250,102 +2303,6 @@ BEGIN
     END IF;
   END IF;
 
-  SELECT job.* INTO candidate
-    FROM hns_root_import_observation_jobs AS job
-    JOIN hns_root_import_sessions AS selected_session
-      ON selected_session.root_import_session_id = job.root_import_session_id
-   WHERE job.attempt_count >= 20
-     AND (
-       job.state = 'queued'
-       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
-     )
-     AND selected_session.status = 'observing'
-     AND (
-       selected_session.expires_at > database_now
-       OR EXISTS (
-           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-            WHERE lifecycle_owner.root_import_session_id = selected_session.root_import_session_id
-         )
-     )
-     AND NOT (
-       job.operation_kind = 'observe_root_v1'
-       AND readiness_enabled
-       AND EXISTS (
-         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-          WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
-       )
-     )
-   ORDER BY job.created_at, job.observation_job_id
-   FOR UPDATE OF job SKIP LOCKED
-   LIMIT 1;
-  IF FOUND THEN
-    SELECT * INTO session
-      FROM hns_root_import_sessions
-     WHERE hns_root_import_sessions.root_import_session_id = candidate.root_import_session_id
-     FOR UPDATE;
-    UPDATE hns_root_import_observation_jobs AS job
-       SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
-           failure_code = 'observation_attempts_exhausted', completed_at = database_now,
-           updated_at = database_now
-     WHERE job.observation_job_id = candidate.observation_job_id;
-    UPDATE hns_root_import_sessions AS exhausted_session
-       SET status = 'failed', revision = session.revision + 1,
-           updated_at = database_now
-     WHERE exhausted_session.root_import_session_id = session.root_import_session_id;
-  END IF;
-
-  SELECT job.* INTO candidate
-    FROM hns_root_import_observation_jobs AS job
-    JOIN hns_root_import_sessions AS selected_session
-      ON selected_session.root_import_session_id = job.root_import_session_id
-   WHERE job.attempt_count < 20
-     AND (
-       job.state = 'queued'
-       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
-     )
-     AND selected_session.status = 'observing'
-     AND (
-       selected_session.expires_at > database_now
-       OR EXISTS (
-           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-            WHERE lifecycle_owner.root_import_session_id = selected_session.root_import_session_id
-         )
-     )
-     AND NOT (
-       job.operation_kind = 'observe_root_v1'
-       AND readiness_enabled
-       AND EXISTS (
-         SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-          WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
-       )
-     )
-   ORDER BY job.created_at, job.observation_job_id
-   FOR UPDATE OF job SKIP LOCKED
-   LIMIT 1;
-  IF NOT FOUND THEN RETURN; END IF;
-  SELECT * INTO session
-    FROM hns_root_import_sessions
-   WHERE hns_root_import_sessions.root_import_session_id = candidate.root_import_session_id;
-  SELECT * INTO provision
-    FROM hns_authority_provision_jobs
-   WHERE provision_job_id = session.provision_job_id;
-  IF provision.state <> 'completed' THEN
-    RAISE EXCEPTION 'HNS root observation provision authority is unavailable';
-  END IF;
-  UPDATE hns_root_import_observation_jobs AS job
-     SET state = 'leased', attempt_count = candidate.attempt_count + 1,
-         lease_fence = candidate.lease_fence + 1,
-         leased_by = input_executor_id,
-         lease_expires_at = database_now + input_lease_seconds * interval '1 second',
-         failure_code = NULL, updated_at = database_now
-   WHERE job.observation_job_id = candidate.observation_job_id;
-  RETURN QUERY SELECT
-    candidate.observation_job_id, candidate.root_import_session_id,
-    candidate.operation_kind, candidate.request_bytes, candidate.request_sha256,
-    provision.publish_plan_bytes, provision.publish_plan_sha256,
-    provision.result_bytes, provision.result_sha256,
-    candidate.lease_fence + 1,
-    database_now + input_lease_seconds * interval '1 second';
 END;
 $$;
 
@@ -2647,10 +2604,11 @@ DECLARE
   session hns_root_import_sessions%ROWTYPE;
   result JSONB;
   database_now TIMESTAMPTZ;
+  observed_at TIMESTAMPTZ;
+  valid_until TIMESTAMPTZ;
   readiness_event_id TEXT;
   committed RECORD;
   problem TEXT;
-  readiness_enabled BOOLEAN;
 BEGIN
   IF input_session_id IS NULL
     OR length(btrim(input_session_id)) = 0
@@ -2673,11 +2631,6 @@ BEGIN
     RAISE EXCEPTION 'invalid HNS lifecycle readiness result';
   END IF;
 
-  SELECT ownership.enabled INTO readiness_enabled
-    FROM hns_root_import_execution_ownership AS ownership
-   WHERE ownership.responsibility = 'readiness'
-   FOR SHARE;
-  readiness_enabled := coalesce(readiness_enabled, FALSE);
   SELECT * INTO job FROM hns_root_import_lifecycle_jobs
    WHERE lifecycle_job_id = input_lifecycle_job_id
    FOR UPDATE;
@@ -2695,10 +2648,6 @@ BEGIN
   END IF;
   IF session.root_import_session_id IS NULL THEN
     RETURN QUERY SELECT 'session_absent'::TEXT, lifecycle.revision, NULL::TEXT;
-    RETURN;
-  END IF;
-  IF NOT readiness_enabled THEN
-    RETURN QUERY SELECT 'ownership_not_enabled'::TEXT, lifecycle.revision, NULL::TEXT;
     RETURN;
   END IF;
 
@@ -2760,12 +2709,34 @@ BEGIN
       problem := 'session';
     ELSIF result->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256 THEN
       problem := 'plan';
-    ELSIF (result->>'observed_at')::TIMESTAMPTZ > database_now THEN
-      problem := 'observed_future';
-    ELSIF (result->>'valid_until')::TIMESTAMPTZ <= database_now THEN
-      problem := 'expired';
+    -- Both timestamps are required, typed, parseable and finite before any
+    -- freshness comparison. A missing key, JSON null, a number, or an
+    -- infinity sentinel is invalid evidence, not a boundary case to clamp.
+    ELSIF jsonb_typeof(result->'observed_at') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(result->'valid_until') IS DISTINCT FROM 'string' THEN
+      problem := 'timestamp_shape';
     ELSE
-      problem := NULL;
+      BEGIN
+        observed_at := (result->>'observed_at')::TIMESTAMPTZ;
+        valid_until := (result->>'valid_until')::TIMESTAMPTZ;
+      EXCEPTION WHEN others THEN
+        problem := 'timestamp_unreadable';
+      END;
+      IF problem IS NULL THEN
+        IF NOT isfinite(observed_at) OR NOT isfinite(valid_until) THEN
+          problem := 'timestamp_infinite';
+        ELSIF observed_at > database_now THEN
+          problem := 'observed_future';
+        -- The frozen readiness_freshness_v1 window is measured from the
+        -- observation itself, not from its later acceptance.
+        ELSIF observed_at <= database_now - interval '1800 seconds' THEN
+          problem := 'observed_stale';
+        ELSIF valid_until <= database_now THEN
+          problem := 'expired';
+        ELSE
+          problem := NULL;
+        END IF;
+      END IF;
     END IF;
   EXCEPTION WHEN others THEN
     problem := 'unreadable';
@@ -2784,8 +2755,11 @@ BEGIN
     'readiness_retained',
     'ready',
     jsonb_build_object(
-      'readiness_observed_at', database_now,
-      'next_check_at', database_now + interval '1800 seconds',
+      -- The accepted observation keeps its own timestamp; the acceptance
+      -- clock is recorded separately by the lifecycle acceptance trigger,
+      -- and the refresh horizon moves with the observation it belongs to.
+      'readiness_observed_at', observed_at,
+      'next_check_at', observed_at + interval '1800 seconds',
       'pending_reason', NULL
     ),
     '[]'::jsonb,
@@ -2854,6 +2828,25 @@ CREATE FUNCTION community_moderation_policy_preimage_v1(input_community_id text,
     revision.revision,
     revision.platform_floor_revision_id,
     revision.platform_floor_hash;
+$$;
+
+CREATE FUNCTION content_rating_reconciliation_plan_v1(requested_limit integer) RETURNS jsonb
+    LANGUAGE plpgsql STABLE
+    AS $$
+DECLARE items jsonb; fingerprint text;
+BEGIN
+  IF requested_limit IS NULL OR requested_limit NOT BETWEEN 1 AND 100 THEN RAISE EXCEPTION 'invalid rating reconciliation limit'; END IF;
+  SELECT COALESCE(jsonb_agg(to_jsonb(candidate) ORDER BY candidate.target_kind,candidate.depth,candidate.community_id,candidate.target_id),'[]') INTO items
+  FROM (
+    SELECT c.* FROM content_rating_reconciliation_candidates_v1 c
+    LEFT JOIN content_rating_reconciliation_current current USING (target_kind,community_id,target_id)
+    LEFT JOIN content_rating_reconciliation_events e ON e.event_id=current.event_id
+    WHERE e.source_hash IS DISTINCT FROM c.source_hash OR e.outcome IS DISTINCT FROM c.outcome
+    ORDER BY c.target_kind,c.depth,c.community_id,c.target_id LIMIT requested_limit
+  ) candidate;
+  fingerprint:=encode(sha256(convert_to(jsonb_build_array('content-rating-reconciliation-v1',requested_limit,items)::text,'UTF8')),'hex');
+  RETURN jsonb_build_object('version','content-rating-reconciliation-v1','plan_hash',fingerprint,'limit',requested_limit,'items',items);
+END;
 $$;
 
 CREATE FUNCTION create_community_moderation_policy_revision_v1(input_account_id text, input_community_id text, input_expected_policy_revision text, input_decisions jsonb) RETURNS community_moderation_policy_update_result_v1
@@ -2958,9 +2951,18 @@ $$;
 
 CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURNS text
     LANGUAGE sql STABLE
+    AS $$
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM current_account_age_evidence_v2(target_account_id))
+    THEN 'adult_18' ELSE 'general' END;
+$$;
+
+CREATE FUNCTION current_account_age_evidence_v2(target_account_id text) RETURNS TABLE(provider_id text, policy_reference text, evidence_expires_at timestamp with time zone)
+    LANGUAGE sql STABLE
     AS $_$
-  SELECT CASE WHEN EXISTS (
-    SELECT 1
+    SELECT receipt.provider_id,
+           concat(receipt.provider_configuration_ref, '@', receipt.provider_configuration_version),
+           LEAST(assertion.expires_at, receipt.expires_at,
+                 credential_witness.expires_at, document_witness.expires_at)
       FROM assertions AS assertion
       JOIN evidence_receipts AS receipt
         ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
@@ -2970,7 +2972,31 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
        AND session.actor_id = assertion.user_id
        AND session.status = 'completed'
        AND session.completed_at = session.terminal_at
-       AND session.intent_id = 'platform.document.age-18'
+       AND (session.intent_id = 'platform.document.age-18' OR EXISTS (
+         SELECT 1
+           FROM age_verification_ceremony_attempts AS attempt
+           JOIN age_verification_requirement_states AS state
+             ON state.action_kind = attempt.action_kind AND state.intent_id = attempt.intent_id
+            AND state.requirement_kind = attempt.requirement_kind
+            AND state.actor_id = attempt.actor_id AND state.generation = attempt.generation
+            AND state.current_ceremony_intent_id = attempt.ceremony_intent_id
+            AND state.current_provider_id = attempt.provider_id
+            AND state.current_provider_binding_hash = attempt.provider_binding_hash
+            AND state.requirement_hash = attempt.requirement_hash
+            AND state.status IN ('pending', 'satisfied')
+           JOIN account_age_verification_current AS current
+             ON current.account_id = attempt.actor_id AND current.intent_id = attempt.intent_id
+          WHERE attempt.ceremony_intent_id = session.intent_id
+            AND attempt.actor_id = session.actor_id AND attempt.action_kind = 'adult_view'
+            AND attempt.requirement_kind = 'age_18'
+            AND attempt.provider_id = session.provider_id
+            AND attempt.provider_configuration_kind = session.provider_configuration_kind
+            AND attempt.provider_configuration_ref = session.provider_configuration_ref
+            AND attempt.provider_configuration_version = session.provider_configuration_version
+            AND session.started_at >= attempt.reserved_at
+            AND session.completed_at < attempt.expires_at
+            AND session.completed_at < session.expires_at
+       ))
        AND session.method = 'document'
        AND session.scope_kind = 'issuer_rp_scope'
        AND session.issuer_rp_scope = 'pirate-social'
@@ -2987,18 +3013,8 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
        AND active_binding.user_id = assertion.user_id
        AND active_binding.binding_event_id = binding.subject_binding_event_id
        AND active_binding.binding_epoch = binding.subject_binding_epoch
-     WHERE assertion.user_id = target_account_id
-       AND assertion.claim_id = 'age.minimum'
-       AND assertion.assurance = 'document_zk'
-       AND receipt.provider_id IN ('self.pass', 'self.enterprise', 'zkpassport')
-       AND receipt.subject_key_id = assertion.subject_key_id
-       AND assertion.assertion_value ? 'minimum_age'
-       AND assertion.assertion_value->>'minimum_age' ~ '^(0|[1-9][0-9]*)$'
-       AND (assertion.assertion_value->>'minimum_age')::NUMERIC >= 18
-       AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
-       AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
-       AND EXISTS (
-         SELECT 1
+      JOIN LATERAL (
+         SELECT LEAST(credential.expires_at, credential_receipt.expires_at) AS expires_at
            FROM assertions AS credential
            JOIN evidence_receipts AS credential_receipt
              ON credential_receipt.evidence_receipt_id = credential.evidence_receipt_id
@@ -3013,9 +3029,13 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
             AND credential.assurance = 'document_zk'
             AND (credential.expires_at IS NULL OR credential.expires_at > clock_timestamp())
             AND (credential_receipt.expires_at IS NULL OR credential_receipt.expires_at > clock_timestamp())
-       )
-       AND EXISTS (
-         SELECT 1
+            AND credential.observed_at <= clock_timestamp()
+            AND credential_receipt.observed_at <= clock_timestamp()
+          ORDER BY LEAST(credential.expires_at, credential_receipt.expires_at) DESC NULLS FIRST, credential.assertion_id DESC
+          LIMIT 1
+      ) AS credential_witness ON TRUE
+      JOIN LATERAL (
+         SELECT LEAST(document.expires_at, document_receipt.expires_at) AS expires_at
            FROM assertions AS document
            JOIN evidence_receipts AS document_receipt
              ON document_receipt.evidence_receipt_id = document.evidence_receipt_id
@@ -3030,7 +3050,22 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
             AND document.assurance = 'document_zk'
             AND (document.expires_at IS NULL OR document.expires_at > clock_timestamp())
             AND (document_receipt.expires_at IS NULL OR document_receipt.expires_at > clock_timestamp())
-       )
+            AND document.observed_at <= clock_timestamp()
+            AND document_receipt.observed_at <= clock_timestamp()
+          ORDER BY LEAST(document.expires_at, document_receipt.expires_at) DESC NULLS FIRST, document.assertion_id DESC
+          LIMIT 1
+      ) AS document_witness ON TRUE
+     WHERE assertion.user_id = target_account_id
+       AND assertion.claim_id = 'age.minimum'
+       AND assertion.assurance = 'document_zk'
+       AND receipt.provider_id IN ('self.pass', 'self.enterprise', 'zkpassport')
+       AND receipt.subject_key_id = assertion.subject_key_id
+       AND assertion.assertion_value ? 'minimum_age'
+       AND assertion.assertion_value->>'minimum_age' ~ '^(0|[1-9][0-9]*)$'
+       AND (assertion.assertion_value->>'minimum_age')::NUMERIC >= 18
+       AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
+       AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
+
        AND NOT EXISTS (
          SELECT 1
            FROM LATERAL (
@@ -3060,7 +3095,11 @@ CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURN
             AND sibling.binding_group_id = assertion.binding_group_id
             AND latest.outcome <> 'accepted'
        )
-  ) THEN 'adult_18' ELSE 'general' END;
+
+       AND assertion.observed_at <= clock_timestamp()
+       AND receipt.observed_at <= clock_timestamp()
+     ORDER BY assertion.observed_at DESC, assertion.assertion_id DESC
+     LIMIT 1;
 $_$;
 
 CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text, input_namespace_authority_reference text, input_namespace_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, database_now timestamp with time zone) RETURNS TABLE(canonical_root text, display_root text, namespace_authority_current boolean, dns_zone_current boolean, dns_delegation_current boolean)
@@ -3478,6 +3517,76 @@ CREATE FUNCTION effective_route_authority_v2(expected_community_id text, databas
      AND binding.route_lifecycle_status = 'active'
      AND binding.ownership_status <> 'verified'
      AND binding.verified_evidence_ref IS NULL
+$$;
+
+CREATE FUNCTION encode_hns_root_readiness_observation_request_v1(input_session_id text) RETURNS TABLE(request_bytes bytea, request_sha256 text)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  session hns_root_import_sessions%ROWTYPE;
+  provision hns_authority_provision_jobs%ROWTYPE;
+  encoded TEXT;
+BEGIN
+  IF input_session_id IS NULL OR btrim(input_session_id) IS DISTINCT FROM input_session_id
+  THEN RAISE EXCEPTION 'invalid HNS readiness request session'; END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+    WHERE root_import_session_id = input_session_id;
+  IF NOT FOUND THEN RETURN; END IF;
+  SELECT * INTO provision FROM hns_authority_provision_jobs
+    WHERE root_import_session_id = input_session_id AND state = 'completed';
+  IF provision.provision_job_id IS NULL THEN RETURN; END IF;
+  IF session.publish_plan_sha256 IS DISTINCT FROM provision.publish_plan_sha256 THEN RETURN; END IF;
+  IF session.namespace_session_id IS NULL
+    OR session.root_label IS NULL
+    OR session.challenge_txt_value IS NULL
+    OR session.ownership_result_sha256 IS NULL
+    OR provision.publish_plan_sha256 IS NULL
+    OR provision.result_sha256 IS NULL
+  THEN RETURN; END IF;
+  -- Alphabetical key order matches canonicalJson. Milliseconds are truncated,
+  -- not rounded, so the value matches a JavaScript Date's toISOString.
+  encoded := '{'
+    || '"challenge_txt_value":' || to_json(session.challenge_txt_value)::text
+    || ',"expires_at":' || to_json(to_char(
+         date_trunc('milliseconds', session.expires_at) AT TIME ZONE 'UTC',
+         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+       ))::text
+    || ',"namespace_session_id":' || to_json(session.namespace_session_id)::text
+    || ',"ownership_result_sha256":' || to_json(session.ownership_result_sha256)::text
+    || ',"provision_result_sha256":' || to_json(provision.result_sha256)::text
+    || ',"publish_plan_sha256":' || to_json(provision.publish_plan_sha256)::text
+    || ',"root_import_session_id":' || to_json(session.root_import_session_id)::text
+    || ',"root_label":' || to_json(session.root_label)::text
+    || ',"version":"pirate-hns-root-readiness-observation-request-v1"'
+    || '}';
+  request_bytes := convert_to(encoded, 'UTF8');
+  request_sha256 := encode(sha256(request_bytes), 'hex');
+  RETURN NEXT;
+END;
+$$;
+
+CREATE FUNCTION enforce_current_content_rating_floor_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE parent_rating text;
+BEGIN
+  IF TG_OP='UPDATE' AND OLD.content_rating='adult_18'
+     AND NEW.content_rating IS DISTINCT FROM 'adult_18' THEN
+    RAISE EXCEPTION 'current content rating cannot be lowered' USING ERRCODE='23514';
+  END IF;
+  IF TG_TABLE_NAME='comments' THEN
+    SELECT content_rating INTO parent_rating FROM posts
+      WHERE community_id=NEW.community_id AND post_id=NEW.post_id FOR SHARE;
+    IF parent_rating='adult_18' THEN NEW.content_rating:='adult_18'; END IF;
+    IF NEW.parent_comment_id IS NOT NULL THEN
+      SELECT content_rating INTO parent_rating FROM comments
+        WHERE community_id=NEW.community_id AND comment_id=NEW.parent_comment_id FOR SHARE;
+      IF parent_rating='adult_18' THEN NEW.content_rating:='adult_18'; END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION enforce_song_rating_projection_v1() RETURNS trigger
@@ -3932,7 +4041,6 @@ CREATE FUNCTION finalize_hns_root_health_renewal_job_v1(input_renewal_job_id tex
 DECLARE
   job hns_root_health_renewal_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
-  observation hns_root_import_observation_jobs%ROWTYPE;
   result JSONB;
   dns_revision hns_dns_zone_activation_revisions%ROWTYPE;
   remaining_seconds INTEGER;
@@ -3949,13 +4057,18 @@ BEGIN
   IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text, NULL::text, NULL::bigint; RETURN; END IF;
   SELECT * INTO session FROM hns_root_import_sessions
     WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id FOR SHARE;
-  SELECT * INTO observation FROM hns_root_import_observation_jobs
-    WHERE hns_root_import_observation_jobs.root_import_session_id = job.root_import_session_id;
 
   database_now := clock_timestamp();
   IF job.state IN ('completed', 'terminal') THEN
+    -- Pre-0170 completed renewals carry no derived request digest. Their
+    -- completion cannot be matched against a derived envelope, so a
+    -- re-delivery is deliberately a conflict rather than a replay.
+    IF job.state = 'completed' AND job.request_sha256 IS NULL THEN
+      RETURN QUERY SELECT 'conflict'::text, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
     IF job.state = 'completed' AND input_outcome = 'ready'
-      AND observation.request_sha256 = input_request_sha256
+      AND job.request_sha256 = input_request_sha256
       AND job.result_bytes = input_result_bytes AND job.result_sha256 = input_result_sha256
       AND input_failure_code IS NULL
     THEN RETURN QUERY SELECT 'replayed'::text, session.root_import_session_id, session.revision;
@@ -3965,7 +4078,11 @@ BEGIN
   END IF;
   IF job.state <> 'leased' OR job.leased_by IS DISTINCT FROM input_executor_id
     OR job.lease_fence IS DISTINCT FROM input_lease_fence OR job.lease_expires_at <= database_now
-    OR observation.request_sha256 IS DISTINCT FROM input_request_sha256
+    OR (SELECT provision.publish_plan_sha256 FROM hns_authority_provision_jobs AS provision
+         WHERE provision.root_import_session_id = job.root_import_session_id
+           AND provision.state = 'completed') IS DISTINCT FROM session.publish_plan_sha256
+    OR job.request_sha256 IS NULL
+    OR job.request_sha256 IS DISTINCT FROM input_request_sha256
   THEN RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN; END IF;
 
   SELECT dns.current_generation INTO current_generation
@@ -4132,23 +4249,16 @@ $$;
 CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
-    AS $_$
+    AS $$
 DECLARE
-  job hns_root_import_observation_jobs%ROWTYPE;
   teardown hns_root_import_teardown_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
-  readiness_enabled BOOLEAN;
 BEGIN
   IF input_outcome NOT IN ('ready', 'retry', 'failed') THEN
     RAISE EXCEPTION 'invalid HNS root observation finalization';
   END IF;
-  SELECT ownership.enabled INTO readiness_enabled
-    FROM hns_root_import_execution_ownership AS ownership
-   WHERE ownership.responsibility = 'readiness'
-   FOR SHARE;
-  readiness_enabled := coalesce(readiness_enabled, FALSE);
   SELECT * INTO teardown
     FROM hns_root_import_teardown_jobs
    WHERE teardown_job_id = input_observation_job_id
@@ -4254,117 +4364,10 @@ BEGIN
     END IF;
     RETURN;
   END IF;
-  SELECT * INTO job
-    FROM hns_root_import_observation_jobs
-   WHERE observation_job_id = input_observation_job_id
-   FOR UPDATE;
-  IF NOT FOUND THEN
-    RETURN QUERY SELECT 'not_found'::TEXT, NULL::TEXT, NULL::BIGINT;
-    RETURN;
-  END IF;
-  SELECT * INTO session
-    FROM hns_root_import_sessions
-   WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id
-   FOR UPDATE;
-  -- A completed job replays idempotently regardless of ownership; the work
-  -- was accepted under the ownership that was current when it ran.
-  IF job.state IN ('completed', 'failed') THEN
-    IF job.state = 'completed'
-      AND input_outcome = 'ready'
-      AND job.request_sha256 = input_request_sha256
-      AND job.result_bytes = input_result_bytes
-      AND job.result_sha256 = input_result_sha256
-      AND input_failure_code IS NULL
-    THEN
-      RETURN QUERY SELECT 'replayed'::TEXT, session.root_import_session_id, session.revision;
-    ELSE
-      RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
-    END IF;
-    RETURN;
-  END IF;
-  -- Ownership handover gates every new outcome, not only a readiness
-  -- acceptance: a post-handover retry or failure would also mutate the
-  -- session while the lifecycle runner owns readiness.
-  IF readiness_enabled
-    AND job.operation_kind = 'observe_root_v1'
-    AND EXISTS (
-      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-       WHERE lifecycle_owner.root_import_session_id = job.root_import_session_id
-    )
-  THEN
-    RETURN QUERY SELECT 'ownership_conflict'::TEXT, session.root_import_session_id, session.revision;
-    RETURN;
-  END IF;
-  IF job.state <> 'leased'
-    OR job.leased_by <> input_executor_id
-    OR job.lease_fence <> input_lease_fence
-    OR job.lease_expires_at <= database_now
-    OR job.request_sha256 <> input_request_sha256
-    OR session.status <> 'observing'
-    OR (
-      session.expires_at <= database_now
-      AND NOT EXISTS (
-           SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
-            WHERE lifecycle_owner.root_import_session_id = session.root_import_session_id
-         )
-    )
-  THEN
-    RETURN QUERY SELECT 'lost'::TEXT, session.root_import_session_id, session.revision;
-    RETURN;
-  END IF;
-  IF input_outcome = 'ready' THEN
-    IF input_result_bytes IS NULL
-      OR input_result_sha256 !~ '^[0-9a-f]{64}$'
-      OR encode(sha256(input_result_bytes), 'hex') <> input_result_sha256
-      OR input_failure_code IS NOT NULL
-    THEN
-      RAISE EXCEPTION 'invalid ready HNS root observation result';
-    END IF;
-    UPDATE hns_root_import_observation_jobs
-       SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
-           result_bytes = input_result_bytes, result_sha256 = input_result_sha256,
-           failure_code = NULL, completed_at = database_now, updated_at = database_now
-     WHERE observation_job_id = input_observation_job_id;
-    UPDATE hns_root_import_sessions
-       SET status = 'ready', revision = session.revision + 1,
-           readiness_result_bytes = input_result_bytes,
-           readiness_result_sha256 = input_result_sha256,
-           updated_at = database_now
-     WHERE hns_root_import_sessions.root_import_session_id = session.root_import_session_id;
-    RETURN QUERY SELECT 'ready'::TEXT, session.root_import_session_id, session.revision + 1;
-    RETURN;
-  END IF;
-  IF input_result_bytes IS NOT NULL OR input_result_sha256 IS NOT NULL
-    OR input_failure_code IS NULL
-    OR btrim(input_failure_code) <> input_failure_code
-    OR octet_length(input_failure_code) NOT BETWEEN 1 AND 128
-    OR input_failure_code ~ '[[:cntrl:]]'
-  THEN
-    RAISE EXCEPTION 'invalid failed HNS root observation result';
-  END IF;
-  IF input_outcome = 'failed' OR job.attempt_count >= 20 THEN
-    UPDATE hns_root_import_observation_jobs
-       SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
-           failure_code = CASE
-             WHEN job.attempt_count >= 20 THEN 'observation_attempts_exhausted'
-             ELSE input_failure_code
-           END,
-           completed_at = database_now, updated_at = database_now
-     WHERE observation_job_id = input_observation_job_id;
-    UPDATE hns_root_import_sessions
-       SET status = 'failed', revision = session.revision + 1,
-           updated_at = database_now
-     WHERE hns_root_import_sessions.root_import_session_id = session.root_import_session_id;
-    RETURN QUERY SELECT 'failed'::TEXT, session.root_import_session_id, session.revision + 1;
-  ELSE
-    UPDATE hns_root_import_observation_jobs
-       SET state = 'queued', leased_by = NULL, lease_expires_at = NULL,
-           failure_code = input_failure_code, updated_at = database_now
-     WHERE observation_job_id = input_observation_job_id;
-    RETURN QUERY SELECT 'retry'::TEXT, session.root_import_session_id, session.revision;
-  END IF;
+  RETURN QUERY SELECT 'not_found'::TEXT, NULL::TEXT, NULL::BIGINT;
+
 END;
-$_$;
+$$;
 
 CREATE FUNCTION finalize_hns_root_import_ownership_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_ownership_status text, input_ownership_result_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
@@ -5110,6 +5113,26 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_age_verification_requirement_state_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN
+    IF NEW.action_kind <> OLD.action_kind
+      OR NEW.intent_id <> OLD.intent_id
+      OR NEW.requirement_kind <> OLD.requirement_kind
+      OR NEW.actor_id <> OLD.actor_id
+      OR NEW.requirement_hash <> OLD.requirement_hash
+      OR NEW.accepted_provider_ids <> OLD.accepted_provider_ids THEN
+      RAISE EXCEPTION 'age verification requirement identity is immutable';
+    END IF;
+    IF OLD.status = 'satisfied' AND NEW.status <> 'satisfied' THEN
+      RAISE EXCEPTION 'satisfied age verification requirements cannot regress';
+    END IF;
+    IF NEW.generation < OLD.generation THEN
+      RAISE EXCEPTION 'age verification requirement generations never decrease';
+    END IF;
+    RETURN NEW;
+  END; $$;
 
 CREATE FUNCTION guard_asset_bonus_leg_asset() RETURNS trigger
     LANGUAGE plpgsql
@@ -7400,6 +7423,46 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_data_metadata_artifact_snapshot() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE pinned bytea;
+BEGIN
+  IF NEW.artifact_kind NOT IN ('ip_metadata','nft_metadata') THEN RETURN NEW; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('data-metadata:' || NEW.registration_operation_id,0));
+  SELECT CASE NEW.artifact_kind WHEN 'ip_metadata' THEN ip_metadata_bytes ELSE nft_metadata_bytes END
+    INTO pinned FROM data_registration_metadata_snapshots
+    WHERE registration_operation_id=NEW.registration_operation_id;
+  IF pinned IS NOT NULL AND (NEW.canonical_sha256<>encode(sha256(pinned),'hex') OR NEW.byte_length<>octet_length(pinned)) THEN
+    RAISE EXCEPTION 'DATA metadata artifact conflicts with pinned preparation' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_metadata_snapshot() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'DATA metadata preparation is immutable' USING ERRCODE='23514';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('data-metadata:' || NEW.registration_operation_id,0));
+  IF EXISTS (
+    SELECT 1 FROM data_registration_artifacts a
+    WHERE a.registration_operation_id=NEW.registration_operation_id
+      AND a.artifact_kind IN ('ip_metadata','nft_metadata')
+      AND (a.canonical_sha256<>encode(sha256(CASE a.artifact_kind
+           WHEN 'ip_metadata' THEN NEW.ip_metadata_bytes ELSE NEW.nft_metadata_bytes END),'hex')
+        OR a.byte_length<>octet_length(CASE a.artifact_kind
+           WHEN 'ip_metadata' THEN NEW.ip_metadata_bytes ELSE NEW.nft_metadata_bytes END))
+  ) THEN
+    RAISE EXCEPTION 'DATA metadata preparation conflicts with retained artifact' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_data_registration_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -7505,6 +7568,54 @@ BEGIN
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'DATA registration operation timestamp must advance';
   END IF;
+  -- Terms backfill: a registered song whose confirmation predates the terms
+  -- evidence gains it in place, from the transaction that confirmed the
+  -- registration. The fill must be complete, the share must follow the
+  -- commercial-remix preset, and nothing else about the row may move. A row
+  -- that already has terms is never rewritten here.
+  IF OLD.state = 'registered' AND NEW.state = 'registered'
+     AND OLD.media_kind = 'song' AND NEW.media_kind = 'song'
+     AND OLD.attached_license_terms_id IS NULL
+     AND NEW.attached_license_terms_id IS NOT NULL
+     AND NEW.attached_license_template IS NOT NULL
+     AND NEW.attached_license_preset IS NOT NULL
+     AND (NEW.attached_license_preset = 'commercial-remix')
+         = (NEW.attached_commercial_rev_share_bps IS NOT NULL)
+     AND NEW.terms_attachment_transaction_hash = NEW.confirmed_transaction_hash
+     AND NEW.terms_attachment_block_number = NEW.confirmed_block_number
+     AND NEW.terms_attachment_block_hash = NEW.confirmed_block_hash
+     AND NEW.terms_attachment_log_index IS NOT NULL
+     AND ROW(
+       NEW.workflow_revision, NEW.workflow_instance_id, NEW.current_attempt_id,
+       NEW.registered_ip_id, NEW.confirmed_transaction_hash, NEW.confirmed_block_number,
+       NEW.confirmed_block_hash, NEW.confirmed_log_index, NEW.confirmed_at,
+       NEW.failure_code, NEW.failure_evidence_ref
+     ) IS NOT DISTINCT FROM ROW(
+       OLD.workflow_revision, OLD.workflow_instance_id, OLD.current_attempt_id,
+       OLD.registered_ip_id, OLD.confirmed_transaction_hash, OLD.confirmed_block_number,
+       OLD.confirmed_block_hash, OLD.confirmed_log_index, OLD.confirmed_at,
+       OLD.failure_code, OLD.failure_evidence_ref
+     ) THEN
+    RETURN NEW;
+  END IF;
+  -- Terms evidence is written with a registration and cleared only when the
+  -- registration itself is withdrawn; nothing else may rewrite it.
+  IF ROW(
+    NEW.attached_license_template, NEW.attached_license_terms_id,
+    NEW.attached_license_preset, NEW.attached_commercial_rev_share_bps,
+    NEW.terms_attachment_transaction_hash, NEW.terms_attachment_block_number,
+    NEW.terms_attachment_block_hash, NEW.terms_attachment_log_index
+  ) IS DISTINCT FROM ROW(
+    OLD.attached_license_template, OLD.attached_license_terms_id,
+    OLD.attached_license_preset, OLD.attached_commercial_rev_share_bps,
+    OLD.terms_attachment_transaction_hash, OLD.terms_attachment_block_number,
+    OLD.terms_attachment_block_hash, OLD.terms_attachment_log_index
+  ) AND NOT (
+    (OLD.state <> 'registered' AND NEW.state = 'registered')
+    OR (OLD.state = 'registered' AND NEW.state <> 'registered')
+  ) THEN
+    RAISE EXCEPTION 'DATA attached terms evidence changes only with registration';
+  END IF;
   IF NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
      OR NEW.workflow_instance_id IS DISTINCT FROM OLD.workflow_instance_id THEN
     IF OLD.state = 'registered'
@@ -7527,7 +7638,8 @@ BEGIN
     RETURN NEW;
   END IF;
   IF NOT (
-    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed'))
+    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed', 'waiting_parent'))
+    OR (OLD.state = 'waiting_parent' AND NEW.state IN ('pending', 'failed'))
     OR (OLD.state = 'signing' AND NEW.state IN (
       'broadcast', 'failed', 'reconciliation_required'
     ))
@@ -7544,6 +7656,15 @@ BEGIN
     OR (OLD.state = 'registered' AND NEW.state IN ('failed', 'reconciliation_required'))
   ) THEN
     RAISE EXCEPTION 'invalid DATA registration operation transition';
+  END IF;
+  -- Only a derivative waits on a parent.
+  IF NEW.state = 'waiting_parent' AND NEW.rights_basis <> 'derivative' THEN
+    RAISE EXCEPTION 'only a derivative DATA registration waits for its parent';
+  END IF;
+  -- A song registers only with the terms it attached.
+  IF NEW.state = 'registered' AND OLD.state <> 'registered'
+     AND NEW.media_kind = 'song' AND NEW.attached_license_terms_id IS NULL THEN
+    RAISE EXCEPTION 'a song DATA registration confirms only with its attached terms';
   END IF;
   RETURN NEW;
 END;
@@ -7605,6 +7726,14 @@ BEGIN
     RAISE EXCEPTION 'DATA registration outbox is terminal';
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_registration_parent_reference() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a DATA parent reference is immutable';
 END;
 $$;
 
@@ -7672,6 +7801,32 @@ BEGIN
     OR NEW.status NOT IN ('revoked','tombstoned')
     OR NEW.updated_at < OLD.updated_at THEN
     RAISE EXCEPTION 'handle grant transition is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_handle_nationality_authoring_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE policy handle_qualification_policy_revisions%ROWTYPE;
+BEGIN
+  IF TG_TABLE_NAME='handle_qualification_policy_revisions' THEN
+    IF NEW.policy_kind <> 'curated_nationality_v1' THEN RETURN NEW; END IF;
+    IF NOT has_community_handle_sales_authority(NEW.community_id,NEW.created_by_account_id) THEN
+      RAISE EXCEPTION 'nationality qualification requires active manage_handle_sales authority';
+    END IF;
+  ELSE
+    SELECT * INTO policy FROM handle_qualification_policy_revisions
+      WHERE policy_id=NEW.policy_id AND policy_revision=NEW.policy_revision FOR SHARE;
+    IF policy.policy_id IS NULL OR policy.policy_kind <> 'curated_nationality_v1'
+      OR policy.community_id IS DISTINCT FROM NEW.community_id
+      OR policy.created_by_account_id IS DISTINCT FROM NEW.actor_account_id
+      OR policy.request_hash IS DISTINCT FROM NEW.request_hash
+      OR policy.created_at IS DISTINCT FROM NEW.committed_at
+      OR NOT has_community_handle_sales_authority(NEW.community_id,NEW.actor_account_id) THEN
+      RAISE EXCEPTION 'nationality authoring action does not match its authorized policy';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -8694,6 +8849,7 @@ CREATE FUNCTION guard_media_lyrics_or_workflow_update() RETURNS trigger
     AS $$
 DECLARE community_active BOOLEAN; membership_active BOOLEAN;
 BEGIN
+  IF OLD.media_kind = 'song' AND OLD.status = 'processing_failed' AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence THEN RETURN NEW; END IF;
   IF NEW.current_lyrics_revision IS DISTINCT FROM OLD.current_lyrics_revision THEN
     SELECT status = 'active' INTO community_active FROM communities
       WHERE community_id=NEW.community_id FOR SHARE;
@@ -8786,6 +8942,30 @@ BEGIN
   IF NEW.status = 'approved' AND (OLD.status IS DISTINCT FROM 'open' OR submission_record.status <> 'processing' OR submission_record.phase <> 'publish' OR NEW.decision_revision IS DISTINCT FROM submission_record.decision_revision OR NEW.review_ref IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS DISTINCT FROM submission_record.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM submission_record.moderator_actor_id OR NEW.action_evidence_ref IS DISTINCT FROM submission_record.moderator_evidence_ref OR NEW.action_kind IS DISTINCT FROM 'approve') THEN RAISE EXCEPTION 'approved moderation projection does not match its submission action'; END IF;
   IF NEW.status = 'blocked' AND (OLD.status IS DISTINCT FROM 'open' OR submission_record.status <> 'blocked' OR NEW.decision_revision IS DISTINCT FROM submission_record.decision_revision OR NEW.review_ref IS DISTINCT FROM OLD.review_ref OR NEW.held_revision IS DISTINCT FROM OLD.held_revision OR NEW.review_ref IS NULL OR NEW.held_revision IS NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS DISTINCT FROM submission_record.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM submission_record.moderator_actor_id OR NEW.action_evidence_ref IS DISTINCT FROM submission_record.moderator_evidence_ref OR NEW.action_kind IS DISTINCT FROM 'block') THEN RAISE EXCEPTION 'blocked moderation projection does not match its submission action'; END IF;
   IF NEW.status = 'closed' AND (OLD.status IS DISTINCT FROM 'open' OR submission_record.status NOT IN ('processing','action_required','manual_review') OR NEW.decision_revision IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.action_evidence_ref IS NOT NULL) THEN RAISE EXCEPTION 'closed moderation projection is not an exact supersession'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_operator_reprocess_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'operator reprocess actions are append-only';
+END;
+$$;
+
+CREATE FUNCTION guard_media_operator_reset_launch() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.event_type='workflow_replacement' AND NEW.payload->'replacement_sequence'='0'::jsonb
+     AND NOT EXISTS (
+       SELECT 1 FROM media_operator_reprocess_actions a
+       WHERE a.outbox_event_id=NEW.outbox_event_id AND a.operation_id=NEW.operation_id
+         AND a.submission_id=NEW.submission_id AND a.community_id=NEW.community_id
+         AND a.actor_user_id=NEW.actor_user_id AND a.resulting_creation_revision=NEW.creation_revision
+         AND a.resulting_workflow_revision=NEW.workflow_revision AND a.replacement_budget_after=0
+     ) THEN RAISE EXCEPTION 'zero replacement sequence requires its operator audit'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -8903,10 +9083,10 @@ BEGIN
        OR registration_record.submission_id IS DISTINCT FROM NEW.submission_id
        OR registration_record.media_operation_id IS DISTINCT FROM NEW.operation_id
        OR registration_record.publication_creation_revision IS DISTINCT FROM NEW.creation_revision
-       OR registration_record.publication_audio_revision IS DISTINCT FROM NEW.audio_revision
+       OR (NEW.media_kind = 'song' AND registration_record.publication_audio_revision IS DISTINCT FROM NEW.audio_revision)
        OR registration_record.publication_analysis_revision IS DISTINCT FROM NEW.analysis_revision
        OR registration_record.publication_decision_revision IS DISTINCT FROM NEW.decision_revision
-       OR registration_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256
+       OR (NEW.media_kind = 'song' AND registration_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256) OR registration_record.media_kind IS DISTINCT FROM NEW.media_kind
        OR NEW.data_registration IS DISTINCT FROM (CASE registration_record.state
          WHEN 'registered' THEN 'registered'
          WHEN 'failed' THEN 'failed'
@@ -8965,6 +9145,23 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_song_canonical_timing() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.state = 'ready' THEN RAISE EXCEPTION 'a measured canonical song timing is immutable'; END IF;
+    RETURN OLD;
+  END IF;
+  IF ROW(NEW.song_post_id, NEW.audio_revision, NEW.song_community_id, NEW.canonical_audio_sha256)
+     IS DISTINCT FROM
+     ROW(OLD.song_post_id, OLD.audio_revision, OLD.song_community_id, OLD.canonical_audio_sha256)
+  THEN RAISE EXCEPTION 'canonical song timing identity is immutable'; END IF;
+  IF OLD.state = 'ready' THEN RAISE EXCEPTION 'a measured canonical song timing is immutable'; END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_submission_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -8989,7 +9186,7 @@ BEGIN
       AND NEW.audio_revision = 1 AND NEW.analysis_revision = OLD.analysis_revision AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.creation_revision = OLD.creation_revision)
     OR (OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'processing' AND NEW.phase IN ('analysis', 'decision')
       AND NEW.analysis_revision = OLD.analysis_revision + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.creation_revision = OLD.creation_revision
-      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
+      AND NEW.decision_revision = CASE WHEN OLD.current_decision_revision IS NULL THEN OLD.decision_revision ELSE 0 END AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
     OR (OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'processing' AND NEW.phase = 'publish'
       AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
       AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
@@ -9022,6 +9219,7 @@ BEGIN
       AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision
       AND NEW.failure_code IS NOT NULL AND NEW.failure_retry_count IS NOT NULL AND NEW.last_safe_phase IS NOT NULL
       AND (NEW.failure_code IS DISTINCT FROM 'upload_seal_conflict' OR OLD.phase = 'finalize'))
+    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.phase IS NOT DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count AND NEW.workflow_replacement_sequence = 0 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.failure_code IS NULL AND NEW.failure_retry_count IS NULL AND NEW.retryable IS NULL AND NEW.last_safe_phase IS NULL AND NEW.post_id IS NULL AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0))
     OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = OLD.last_safe_phase
       AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
       AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
@@ -9047,7 +9245,7 @@ BEGIN
     IF NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'audio transition pointers are not exact'; END IF;
   ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'processing' AND NEW.analysis_revision = OLD.analysis_revision + 1 THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
-    IF analysis_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.current_analysis_revision <> NEW.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.phase NOT IN ('analysis','decision') OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR analysis_record.audio_revision <> NEW.audio_revision OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) THEN RAISE EXCEPTION 'analysis transition evidence is not exact'; END IF;
+    IF analysis_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.current_analysis_revision <> NEW.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (CASE WHEN OLD.current_decision_revision IS NULL THEN OLD.decision_revision ELSE 0 END) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.phase NOT IN ('analysis','decision') OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR analysis_record.audio_revision <> NEW.audio_revision OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) THEN RAISE EXCEPTION 'analysis transition evidence is not exact'; END IF;
     IF NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'analysis transition pointers are not exact'; END IF;
   ELSIF OLD.status = 'processing' AND (OLD.phase = 'decision' OR (OLD.phase = 'analysis' AND NEW.status = 'manual_review')) AND NEW.decision_revision = OLD.decision_revision + 1 THEN
     SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision FOR SHARE;
@@ -9176,6 +9374,21 @@ BEGIN
   ELSIF OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload', 'finalize', 'analysis', 'decision', 'publish') AND NEW.status = 'processing_failed' THEN
     IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.retry_count <> OLD.retry_count OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.moderator_action_id IS DISTINCT FROM OLD.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM OLD.moderator_actor_id OR NEW.moderator_evidence_ref IS DISTINCT FROM OLD.moderator_evidence_ref THEN RAISE EXCEPTION 'media failure pointers are not exact'; END IF;
     IF NEW.phase IS NOT NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.failure_code IS NULL OR NEW.failure_retry_count IS NULL OR NEW.last_safe_phase IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.abandonment_reason IS NOT NULL OR NEW.retention_disposition IS NOT NULL THEN RAISE EXCEPTION 'media failure evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' AND OLD.failure_code = 'workflow_terminal_unconverged' THEN
+    -- The operator resolution resets the automatic replacement allowance to
+    -- zero; the exact-evidence check below binds that reset to its audit row.
+    IF NEW.workflow_replacement_sequence <> 0 THEN RAISE EXCEPTION 'operator reprocess must reset the replacement sequence'; END IF;
+    IF NEW.current_terms_revision IS DISTINCT FROM (CASE WHEN OLD.current_terms_revision IS NULL THEN NULL ELSE NEW.creation_revision END)
+      OR (OLD.current_terms_revision IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM media_submission_terms prior JOIN media_submission_terms next
+          ON next.operation_id=prior.operation_id AND next.submission_id=prior.submission_id
+          AND next.community_id=prior.community_id AND next.actor_user_id=prior.actor_user_id
+          AND next.author_persona_id=prior.author_persona_id AND next.terms_snapshot=prior.terms_snapshot
+        WHERE prior.operation_id=OLD.operation_id AND prior.creation_revision=OLD.current_terms_revision
+          AND next.creation_revision=NEW.creation_revision
+      )) THEN RAISE EXCEPTION 'operator reprocess must preserve accepted terms'; END IF;
+    IF (to_jsonb(NEW) - ARRAY['current_terms_revision','actor_account_id','creation_revision','workflow_revision','workflow_replacement_sequence','status','phase','decision_revision','current_decision_revision','failure_code','failure_retry_count','retryable','last_safe_phase','event_sequence','updated_at']) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['current_terms_revision','actor_account_id','creation_revision','workflow_revision','workflow_replacement_sequence','status','phase','decision_revision','current_decision_revision','failure_code','failure_retry_count','retryable','last_safe_phase','event_sequence','updated_at']) THEN RAISE EXCEPTION 'operator reprocess changed unrelated authority'; END IF;
+    IF NEW.workflow_replacement_sequence <> 0 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NOT EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0) THEN RAISE EXCEPTION 'operator reprocess transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
     IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'retry transition pointers are not exact'; END IF;
     IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
@@ -9198,6 +9411,267 @@ BEGIN
     IF NEW.phase IS NOT NULL OR NEW.post_id IS NOT NULL OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id, NEW.bound_reference_evidence_ref, NEW.bound_reference_audio_revision, NEW.bound_reference_analysis_revision, NEW.bound_reference_audio_sha256, NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id, OLD.bound_reference_evidence_ref, OLD.bound_reference_audio_revision, OLD.bound_reference_analysis_revision, OLD.bound_reference_audio_sha256, OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'abandoned cleanup is not exact'; END IF;
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_submission_update_rating_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE allowed BOOLEAN := FALSE; community_active BOOLEAN; membership_active BOOLEAN; analysis_record media_analysis_evidence%ROWTYPE; decision_record media_publication_decisions%ROWTYPE; post_record posts%ROWTYPE; audio_record media_audio_revisions%ROWTYPE; terms_record media_submission_terms%ROWTYPE; moderation_action media_moderation_actions%ROWTYPE;
+BEGIN
+  IF is_current_media_rating_raise_v2(OLD,NEW) THEN RETURN NEW; END IF;
+  IF ROW(NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id, NEW.endpoint_template, NEW.idempotency_key, NEW.request_hash, NEW.title, NEW.song_type, NEW.start_input, NEW.audio_reservation_id, NEW.response_snapshot_bytes, NEW.response_snapshot_sha256, NEW.created_at) IS DISTINCT FROM ROW(OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id, OLD.endpoint_template, OLD.idempotency_key, OLD.request_hash, OLD.title, OLD.song_type, OLD.start_input, OLD.audio_reservation_id, OLD.response_snapshot_bytes, OLD.response_snapshot_sha256, OLD.created_at) THEN RAISE EXCEPTION 'media submission authority is immutable'; END IF;
+  IF NEW.event_sequence <> OLD.event_sequence + 1 OR NEW.updated_at <= OLD.updated_at THEN RAISE EXCEPTION 'media submission transition fence did not advance'; END IF;
+  SELECT status = 'active' INTO community_active FROM communities WHERE community_id = NEW.community_id FOR SHARE;
+  SELECT status = 'member' INTO membership_active FROM community_memberships WHERE community_id = NEW.community_id AND user_id = NEW.actor_user_id FOR SHARE;
+  IF community_active IS DISTINCT FROM TRUE OR membership_active IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'media submission requires active community membership'; END IF;
+  allowed :=
+    (OLD.status = 'processing' AND OLD.phase = 'reserve' AND NEW.status = 'processing' AND NEW.phase = 'awaiting_upload'
+      AND NEW.creation_revision = 1 AND NEW.audio_revision = 0 AND NEW.analysis_revision = 0 AND NEW.decision_revision = 0
+      AND NEW.workflow_revision = 0 AND NEW.current_terms_revision IS NULL AND NEW.current_immutable_ref IS NULL
+      AND NEW.current_analysis_revision IS NULL AND NEW.current_decision_revision IS NULL AND NEW.post_id IS NULL)
+    OR ((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL))
+      AND NEW.status = 'processing' AND NEW.phase = CASE WHEN OLD.audio_revision = 0 THEN 'awaiting_upload' ELSE 'analysis' END
+      AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.current_terms_revision = NEW.creation_revision
+      AND NEW.workflow_revision = OLD.workflow_revision AND NEW.post_id IS NULL
+    OR (OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND OLD.audio_revision = 0 AND NEW.status = 'processing' AND NEW.phase = 'analysis'
+      AND NEW.audio_revision = 1 AND NEW.analysis_revision = OLD.analysis_revision AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.creation_revision = OLD.creation_revision)
+    OR (OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'processing' AND NEW.phase IN ('analysis', 'decision')
+      AND NEW.analysis_revision = OLD.analysis_revision + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.creation_revision = OLD.creation_revision
+      AND NEW.decision_revision = CASE WHEN OLD.current_decision_revision IS NULL THEN OLD.decision_revision ELSE 0 END AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
+    OR (OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'processing' AND NEW.phase = 'publish'
+      AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
+      AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.status = 'manual_review' AND NEW.phase IS NULL
+      AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
+      AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'blocked' AND NEW.phase IS NULL
+      AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
+      AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND (OLD.phase = 'analysis' OR (OLD.phase = 'decision' AND NEW.review_reason_code = 'moderation_unavailable' AND NEW.review_exhaustion_code IS NULL AND NEW.review_exhaustion_attempt_id IS NULL)) AND NEW.status = 'manual_review' AND NEW.phase IS NULL
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision
+      AND NEW.analysis_revision = OLD.analysis_revision AND NEW.review_ref IS NOT NULL
+      AND ((NEW.review_reason_code = 'review_required' AND NEW.review_exhaustion_code = 'acr_exhausted' AND NEW.review_exhaustion_attempt_id IS NOT NULL)
+        OR (NEW.review_reason_code = 'moderation_unavailable' AND NEW.review_exhaustion_code IS NULL AND NEW.review_exhaustion_attempt_id IS NULL))
+      AND NEW.held_revision = OLD.creation_revision AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'action_required' AND NEW.phase IS NULL
+      AND NEW.action_kind = 'reference_required' AND NEW.action_expires_at > clock_timestamp() AND NEW.held_revision = OLD.creation_revision
+      AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.post_id IS NULL)
+    OR (OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'processing' AND NEW.phase = (CASE WHEN OLD.current_terms_revision IS NULL THEN 'analysis' ELSE 'decision' END)
+      AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision AND NEW.bound_reference_asset_id IS NOT NULL AND NEW.post_id IS NULL)
+    OR (OLD.status = 'manual_review' AND OLD.phase IS NULL AND NEW.status = 'processing' AND NEW.phase = 'publish'
+      AND NEW.creation_revision = OLD.creation_revision AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.post_id IS NULL)
+    OR (OLD.status = 'manual_review' AND OLD.phase IS NULL AND NEW.status = 'blocked' AND NEW.phase IS NULL
+      AND NEW.creation_revision = OLD.creation_revision AND NEW.decision_revision = OLD.decision_revision AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase = 'publish' AND NEW.status = 'published' AND NEW.phase IS NULL
+      AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.post_id IS NOT NULL AND NEW.decision_revision = OLD.decision_revision AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision)
+    OR (OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload', 'finalize', 'analysis', 'decision', 'publish') AND NEW.status = 'processing_failed' AND NEW.phase IS NULL
+      AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision
+      AND NEW.failure_code IS NOT NULL AND NEW.failure_retry_count IS NOT NULL AND NEW.last_safe_phase IS NOT NULL
+      AND (NEW.failure_code IS DISTINCT FROM 'upload_seal_conflict' OR OLD.phase = 'finalize'))
+    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.phase IS NOT DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count AND NEW.workflow_replacement_sequence = 0 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.failure_code IS NULL AND NEW.failure_retry_count IS NULL AND NEW.retryable IS NULL AND NEW.last_safe_phase IS NULL AND NEW.post_id IS NULL AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0))
+    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = OLD.last_safe_phase
+      AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
+    OR (OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'abandoned' AND NEW.phase IS NULL AND OLD.action_kind = 'reference_required'
+      AND OLD.action_expires_at <= clock_timestamp() AND NEW.abandonment_reason = 'action_deadline_elapsed' AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload') AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
+      AND NEW.abandonment_reason = 'author_cancelled' AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
+      AND NEW.abandonment_reason = 'reservation_expired' AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize') AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
+      AND NEW.abandonment_reason = 'upload_expectation_mismatch' AND NEW.post_id IS NULL)
+    OR (OLD.status = 'processing' AND OLD.phase = 'finalize' AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
+      AND NEW.abandonment_reason = 'upload_source_changed_before_finalize' AND NEW.post_id IS NULL);
+  IF allowed IS NOT TRUE THEN RAISE EXCEPTION 'media submission transition is not allowed'; END IF;
+  IF OLD.status = 'processing' AND OLD.phase = 'reserve' AND NEW.status = 'processing' AND NEW.phase = 'awaiting_upload' THEN
+    IF NEW.creation_revision IS DISTINCT FROM OLD.creation_revision OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM OLD.decision_revision OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_decision_revision IS DISTINCT FROM OLD.current_decision_revision OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.retry_count IS DISTINCT FROM OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.action_kind IS DISTINCT FROM OLD.action_kind OR NEW.action_reference_request_ref IS DISTINCT FROM OLD.action_reference_request_ref OR NEW.action_expires_at IS DISTINCT FROM OLD.action_expires_at OR NEW.held_revision IS DISTINCT FROM OLD.held_revision OR NEW.review_ref IS DISTINCT FROM OLD.review_ref OR NEW.review_reason_code IS DISTINCT FROM OLD.review_reason_code OR NEW.review_exhaustion_code IS DISTINCT FROM OLD.review_exhaustion_code OR NEW.review_exhaustion_attempt_id IS DISTINCT FROM OLD.review_exhaustion_attempt_id OR NEW.moderator_action_id IS DISTINCT FROM OLD.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM OLD.moderator_actor_id OR NEW.moderator_evidence_ref IS DISTINCT FROM OLD.moderator_evidence_ref OR NEW.moderator_approval_kind IS DISTINCT FROM OLD.moderator_approval_kind OR NEW.moderator_reason_code IS DISTINCT FROM OLD.moderator_reason_code OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'reservation issued transition evidence is not exact'; END IF;
+  ELSIF (((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL)) AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.current_terms_revision = NEW.creation_revision) THEN
+    SELECT * INTO terms_record FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision=NEW.creation_revision FOR SHARE;
+    IF terms_record.submission_id IS NULL OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR terms_record.license_preset IS NULL OR terms_record.access_mode <> 'public' THEN RAISE EXCEPTION 'terms transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND NEW.status = 'processing' AND NEW.audio_revision = OLD.audio_revision + 1 THEN
+    SELECT * INTO audio_record FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision FOR SHARE;
+    IF audio_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> OLD.decision_revision OR NEW.current_decision_revision IS DISTINCT FROM OLD.current_decision_revision OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.current_immutable_ref IS DISTINCT FROM audio_record.immutable_ref OR NEW.phase <> 'analysis' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL THEN RAISE EXCEPTION 'audio transition evidence is not exact'; END IF;
+    IF NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'audio transition pointers are not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'processing' AND NEW.analysis_revision = OLD.analysis_revision + 1 THEN
+    SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
+    IF analysis_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.current_analysis_revision <> NEW.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (CASE WHEN OLD.current_decision_revision IS NULL THEN OLD.decision_revision ELSE 0 END) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.phase NOT IN ('analysis','decision') OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR analysis_record.audio_revision <> NEW.audio_revision OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) THEN RAISE EXCEPTION 'analysis transition evidence is not exact'; END IF;
+    IF NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'analysis transition pointers are not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND (OLD.phase = 'decision' OR (OLD.phase = 'analysis' AND NEW.status = 'manual_review')) AND NEW.decision_revision = OLD.decision_revision + 1 THEN
+    SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision FOR SHARE;
+    IF decision_record.submission_id IS NULL
+       OR NEW.creation_revision <> OLD.creation_revision
+       OR NEW.audio_revision <> OLD.audio_revision
+       OR NEW.analysis_revision <> OLD.analysis_revision
+       OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref
+       OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision
+       OR ROW(NEW.bound_reference_asset_id, NEW.bound_reference_evidence_ref, NEW.bound_reference_audio_revision, NEW.bound_reference_analysis_revision, NEW.bound_reference_audio_sha256, NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id, OLD.bound_reference_evidence_ref, OLD.bound_reference_audio_revision, OLD.bound_reference_analysis_revision, OLD.bound_reference_audio_sha256, OLD.bound_reference_upstream_share_bps)
+       OR NEW.workflow_revision <> OLD.workflow_revision
+       OR NEW.retry_count <> OLD.retry_count
+       OR NEW.post_id IS DISTINCT FROM OLD.post_id
+       OR NEW.failure_code IS DISTINCT FROM OLD.failure_code
+       OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count
+       OR NEW.retryable IS DISTINCT FROM OLD.retryable
+       OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase
+       OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason
+       OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition
+       OR NEW.current_decision_revision <> NEW.decision_revision
+       OR NEW.post_id IS DISTINCT FROM OLD.post_id
+       OR decision_record.creation_revision <> NEW.creation_revision
+       OR decision_record.audio_revision <> NEW.audio_revision
+       OR decision_record.analysis_revision <> NEW.analysis_revision
+       OR decision_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision)
+       OR (decision_record.outcome = 'allow' AND (NEW.status <> 'processing' OR NEW.phase <> 'publish' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL))
+       OR (decision_record.outcome = 'manual_review' AND (NEW.status <> 'manual_review' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NULL OR NEW.review_reason_code <> 'review_required' OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision <> NEW.creation_revision OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL))
+       OR (decision_record.outcome = 'block' AND (NEW.status <> 'blocked' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL)) THEN RAISE EXCEPTION 'decision transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.status = 'manual_review' AND NEW.decision_revision = 0 AND NEW.review_reason_code = 'moderation_unavailable' AND NEW.review_exhaustion_code IS NULL THEN
+    IF NEW.creation_revision IS DISTINCT FROM OLD.creation_revision
+       OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision
+       OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision
+       OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref
+       OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision
+       OR NEW.current_decision_revision IS NOT NULL
+       OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps)
+       OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
+       OR NEW.retry_count IS DISTINCT FROM OLD.retry_count
+       OR NEW.failure_code IS DISTINCT FROM OLD.failure_code
+       OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count
+       OR NEW.retryable IS DISTINCT FROM OLD.retryable
+       OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase
+       OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason
+       OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition
+       OR NEW.post_id IS DISTINCT FROM OLD.post_id
+       OR NEW.review_ref IS NULL
+       OR NEW.review_exhaustion_attempt_id IS NOT NULL
+       OR NEW.held_revision IS DISTINCT FROM OLD.creation_revision
+       OR NEW.action_kind IS NOT NULL
+       OR NEW.action_reference_request_ref IS NOT NULL
+       OR NEW.action_expires_at IS NOT NULL
+       OR NEW.moderator_action_id IS NOT NULL
+       OR NEW.moderator_actor_id IS NOT NULL
+       OR NEW.moderator_evidence_ref IS NOT NULL
+       OR NEW.moderator_approval_kind IS NOT NULL
+       OR NEW.moderator_reason_code IS NOT NULL THEN
+      RAISE EXCEPTION 'provider-unavailable review evidence is not exact';
+    END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'manual_review' AND NEW.decision_revision = 0 AND NEW.review_exhaustion_code = 'acr_exhausted' THEN
+    SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
+    IF analysis_record.submission_id IS NULL OR NOT EXISTS (SELECT 1 FROM media_submission_terms t WHERE t.community_id=NEW.community_id AND t.actor_user_id=NEW.actor_user_id AND t.submission_id=NEW.submission_id AND t.operation_id=NEW.operation_id AND t.creation_revision=NEW.creation_revision) OR analysis_record.acr_decision <> 'inconclusive' OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR NEW.current_decision_revision IS NOT NULL OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.review_exhaustion_attempt_id IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NOT EXISTS (SELECT 1 FROM media_processing_attempts a WHERE a.attempt_id=NEW.review_exhaustion_attempt_id AND a.community_id=NEW.community_id AND a.actor_user_id=NEW.actor_user_id AND a.submission_id=NEW.submission_id AND a.operation_id=NEW.operation_id AND a.stage IN ('acr_primary','acr_alternate') AND a.input_kind='audio' AND a.audio_revision=NEW.audio_revision AND a.analysis_revision=NEW.analysis_revision AND a.input_revision=NEW.audio_revision AND a.input_hash=(SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage=a.stage AND later.attempt_number>a.attempt_number)) THEN RAISE EXCEPTION 'ACR exhaustion evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'action_required' THEN
+    SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
+    IF analysis_record.submission_id IS NULL OR analysis_record.operation_id IS DISTINCT FROM NEW.operation_id OR analysis_record.audio_revision IS DISTINCT FROM NEW.audio_revision OR analysis_record.analysis_revision IS DISTINCT FROM NEW.analysis_revision OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) OR analysis_record.finalized_audio_ref IS DISTINCT FROM NEW.current_immutable_ref OR analysis_record.acr_decision IS DISTINCT FROM 'requires_reference' OR analysis_record.acr_evidence_ref IS NULL OR analysis_record.acr_policy_revision IS NULL OR analysis_record.acr_adapter_revision IS NULL THEN RAISE EXCEPTION 'reference action analysis evidence is not exact'; END IF;
+    IF NEW.phase IS NOT NULL OR NEW.action_kind IS DISTINCT FROM 'reference_required' OR NEW.action_expires_at <= clock_timestamp() OR NEW.held_revision <> OLD.creation_revision OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.post_id IS NOT NULL THEN RAISE EXCEPTION 'reference action evidence is not exact'; END IF;
+    IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'reference action pointers are not exact'; END IF;
+  ELSIF OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'processing' AND NEW.bound_reference_asset_id IS NOT NULL THEN
+    IF NEW.creation_revision <> OLD.creation_revision + 1 OR OLD.action_expires_at <= clock_timestamp() OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.current_terms_revision IS NULL THEN 'analysis' ELSE 'decision' END) OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.bound_reference_audio_revision <> NEW.audio_revision OR NEW.bound_reference_analysis_revision > NEW.analysis_revision THEN RAISE EXCEPTION 'bound reference transition evidence is not exact'; END IF;
+    IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'bound reference pointers are not exact'; END IF;
+  ELSIF OLD.status = 'manual_review' AND OLD.phase IS NULL AND NEW.status IN ('processing','blocked') THEN
+    SELECT * INTO moderation_action FROM media_moderation_actions WHERE action_id=NEW.moderator_action_id AND community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id FOR SHARE;
+    IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref
+       OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision
+       OR ROW(NEW.bound_reference_asset_id, NEW.bound_reference_evidence_ref, NEW.bound_reference_audio_revision, NEW.bound_reference_analysis_revision, NEW.bound_reference_audio_sha256, NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id, OLD.bound_reference_evidence_ref, OLD.bound_reference_audio_revision, OLD.bound_reference_analysis_revision, OLD.bound_reference_audio_sha256, OLD.bound_reference_upstream_share_bps)
+       OR NEW.workflow_revision <> OLD.workflow_revision
+       OR NEW.retry_count <> OLD.retry_count
+       OR NEW.failure_code IS DISTINCT FROM OLD.failure_code
+       OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count
+       OR NEW.retryable IS DISTINCT FROM OLD.retryable
+       OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase
+       OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason
+       OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition
+       OR moderation_action.action_id IS NULL
+       OR moderation_action.authority_actor_user_id IS DISTINCT FROM NEW.moderator_actor_id
+       OR moderation_action.held_revision IS DISTINCT FROM OLD.held_revision
+       OR moderation_action.evidence_ref IS DISTINCT FROM NEW.moderator_evidence_ref
+       OR (moderation_action.action_kind = 'approve' AND (NEW.status <> 'processing' OR NEW.phase <> 'publish' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR moderation_action.decision_revision IS DISTINCT FROM NEW.decision_revision OR moderation_action.approval_kind IS DISTINCT FROM NEW.moderator_approval_kind OR moderation_action.reason_code IS DISTINCT FROM NEW.moderator_reason_code OR moderation_action.decision_snapshot IS DISTINCT FROM (SELECT decision_snapshot FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision)))
+       OR (moderation_action.action_kind = 'block' AND (NEW.status <> 'blocked' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS DISTINCT FROM 'policy_violation' OR moderation_action.decision_revision IS NOT NULL OR moderation_action.approval_kind IS NOT NULL OR moderation_action.reason_code IS DISTINCT FROM 'policy_violation' OR NEW.decision_revision <> OLD.decision_revision)) THEN RAISE EXCEPTION 'moderation action evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'publish' AND NEW.status = 'published' THEN
+    IF NEW.creation_revision <> OLD.creation_revision
+       OR NEW.audio_revision <> OLD.audio_revision
+       OR NEW.analysis_revision <> OLD.analysis_revision
+       OR NEW.decision_revision <> OLD.decision_revision
+       OR NEW.current_decision_revision IS DISTINCT FROM NEW.decision_revision
+       OR NEW.workflow_revision <> OLD.workflow_revision + 1
+       OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref
+       OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision
+       OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps)
+       OR NEW.retry_count <> OLD.retry_count
+       OR NEW.failure_code IS NOT NULL
+       OR NEW.failure_retry_count IS NOT NULL
+       OR NEW.retryable IS NOT NULL
+       OR NEW.last_safe_phase IS NOT NULL
+       OR NEW.action_kind IS NOT NULL
+       OR NEW.action_reference_request_ref IS NOT NULL
+       OR NEW.action_expires_at IS NOT NULL
+       OR NEW.review_ref IS NOT NULL
+       OR NEW.review_reason_code IS NOT NULL
+       OR NEW.review_exhaustion_code IS NOT NULL
+       OR NEW.review_exhaustion_attempt_id IS NOT NULL
+       OR NEW.held_revision IS NOT NULL
+       OR NEW.abandonment_reason IS NOT NULL
+       OR NEW.retention_disposition IS NOT NULL
+       OR NEW.moderator_action_id IS DISTINCT FROM OLD.moderator_action_id
+       OR NEW.moderator_actor_id IS DISTINCT FROM OLD.moderator_actor_id
+       OR NEW.moderator_evidence_ref IS DISTINCT FROM OLD.moderator_evidence_ref
+       OR NEW.moderator_approval_kind IS DISTINCT FROM OLD.moderator_approval_kind
+       OR NEW.moderator_reason_code IS DISTINCT FROM OLD.moderator_reason_code
+       OR NEW.post_id IS NULL THEN
+      RAISE EXCEPTION 'publication transition evidence is not exact';
+    END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload', 'finalize', 'analysis', 'decision', 'publish') AND NEW.status = 'processing_failed' THEN
+    IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.retry_count <> OLD.retry_count OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.moderator_action_id IS DISTINCT FROM OLD.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM OLD.moderator_actor_id OR NEW.moderator_evidence_ref IS DISTINCT FROM OLD.moderator_evidence_ref THEN RAISE EXCEPTION 'media failure pointers are not exact'; END IF;
+    IF NEW.phase IS NOT NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.failure_code IS NULL OR NEW.failure_retry_count IS NULL OR NEW.last_safe_phase IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.abandonment_reason IS NOT NULL OR NEW.retention_disposition IS NOT NULL THEN RAISE EXCEPTION 'media failure evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' AND OLD.failure_code = 'workflow_terminal_unconverged' THEN
+    -- The operator resolution resets the automatic replacement allowance to
+    -- zero; the exact-evidence check below binds that reset to its audit row.
+    IF NEW.workflow_replacement_sequence <> 0 THEN RAISE EXCEPTION 'operator reprocess must reset the replacement sequence'; END IF;
+    IF NEW.current_terms_revision IS DISTINCT FROM (CASE WHEN OLD.current_terms_revision IS NULL THEN NULL ELSE NEW.creation_revision END)
+      OR (OLD.current_terms_revision IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM media_submission_terms prior JOIN media_submission_terms next
+          ON next.operation_id=prior.operation_id AND next.submission_id=prior.submission_id
+          AND next.community_id=prior.community_id AND next.actor_user_id=prior.actor_user_id
+          AND next.author_persona_id=prior.author_persona_id AND next.terms_snapshot=prior.terms_snapshot
+        WHERE prior.operation_id=OLD.operation_id AND prior.creation_revision=OLD.current_terms_revision
+          AND next.creation_revision=NEW.creation_revision
+      )) THEN RAISE EXCEPTION 'operator reprocess must preserve accepted terms'; END IF;
+    IF (to_jsonb(NEW) - ARRAY['current_terms_revision','actor_account_id','creation_revision','workflow_revision','workflow_replacement_sequence','status','phase','decision_revision','current_decision_revision','failure_code','failure_retry_count','retryable','last_safe_phase','event_sequence','updated_at']) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['current_terms_revision','actor_account_id','creation_revision','workflow_revision','workflow_replacement_sequence','status','phase','decision_revision','current_decision_revision','failure_code','failure_retry_count','retryable','last_safe_phase','event_sequence','updated_at']) THEN RAISE EXCEPTION 'operator reprocess changed unrelated authority'; END IF;
+    IF NEW.workflow_replacement_sequence <> 0 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NOT EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0) THEN RAISE EXCEPTION 'operator reprocess transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
+    IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'retry transition pointers are not exact'; END IF;
+    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
+  END IF;
+  IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.bound_reference_evidence_ref AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'bound reference evidence is missing'; END IF;
+  IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
+    SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision = NEW.analysis_revision FOR SHARE;
+    SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision = NEW.decision_revision FOR SHARE;
+    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety NOT IN ('allow', 'not_applicable', 'cover_withheld', 'visual_provider_unavailable') OR analysis_record.lyrics_safety NOT IN ('not_applicable', 'allow') OR analysis_record.speech_status = 'unavailable' OR COALESCE(analysis_record.explicitness, 'not_applicable') NOT IN ('not_explicit', 'explicit', 'not_applicable') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
+  END IF;
+  IF NEW.status = 'published' THEN
+    SELECT * INTO post_record FROM posts WHERE community_id = NEW.community_id AND post_id = NEW.post_id FOR SHARE;
+    IF post_record.post_id IS NULL OR post_record.author_user_id <> NEW.actor_user_id OR post_record.post_type <> 'song' OR post_record.status <> 'published' OR post_record.visibility <> 'public' OR post_record.title <> NEW.title THEN RAISE EXCEPTION 'media publication Post is not owned by submission'; END IF;
+  END IF;
+  IF NEW.status = 'abandoned' AND NEW.abandonment_reason = 'reservation_expired' AND NOT EXISTS (SELECT 1 FROM media_upload_reservations r WHERE r.community_id=NEW.community_id AND r.actor_user_id=NEW.actor_user_id AND r.reservation_id=NEW.audio_reservation_id AND r.expires_at <= clock_timestamp()) THEN RAISE EXCEPTION 'reservation is not expired'; END IF;
+  IF NEW.status = 'abandoned' AND NEW.abandonment_reason IN ('author_cancelled', 'reservation_expired') AND NEW.retention_disposition IS DISTINCT FROM 'no_object' THEN RAISE EXCEPTION 'pre-finalize abandonment retention is not exact'; END IF;
+  IF NEW.status = 'abandoned' AND NEW.abandonment_reason IN ('upload_expectation_mismatch', 'upload_source_changed_before_finalize') AND NEW.retention_disposition IS DISTINCT FROM 'retain_for_reconciliation' THEN RAISE EXCEPTION 'upload precondition abandonment retention is not exact'; END IF;
+  IF NEW.status = 'abandoned' AND NEW.abandonment_reason = 'action_deadline_elapsed' AND NEW.retention_disposition IS DISTINCT FROM (CASE WHEN NEW.audio_revision > 0 THEN 'retain_until_expiry' ELSE 'no_object' END) THEN RAISE EXCEPTION 'action deadline retention is not exact'; END IF;
+  IF NEW.status = 'abandoned' THEN
+    IF NEW.phase IS NOT NULL OR NEW.post_id IS NOT NULL OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id, NEW.bound_reference_evidence_ref, NEW.bound_reference_audio_revision, NEW.bound_reference_analysis_revision, NEW.bound_reference_audio_sha256, NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id, OLD.bound_reference_evidence_ref, OLD.bound_reference_audio_revision, OLD.bound_reference_analysis_revision, OLD.bound_reference_audio_sha256, OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'abandoned cleanup is not exact'; END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_video_reservation_song_plan() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a frozen song-video reservation plan is immutable';
 END;
 $$;
 
@@ -9243,10 +9717,40 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_video_song_reference() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a published song reference is immutable';
+END;
+$$;
+
 CREATE FUNCTION guard_media_video_submission_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  IF OLD.media_kind <> 'video' OR NEW.media_kind <> 'video'
+    OR ROW(NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.author_persona_id,
+           NEW.operation_id, NEW.idempotency_key, NEW.request_hash, NEW.audio_reservation_id,
+           NEW.video_intent, NEW.caption, NEW.author_declared_rating, NEW.created_at)
+       IS DISTINCT FROM
+       ROW(OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.author_persona_id,
+           OLD.operation_id, OLD.idempotency_key, OLD.request_hash, OLD.audio_reservation_id,
+           OLD.video_intent, OLD.caption, OLD.author_declared_rating, OLD.created_at)
+  THEN RAISE EXCEPTION 'video submission authority is immutable'; END IF;
+  IF NEW.event_sequence <> OLD.event_sequence + 1 OR NEW.updated_at <= OLD.updated_at
+  THEN RAISE EXCEPTION 'video submission transition fence did not advance'; END IF;
+  IF OLD.status IN ('published', 'blocked', 'abandoned')
+  THEN RAISE EXCEPTION 'video submission is terminal'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_video_submission_update_rating_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF is_current_media_rating_raise_v2(OLD,NEW) THEN RETURN NEW; END IF;
   IF OLD.media_kind <> 'video' OR NEW.media_kind <> 'video'
     OR ROW(NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.author_persona_id,
            NEW.operation_id, NEW.idempotency_key, NEW.request_hash, NEW.audio_reservation_id,
@@ -10169,6 +10673,26 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_nationality_requirement_state_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN
+    IF NEW.action_kind <> OLD.action_kind
+      OR NEW.intent_id <> OLD.intent_id
+      OR NEW.requirement_kind <> OLD.requirement_kind
+      OR NEW.actor_id <> OLD.actor_id
+      OR NEW.requirement_hash <> OLD.requirement_hash
+      OR NEW.accepted_provider_ids <> OLD.accepted_provider_ids THEN
+      RAISE EXCEPTION 'nationality requirement identity is immutable';
+    END IF;
+    IF OLD.status = 'satisfied' AND NEW.status <> 'satisfied' THEN
+      RAISE EXCEPTION 'satisfied nationality requirements cannot regress';
+    END IF;
+    IF NEW.generation < OLD.generation THEN
+      RAISE EXCEPTION 'nationality requirement generations never decrease';
+    END IF;
+    RETURN NEW;
+  END; $$;
+
 CREATE FUNCTION guard_operator_managed_root_registry_current_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -10342,6 +10866,27 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
+$$;
+
+CREATE FUNCTION guard_rating_reconciliation_current_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'rating reconciliation current authority cannot be deleted'; END IF;
+  IF (SELECT count(*) FROM content_rating_reconciliation_candidates_v1 c
+      JOIN content_rating_reconciliation_events e ON e.event_id=NEW.event_id
+      WHERE c.target_kind=NEW.target_kind AND c.community_id=NEW.community_id AND c.target_id=NEW.target_id
+        AND e.source_hash=c.source_hash AND e.outcome=c.outcome)<>1 THEN
+    RAISE EXCEPTION 'rating reconciliation current authority is stale';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_rating_reconciliation_history_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN RAISE EXCEPTION 'rating reconciliation history is immutable' USING ERRCODE='23514'; END;
 $$;
 
 CREATE FUNCTION guard_reward_asset_verification_change() RETURNS trigger
@@ -11349,6 +11894,54 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_video_render_attempt_execution() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.execution_phase IS DISTINCT FROM OLD.execution_phase AND NOT (
+    (OLD.execution_phase = 'recorded' AND NEW.execution_phase = 'submitting')
+    OR (OLD.execution_phase = 'submitting' AND NEW.execution_phase = 'submitted')
+  ) THEN
+    RAISE EXCEPTION 'a song-video render execution cannot move backwards';
+  END IF;
+  IF OLD.execution_started_at IS NOT NULL
+    AND NEW.execution_started_at IS DISTINCT FROM OLD.execution_started_at THEN
+    RAISE EXCEPTION 'a song-video render execution start is immutable';
+  END IF;
+  -- Recorded outcomes are evidence: once present, nothing rewrites or clears
+  -- them. A later execution at the same address cannot replace another's.
+  IF OLD.expected_output_sha256 IS NOT NULL
+     AND ROW(NEW.expected_output_sha256,NEW.expected_output_byte_length)
+         IS DISTINCT FROM ROW(OLD.expected_output_sha256,OLD.expected_output_byte_length)
+  THEN
+    RAISE EXCEPTION 'a song-video render output record is immutable';
+  END IF;
+  IF OLD.execution_refusal_reason IS NOT NULL
+     AND NEW.execution_refusal_reason IS DISTINCT FROM OLD.execution_refusal_reason
+  THEN
+    RAISE EXCEPTION 'a song-video render refusal record is immutable';
+  END IF;
+  -- A host claim is taken once and never moved or cleared. The attempt it
+  -- names can only be re-rendered through a new generation, never by handing
+  -- the same execution to another host.
+  IF OLD.execution_claim_id IS NOT NULL
+     AND ROW(NEW.execution_claim_id,NEW.execution_claimed_at)
+         IS DISTINCT FROM ROW(OLD.execution_claim_id,OLD.execution_claimed_at)
+  THEN
+    RAISE EXCEPTION 'a song-video render host claim is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_song_video_render_plan() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'a song-video render plan is immutable';
+END;
+$$;
+
 CREATE FUNCTION guard_sponsor_daily_totals() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11595,6 +12188,63 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_text_content_submission_update_rating_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF is_current_text_rating_raise_v2(OLD,NEW) THEN RETURN NEW; END IF;
+  IF ROW(
+    NEW.community_id, NEW.submission_id, NEW.operation_id, NEW.actor_user_id,
+    NEW.author_persona_id, NEW.surface, NEW.target_post_id,
+    NEW.target_parent_comment_id, NEW.idempotency_key, NEW.request_hash,
+    NEW.moderation_decision, NEW.policy_revision_id, NEW.policy_hash,
+    NEW.platform_policy_revision_id, NEW.platform_policy_hash,
+    NEW.community_policy_revision_id, NEW.community_policy_hash,
+    NEW.input_sha256, NEW.internal_reason_codes, NEW.evidence_ref,
+    NEW.created_at, NEW.response_snapshot_bytes, NEW.response_snapshot_sha256,
+    NEW.author_declared_rating, NEW.matched_categories,
+    NEW.category_decisions, NEW.effective_policy_decision
+  ) IS DISTINCT FROM ROW(
+    OLD.community_id, OLD.submission_id, OLD.operation_id, OLD.actor_user_id,
+    OLD.author_persona_id, OLD.surface, OLD.target_post_id,
+    OLD.target_parent_comment_id, OLD.idempotency_key, OLD.request_hash,
+    OLD.moderation_decision, OLD.policy_revision_id, OLD.policy_hash,
+    OLD.platform_policy_revision_id, OLD.platform_policy_hash,
+    OLD.community_policy_revision_id, OLD.community_policy_hash,
+    OLD.input_sha256, OLD.internal_reason_codes, OLD.evidence_ref,
+    OLD.created_at, OLD.response_snapshot_bytes, OLD.response_snapshot_sha256,
+    OLD.author_declared_rating, OLD.matched_categories,
+    OLD.category_decisions, OLD.effective_policy_decision
+  ) THEN
+    RAISE EXCEPTION 'text content submission evidence and creation snapshot are immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'text content submission updated_at must advance';
+  END IF;
+  IF OLD.status = 'published' AND NEW.status = 'published' THEN
+    IF OLD.resulting_content_rating <> 'general'
+      OR NEW.resulting_content_rating <> 'adult_18'
+      OR ROW(NEW.public_reason_code, NEW.published_post_id,
+             NEW.published_comment_id, NEW.review_ref)
+         IS DISTINCT FROM
+         ROW(OLD.public_reason_code, OLD.published_post_id,
+             OLD.published_comment_id, OLD.review_ref) THEN
+      RAISE EXCEPTION 'published text submission permits only an adult rating raise';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.status <> 'manual_review' OR NEW.status NOT IN ('published', 'blocked') THEN
+    RAISE EXCEPTION 'text content submission transition is not allowed: % -> %',
+      OLD.status, NEW.status;
+  END IF;
+  IF OLD.resulting_content_rating = 'adult_18'
+    AND NEW.resulting_content_rating <> 'adult_18' THEN
+    RAISE EXCEPTION 'text content submission rating cannot be lowered';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_text_moderation_case_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11627,6 +12277,37 @@ BEGIN
   END IF;
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'text moderation case updated_at must advance';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_unresolved_rating_hold_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE kind text; target text; parent_held boolean:=false;
+BEGIN
+  IF NEW.status<>'published' THEN RETURN NEW; END IF;
+  CASE TG_TABLE_NAME
+    WHEN 'posts' THEN
+      kind:='post'; target:=NEW.post_id;
+      SELECT EXISTS (SELECT 1 FROM media_video_song_references r
+        WHERE r.post_id=NEW.post_id AND rating_reconciliation_held_v1('post',r.song_community_id,r.song_post_id)) INTO parent_held;
+    WHEN 'comments' THEN
+      kind:='comment'; target:=NEW.comment_id;
+      WITH RECURSIVE ancestry AS (
+        SELECT c.comment_id,c.parent_comment_id FROM comments c
+          WHERE c.community_id=NEW.community_id AND c.comment_id=NEW.parent_comment_id
+        UNION
+        SELECT c.comment_id,c.parent_comment_id FROM comments c JOIN ancestry a ON c.comment_id=a.parent_comment_id
+          WHERE c.community_id=NEW.community_id
+      ) SELECT rating_reconciliation_held_v1('post',NEW.community_id,NEW.post_id)
+        OR EXISTS (SELECT 1 FROM ancestry a WHERE rating_reconciliation_held_v1('comment',NEW.community_id,a.comment_id)) INTO parent_held;
+    WHEN 'text_content_submissions' THEN kind:='text_submission'; target:=NEW.submission_id;
+    WHEN 'media_post_submissions' THEN kind:='media_submission'; target:=NEW.submission_id;
+  END CASE;
+  IF parent_held OR rating_reconciliation_held_v1(kind,NEW.community_id,target) THEN
+    RAISE EXCEPTION 'current rating evidence is unresolved' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END;
@@ -11725,6 +12406,46 @@ CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id t
   ), FALSE)
 $$;
 
+CREATE FUNCTION hns_lifecycle_schema_compatibility_v1(input_service_version text, input_job_envelope_version text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  state hns_lifecycle_schema_cutover%ROWTYPE;
+BEGIN
+  IF input_service_version IS NULL
+    OR btrim(input_service_version) IS DISTINCT FROM input_service_version
+    OR octet_length(input_service_version) NOT BETWEEN 1 AND 128
+    OR input_service_version ~ '[[:cntrl:]]'
+    OR input_job_envelope_version IS NULL
+    OR btrim(input_job_envelope_version) IS DISTINCT FROM input_job_envelope_version
+    OR octet_length(input_job_envelope_version) NOT BETWEEN 1 AND 128
+    OR input_job_envelope_version ~ '[[:cntrl:]]'
+  THEN
+    RAISE EXCEPTION 'invalid HNS lifecycle schema compatibility request';
+  END IF;
+  SELECT * INTO state
+    FROM hns_lifecycle_schema_cutover
+   ORDER BY recorded_at DESC, cutover_version DESC
+   LIMIT 1;
+  IF NOT FOUND THEN
+    RETURN 'pre_cutover';
+  END IF;
+  IF NOT (input_service_version = ANY (state.compatible_service_versions)) THEN
+    RAISE EXCEPTION
+      'hns_lifecycle_schema_incompatible: service % is not compatible with cutover % (%)',
+      input_service_version, state.cutover_version, state.compatible_service_versions;
+  END IF;
+  IF NOT (input_job_envelope_version = ANY (state.compatible_job_envelope_versions)) THEN
+    RAISE EXCEPTION
+      'hns_lifecycle_schema_incompatible: job envelope % is not compatible with cutover % (%)',
+      input_job_envelope_version, state.cutover_version,
+      state.compatible_job_envelope_versions;
+  END IF;
+  RETURN 'compatible';
+END;
+$$;
+
 CREATE FUNCTION hns_root_health_renewal_delay_v1(attempt integer) RETURNS interval
     LANGUAGE sql IMMUTABLE
     SET search_path FROM CURRENT
@@ -11741,6 +12462,22 @@ CREATE FUNCTION hns_root_health_renewal_terminal_failure_v1(code text) RETURNS b
   SELECT COALESCE(code IN ('invalid_request', 'authority_mismatch',
     'evidence_mismatch', 'ownership_revoked', 'invalid_delegation',
     'session_expired', 'session_not_activated', 'generation_superseded'), FALSE)
+$$;
+
+CREATE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.readiness_observed_at IS NULL THEN
+    NEW.readiness_accepted_at := NULL;
+  ELSIF NEW.readiness_observed_at IS DISTINCT FROM OLD.readiness_observed_at THEN
+    NEW.readiness_accepted_at := clock_timestamp();
+  ELSE
+    NEW.readiness_accepted_at := OLD.readiness_accepted_at;
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION hns_root_import_lifecycle_transition_allowed_v1(input_from text, input_to text) RETURNS boolean
@@ -12229,6 +12966,217 @@ BEGIN
   );
   RETURN NEW;
 END;
+$$;
+
+CREATE TABLE media_post_submissions (
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/media-post-submissions'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    title text,
+    song_type text,
+    start_input jsonb NOT NULL,
+    audio_reservation_id text NOT NULL,
+    creation_revision bigint DEFAULT 1 NOT NULL,
+    audio_revision bigint DEFAULT 0 NOT NULL,
+    analysis_revision bigint DEFAULT 0 NOT NULL,
+    decision_revision bigint DEFAULT 0 NOT NULL,
+    workflow_revision bigint DEFAULT 0 NOT NULL,
+    event_sequence bigint DEFAULT 1 NOT NULL,
+    current_terms_revision bigint,
+    current_immutable_ref text,
+    current_analysis_revision bigint,
+    current_decision_revision bigint,
+    bound_reference_asset_id text,
+    bound_reference_evidence_ref text,
+    bound_reference_audio_revision bigint,
+    bound_reference_analysis_revision bigint,
+    bound_reference_audio_sha256 text,
+    bound_reference_upstream_share_bps integer,
+    status text DEFAULT 'processing'::text NOT NULL,
+    phase text DEFAULT 'reserve'::text,
+    post_id text,
+    failure_code text,
+    retry_count integer DEFAULT 0 NOT NULL,
+    failure_retry_count integer,
+    retryable boolean,
+    last_safe_phase text,
+    action_kind text,
+    action_reference_request_ref text,
+    action_expires_at timestamp with time zone,
+    held_revision bigint,
+    review_ref text,
+    review_reason_code text,
+    review_exhaustion_code text,
+    review_exhaustion_attempt_id text,
+    moderator_action_id text,
+    moderator_actor_id text,
+    moderator_evidence_ref text,
+    moderator_approval_kind text,
+    moderator_reason_code text,
+    abandonment_reason text,
+    retention_disposition text,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
+    lyrics_revision bigint DEFAULT 0 NOT NULL,
+    current_lyrics_revision bigint,
+    workflow_replacement_sequence bigint DEFAULT 0 NOT NULL,
+    author_declared_rating text DEFAULT 'general'::text NOT NULL,
+    resulting_content_rating text DEFAULT 'general'::text NOT NULL,
+    media_kind text DEFAULT 'song'::text NOT NULL,
+    video_intent text,
+    caption text,
+    video_revision bigint DEFAULT 0 NOT NULL,
+    poster_timestamp_ms bigint,
+    video_state_snapshot jsonb,
+    failure_evidence_ref text,
+    CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
+    CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
+    CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),
+    CONSTRAINT media_post_submissions_audio_revision_check CHECK ((audio_revision >= 0)),
+    CONSTRAINT media_post_submissions_author_declared_rating_check CHECK ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
+    CONSTRAINT media_post_submissions_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_post_submissions_decision_revision_check CHECK ((decision_revision >= 0)),
+    CONSTRAINT media_post_submissions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-post-submissions'::text)),
+    CONSTRAINT media_post_submissions_event_sequence_check CHECK ((event_sequence > 0)),
+    CONSTRAINT media_post_submissions_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['invalid_media'::text, 'unsupported_media'::text, 'probe_failed'::text, 'hash_failed'::text, 'transform_failed'::text, 'publication_failed'::text, 'upload_seal_conflict'::text, 'poster_undecodable'::text, 'poster_timestamp_out_of_range'::text, 'workflow_terminal_unconverged'::text])) OR ((media_kind = 'video'::text) AND (failure_code = ANY (ARRAY['membership_required'::text, 'provider_submission_unconfirmed'::text]))))),
+    CONSTRAINT media_post_submissions_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR (btrim(failure_evidence_ref) <> ''::text))),
+    CONSTRAINT media_post_submissions_failure_retry_count_check CHECK (((failure_retry_count IS NULL) OR ((failure_retry_count >= 0) AND (failure_retry_count <= 3)))),
+    CONSTRAINT media_post_submissions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_post_submissions_last_safe_phase_check CHECK (((last_safe_phase IS NULL) OR (last_safe_phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])) OR ((media_kind = 'video'::text) AND (video_intent = 'song_reference'::text) AND (last_safe_phase = 'render'::text)))),
+    CONSTRAINT media_post_submissions_lyrics_revision_check CHECK ((lyrics_revision >= 0)),
+    CONSTRAINT media_post_submissions_lyrics_shape CHECK ((((lyrics_revision = 0) AND (current_lyrics_revision IS NULL)) OR ((lyrics_revision > 0) AND (current_lyrics_revision = lyrics_revision)))),
+    CONSTRAINT media_post_submissions_moderator_approval_kind_check CHECK (((moderator_approval_kind IS NULL) OR (moderator_approval_kind = ANY (ARRAY['standard'::text, 'acr_override'::text])))),
+    CONSTRAINT media_post_submissions_moderator_reason_code_check CHECK (((moderator_reason_code IS NULL) OR (moderator_reason_code = ANY (ARRAY['acr_inconclusive'::text, 'acr_exhausted'::text, 'acr_skipped'::text, 'policy_violation'::text])))),
+    CONSTRAINT media_post_submissions_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
+    CONSTRAINT media_post_submissions_phase_check CHECK (((phase IS NULL) OR (phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])) OR ((media_kind = 'video'::text) AND (video_intent = 'song_reference'::text) AND (phase = 'render'::text)))),
+    CONSTRAINT media_post_submissions_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_evidence_ref IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_evidence_ref IS NOT NULL) AND (btrim(bound_reference_evidence_ref) <> ''::text) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
+    CONSTRAINT media_post_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_post_submissions_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT media_post_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_post_submissions_resulting_content_rating_check CHECK ((resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
+    CONSTRAINT media_post_submissions_retention_disposition_check CHECK (((retention_disposition IS NULL) OR (retention_disposition = ANY (ARRAY['no_object'::text, 'retain_for_reconciliation'::text, 'retain_until_expiry'::text])))),
+    CONSTRAINT media_post_submissions_retry_count_check CHECK (((retry_count >= 0) AND (retry_count <= 3))),
+    CONSTRAINT media_post_submissions_review_exhaustion_code_check CHECK (((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))),
+    CONSTRAINT media_post_submissions_review_exhaustion_shape CHECK ((((review_exhaustion_code IS NULL) AND (review_exhaustion_attempt_id IS NULL)) OR ((review_exhaustion_code = 'acr_exhausted'::text) AND (review_exhaustion_attempt_id IS NOT NULL) AND (status = 'manual_review'::text)))),
+    CONSTRAINT media_post_submissions_review_reason_code_check CHECK (((review_reason_code IS NULL) OR (review_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'video_review'::text])))),
+    CONSTRAINT media_post_submissions_revision_shape CHECK ((((media_kind = 'song'::text) AND (video_revision = 0) AND (((audio_revision = 0) AND (current_immutable_ref IS NULL)) OR ((audio_revision > 0) AND (current_immutable_ref IS NOT NULL)))) OR ((media_kind = 'video'::text) AND (audio_revision = 0) AND (((video_revision = 0) AND (current_immutable_ref IS NULL)) OR ((video_revision > 0) AND (current_immutable_ref IS NOT NULL)))))),
+    CONSTRAINT media_post_submissions_shape CHECK ((((status = 'processing'::text) AND (phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'action_required'::text) AND (phase IS NULL) AND (action_kind = 'reference_required'::text) AND (action_reference_request_ref IS NOT NULL) AND (action_expires_at IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL)) OR ((status = 'manual_review'::text) AND (phase IS NULL) AND (review_ref IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL) AND ((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))) OR ((status = 'published'::text) AND (phase IS NULL) AND (post_id IS NOT NULL) AND (failure_code IS NULL)) OR ((status = 'blocked'::text) AND (phase IS NULL) AND (post_id IS NULL)) OR ((status = 'processing_failed'::text) AND (phase IS NULL) AND (failure_code IS NOT NULL) AND (failure_retry_count IS NOT NULL) AND (retryable IS NOT NULL) AND (last_safe_phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'abandoned'::text) AND (phase IS NULL) AND (post_id IS NULL) AND (abandonment_reason IS NOT NULL) AND (retention_disposition IS NOT NULL) AND (action_kind IS NULL) AND (action_reference_request_ref IS NULL) AND (action_expires_at IS NULL) AND (review_ref IS NULL) AND (review_reason_code IS NULL) AND (review_exhaustion_code IS NULL) AND (held_revision IS NULL) AND (moderator_action_id IS NULL) AND (moderator_actor_id IS NULL) AND (moderator_evidence_ref IS NULL) AND (moderator_approval_kind IS NULL) AND (moderator_reason_code IS NULL)))),
+    CONSTRAINT media_post_submissions_start_input_check CHECK ((jsonb_typeof(start_input) = 'object'::text)),
+    CONSTRAINT media_post_submissions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'published'::text, 'blocked'::text, 'processing_failed'::text, 'abandoned'::text]))),
+    CONSTRAINT media_post_submissions_submission_id_check CHECK ((btrim(submission_id) <> ''::text)),
+    CONSTRAINT media_post_submissions_track_shape CHECK ((((media_kind = 'song'::text) AND (title IS NOT NULL) AND (btrim(title) <> ''::text) AND (char_length(title) <= 200) AND (song_type = ANY (ARRAY['original'::text, 'remix'::text])) AND (video_intent IS NULL) AND (caption IS NULL) AND (video_revision = 0) AND (poster_timestamp_ms IS NULL) AND (video_state_snapshot IS NULL)) OR ((media_kind = 'video'::text) AND (title IS NULL) AND (song_type IS NULL) AND (video_intent = ANY (ARRAY['original_audio'::text, 'song_reference'::text])) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (audio_revision = 0) AND (lyrics_revision = 0) AND (current_terms_revision IS NULL) AND (current_lyrics_revision IS NULL) AND (bound_reference_asset_id IS NULL) AND (video_revision >= 0) AND (jsonb_typeof(video_state_snapshot) = 'object'::text) AND ((poster_timestamp_ms IS NULL) OR ((poster_timestamp_ms >= 0) AND (poster_timestamp_ms <= 179999)))))),
+    CONSTRAINT media_post_submissions_workflow_replacement_sequence_check CHECK ((workflow_replacement_sequence >= 0)),
+    CONSTRAINT media_post_submissions_workflow_revision_check CHECK ((workflow_revision >= 0)),
+    CONSTRAINT media_video_submission_reconciliation_shape CHECK (((media_kind <> 'video'::text) OR (((NOT (video_state_snapshot ? 'reconciliationRequired'::text)) OR (jsonb_typeof((video_state_snapshot -> 'reconciliationRequired'::text)) = 'boolean'::text)) AND (((video_state_snapshot ->> 'reconciliationRequired'::text) IS DISTINCT FROM 'true'::text) OR ((status = 'processing_failed'::text) AND (retryable IS FALSE))))))
+);
+
+CREATE FUNCTION is_current_media_rating_raise_v2(previous media_post_submissions, following media_post_submissions) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT previous.resulting_content_rating='general' AND following.resulting_content_rating='adult_18'
+    AND (to_jsonb(previous)-ARRAY['resulting_content_rating','actor_account_id'])
+      =(to_jsonb(following)-ARRAY['resulting_content_rating','actor_account_id']);
+$$;
+
+CREATE FUNCTION valid_text_moderation_reason_codes(value jsonb) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
+    AS $$
+BEGIN
+  IF jsonb_typeof(value) <> 'array' THEN
+    RETURN FALSE;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM jsonb_array_elements_text(value) AS reason(code)
+     WHERE code NOT IN (
+       'sexual_minors', 'adult_sexual', 'graphic_violence', 'harassment',
+       'threat', 'hate', 'self_harm', 'illicit', 'spam', 'other_policy',
+       'age_gate_required', 'provider_unavailable', 'provider_timeout',
+       'provider_invalid'
+     )
+  ) THEN
+    RETURN FALSE;
+  END IF;
+  RETURN (
+    SELECT count(*) = count(DISTINCT code)
+      FROM jsonb_array_elements_text(value) AS reason(code)
+  );
+EXCEPTION WHEN OTHERS THEN
+  RETURN FALSE;
+END;
+$$;
+
+CREATE TABLE text_content_submissions (
+    community_id text NOT NULL,
+    submission_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    surface text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    status text NOT NULL,
+    moderation_decision text NOT NULL,
+    public_reason_code text,
+    policy_revision_id text NOT NULL,
+    policy_hash text NOT NULL,
+    input_sha256 text NOT NULL,
+    internal_reason_codes jsonb NOT NULL,
+    evidence_ref text,
+    published_post_id text,
+    published_comment_id text,
+    review_ref text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    operation_id text NOT NULL,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    target_post_id text,
+    target_parent_comment_id text,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
+    platform_policy_revision_id text,
+    platform_policy_hash text,
+    community_policy_revision_id text,
+    community_policy_hash text,
+    author_declared_rating text,
+    resulting_content_rating text,
+    matched_categories jsonb,
+    category_decisions jsonb,
+    effective_policy_decision text,
+    CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
+    CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
+    CONSTRAINT text_content_submissions_operation_id_not_blank CHECK (((btrim(operation_id) <> ''::text) AND (operation_id = btrim(operation_id)))),
+    CONSTRAINT text_content_submissions_policy_evidence_shape CHECK ((num_nonnulls(platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 4]))),
+    CONSTRAINT text_content_submissions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT text_content_submissions_public_reason_code_check CHECK (((public_reason_code IS NULL) OR (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'policy_violation'::text])))),
+    CONSTRAINT text_content_submissions_reasons_array CHECK ((valid_text_moderation_reason_codes(internal_reason_codes) AND (((moderation_decision = 'allow'::text) AND (jsonb_array_length(internal_reason_codes) = 0)) OR ((moderation_decision = 'manual_review'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ? 'sexual_minors'::text))) OR ((moderation_decision = 'blocked'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ?| ARRAY['age_gate_required'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))))),
+    CONSTRAINT text_content_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT text_content_submissions_response_snapshot_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
+    CONSTRAINT text_content_submissions_response_snapshot_nonempty CHECK ((octet_length(response_snapshot_bytes) > 0)),
+    CONSTRAINT text_content_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT text_content_submissions_status_check CHECK ((status = ANY (ARRAY['published'::text, 'manual_review'::text, 'blocked'::text]))),
+    CONSTRAINT text_content_submissions_status_shape CHECK ((((status = 'published'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (((surface = 'text_post'::text) AND (published_post_id IS NOT NULL) AND (published_comment_id IS NULL)) OR ((surface = ANY (ARRAY['comment'::text, 'reply'::text])) AND (published_post_id IS NULL) AND (published_comment_id IS NOT NULL)))) OR ((status = 'manual_review'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text])) AND (review_ref IS NOT NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)) OR ((status = 'blocked'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = 'policy_violation'::text) AND (review_ref IS NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)))),
+    CONSTRAINT text_content_submissions_surface_check CHECK ((surface = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
+    CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
+    CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT text_content_submissions_v2_decision_evidence_shape CHECK (((num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = ANY (ARRAY[0, 5])) AND ((author_declared_rating IS NULL) OR ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (jsonb_typeof(matched_categories) = 'array'::text) AND (jsonb_typeof(category_decisions) = 'object'::text) AND (effective_policy_decision = ANY (ARRAY['permit'::text, 'review'::text, 'block'::text])))))),
+    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL))))
+);
+
+CREATE FUNCTION is_current_text_rating_raise_v2(previous text_content_submissions, following text_content_submissions) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT previous.resulting_content_rating='general' AND following.resulting_content_rating='adult_18'
+    AND (to_jsonb(previous)-ARRAY['resulting_content_rating','actor_account_id'])
+      =(to_jsonb(following)-ARRAY['resulting_content_rating','actor_account_id']);
 $$;
 
 CREATE FUNCTION is_dance_identifier(value text, maximum_octets integer DEFAULT 256) RETURNS boolean
@@ -12796,7 +13744,6 @@ CREATE FUNCTION prepare_hns_root_inventory_renewal_v1(input_renewal_job_id text,
 DECLARE
   job hns_root_health_renewal_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
-  observation hns_root_import_observation_jobs%ROWTYPE;
   result JSONB;
   dns_revision hns_dns_zone_activation_revisions%ROWTYPE;
   remaining_seconds INTEGER;
@@ -12814,13 +13761,17 @@ BEGIN
   IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text, NULL::text, NULL::bigint; RETURN; END IF;
   SELECT * INTO session FROM hns_root_import_sessions
     WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id FOR UPDATE;
-  SELECT * INTO observation FROM hns_root_import_observation_jobs
-    WHERE hns_root_import_observation_jobs.root_import_session_id = job.root_import_session_id;
 
   database_now := clock_timestamp();
   IF job.state IN ('completed', 'terminal') THEN
+    -- See the renewal finalizer: a pre-0170 completed job's missing request
+    -- digest is a deliberate conflict, never a replay.
+    IF job.state = 'completed' AND job.request_sha256 IS NULL THEN
+      RETURN QUERY SELECT 'conflict'::text, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
     IF job.state = 'completed' AND input_outcome = 'ready'
-      AND observation.request_sha256 = input_request_sha256
+      AND job.request_sha256 = input_request_sha256
       AND job.result_bytes = input_result_bytes AND job.result_sha256 = input_result_sha256
       AND input_failure_code IS NULL
     THEN RETURN QUERY SELECT 'replayed'::text, session.root_import_session_id, session.revision;
@@ -12830,7 +13781,11 @@ BEGIN
   END IF;
   IF job.state <> 'leased' OR job.leased_by IS DISTINCT FROM input_executor_id
     OR job.lease_fence IS DISTINCT FROM input_lease_fence OR job.lease_expires_at <= database_now
-    OR observation.request_sha256 IS DISTINCT FROM input_request_sha256
+    OR (SELECT provision.publish_plan_sha256 FROM hns_authority_provision_jobs AS provision
+         WHERE provision.root_import_session_id = job.root_import_session_id
+           AND provision.state = 'completed') IS DISTINCT FROM session.publish_plan_sha256
+    OR job.request_sha256 IS NULL
+    OR job.request_sha256 IS DISTINCT FROM input_request_sha256
   THEN RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN; END IF;
 
   SELECT dns.current_generation INTO current_generation
@@ -14248,23 +15203,51 @@ CREATE FUNCTION raise_text_rating_with_descendants_v1(target_community_id text, 
     AS $$
 DECLARE
   changed_count INTEGER := 0;
-  latest_count INTEGER := 0;
 BEGIN
   IF target_kind = 'text_post' THEN
+    SELECT
+      (SELECT count(*) FROM posts
+        WHERE community_id = target_community_id
+          AND post_id = target_resource_id
+          AND post_type = 'text'
+          AND content_rating <> 'adult_18')
+      +
+      (SELECT count(*) FROM comments
+        WHERE community_id = target_community_id
+          AND post_id = target_resource_id
+          AND content_rating <> 'adult_18')
+      INTO changed_count;
+
     UPDATE posts
        SET content_rating = 'adult_18', updated_at = transition_at
      WHERE community_id = target_community_id
        AND post_id = target_resource_id
-       AND post_type = 'text';
-    GET DIAGNOSTICS changed_count = ROW_COUNT;
+       AND post_type = 'text'
+       AND content_rating <> 'adult_18';
+
     UPDATE comments
        SET content_rating = 'adult_18', updated_at = transition_at
      WHERE community_id = target_community_id
        AND post_id = target_resource_id
        AND content_rating <> 'adult_18';
-    GET DIAGNOSTICS latest_count = ROW_COUNT;
-    changed_count := changed_count + latest_count;
   ELSIF target_kind IN ('comment', 'reply') THEN
+    WITH RECURSIVE descendants AS (
+      SELECT comment_id
+        FROM comments
+       WHERE community_id = target_community_id
+         AND comment_id = target_resource_id
+      UNION ALL
+      SELECT child.comment_id
+        FROM comments AS child
+        JOIN descendants AS parent ON parent.comment_id = child.parent_comment_id
+       WHERE child.community_id = target_community_id
+    )
+    SELECT count(*) INTO changed_count
+      FROM comments AS comment
+      JOIN descendants ON descendants.comment_id = comment.comment_id
+     WHERE comment.community_id = target_community_id
+       AND comment.content_rating <> 'adult_18';
+
     WITH RECURSIVE descendants AS (
       SELECT comment_id
         FROM comments
@@ -14282,7 +15265,6 @@ BEGIN
      WHERE comment.community_id = target_community_id
        AND comment.comment_id = descendants.comment_id
        AND comment.content_rating <> 'adult_18';
-    GET DIAGNOSTICS changed_count = ROW_COUNT;
   ELSE
     RAISE EXCEPTION 'unsupported text rating target kind';
   END IF;
@@ -14296,6 +15278,14 @@ BEGIN
      AND projection.content_rating IS DISTINCT FROM comment.content_rating;
   RETURN changed_count;
 END;
+$$;
+
+CREATE FUNCTION rating_reconciliation_held_v1(kind text, community text, target text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (SELECT 1 FROM content_rating_reconciliation_current c
+    JOIN content_rating_reconciliation_events e USING(event_id)
+    WHERE c.target_kind=kind AND c.community_id=community AND c.target_id=target AND e.outcome='held');
 $$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
@@ -14675,6 +15665,12 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_age_verification_ceremony_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN
+    RAISE EXCEPTION 'age verification ceremony attempts are append-only evidence';
+  END; $$;
+
 CREATE FUNCTION reject_community_commerce_immutable_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -14745,6 +15741,12 @@ CREATE FUNCTION reject_dance_reference_action_change() RETURNS trigger
 BEGIN
   RAISE EXCEPTION 'Dance reference actions are append-only';
 END
+$$;
+
+CREATE FUNCTION reject_handle_nationality_decision_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN RAISE EXCEPTION 'handle nationality decisions and evidence uses are immutable'; END;
 $$;
 
 CREATE FUNCTION reject_handle_sales_append_only_change_v1() RETURNS trigger
@@ -14867,6 +15869,12 @@ BEGIN
   RAISE EXCEPTION 'namespace ownership evidence snapshots are append-only';
 END;
 $$;
+
+CREATE FUNCTION reject_nationality_ceremony_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN
+    RAISE EXCEPTION 'nationality ceremony attempts are append-only evidence';
+  END; $$;
 
 CREATE FUNCTION reject_operator_managed_root_registry_version_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -15044,6 +16052,206 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_data_operator_resume_audit() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.state = 'reconciliation_required'
+     AND (
+       NEW.state IN ('broadcast', 'confirming')
+       OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
+     ) THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM data_operator_resume_actions action
+      WHERE action.registration_operation_id = NEW.registration_operation_id
+        AND action.expected_workflow_revision = OLD.workflow_revision
+        AND action.resumed_attempt_id = NEW.current_attempt_id
+        AND action.community_id = NEW.community_id
+        AND action.actor_user_id = NEW.actor_user_id
+        AND action.submission_id = NEW.submission_id
+    ) THEN
+      RAISE EXCEPTION 'operator resume requires its exact audit';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_attempt_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM data_registration_operations operation
+     WHERE operation.registration_operation_id = NEW.registration_operation_id
+       AND operation.media_kind = 'video' AND operation.rights_basis = 'derivative'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM data_registration_parent_resolutions resolution
+     WHERE resolution.registration_operation_id = NEW.registration_operation_id
+  ) THEN
+    RAISE EXCEPTION 'a derivative DATA registration signs only after its parent resolves';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_parent_resolution_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  child_state TEXT;
+BEGIN
+  SELECT state INTO child_state FROM data_registration_operations
+   WHERE registration_operation_id = NEW.registration_operation_id
+     AND media_kind = 'video' AND rights_basis = 'derivative'
+   FOR UPDATE;
+  IF child_state IS NULL OR child_state NOT IN ('pending', 'waiting_parent') THEN
+    RAISE EXCEPTION 'a DATA parent resolution needs a derivative video awaiting it';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_operations parent
+     WHERE parent.registration_operation_id = NEW.parent_registration_operation_id
+       AND parent.state = 'registered'
+       AND parent.media_kind = 'song'
+       AND parent.registration_revision = NEW.parent_registration_revision
+       AND parent.registered_ip_id = NEW.parent_ip_id
+       AND parent.confirmed_transaction_hash = NEW.parent_registration_transaction_hash
+       AND parent.confirmed_block_number = NEW.parent_registration_block_number
+       AND parent.confirmed_block_hash = NEW.parent_registration_block_hash
+       AND parent.confirmed_log_index = NEW.parent_registration_log_index
+       AND parent.attached_license_template = NEW.license_template
+       AND parent.attached_license_terms_id = NEW.license_terms_id
+       AND parent.attached_license_preset = NEW.license_preset
+       AND parent.attached_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.commercial_rev_share_bps
+       AND parent.terms_attachment_transaction_hash = NEW.terms_attachment_transaction_hash
+       AND parent.terms_attachment_block_number = NEW.terms_attachment_block_number
+       AND parent.terms_attachment_block_hash = NEW.terms_attachment_block_hash
+       AND parent.terms_attachment_log_index = NEW.terms_attachment_log_index
+     FOR SHARE
+  ) THEN
+    RAISE EXCEPTION 'a DATA parent resolution must restate the parent''s confirmed row';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_parent_references reference
+     WHERE reference.registration_operation_id = NEW.registration_operation_id
+       AND reference.parent_registration_operation_id = NEW.parent_registration_operation_id
+       AND reference.expected_parent_license_preset = NEW.license_preset
+       AND reference.expected_parent_commercial_rev_share_bps
+         IS NOT DISTINCT FROM NEW.commercial_rev_share_bps
+  ) THEN
+    RAISE EXCEPTION 'a DATA parent resolution must consume the expected parent license';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_data_registration_video_parent_shape() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  has_parent BOOLEAN;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM data_registration_parent_references p
+     WHERE p.registration_operation_id = NEW.registration_operation_id
+  ) INTO has_parent;
+  IF (NEW.rights_basis = 'derivative') <> has_parent THEN
+    RAISE EXCEPTION 'a video DATA intent has a parent exactly when it is derivative';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_media_video_reservation_song_plan() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.media_kind = 'video' AND NEW.video_intent = 'song_reference' AND NOT EXISTS (
+    SELECT 1 FROM media_video_reservation_song_plans p WHERE p.reservation_id = NEW.reservation_id
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video reservation requires its frozen plan';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_media_video_rights_basis_matches_intent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_post_submissions s
+     WHERE s.submission_id = NEW.submission_id AND s.media_kind = 'video'
+       AND ((s.video_intent = 'original_audio' AND NEW.rights_basis = 'original')
+         OR (s.video_intent = 'song_reference' AND NEW.rights_basis = 'derivative'))
+  ) THEN
+    RAISE EXCEPTION 'video rights basis does not match the submission intent';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_projection_edge() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_video_song_references e
+     WHERE e.submission_id = NEW.submission_id
+       AND e.post_id = NEW.post_id
+       AND e.plan_id = NEW.song_video_plan_id
+       AND e.master_revision_id = NEW.song_video_master_revision_id
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video projection requires its song edge';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_rating_floor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM media_post_submissions s
+      JOIN posts video ON video.community_id = s.community_id AND video.post_id = NEW.post_id
+      JOIN posts song ON song.community_id = NEW.song_community_id AND song.post_id = NEW.song_post_id
+     WHERE s.submission_id = NEW.submission_id
+       AND video.post_type = 'video'
+       AND song.post_type = 'song'
+       AND (song.content_rating <> 'adult_18' OR video.content_rating = 'adult_18')
+  ) THEN
+    RAISE EXCEPTION 'a song-reference video must be rated at least as its song';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_render_plan_frozen() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM media_post_submissions s
+      JOIN media_video_reservation_song_plans r ON r.reservation_id = s.audio_reservation_id
+     WHERE s.submission_id = NEW.submission_id
+       AND s.media_kind = 'video'
+       AND s.video_intent = 'song_reference'
+       AND r.song_post_id = NEW.song_post_id
+       AND r.audio_revision = NEW.audio_revision
+       AND r.song_asset_id = NEW.song_asset_id
+       AND r.song_duration_samples = NEW.song_duration_samples
+       AND r.clip_start_samples = NEW.clip_start_samples
+       AND r.clip_duration_samples = NEW.clip_duration_samples
+  ) THEN
+    RAISE EXCEPTION 'a song-video render plan must be its reservation''s frozen plan';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION require_text_moderation_v2_case() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -15134,6 +16342,24 @@ BEGIN
     RAISE EXCEPTION 'V2 text submission requires complete decision evidence';
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_video_publication_decision_anchor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.decision_revision > NEW.creation_revision OR NOT EXISTS (
+    SELECT 1 FROM media_video_publication_decisions d
+     WHERE d.submission_id = NEW.submission_id
+       AND d.creation_revision = NEW.decision_revision
+       AND d.video_revision = NEW.video_revision
+       AND d.analysis_revision = NEW.analysis_revision
+       AND d.outcome IN ('publish', 'review')
+  ) THEN
+    RAISE EXCEPTION 'a video publication must rest on a publishing decision';
+  END IF;
+  RETURN NULL;
 END;
 $$;
 
@@ -15273,6 +16499,55 @@ CREATE FUNCTION resolve_hns_community_app_host_authority_v1(input_normalized_hos
    WHERE database_now IS NOT NULL
      AND input_normalized_host = current_app.normalized_host
 $$;
+
+CREATE FUNCTION retained_categories_rating_v1(categories jsonb, bound boolean, declared text) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    AS $$
+BEGIN
+  IF bound IS DISTINCT FROM true OR declared NOT IN ('general','adult_18') OR declared IS NULL
+     OR jsonb_typeof(categories) IS DISTINCT FROM 'array' THEN RETURN 'held'; END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(categories) c
+      WHERE jsonb_typeof(c)<>'string' OR moderation_policy_category_ordinal_v1(c#>>'{}') IS NULL)
+     OR (SELECT count(*)<>count(DISTINCT c) FROM jsonb_array_elements(categories) c)
+     OR categories ? 'sexual/minors' THEN RETURN 'held'; END IF;
+  IF declared='adult_18' OR categories ?| ARRAY['sexual','violence/graphic'] THEN RETURN 'adult_18'; END IF;
+  RETURN 'general';
+END;
+$$;
+
+CREATE FUNCTION retained_video_rating_v1(analysis jsonb, evidence jsonb, bound boolean, declared text) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    AS $_$
+DECLARE inputs jsonb; frames jsonb; item jsonb; expected_hash text; expected_role text;
+  categories jsonb := '[]'; idx integer; result text;
+BEGIN
+  IF bound IS DISTINCT FROM true OR jsonb_typeof(analysis) IS DISTINCT FROM 'object'
+    OR jsonb_typeof(evidence) IS DISTINCT FROM 'object' THEN RETURN 'held'; END IF;
+  inputs:=evidence->'inputs'; frames:=analysis->'frames'->'extracted';
+  IF jsonb_typeof(inputs) IS DISTINCT FROM 'array' OR jsonb_typeof(frames) IS DISTINCT FROM 'array'
+    THEN RETURN 'held'; END IF;
+  IF jsonb_array_length(frames)<>3 OR jsonb_array_length(inputs)<>
+    (CASE WHEN analysis->'safetyRequest'->>'captionSha256' IS NULL THEN 3 ELSE 4 END) THEN RETURN 'held'; END IF;
+  FOR idx IN 0..jsonb_array_length(inputs)-1 LOOP
+    item:=inputs->idx;
+    expected_hash:=CASE WHEN idx<3 THEN frames->idx->>'sha256' ELSE analysis->'safetyRequest'->>'captionSha256' END;
+    expected_role:=CASE WHEN idx<3 THEN (ARRAY['poster','first','midpoint'])[idx+1] ELSE 'caption' END;
+    IF expected_hash IS NULL OR expected_hash !~ '^[0-9a-f]{64}$'
+      OR item->>'outcome' IS DISTINCT FROM 'evaluated'
+      OR item->>'role' IS DISTINCT FROM expected_role OR item->>'sha256' IS DISTINCT FROM expected_hash
+      OR item->'provider'->>'input_sha256' IS DISTINCT FROM expected_hash
+      OR item->'provider'->>'provider_id' IS DISTINCT FROM 'openai'
+      OR (idx<3 AND (analysis->'safetyRequest'->'frameSha256s'->>idx IS DISTINCT FROM expected_hash OR frames->idx->>'role' IS DISTINCT FROM expected_role))
+      OR item->'provider'->'matched_categories' IS DISTINCT FROM item->'resolution'->'matched_categories'
+      THEN RETURN 'held'; END IF;
+    result:=retained_categories_rating_v1(item->'provider'->'matched_categories',true,'general');
+    IF result='held' THEN RETURN 'held'; END IF;
+    categories:=categories || (item->'provider'->'matched_categories');
+  END LOOP;
+  SELECT COALESCE(jsonb_agg(DISTINCT c),'[]') INTO categories FROM jsonb_array_elements(categories) c;
+  RETURN retained_categories_rating_v1(categories,true,declared);
+END;
+$_$;
 
 CREATE FUNCTION revoke_operator_managed_route_v1(input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_canonical_root text, input_activation_id text, input_route_binding_id text, input_expected_activation_generation bigint, input_reason_code text) RETURNS TABLE(outcome text, operator_route_activation_id text, route_binding_id text, activation_generation bigint)
     LANGUAGE plpgsql
@@ -15493,6 +16768,127 @@ CREATE FUNCTION reward_leg_accepts_qualification(leg_id_input text, activity_inp
     FROM song_reward_offer_legs leg WHERE leg.leg_id = leg_id_input), false)
 $$;
 
+CREATE FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(input_executor_id text, input_attempt_id text, input_service_version text, input_expected_bundle_sha256 text, input_measured_bundle_sha256 text, input_process_started_at timestamp with time zone) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  probe_session CONSTANT TEXT := 'cutover-readiness-probe';
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  existing hns_lifecycle_service_identity%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  probe_outcome TEXT;
+  probe_reason TEXT;
+  completed_at TIMESTAMPTZ;
+  bound_job_id BIGINT;
+  bound_fence BIGINT;
+  finalized RECORD;
+BEGIN
+  IF btrim(input_executor_id) IS DISTINCT FROM input_executor_id
+    OR octet_length(input_executor_id) NOT BETWEEN 1 AND 256
+    OR input_executor_id ~ '[[:cntrl:]]'
+    OR btrim(input_attempt_id) IS DISTINCT FROM input_attempt_id
+    OR octet_length(input_attempt_id) NOT BETWEEN 8 AND 128
+    OR input_attempt_id !~ '^[A-Za-z0-9._:-]+$'
+    OR input_service_version !~ '^[A-Za-z0-9._:@/-]{1,128}$'
+    OR input_expected_bundle_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_measured_bundle_sha256 !~ '^[0-9a-f]{64}$'
+    OR input_process_started_at IS NULL
+    OR input_process_started_at > database_now + interval '1 minute'
+  THEN
+    RAISE EXCEPTION 'invalid HNS cutover readiness probe request';
+  END IF;
+
+  SELECT * INTO existing FROM hns_lifecycle_service_identity
+    WHERE service_name = 'pirate-hns-authority-provisioner' FOR UPDATE;
+
+  IF input_measured_bundle_sha256 IS DISTINCT FROM input_expected_bundle_sha256 THEN
+    probe_outcome := 'failed';
+    probe_reason := 'artifact_mismatch';
+  ELSE
+    SELECT * INTO job FROM hns_root_import_lifecycle_jobs
+      WHERE root_import_session_id = probe_session
+        AND job_kind = 'observe_readiness'
+      ORDER BY lifecycle_job_id DESC LIMIT 1 FOR UPDATE;
+    IF job.lifecycle_job_id IS NULL THEN
+      probe_outcome := 'probe_absent';
+      probe_reason := 'probe job missing';
+    ELSIF job.state = 'completed' THEN
+      -- A completed probe belongs to exactly one attempt. The same attempt
+      -- may refresh its process start; a different attempt must re-seed and
+      -- can never be satisfied by the previous attempt's completion.
+      IF existing.attempt_id = input_attempt_id THEN
+        probe_outcome := 'replayed';
+        probe_reason := NULL;
+        completed_at := existing.probe_completed_at;
+        bound_job_id := existing.probe_job_id;
+        bound_fence := existing.lease_fence;
+      ELSE
+        probe_outcome := 'failed';
+        probe_reason := 'attempt_mismatch';
+      END IF;
+    ELSIF job.state = 'queued'
+      OR (job.state = 'leased' AND job.lease_expires_at <= database_now) THEN
+      UPDATE hns_root_import_lifecycle_jobs
+         SET state = 'leased', attempt_count = LEAST(job.attempt_count + 1, 100),
+             lease_fence = job.lease_fence + 1, leased_by = input_executor_id,
+             lease_expires_at = database_now + interval '30 seconds',
+             failure_code = NULL, updated_at = database_now
+       WHERE lifecycle_job_id = job.lifecycle_job_id
+       RETURNING * INTO job;
+      SELECT * INTO finalized FROM finalize_hns_root_import_lifecycle_job_v1(
+        job.lifecycle_job_id, input_executor_id, job.lease_fence, 'completed', NULL
+      ) AS result;
+      IF finalized.outcome = 'completed' THEN
+        probe_outcome := 'ready';
+        probe_reason := NULL;
+        completed_at := database_now;
+        bound_job_id := job.lifecycle_job_id;
+        bound_fence := job.lease_fence;
+      ELSE
+        probe_outcome := 'failed';
+        probe_reason := finalized.outcome;
+        bound_job_id := job.lifecycle_job_id;
+        bound_fence := job.lease_fence;
+      END IF;
+    ELSE
+      probe_outcome := 'lease_conflict';
+      probe_reason := 'probe job is not claimable';
+      bound_job_id := job.lifecycle_job_id;
+      bound_fence := job.lease_fence;
+    END IF;
+  END IF;
+
+  INSERT INTO hns_lifecycle_service_identity (
+    service_name, service_version, bundle_sha256, executor_id,
+    process_started_at, probe_outcome, probe_reason,
+    attempt_id, probe_job_id, lease_fence,
+    expected_bundle_sha256, measured_bundle_sha256, probe_completed_at
+  ) VALUES (
+    'pirate-hns-authority-provisioner', input_service_version,
+    input_measured_bundle_sha256, input_executor_id,
+    input_process_started_at, probe_outcome, probe_reason,
+    input_attempt_id, bound_job_id, bound_fence,
+    input_expected_bundle_sha256, input_measured_bundle_sha256, completed_at
+  )
+  ON CONFLICT (service_name) DO UPDATE SET
+    service_version = EXCLUDED.service_version,
+    bundle_sha256 = EXCLUDED.bundle_sha256,
+    executor_id = EXCLUDED.executor_id,
+    process_started_at = EXCLUDED.process_started_at,
+    probe_outcome = EXCLUDED.probe_outcome,
+    probe_reason = EXCLUDED.probe_reason,
+    attempt_id = EXCLUDED.attempt_id,
+    probe_job_id = EXCLUDED.probe_job_id,
+    lease_fence = EXCLUDED.lease_fence,
+    expected_bundle_sha256 = EXCLUDED.expected_bundle_sha256,
+    measured_bundle_sha256 = EXCLUDED.measured_bundle_sha256,
+    probe_completed_at = EXCLUDED.probe_completed_at;
+
+  RETURN probe_outcome;
+END;
+$_$;
+
 CREATE FUNCTION schedule_hns_root_health_renewals_v1(input_limit integer, input_renew_when_remaining_seconds integer, input_heartbeat_freshness_seconds integer) RETURNS TABLE(eligible_roots integer, enqueued_roots integer, successful_tick_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -15586,6 +16982,40 @@ BEGIN
     updated_at = EXCLUDED.updated_at;
 
   RETURN QUERY SELECT eligible_count, inserted_count, database_now;
+END;
+$$;
+
+CREATE FUNCTION seed_hns_lifecycle_readiness_cutover_probe_v1() RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  probe_session CONSTANT TEXT := 'cutover-readiness-probe';
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  INSERT INTO hns_root_import_lifecycle (
+    root_import_session_id, root_label, phase, revision, generation,
+    plan_exposed_at, publication_deadline_at, first_current_observation_at,
+    finality_deadline_at, policy_name, policy_digest, plan_encoded_resource_sha256,
+    synthetic
+  ) VALUES (
+    probe_session, 'cutover-probe', 'checking_authority', 1, 1,
+    database_now - interval '1 hour', database_now + interval '13 days',
+    database_now - interval '2 hours', database_now + interval '22 hours',
+    'hns_root_import_lifecycle_v1', 'cutover-probe', repeat('a', 64), TRUE
+  )
+  ON CONFLICT (root_import_session_id) DO UPDATE SET synthetic = TRUE;
+
+  DELETE FROM hns_root_import_lifecycle_jobs
+   WHERE root_import_session_id = probe_session
+     AND job_kind = 'observe_readiness'
+     AND state IN ('queued', 'leased');
+
+  INSERT INTO hns_root_import_lifecycle_jobs (
+    root_import_session_id, job_kind, due_at, generation
+  ) VALUES (probe_session, 'observe_readiness', database_now, 1);
+
+  RETURN 'seeded';
 END;
 $$;
 
@@ -15777,34 +17207,6 @@ BEGIN
 END
 $$;
 
-CREATE FUNCTION valid_text_moderation_reason_codes(value jsonb) RETURNS boolean
-    LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
-    AS $$
-BEGIN
-  IF jsonb_typeof(value) <> 'array' THEN
-    RETURN FALSE;
-  END IF;
-  IF EXISTS (
-    SELECT 1
-      FROM jsonb_array_elements_text(value) AS reason(code)
-     WHERE code NOT IN (
-       'sexual_minors', 'adult_sexual', 'graphic_violence', 'harassment',
-       'threat', 'hate', 'self_harm', 'illicit', 'spam', 'other_policy',
-       'age_gate_required', 'provider_unavailable', 'provider_timeout',
-       'provider_invalid'
-     )
-  ) THEN
-    RETURN FALSE;
-  END IF;
-  RETURN (
-    SELECT count(*) = count(DISTINCT code)
-      FROM jsonb_array_elements_text(value) AS reason(code)
-  );
-EXCEPTION WHEN OTHERS THEN
-  RETURN FALSE;
-END;
-$$;
-
 CREATE FUNCTION validate_active_membership_follow_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -15820,6 +17222,54 @@ BEGIN
     PERFORM require_active_membership_follow_pair_v1(NEW.community_id, NEW.user_id);
   END IF;
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_age_verification_ceremony_attempt_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  state_record age_verification_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO state_record
+    FROM age_verification_requirement_states
+   WHERE action_kind = NEW.action_kind
+     AND intent_id = NEW.intent_id
+     AND requirement_kind = NEW.requirement_kind
+   FOR UPDATE;
+
+  IF NOT FOUND
+    OR state_record.actor_id <> NEW.actor_id
+    OR state_record.requirement_hash <> NEW.requirement_hash
+    OR NOT EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements_text(state_record.accepted_provider_ids) AS accepted
+          WHERE accepted.value = NEW.provider_id
+       )
+    OR NEW.generation <> state_record.generation + 1
+    OR state_record.status NOT IN ('unmet', 'failed', 'expired', 'pending') THEN
+    RAISE EXCEPTION 'age verification ceremony reservation does not match the current requirement state';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_age_verification_requirement_state_providers() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  accepted text[];
+BEGIN
+  SELECT array_agg(value ORDER BY value)::text[]
+    INTO accepted
+    FROM jsonb_array_elements_text(NEW.accepted_provider_ids);
+
+  IF accepted IS DISTINCT FROM ARRAY['self.pass', 'zkpassport']::text[] THEN
+    RAISE EXCEPTION 'age verification requirements accept exactly Self and ZKPassport';
+  END IF;
+
+  RETURN NEW;
 END;
 $$;
 
@@ -16244,6 +17694,125 @@ BEGIN
     OR policy.policy_hash <> NEW.qualification_policy_hash
     OR policy.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash THEN
     RAISE EXCEPTION 'handle offering qualification reference is inconsistent';
+  END IF;
+
+  SELECT * INTO pricing
+    FROM handle_pricing_revisions
+   WHERE pricing_id = NEW.pricing_id
+     AND pricing_revision = NEW.pricing_revision
+   FOR SHARE;
+  IF pricing.pricing_id IS NULL
+    OR pricing.status <> 'active'
+    OR pricing.pricing_kind <> 'free_v1'
+    OR pricing.pricing_hash <> NEW.pricing_hash
+    OR pricing.atomic_amount <> NEW.atomic_amount THEN
+    RAISE EXCEPTION 'handle offering pricing reference is inconsistent';
+  END IF;
+
+  SELECT * INTO driver
+    FROM handle_issuance_driver_revisions
+   WHERE family = NEW.family
+     AND driver_id = NEW.issuance_driver_id
+     AND driver_version = NEW.issuance_driver_version
+   FOR SHARE;
+  IF driver.driver_id IS NULL
+    OR driver.status <> 'enabled'
+    OR driver.fulfillment_kind <> NEW.fulfillment_kind THEN
+    RAISE EXCEPTION 'handle offering issuance-driver reference is inconsistent';
+  END IF;
+
+  SELECT * INTO prior
+    FROM community_handle_offering_revisions
+   WHERE offering_id = NEW.offering_id
+   ORDER BY offering_revision DESC
+   LIMIT 1
+   FOR SHARE;
+  IF prior.offering_id IS NULL THEN
+    IF NEW.offering_revision <> 1 THEN
+      RAISE EXCEPTION 'handle offering must begin at revision one';
+    END IF;
+  ELSIF NEW.offering_revision <> prior.offering_revision + 1
+    OR NEW.community_id <> prior.community_id
+    OR NEW.created_at <> prior.created_at
+    OR prior.status = 'retired' THEN
+    RAISE EXCEPTION 'handle offering revision sequence or identity is invalid';
+  END IF;
+  IF NEW.recorded_at < NEW.created_at THEN
+    RAISE EXCEPTION 'handle offering recorded time precedes creation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_community_handle_offering_revision_insert_v3() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  activation community_handle_sale_namespace_activation_revisions%ROWTYPE;
+  reserved_document handle_reserved_label_revisions%ROWTYPE;
+  policy handle_qualification_policy_revisions%ROWTYPE;
+  pricing handle_pricing_revisions%ROWTYPE;
+  driver handle_issuance_driver_revisions%ROWTYPE;
+  prior community_handle_offering_revisions%ROWTYPE;
+BEGIN
+  IF NOT has_community_handle_sales_authority(NEW.community_id, NEW.actor_account_id) THEN
+    RAISE EXCEPTION 'handle offering requires active manage_handle_sales authority';
+  END IF;
+  SELECT * INTO activation
+    FROM community_handle_sale_namespace_activation_revisions
+   WHERE sale_namespace_activation_id = NEW.sale_namespace_activation_id
+     AND sale_namespace_activation_generation = NEW.sale_namespace_activation_generation
+   FOR SHARE;
+  IF activation.sale_namespace_activation_id IS NULL
+    OR activation.community_id <> NEW.community_id
+    OR activation.family <> NEW.family
+    OR activation.canonical_root <> NEW.namespace_root
+    OR activation.display_root <> NEW.display_root THEN
+    RAISE EXCEPTION 'handle offering sale activation reference is inconsistent';
+  END IF;
+  IF NEW.status = 'active' AND NOT EXISTS (
+    SELECT 1 FROM effective_community_handle_sale_namespace_v1(
+      NEW.sale_namespace_activation_id,
+      clock_timestamp()
+    ) AS effective
+     WHERE effective.sale_namespace_activation_generation
+         = NEW.sale_namespace_activation_generation
+  ) THEN
+    RAISE EXCEPTION 'active handle offering requires the current effective sale activation';
+  END IF;
+
+  SELECT * INTO reserved_document
+    FROM handle_reserved_label_revisions
+   WHERE reserved_labels_id = NEW.reserved_labels_id
+     AND reserved_labels_revision = NEW.reserved_labels_revision
+   FOR SHARE;
+  IF reserved_document.reserved_labels_id IS NULL
+    OR reserved_document.family <> NEW.family
+    OR reserved_document.status <> 'active'
+    OR reserved_document.reserved_labels_hash <> NEW.reserved_labels_hash
+    OR (NEW.label_scope_kind = 'exact_label_v2' AND (
+      NEW.exact_label = ANY(reserved_document.platform_labels)
+      OR NEW.exact_label = ANY(reserved_document.namespace_labels)
+    )) THEN
+    RAISE EXCEPTION 'handle offering reserved-label reference is inconsistent';
+  END IF;
+
+  SELECT * INTO policy
+    FROM handle_qualification_policy_revisions
+   WHERE policy_id = NEW.qualification_policy_id
+     AND policy_revision = NEW.qualification_policy_revision
+   FOR SHARE;
+  IF policy.policy_id IS NULL
+    OR policy.status <> 'active'
+    OR (policy.community_id IS NOT NULL AND policy.community_id <> NEW.community_id)
+    OR policy.policy_hash <> NEW.qualification_policy_hash
+    OR policy.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash THEN
+    RAISE EXCEPTION 'handle offering qualification reference is inconsistent';
+  END IF;
+
+  IF (NEW.label_scope_kind='label_rule_v2' AND policy.policy_kind NOT IN ('none_v1','curated_nationality_v1'))
+    OR (NEW.label_scope_kind='exact_label_v2' AND policy.policy_kind <> 'curated_policy_v1') THEN
+    RAISE EXCEPTION 'handle allocation does not admit this qualification policy';
   END IF;
 
   SELECT * INTO pricing
@@ -17687,6 +19256,40 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION validate_data_operator_resume_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM data_registration_operations operation
+      JOIN data_registration_signing_attempts attempt
+        ON attempt.submission_attempt_id = NEW.resumed_attempt_id
+       AND attempt.registration_operation_id = operation.registration_operation_id
+      JOIN data_registration_outbox launch
+        ON launch.outbox_id = NEW.outbox_id
+       AND launch.registration_operation_id = operation.registration_operation_id
+     WHERE operation.registration_operation_id = NEW.registration_operation_id
+       AND operation.community_id = NEW.community_id
+       AND operation.actor_user_id = NEW.actor_user_id
+       AND operation.submission_id = NEW.submission_id
+       AND operation.workflow_revision = NEW.resulting_workflow_revision
+       AND operation.workflow_instance_id = 'data-registration-workflow:'
+           || operation.registration_operation_id || ':r' || operation.workflow_revision::text
+       AND operation.current_attempt_id = NEW.resumed_attempt_id
+       AND operation.state = CASE WHEN attempt.state = 'mined' THEN 'confirming' ELSE 'broadcast' END
+       AND attempt.state IN ('broadcast', 'mined')
+       AND launch.event_type = 'workflow_replacement'
+       AND launch.workflow_revision = NEW.resulting_workflow_revision
+       AND launch.workflow_instance_id = operation.workflow_instance_id
+       AND launch.state = 'pending'
+  ) THEN
+    RAISE EXCEPTION 'operator resume lacks its exact transition, attempt or launch';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_handle_claim_insert_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -17755,6 +19358,119 @@ BEGIN
     OR NEW.issued_at <> claim.created_at THEN
     RAISE EXCEPTION 'handle grant does not match its immutable claim';
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_action_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  document jsonb := to_jsonb(NEW);
+  quote handle_quotes%ROWTYPE;
+  decision handle_nationality_decisions%ROWTYPE;
+  policy_kind text;
+  expected_purpose text;
+  expected_resource text;
+BEGIN
+  IF TG_TABLE_NAME='handle_quotes' THEN
+    quote := NEW;
+    expected_purpose := 'quote'; expected_resource := NEW.quote_id;
+  ELSE
+    SELECT * INTO quote FROM handle_quotes WHERE quote_id=NEW.quote_id FOR SHARE;
+    expected_purpose := CASE WHEN TG_TABLE_NAME='handle_reservations' THEN 'reservation' ELSE 'claim' END;
+    expected_resource := document->>(expected_purpose || '_id');
+  END IF;
+  SELECT policy.policy_kind INTO policy_kind
+    FROM community_handle_offering_revisions offering
+    JOIN handle_qualification_policy_revisions policy
+      ON policy.policy_id=offering.qualification_policy_id AND policy.policy_revision=offering.qualification_policy_revision
+    WHERE offering.offering_id=quote.offering_id AND offering.offering_revision=quote.offering_revision;
+  IF policy_kind IS DISTINCT FROM 'curated_nationality_v1' THEN
+    IF document->>'nationality_decision_id' IS NOT NULL OR quote.nationality_qualification_pin IS NOT NULL
+      THEN RAISE EXCEPTION 'unqualified and private handles cannot carry nationality decisions'; END IF;
+    RETURN NEW;
+  END IF;
+  SELECT * INTO decision FROM handle_nationality_decisions WHERE decision_id=NEW.nationality_decision_id FOR SHARE;
+  IF decision.decision_id IS NULL OR decision.outcome<>'pass'
+    OR decision.purpose<>expected_purpose OR decision.resource_id<>expected_resource
+    OR decision.actor_account_id<>NEW.actor_account_id OR decision.offering_id<>quote.offering_id
+    OR decision.offering_revision<>quote.offering_revision OR decision.offering_hash<>quote.offering_hash
+    OR decision.qualification_policy_hash<>quote.eligibility_policy_hash
+    OR NOT EXISTS (SELECT 1 FROM handle_nationality_evidence_uses AS evidence_use WHERE evidence_use.decision_id=decision.decision_id)
+    THEN RAISE EXCEPTION 'handle action requires its own current nationality decision'; END IF;
+  IF expected_purpose='quote' AND (
+    quote.nationality_qualification_pin->>'offering_revision' IS DISTINCT FROM quote.offering_revision::text
+    OR quote.nationality_qualification_pin->>'offering_hash' IS DISTINCT FROM quote.offering_hash
+    OR quote.nationality_qualification_pin->'qualification'->>'policy_id' IS DISTINCT FROM decision.qualification_policy_id
+    OR quote.nationality_qualification_pin->'qualification'->>'policy_revision' IS DISTINCT FROM decision.qualification_policy_revision::text
+    OR quote.nationality_qualification_pin->'qualification'->>'policy_hash' IS DISTINCT FROM decision.qualification_policy_hash
+    OR quote.nationality_qualification_pin->'qualification'->>'requirement_hash' IS DISTINCT FROM decision.requirement_hash
+    OR quote.nationality_qualification_pin->'eligibility'->>'decision' IS DISTINCT FROM 'passed'
+    OR quote.nationality_qualification_pin->'eligibility'->'accepted_provider_ids' IS DISTINCT FROM '["self.pass","zkpassport"]'::jsonb
+    OR quote.nationality_qualification_pin->'eligibility'->>'policy_hash' IS DISTINCT FROM decision.qualification_policy_hash
+    OR quote.nationality_qualification_pin->'eligibility'->>'requirement_hash' IS DISTINCT FROM decision.requirement_hash
+    OR quote.nationality_qualification_pin->'eligibility'->>'selected_provider_id' IS DISTINCT FROM decision.selected_provider_id
+    OR quote.nationality_qualification_pin->'eligibility'->>'selected_provider_binding_hash' IS DISTINCT FROM decision.selected_provider_binding_hash
+    OR quote.nationality_qualification_pin->'eligibility'->'evidence_use_ids' IS DISTINCT FROM to_jsonb(quote.evidence_use_ids)
+  ) THEN RAISE EXCEPTION 'handle nationality quote snapshot differs from its decision'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_decision_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  offering community_handle_offering_revisions%ROWTYPE;
+  policy handle_qualification_policy_revisions%ROWTYPE;
+BEGIN
+  SELECT * INTO offering FROM community_handle_offering_revisions
+    WHERE offering_id=NEW.offering_id AND offering_revision=NEW.offering_revision FOR SHARE;
+  SELECT * INTO policy FROM handle_qualification_policy_revisions
+    WHERE policy_id=offering.qualification_policy_id AND policy_revision=offering.qualification_policy_revision FOR SHARE;
+  IF policy.policy_kind IS DISTINCT FROM 'curated_nationality_v1'
+    OR offering.offering_hash IS DISTINCT FROM NEW.offering_hash
+    OR policy.policy_id IS DISTINCT FROM NEW.qualification_policy_id
+    OR policy.policy_revision IS DISTINCT FROM NEW.qualification_policy_revision
+    OR policy.policy_hash IS DISTINCT FROM NEW.qualification_policy_hash
+    OR policy.nationality_policy->>'requirement_hash' IS DISTINCT FROM NEW.requirement_hash
+    OR (NEW.outcome='pass' AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(policy.nationality_policy->'provider_bindings') binding
+        WHERE binding->>'provider_id'=NEW.selected_provider_id
+    )) THEN RAISE EXCEPTION 'handle nationality decision does not match its offering policy'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_quote_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.result_kind='nationality_required' AND NOT EXISTS (
+    SELECT 1 FROM handle_nationality_qualification_intents intent
+    WHERE intent.qualification_intent_id=NEW.qualification_intent_id
+      AND intent.actor_account_id=NEW.actor_account_id AND intent.owner_persona_id=NEW.owner_persona_id
+      AND intent.offering_id=NEW.offering_id
+  ) THEN RAISE EXCEPTION 'nationality quote action does not match buyer context'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_handle_nationality_use_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  decision handle_nationality_decisions%ROWTYPE;
+BEGIN
+  SELECT * INTO decision FROM handle_nationality_decisions WHERE decision_id=NEW.decision_id FOR SHARE;
+  IF decision.outcome IS DISTINCT FROM 'pass' OR decision.actor_account_id IS DISTINCT FROM NEW.actor_account_id
+    OR NOT EXISTS (SELECT 1 FROM assertions a JOIN evidence_receipts r ON r.evidence_receipt_id=a.evidence_receipt_id
+      WHERE a.assertion_id=NEW.assertion_id AND a.user_id=NEW.actor_account_id
+        AND a.evidence_receipt_id=NEW.evidence_receipt_id AND a.claim_id='nationality.allowed'
+        AND a.assertion_value='{"allowed":true}'::jsonb
+        AND r.provider_id=decision.selected_provider_id)
+    THEN RAISE EXCEPTION 'handle nationality evidence use does not match its decision'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -18651,6 +20367,111 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_media_analysis_snapshot_v3() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  lyrics_analysis JSONB;
+  content_moderation JSONB;
+  provider_evidence JSONB;
+  expected_keys TEXT[];
+BEGIN
+  IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot) AS key)
+       IS DISTINCT FROM ARRAY['acr','analysisRevision','audioRevision','boundReference',
+         'canonicalAudioSha256','contentModeration','coverModeration','embeddedMetadata',
+         'finalizedAudioRef','lyricsAnalysis','lyricsSafety','mediaSafety','operationId',
+         'probeEvidenceRef','version']::TEXT[] THEN
+    RAISE EXCEPTION 'analysis snapshot keys are not exact';
+  END IF;
+
+  lyrics_analysis := NEW.analysis_snapshot->'lyricsAnalysis';
+  content_moderation := NEW.analysis_snapshot->'contentModeration';
+  provider_evidence := content_moderation->'providerEvidence';
+  IF jsonb_typeof(lyrics_analysis) IS DISTINCT FROM 'object'
+     OR jsonb_typeof(content_moderation) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'analysis snapshot nested facts are not objects';
+  END IF;
+
+  IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(content_moderation - 'ratingRuleRevision') AS key)
+       IS DISTINCT FROM ARRAY['communityPolicyRevision','decision','evidenceRef','inputSha256',
+         'matchedCategories','platformPolicyRevision','policyRevision','providerEvidence',
+         'resultingContentRating']::TEXT[]
+     OR (content_moderation ? 'ratingRuleRevision'
+       AND content_moderation->>'ratingRuleRevision' IS DISTINCT FROM 'accepted-adult-signals-v2')
+     OR content_moderation->>'decision' NOT IN ('allow','manual_review','blocked')
+     OR content_moderation->>'resultingContentRating' NOT IN ('general','adult_18')
+     OR COALESCE(btrim(content_moderation->>'inputSha256'), '') = ''
+     OR jsonb_typeof(content_moderation->'matchedCategories') IS DISTINCT FROM 'array'
+     OR COALESCE(btrim(content_moderation->>'policyRevision'), '') = ''
+     OR COALESCE(btrim(content_moderation->>'platformPolicyRevision'), '') = ''
+     OR COALESCE(btrim(content_moderation->>'communityPolicyRevision'), '') = ''
+     OR (content_moderation->'evidenceRef' IS DISTINCT FROM 'null'::jsonb
+       AND jsonb_typeof(content_moderation->'evidenceRef') IS DISTINCT FROM 'string')
+     OR (provider_evidence IS DISTINCT FROM 'null'::jsonb
+       AND jsonb_typeof(provider_evidence) IS DISTINCT FROM 'object') THEN
+    RAISE EXCEPTION 'content moderation snapshot shape is invalid';
+  END IF;
+
+  IF provider_evidence IS DISTINCT FROM 'null'::jsonb
+     AND ((SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(provider_evidence) AS key)
+            IS DISTINCT FROM ARRAY['inputs','providerId','requestedModel','returnedModel']::TEXT[]
+       OR provider_evidence->>'providerId' IS DISTINCT FROM 'openai'
+       OR COALESCE(btrim(provider_evidence->>'requestedModel'), '') = ''
+       OR COALESCE(btrim(provider_evidence->>'returnedModel'), '') = ''
+       OR jsonb_typeof(provider_evidence->'inputs') IS DISTINCT FROM 'array') THEN
+    RAISE EXCEPTION 'content moderation provider evidence shape is invalid';
+  END IF;
+
+  expected_keys := CASE NEW.speech_status
+    WHEN 'ready' THEN ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision',
+      'primaryLanguageBcp47','secondaryLanguageBcp47','status']::TEXT[]
+    WHEN 'unavailable' THEN ARRAY['adapterRevision','evidenceRef','explicitness',
+      'policyRevision','status']::TEXT[]
+    ELSE ARRAY['status']::TEXT[]
+  END;
+  IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(lyrics_analysis) AS key)
+       IS DISTINCT FROM expected_keys
+     OR lyrics_analysis->>'status' IS DISTINCT FROM NEW.speech_status
+     OR NEW.analysis_snapshot->>'version' IS DISTINCT FROM NEW.analysis_version
+     OR NEW.analysis_snapshot->>'operationId' IS DISTINCT FROM NEW.operation_id
+     OR (NEW.analysis_snapshot->>'analysisRevision')::numeric IS DISTINCT FROM NEW.analysis_revision
+     OR (NEW.analysis_snapshot->>'audioRevision')::numeric IS DISTINCT FROM NEW.audio_revision
+     OR NEW.analysis_snapshot->>'canonicalAudioSha256' IS DISTINCT FROM NEW.canonical_audio_sha256
+     OR NEW.analysis_snapshot->>'finalizedAudioRef' IS DISTINCT FROM NEW.finalized_audio_ref
+     OR NEW.analysis_snapshot->>'probeEvidenceRef' IS DISTINCT FROM NEW.probe_evidence_ref
+     OR NEW.analysis_snapshot->>'lyricsSafety' IS DISTINCT FROM NEW.lyrics_safety
+     OR NEW.analysis_snapshot->>'mediaSafety' IS DISTINCT FROM NEW.media_safety
+     OR lyrics_analysis->>'explicitness' IS DISTINCT FROM NEW.explicitness
+     OR lyrics_analysis->>'primaryLanguageBcp47' IS DISTINCT FROM NEW.primary_language_bcp47
+     OR lyrics_analysis->>'secondaryLanguageBcp47' IS DISTINCT FROM NEW.secondary_language_bcp47
+     OR lyrics_analysis->>'evidenceRef' IS DISTINCT FROM NEW.speech_evidence_ref
+     OR lyrics_analysis->>'policyRevision' IS DISTINCT FROM NEW.speech_policy_revision
+     OR lyrics_analysis->>'adapterRevision' IS DISTINCT FROM NEW.speech_adapter_revision
+     OR NEW.analysis_snapshot->'coverModeration'->>'decision' IS DISTINCT FROM NEW.cover_moderation_decision
+     OR NEW.analysis_snapshot->'coverModeration'->>'reason' IS DISTINCT FROM NEW.cover_moderation_reason
+     OR NEW.analysis_snapshot->'coverModeration'->>'providerId' IS DISTINCT FROM NEW.cover_moderation_provider_id
+     OR NEW.analysis_snapshot->'coverModeration'->>'requestedModel' IS DISTINCT FROM NEW.cover_moderation_requested_model
+     OR NEW.analysis_snapshot->'coverModeration'->>'returnedModel' IS DISTINCT FROM NEW.cover_moderation_returned_model
+     OR NEW.analysis_snapshot->'coverModeration'->>'inputSha256' IS DISTINCT FROM NEW.cover_moderation_input_sha256
+     OR NEW.analysis_snapshot->'coverModeration'->'matchedCategories' IS DISTINCT FROM NEW.cover_moderation_matched_categories
+     OR NEW.analysis_snapshot->'coverModeration'->>'evidenceRef' IS DISTINCT FROM NEW.cover_moderation_evidence_ref
+     OR NEW.analysis_snapshot->'coverModeration'->'evidence' IS DISTINCT FROM COALESCE(NEW.cover_moderation_evidence, 'null'::jsonb)
+     OR NEW.analysis_snapshot->'embeddedMetadata'->>'evidenceRef'
+          IS DISTINCT FROM NEW.embedded_metadata_evidence_ref
+     OR NEW.analysis_snapshot->'embeddedMetadata'->>'adapterRevision'
+          IS DISTINCT FROM NEW.embedded_metadata_adapter_revision
+     OR NEW.analysis_snapshot->'embeddedMetadata'->>'trackTitle' IS DISTINCT FROM NEW.embedded_title
+     OR NEW.analysis_snapshot->'embeddedMetadata'->'cover' IS DISTINCT FROM NEW.cover_facts
+     OR NEW.analysis_snapshot->'acr'->>'decision' IS DISTINCT FROM NEW.acr_decision
+     OR NEW.analysis_snapshot->'acr'->>'evidenceRef' IS DISTINCT FROM NEW.acr_evidence_ref
+     OR NEW.analysis_snapshot->'acr'->>'policyRevision' IS DISTINCT FROM NEW.acr_policy_revision
+     OR NEW.analysis_snapshot->'acr'->>'adapterRevision' IS DISTINCT FROM NEW.acr_adapter_revision THEN
+    RAISE EXCEPTION 'analysis snapshot scalars do not match columns';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_media_finalize_event_pair() RETURNS trigger
     LANGUAGE plpgsql
     AS $_$
@@ -18791,9 +20612,38 @@ CREATE FUNCTION validate_media_immutable_object_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE reservation_record media_upload_reservations%ROWTYPE;
+DECLARE master_record media_song_video_masters%ROWTYPE;
+DECLARE submission_record media_post_submissions%ROWTYPE;
 BEGIN
+  IF NEW.reservation_id IS NULL THEN
+    SELECT * INTO master_record
+      FROM media_song_video_masters m
+      JOIN media_song_video_accepted_masters a
+        ON a.master_revision_id = m.master_revision_id AND a.plan_id = m.plan_id
+     WHERE m.verified_object_key = NEW.immutable_ref
+       AND m.plan_submission_id = NEW.submission_id
+     FOR UPDATE OF m;
+    SELECT * INTO submission_record FROM media_post_submissions
+     WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
+       AND submission_id = NEW.submission_id AND operation_id = NEW.operation_id
+     FOR SHARE;
+    IF master_record.master_revision_id IS NULL
+       OR master_record.master_sha256 <> NEW.canonical_sha256
+       OR master_record.master_byte_length <> NEW.size_bytes
+       OR master_record.verified_object_etag IS NULL
+       OR master_record.verified_object_etag <> NEW.etag
+       OR master_record.verified_object_version <> NEW.object_version
+       OR NEW.content_type <> 'video/mp4'
+       OR NEW.identity_kind <> 'content_etag'
+       OR submission_record.submission_id IS NULL
+       OR submission_record.author_persona_id <> NEW.author_persona_id
+    THEN
+      RAISE EXCEPTION 'sealed master facts do not match the accepted master';
+    END IF;
+    RETURN NEW;
+  END IF;
   SELECT * INTO reservation_record FROM media_upload_reservations WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND reservation_id = NEW.reservation_id FOR UPDATE;
-  IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
+  IF reservation_record.reservation_id IS NULL OR reservation_record.submission_id <> NEW.submission_id OR reservation_record.operation_id <> NEW.operation_id OR reservation_record.state <> 'claimed' OR reservation_record.expires_at <= clock_timestamp() OR reservation_record.expected_content_type <> NEW.content_type OR reservation_record.expected_size_bytes <> NEW.size_bytes OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256) OR NEW.identity_kind <> 'upload_version' THEN RAISE EXCEPTION 'sealed media facts do not match reservation expectations'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -19068,6 +20918,45 @@ BEGIN
      OR NEW.action_evidence_ref IS NOT NULL THEN
     RAISE EXCEPTION 'initial moderation projection is not empty';
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_media_operator_reprocess_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_post_submissions s
+    JOIN media_submission_events e ON e.operation_id=s.operation_id
+      AND e.submission_id=s.submission_id AND e.community_id=s.community_id
+      AND e.actor_user_id=s.actor_user_id AND e.event_sequence=s.event_sequence
+    JOIN media_submission_outbox o ON o.outbox_event_id=NEW.outbox_event_id
+      AND o.operation_id=s.operation_id AND o.submission_id=s.submission_id
+      AND o.community_id=s.community_id AND o.actor_user_id=s.actor_user_id
+    WHERE s.operation_id=NEW.operation_id AND s.submission_id=NEW.submission_id
+      AND s.community_id=NEW.community_id AND s.actor_user_id=NEW.actor_user_id
+      AND s.status='processing' AND s.creation_revision=NEW.resulting_creation_revision
+      AND s.workflow_revision=NEW.resulting_workflow_revision
+      AND e.event_kind='workflow_replaced'
+      AND e.creation_revision=s.creation_revision AND e.workflow_revision=s.workflow_revision
+      AND e.audio_revision=s.audio_revision AND e.analysis_revision=s.analysis_revision
+      AND e.decision_revision=s.decision_revision
+      AND e.evidence->>'action'='operator_reprocess'
+      AND NEW.replacement_budget_after=0 AND s.workflow_replacement_sequence=0
+      AND e.evidence->'replacement_budget_before'=to_jsonb(NEW.replacement_budget_before)
+      AND e.evidence->'replacement_budget_after'=to_jsonb(NEW.replacement_budget_after)
+      AND o.payload->'replacement_sequence'='0'::jsonb
+      AND e.evidence->>'idempotency_key'=NEW.idempotency_key
+      AND e.evidence->>'request_hash'=NEW.request_hash
+      AND e.evidence->>'operator_principal_id'=NEW.operator_principal_id
+      AND e.evidence->>'evidence_ref'=NEW.evidence_ref
+      AND o.event_type='workflow_replacement'
+      AND o.creation_revision=s.creation_revision AND o.workflow_revision=s.workflow_revision
+      AND o.audio_revision=s.audio_revision AND o.analysis_revision=s.analysis_revision
+      AND o.lyrics_revision IS NOT DISTINCT FROM s.current_lyrics_revision
+      AND o.workflow_instance_id='media-' || s.operation_id || '-r' || s.workflow_revision::text
+  ) THEN RAISE EXCEPTION 'operator reprocess lacks its exact transition, event or launch'; END IF;
   RETURN NEW;
 END;
 $$;
@@ -19587,6 +21476,7 @@ CREATE FUNCTION validate_media_submission_event_pair() RETURNS trigger
     AS $$
 DECLARE expected_event TEXT; event_record media_submission_events%ROWTYPE; reservation_record media_upload_reservations%ROWTYPE;
 BEGIN
+  IF OLD.media_kind = 'song' AND OLD.status = 'processing_failed' AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions a WHERE a.operation_id=NEW.operation_id AND a.submission_id=NEW.submission_id AND a.expected_creation_revision=OLD.creation_revision AND a.expected_workflow_revision=OLD.workflow_revision AND a.resulting_creation_revision=NEW.creation_revision AND a.resulting_workflow_revision=NEW.workflow_revision AND a.replacement_budget_before=OLD.workflow_replacement_sequence AND a.replacement_budget_after=NEW.workflow_replacement_sequence) THEN RETURN NEW; END IF;
   IF OLD.status = 'processing' AND OLD.phase = 'reserve' AND NEW.status = 'processing' AND NEW.phase = 'awaiting_upload' THEN expected_event := 'media_reservation_issued';
   ELSIF (((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL)) AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.current_terms_revision = NEW.creation_revision) THEN expected_event := 'song_terms_bound';
   ELSIF OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND NEW.audio_revision = OLD.audio_revision + 1 THEN expected_event := 'upload_finalized';
@@ -20674,6 +22564,54 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_nationality_ceremony_attempt_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  state_record nationality_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO state_record
+    FROM nationality_requirement_states
+   WHERE action_kind = NEW.action_kind
+     AND intent_id = NEW.intent_id
+     AND requirement_kind = NEW.requirement_kind
+   FOR UPDATE;
+
+  IF NOT FOUND
+    OR state_record.actor_id <> NEW.actor_id
+    OR state_record.requirement_hash <> NEW.requirement_hash
+    OR NOT EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements_text(state_record.accepted_provider_ids) AS accepted
+          WHERE accepted.value = NEW.provider_id
+       )
+    OR NEW.generation <> state_record.generation + 1
+    OR state_record.status NOT IN ('unmet', 'failed', 'expired', 'pending') THEN
+    RAISE EXCEPTION 'nationality ceremony reservation does not match the current requirement state';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_nationality_requirement_state_providers() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  accepted text[];
+BEGIN
+  SELECT array_agg(value ORDER BY value)::text[]
+    INTO accepted
+    FROM jsonb_array_elements_text(NEW.accepted_provider_ids);
+
+  IF accepted IS DISTINCT FROM ARRAY['self.pass', 'zkpassport']::text[] THEN
+    RAISE EXCEPTION 'nationality requirements accept exactly Self and ZKPassport';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_optional_route_v2_committed_community() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -21120,6 +23058,14 @@ BEGIN
 END;
 $$;
 
+CREATE TABLE account_age_verification_current (
+    account_id text NOT NULL,
+    intent_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_age_verification_current_check CHECK ((updated_at >= created_at))
+);
+
 CREATE TABLE account_aliases (
     source_user_id text NOT NULL,
     canonical_user_id text NOT NULL,
@@ -21283,6 +23229,61 @@ CREATE TABLE activity_registry (
     CONSTRAINT activity_registry_state_shape CHECK ((((status = 'active'::text) AND (producer_version IS NOT NULL) AND (current_policy_version_id IS NOT NULL)) OR ((status = 'reserved'::text) AND (producer_version IS NULL) AND (current_policy_version_id IS NULL)))),
     CONSTRAINT activity_registry_status_check CHECK ((status = ANY (ARRAY['active'::text, 'reserved'::text]))),
     CONSTRAINT activity_registry_time_order CHECK ((updated_at >= created_at))
+);
+
+CREATE TABLE age_verification_ceremony_attempts (
+    ceremony_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    action_kind text NOT NULL,
+    intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    generation bigint NOT NULL,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    reservation_request_hash text NOT NULL,
+    reservation_request jsonb NOT NULL,
+    reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT age_verification_ceremony_attempts_action_kind_check CHECK ((action_kind = ANY (ARRAY['adult_view'::text]))),
+    CONSTRAINT age_verification_ceremony_attempts_generation_check CHECK ((generation > 0)),
+    CONSTRAINT age_verification_ceremony_attempts_hash_shape_check CHECK (((requirement_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (reservation_request_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT age_verification_ceremony_attempts_identifiers_not_blank CHECK (((btrim(ceremony_intent_id) <> ''::text) AND (ceremony_intent_id = btrim(ceremony_intent_id)) AND (btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
+    CONSTRAINT age_verification_ceremony_attempts_provider_configuration_kind_ CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT age_verification_ceremony_attempts_requirement_kind_check CHECK ((requirement_kind = 'age_18'::text)),
+    CONSTRAINT age_verification_ceremony_attempts_reservation_request_check CHECK ((jsonb_typeof(reservation_request) = 'object'::text))
+);
+
+CREATE TABLE age_verification_requirement_states (
+    action_kind text NOT NULL,
+    intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    actor_id text NOT NULL,
+    status text NOT NULL,
+    requirement_hash text NOT NULL,
+    accepted_provider_ids jsonb NOT NULL,
+    generation bigint DEFAULT 0 NOT NULL,
+    current_ceremony_intent_id text,
+    current_provider_id text,
+    current_provider_binding_hash text,
+    current_provider_configuration_kind text,
+    current_provider_configuration_ref text,
+    current_provider_configuration_version text,
+    satisfied_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT age_verification_requirement_states_accepted_providers_shape CHECK (((jsonb_typeof(accepted_provider_ids) = 'array'::text) AND (jsonb_array_length(accepted_provider_ids) = 2))),
+    CONSTRAINT age_verification_requirement_states_action_kind_check CHECK ((action_kind = ANY (ARRAY['adult_view'::text]))),
+    CONSTRAINT age_verification_requirement_states_generation_check CHECK ((generation >= 0)),
+    CONSTRAINT age_verification_requirement_states_hash_shape_check CHECK (((requirement_hash ~ '^[0-9a-f]{64}$'::text) AND ((current_provider_binding_hash IS NULL) OR (current_provider_binding_hash ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT age_verification_requirement_states_progress_shape CHECK ((((status = 'unmet'::text) AND (generation = 0) AND (current_ceremony_intent_id IS NULL) AND (current_provider_id IS NULL) AND (current_provider_binding_hash IS NULL) AND (current_provider_configuration_kind IS NULL) AND (current_provider_configuration_ref IS NULL) AND (current_provider_configuration_version IS NULL) AND (satisfied_at IS NULL)) OR ((status = ANY (ARRAY['pending'::text, 'failed'::text, 'expired'::text])) AND (generation > 0) AND (btrim(current_ceremony_intent_id) <> ''::text) AND (current_ceremony_intent_id = btrim(current_ceremony_intent_id)) AND (btrim(current_provider_id) <> ''::text) AND (current_provider_binding_hash IS NOT NULL) AND (current_provider_configuration_kind IS NOT NULL) AND (current_provider_configuration_ref IS NOT NULL) AND (current_provider_configuration_version IS NOT NULL) AND (satisfied_at IS NULL)) OR ((status = 'satisfied'::text) AND (generation > 0) AND (btrim(current_ceremony_intent_id) <> ''::text) AND (current_provider_id IS NOT NULL) AND (satisfied_at IS NOT NULL)))),
+    CONSTRAINT age_verification_requirement_states_requirement_kind_check CHECK ((requirement_kind = 'age_18'::text)),
+    CONSTRAINT age_verification_requirement_states_status_check CHECK ((status = ANY (ARRAY['unmet'::text, 'pending'::text, 'failed'::text, 'expired'::text, 'satisfied'::text]))),
+    CONSTRAINT age_verification_requirement_states_time_order CHECK ((updated_at >= created_at))
 );
 
 CREATE TABLE assertion_bindings (
@@ -21925,7 +23926,7 @@ CREATE TABLE community_handle_offering_revisions (
     CONSTRAINT community_handle_offering_revisions_quote_ttl_seconds_check CHECK (((quote_ttl_seconds >= 30) AND (quote_ttl_seconds <= 900))),
     CONSTRAINT community_handle_offering_revisions_reserved_labels_hash_check CHECK ((reserved_labels_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_handle_offering_revisions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'retired'::text]))),
-    CONSTRAINT community_handle_offering_supported_shape CHECK (((family = 'hns'::text) AND (namespace_root <> 'pirate'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (atomic_amount = (0)::numeric) AND (((label_scope_kind = 'label_rule_v2'::text) AND (allocation_kind = 'first_come_v1'::text) AND (qualification_policy_id = 'none_v1'::text) AND ((max_active_grants_per_account IS NULL) OR ((max_active_grants_per_account >= 1) AND (max_active_grants_per_account <= '9007199254740991'::bigint)))) OR ((label_scope_kind = 'exact_label_v2'::text) AND (allocation_kind = 'direct_grant_v1'::text) AND (qualification_policy_id <> 'none_v1'::text) AND (max_active_grants_per_account IS NULL)))))
+    CONSTRAINT community_handle_offering_supported_shape CHECK (((family = 'hns'::text) AND (namespace_root <> 'pirate'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (atomic_amount = (0)::numeric) AND (((label_scope_kind = 'label_rule_v2'::text) AND (allocation_kind = 'first_come_v1'::text) AND ((max_active_grants_per_account IS NULL) OR ((max_active_grants_per_account >= 1) AND (max_active_grants_per_account <= '9007199254740991'::bigint)))) OR ((label_scope_kind = 'exact_label_v2'::text) AND (allocation_kind = 'direct_grant_v1'::text) AND (qualification_policy_id <> 'none_v1'::text) AND (max_active_grants_per_account IS NULL)))))
 );
 
 CREATE TABLE community_handle_sale_namespace_activation_actions (
@@ -23451,6 +25452,465 @@ CREATE TABLE content_publication_outbox (
     CONSTRAINT content_publication_outbox_time_shape CHECK ((((state = 'published'::text) AND (published_at IS NOT NULL)) OR ((state = ANY (ARRAY['pending'::text, 'failed'::text])) AND (published_at IS NULL))))
 );
 
+CREATE TABLE media_analysis_evidence (
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    analysis_version text NOT NULL,
+    audio_revision bigint NOT NULL,
+    analysis_revision bigint NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    finalized_audio_ref text NOT NULL,
+    probe_evidence_ref text NOT NULL,
+    embedded_metadata_evidence_ref text NOT NULL,
+    embedded_metadata_adapter_revision text NOT NULL,
+    embedded_title text,
+    embedded_title_provenance text NOT NULL,
+    cover_status text NOT NULL,
+    cover_artifact_ref text,
+    cover_artifact_sha256 text,
+    cover_media_type text,
+    cover_width integer,
+    cover_height integer,
+    cover_normalization_revision text,
+    cover_safety_policy_revision text,
+    cover_facts jsonb NOT NULL,
+    speech_status text NOT NULL,
+    transcript_artifact_ref text,
+    transcript_sha256 text,
+    explicitness text,
+    primary_language_bcp47 text,
+    secondary_language_bcp47 text,
+    speech_evidence_ref text,
+    speech_policy_revision text,
+    speech_adapter_revision text,
+    acr_decision text NOT NULL,
+    acr_evidence_ref text NOT NULL,
+    acr_policy_revision text NOT NULL,
+    acr_adapter_revision text NOT NULL,
+    media_safety text NOT NULL,
+    lyrics_safety text NOT NULL,
+    bound_reference_asset_id text,
+    bound_reference_audio_revision bigint,
+    bound_reference_analysis_revision bigint,
+    bound_reference_audio_sha256 text,
+    bound_reference_upstream_share_bps integer,
+    analysis_snapshot jsonb NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
+    transcript_revision bigint,
+    lyrics_revision bigint,
+    material_disagreement boolean DEFAULT false NOT NULL,
+    cover_moderation_decision text NOT NULL,
+    cover_moderation_reason text NOT NULL,
+    cover_moderation_provider_id text,
+    cover_moderation_requested_model text,
+    cover_moderation_returned_model text,
+    cover_moderation_input_sha256 text,
+    cover_moderation_matched_categories jsonb NOT NULL,
+    cover_moderation_evidence_ref text,
+    cover_moderation_evidence jsonb,
+    CONSTRAINT media_analysis_cover_moderation_categories_check CHECK ((jsonb_typeof(cover_moderation_matched_categories) = 'array'::text)),
+    CONSTRAINT media_analysis_cover_moderation_decision_check CHECK ((cover_moderation_decision = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'withheld'::text]))),
+    CONSTRAINT media_analysis_cover_moderation_evidence_check CHECK (((cover_moderation_evidence IS NULL) OR (jsonb_typeof(cover_moderation_evidence) = 'object'::text))),
+    CONSTRAINT media_analysis_cover_moderation_hash_check CHECK (((cover_moderation_input_sha256 IS NULL) OR (cover_moderation_input_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_analysis_cover_moderation_model_check CHECK ((((cover_moderation_provider_id IS NULL) AND (cover_moderation_requested_model IS NULL) AND (cover_moderation_returned_model IS NULL)) OR ((cover_moderation_provider_id = 'openai'::text) AND (cover_moderation_requested_model = 'omni-moderation-2024-09-26'::text) AND ((cover_moderation_returned_model IS NULL) OR (cover_moderation_returned_model = cover_moderation_requested_model))))),
+    CONSTRAINT media_analysis_cover_moderation_provider_check CHECK (((cover_moderation_provider_id IS NULL) OR (cover_moderation_provider_id = 'openai'::text))),
+    CONSTRAINT media_analysis_cover_moderation_reason_check CHECK ((cover_moderation_reason = ANY (ARRAY['not_embedded'::text, 'clean'::text, 'matched_category'::text, 'provider_unavailable'::text, 'invalid_image'::text, 'limits_exceeded'::text]))),
+    CONSTRAINT media_analysis_cover_moderation_shape CHECK ((((cover_moderation_decision = 'not_applicable'::text) AND (cover_moderation_reason = 'not_embedded'::text) AND (cover_status = 'absent'::text)) OR ((cover_moderation_decision = 'allow'::text) AND (cover_moderation_reason = 'clean'::text) AND (cover_status = 'ready'::text) AND (media_safety = 'allow'::text) AND (cover_moderation_provider_id = 'openai'::text) AND (cover_moderation_returned_model = cover_moderation_requested_model) AND (cover_moderation_input_sha256 = cover_artifact_sha256) AND (cover_moderation_matched_categories = '[]'::jsonb) AND (cover_moderation_evidence_ref IS NOT NULL) AND (cover_moderation_evidence IS NOT NULL)) OR ((cover_moderation_decision = 'withheld'::text) AND (cover_status <> 'absent'::text)))),
+    CONSTRAINT media_analysis_cover_shape CHECK ((((cover_status = 'ready'::text) AND (cover_artifact_ref IS NOT NULL) AND (cover_artifact_sha256 IS NOT NULL) AND (cover_media_type = ANY (ARRAY['image/jpeg'::text, 'image/png'::text, 'image/webp'::text])) AND (cover_width IS NOT NULL) AND (cover_height IS NOT NULL) AND (cover_width > 0) AND (cover_height > 0) AND (btrim(cover_normalization_revision) <> ''::text) AND (btrim(cover_safety_policy_revision) <> ''::text) AND (NOT (cover_facts ? 'reasonCode'::text))) OR ((cover_status = 'absent'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = 'not_embedded'::text) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)) OR ((cover_status = 'rejected'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = ANY (ARRAY['invalid'::text, 'unsafe'::text, 'limits_exceeded'::text])) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)))),
+    CONSTRAINT media_analysis_evidence_acr_adapter_revision_check CHECK ((btrim(acr_adapter_revision) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_acr_decision_check CHECK ((acr_decision = ANY (ARRAY['allow'::text, 'requires_reference'::text, 'inconclusive'::text, 'skipped'::text]))),
+    CONSTRAINT media_analysis_evidence_acr_evidence_ref_check CHECK ((btrim(acr_evidence_ref) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_acr_policy_revision_check CHECK ((btrim(acr_policy_revision) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT media_analysis_evidence_analysis_snapshot_check CHECK ((jsonb_typeof(analysis_snapshot) = 'object'::text)),
+    CONSTRAINT media_analysis_evidence_analysis_version_check CHECK ((analysis_version = 'song-trusted-analysis-v1'::text)),
+    CONSTRAINT media_analysis_evidence_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT media_analysis_evidence_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_analysis_evidence_cover_artifact_sha256_check CHECK (((cover_artifact_sha256 IS NULL) OR (cover_artifact_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_analysis_evidence_cover_facts_check CHECK ((jsonb_typeof(cover_facts) = 'object'::text)),
+    CONSTRAINT media_analysis_evidence_cover_status_check CHECK ((cover_status = ANY (ARRAY['ready'::text, 'absent'::text, 'rejected'::text]))),
+    CONSTRAINT media_analysis_evidence_embedded_metadata_adapter_revisio_check CHECK ((btrim(embedded_metadata_adapter_revision) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_embedded_metadata_evidence_ref_check CHECK ((btrim(embedded_metadata_evidence_ref) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_embedded_title_provenance_check CHECK ((embedded_title_provenance = ANY (ARRAY['embedded'::text, 'absent'::text]))),
+    CONSTRAINT media_analysis_evidence_explicitness_check CHECK (((explicitness IS NULL) OR (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])))),
+    CONSTRAINT media_analysis_evidence_lyrics_safety_check CHECK ((lyrics_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'review_required'::text, 'blocked'::text]))),
+    CONSTRAINT media_analysis_evidence_media_safety_check CHECK ((media_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'cover_withheld'::text, 'visual_provider_unavailable'::text, 'draft'::text, 'review_required'::text, 'blocked'::text]))),
+    CONSTRAINT media_analysis_evidence_probe_evidence_ref_check CHECK ((btrim(probe_evidence_ref) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_speech_adapter_revision_check CHECK ((btrim(speech_adapter_revision) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_speech_evidence_ref_check CHECK ((btrim(speech_evidence_ref) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_speech_policy_revision_check CHECK ((btrim(speech_policy_revision) <> ''::text)),
+    CONSTRAINT media_analysis_evidence_speech_status_check CHECK ((speech_status = ANY (ARRAY['ready'::text, 'not_applicable'::text, 'unavailable'::text]))),
+    CONSTRAINT media_analysis_evidence_transcript_sha256_check CHECK (((transcript_sha256 IS NULL) OR (transcript_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_analysis_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 = canonical_audio_sha256) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
+    CONSTRAINT media_analysis_speech_shape CHECK ((((speech_status = 'ready'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (transcript_revision IS NULL) AND (lyrics_revision > 0) AND (material_disagreement = false) AND (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])) AND (primary_language_bcp47 IS NOT NULL) AND (char_length(primary_language_bcp47) <= 35) AND (primary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text) AND ((secondary_language_bcp47 IS NULL) OR ((char_length(secondary_language_bcp47) <= 35) AND (secondary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text) AND (secondary_language_bcp47 IS DISTINCT FROM primary_language_bcp47))) AND (speech_evidence_ref IS NOT NULL) AND (speech_policy_revision IS NOT NULL) AND (speech_adapter_revision IS NOT NULL) AND (lyrics_safety = ANY (ARRAY['allow'::text, 'review_required'::text, 'blocked'::text]))) OR ((speech_status = 'not_applicable'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (transcript_revision IS NULL) AND (lyrics_revision IS NULL) AND (material_disagreement = false) AND (explicitness IS NULL) AND (primary_language_bcp47 IS NULL) AND (secondary_language_bcp47 IS NULL) AND (speech_evidence_ref IS NULL) AND (speech_policy_revision IS NULL) AND (speech_adapter_revision IS NULL) AND (lyrics_safety = 'not_applicable'::text)) OR ((speech_status = 'unavailable'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (transcript_revision IS NULL) AND (lyrics_revision > 0) AND (material_disagreement = false) AND (explicitness = 'uncertain'::text) AND (primary_language_bcp47 IS NULL) AND (secondary_language_bcp47 IS NULL) AND (speech_evidence_ref IS NOT NULL) AND (speech_policy_revision IS NOT NULL) AND (speech_adapter_revision IS NOT NULL) AND (lyrics_safety = 'review_required'::text)))),
+    CONSTRAINT media_analysis_title_shape CHECK ((((embedded_title_provenance = 'embedded'::text) AND (embedded_title IS NOT NULL) AND (btrim(embedded_title) <> ''::text) AND (char_length(embedded_title) <= 200)) OR ((embedded_title_provenance = 'absent'::text) AND (embedded_title IS NULL))))
+);
+
+CREATE TABLE media_publication_projections (
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    post_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    audio_revision bigint NOT NULL,
+    analysis_revision bigint NOT NULL,
+    decision_revision bigint NOT NULL,
+    canonical_audio_sha256 text,
+    title text,
+    audio_asset_ref text,
+    cover_artifact_ref text,
+    language_status text NOT NULL,
+    primary_language_bcp47 text,
+    secondary_language_bcp47 text,
+    lyrics_explicitness text NOT NULL,
+    analysis_badges jsonb DEFAULT '[]'::jsonb NOT NULL,
+    alignment text DEFAULT 'pending'::text NOT NULL,
+    data_registration text DEFAULT 'pending'::text NOT NULL,
+    locked_delivery text DEFAULT 'not_required'::text NOT NULL,
+    projected_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
+    lyrics_status text DEFAULT 'no_lyrics'::text NOT NULL,
+    lyrics_revision bigint,
+    lyrics_text text,
+    visibility text DEFAULT 'public'::text NOT NULL,
+    content_rating text DEFAULT 'general'::text NOT NULL,
+    media_kind text DEFAULT 'song'::text NOT NULL,
+    video_revision bigint DEFAULT 0 NOT NULL,
+    caption text,
+    video_asset_ref text,
+    poster_artifact_ref text,
+    original_sound_id text,
+    canonical_video_sha256 text,
+    song_video_plan_id text,
+    song_video_master_revision_id text,
+    CONSTRAINT media_publication_lyrics_shape CHECK ((((lyrics_status = 'ready'::text) AND (lyrics_revision > 0) AND (lyrics_text IS NOT NULL)) OR ((lyrics_status = 'no_lyrics'::text) AND (lyrics_revision IS NULL) AND (lyrics_text IS NULL)))),
+    CONSTRAINT media_publication_projection_track_shape CHECK ((((media_kind = 'song'::text) AND (video_revision = 0) AND (caption IS NULL) AND (video_asset_ref IS NULL) AND (poster_artifact_ref IS NULL) AND (original_sound_id IS NULL) AND (canonical_video_sha256 IS NULL) AND (song_video_plan_id IS NULL) AND (song_video_master_revision_id IS NULL) AND (title IS NOT NULL) AND (audio_asset_ref IS NOT NULL) AND (canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)) OR ((media_kind = 'video'::text) AND (audio_revision = 0) AND (video_revision > 0) AND (title IS NULL) AND (audio_asset_ref IS NULL) AND (canonical_audio_sha256 IS NULL) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (video_asset_ref IS NOT NULL) AND (btrim(video_asset_ref) <> ''::text) AND (poster_artifact_ref IS NOT NULL) AND (btrim(poster_artifact_ref) <> ''::text) AND (canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text) AND (((original_sound_id IS NOT NULL) AND (btrim(original_sound_id) <> ''::text) AND (song_video_plan_id IS NULL) AND (song_video_master_revision_id IS NULL)) OR ((original_sound_id IS NULL) AND (song_video_plan_id IS NOT NULL) AND (song_video_master_revision_id IS NOT NULL)))))),
+    CONSTRAINT media_publication_projections_alignment_check CHECK ((alignment = ANY (ARRAY['not_applicable'::text, 'pending'::text, 'ready'::text, 'unavailable'::text]))),
+    CONSTRAINT media_publication_projections_analysis_badges_check CHECK ((analysis_badges = ANY (ARRAY['[]'::jsonb, '["reference_bound"]'::jsonb]))),
+    CONSTRAINT media_publication_projections_audio_asset_ref_check CHECK ((btrim(audio_asset_ref) <> ''::text)),
+    CONSTRAINT media_publication_projections_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_publication_projections_content_rating_check CHECK ((content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
+    CONSTRAINT media_publication_projections_data_registration_check CHECK ((data_registration = ANY (ARRAY['pending'::text, 'registered'::text, 'failed'::text]))),
+    CONSTRAINT media_publication_projections_language_status_check CHECK ((language_status = ANY (ARRAY['ready'::text, 'not_applicable'::text, 'unavailable'::text]))),
+    CONSTRAINT media_publication_projections_locked_delivery_check CHECK ((locked_delivery = ANY (ARRAY['not_required'::text, 'preparing'::text, 'ready'::text, 'failed'::text]))),
+    CONSTRAINT media_publication_projections_lyrics_explicitness_check CHECK ((lyrics_explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'not_applicable'::text, 'uncertain'::text, 'unavailable'::text]))),
+    CONSTRAINT media_publication_projections_lyrics_status_check CHECK ((lyrics_status = ANY (ARRAY['ready'::text, 'no_lyrics'::text]))),
+    CONSTRAINT media_publication_projections_title_check CHECK ((btrim(title) <> ''::text)),
+    CONSTRAINT media_publication_projections_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
+);
+
+CREATE TABLE media_video_analyses (
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    analysis_revision bigint NOT NULL,
+    canonical_video_sha256 text NOT NULL,
+    analysis_snapshot jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_analyses_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT media_video_analyses_analysis_snapshot_check CHECK ((jsonb_typeof(analysis_snapshot) = 'object'::text)),
+    CONSTRAINT media_video_analyses_canonical_video_sha256_check CHECK ((canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE media_video_safety_evidence (
+    submission_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    creation_revision bigint NOT NULL,
+    request_id text NOT NULL,
+    input_sha256 text NOT NULL,
+    evidence_ref text NOT NULL,
+    evidence_snapshot jsonb NOT NULL,
+    platform_held boolean NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_safety_evidence_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_video_safety_evidence_evidence_ref_check CHECK ((evidence_ref ~ '^evidence_[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_safety_evidence_evidence_snapshot_check CHECK (((jsonb_typeof(evidence_snapshot) = 'object'::text) AND (octet_length((evidence_snapshot)::text) <= 65536))),
+    CONSTRAINT media_video_safety_evidence_input_sha256_check CHECK ((input_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_safety_evidence_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT media_video_safety_evidence_video_revision_check CHECK ((video_revision > 0)),
+    CONSTRAINT video_safety_evidence_identity CHECK (COALESCE((((evidence_snapshot ->> 'requestId'::text) = request_id) AND ((evidence_snapshot ->> 'inputDigest'::text) = input_sha256) AND (((evidence_snapshot -> 'fact'::text) ->> 'evidenceRef'::text) = evidence_ref) AND (((evidence_snapshot ->> 'platformHeld'::text))::boolean = platform_held)), false)),
+    CONSTRAINT video_safety_hold_blocked CHECK (((NOT platform_held) OR (((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = 'blocked'::text) OR (((evidence_snapshot -> 'fact'::text) ->> 'captionSafety'::text) = 'blocked'::text))),
+    CONSTRAINT video_safety_no_visual_allow CHECK (COALESCE(((((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = ANY (ARRAY['review_required'::text, 'blocked'::text])) AND (((evidence_snapshot -> 'fact'::text) -> 'minorSafetyEvidenceRef'::text) = 'null'::jsonb)), false))
+);
+
+CREATE TABLE media_video_song_references (
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    actor_account_id text NOT NULL,
+    post_id text NOT NULL,
+    relationship text DEFAULT 'references_song'::text NOT NULL,
+    song_community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    plan_id text NOT NULL,
+    master_revision_id text NOT NULL,
+    policy_transition text DEFAULT 'publication_committed'::text NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    derivative_video text NOT NULL,
+    policy_permitted boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_song_references_audio_revision_check CHECK ((audio_revision >= 1)),
+    CONSTRAINT media_video_song_references_created_at_check CHECK (isfinite(created_at)),
+    CONSTRAINT media_video_song_references_creation_revision_check CHECK ((creation_revision >= 1)),
+    CONSTRAINT media_video_song_references_derivative_video_check CHECK ((derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text]))),
+    CONSTRAINT media_video_song_references_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_song_references_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
+    CONSTRAINT media_video_song_references_policy_permitted_check CHECK (policy_permitted),
+    CONSTRAINT media_video_song_references_policy_transition_check CHECK ((policy_transition = 'publication_committed'::text)),
+    CONSTRAINT media_video_song_references_post_id_check CHECK ((btrim(post_id) <> ''::text)),
+    CONSTRAINT media_video_song_references_relationship_check CHECK ((relationship = 'references_song'::text))
+);
+
+CREATE TABLE posts (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    author_user_id text,
+    post_type text DEFAULT 'text'::text NOT NULL,
+    status text DEFAULT 'published'::text NOT NULL,
+    visibility text DEFAULT 'public'::text NOT NULL,
+    title text,
+    body text,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    idempotency_key text DEFAULT ''::text NOT NULL,
+    idempotency_body_hash text,
+    comments_locked boolean DEFAULT false NOT NULL,
+    comment_count integer DEFAULT 0 NOT NULL,
+    upvote_count integer DEFAULT 0 NOT NULL,
+    downvote_count integer DEFAULT 0 NOT NULL,
+    author_persona_id text,
+    author_declared_rating text,
+    content_rating text,
+    CONSTRAINT posts_author_persona_shape CHECK ((((author_user_id IS NULL) AND (author_persona_id IS NULL)) OR ((author_user_id IS NOT NULL) AND (author_persona_id IS NOT NULL)))),
+    CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
+    CONSTRAINT posts_downvote_count_nonnegative CHECK ((downvote_count >= 0)),
+    CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
+    CONSTRAINT posts_rated_content_shape CHECK ((((post_type = ANY (ARRAY['text'::text, 'song'::text, 'video'::text])) AND (author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND ((content_rating = 'adult_18'::text) OR (author_declared_rating = 'general'::text))) OR ((post_type <> ALL (ARRAY['text'::text, 'song'::text, 'video'::text])) AND (author_declared_rating IS NULL) AND (content_rating IS NULL)))),
+    CONSTRAINT posts_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'published'::text, 'failed'::text, 'hidden'::text, 'removed'::text, 'deleted'::text]))),
+    CONSTRAINT posts_upvote_count_nonnegative CHECK ((upvote_count >= 0)),
+    CONSTRAINT posts_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
+);
+
+CREATE VIEW retained_comment_rating_base_v1 AS
+SELECT
+    NULL::text AS community_id,
+    NULL::text AS comment_id,
+    NULL::text AS post_id,
+    NULL::text AS parent_comment_id,
+    NULL::integer AS depth,
+    NULL::text AS outcome,
+    NULL::text AS source_hash;
+
+CREATE VIEW retained_post_rating_base_v1 AS
+SELECT
+    NULL::text AS community_id,
+    NULL::text AS post_id,
+    NULL::text AS post_type,
+    NULL::text AS outcome,
+    NULL::text AS source_hash;
+
+CREATE VIEW retained_post_rating_assessment_v1 AS
+ SELECT b.community_id,
+    b.post_id,
+        CASE
+            WHEN ((b.outcome = 'held'::text) OR ((s.video_intent = 'song_reference'::text) AND ((parent.post_id IS NULL) OR (parent.outcome = 'held'::text)))) THEN 'held'::text
+            WHEN ((b.outcome = 'adult_18'::text) OR (parent.outcome = 'adult_18'::text)) THEN 'adult_18'::text
+            ELSE 'general'::text
+        END AS outcome,
+    encode(sha256(convert_to((jsonb_build_array(b.source_hash, b.outcome, parent.source_hash, parent.outcome))::text, 'UTF8'::name)), 'hex'::text) AS source_hash
+   FROM ((((retained_post_rating_base_v1 b
+     LEFT JOIN media_publication_projections p ON (((p.community_id = b.community_id) AND (p.post_id = b.post_id))))
+     LEFT JOIN media_post_submissions s ON ((s.submission_id = p.submission_id)))
+     LEFT JOIN media_video_song_references r ON (((r.submission_id = s.submission_id) AND (r.post_id = b.post_id))))
+     LEFT JOIN retained_post_rating_base_v1 parent ON (((parent.community_id = r.song_community_id) AND (parent.post_id = r.song_post_id))));
+
+CREATE VIEW retained_comment_rating_assessment_v1 AS
+ WITH RECURSIVE ancestry AS (
+         SELECT b_1.community_id,
+            b_1.comment_id,
+            b_1.depth,
+                CASE
+                    WHEN ((b_1.outcome = 'held'::text) OR (p.outcome IS NULL) OR (p.outcome = 'held'::text)) THEN 'held'::text
+                    WHEN ((b_1.outcome = 'adult_18'::text) OR (p.outcome = 'adult_18'::text)) THEN 'adult_18'::text
+                    ELSE 'general'::text
+                END AS outcome,
+            encode(sha256(convert_to((jsonb_build_array(b_1.source_hash, b_1.outcome, p.source_hash, p.outcome))::text, 'UTF8'::name)), 'hex'::text) AS source_hash
+           FROM (retained_comment_rating_base_v1 b_1
+             LEFT JOIN retained_post_rating_assessment_v1 p ON (((p.community_id = b_1.community_id) AND (p.post_id = b_1.post_id))))
+          WHERE (b_1.parent_comment_id IS NULL)
+        UNION ALL
+         SELECT b_1.community_id,
+            b_1.comment_id,
+            b_1.depth,
+                CASE
+                    WHEN ((b_1.outcome = 'held'::text) OR (p.outcome = 'held'::text)) THEN 'held'::text
+                    WHEN ((b_1.outcome = 'adult_18'::text) OR (p.outcome = 'adult_18'::text)) THEN 'adult_18'::text
+                    ELSE 'general'::text
+                END AS "case",
+            encode(sha256(convert_to((jsonb_build_array(b_1.source_hash, b_1.outcome, p.source_hash, p.outcome))::text, 'UTF8'::name)), 'hex'::text) AS encode
+           FROM (retained_comment_rating_base_v1 b_1
+             JOIN ancestry p ON (((p.community_id = b_1.community_id) AND (p.comment_id = b_1.parent_comment_id))))
+        )
+ SELECT b.community_id,
+    b.comment_id,
+    b.depth,
+    COALESCE(a.outcome, 'held'::text) AS outcome,
+    COALESCE(a.source_hash, b.source_hash) AS source_hash
+   FROM (retained_comment_rating_base_v1 b
+     LEFT JOIN ancestry a ON (((a.community_id = b.community_id) AND (a.comment_id = b.comment_id))));
+
+CREATE TABLE text_moderation_evidence (
+    evidence_ref text NOT NULL,
+    provider_id text NOT NULL,
+    requested_model_identifier text NOT NULL,
+    response_model_identifier text,
+    outcome text NOT NULL,
+    normalized_categories jsonb DEFAULT '{}'::jsonb NOT NULL,
+    normalized_scores jsonb DEFAULT '{}'::jsonb NOT NULL,
+    response_sha256 text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    applied_input_types jsonb DEFAULT '{}'::jsonb NOT NULL,
+    input_sha256 text,
+    input_hashes jsonb DEFAULT '[]'::jsonb NOT NULL,
+    evidence_hash text,
+    community_id text,
+    policy_revision_id text,
+    policy_hash text,
+    platform_policy_revision_id text,
+    platform_policy_hash text,
+    community_policy_revision_id text,
+    community_policy_hash text,
+    rating_rule_revision text,
+    CONSTRAINT text_moderation_evidence_applied_types_object CHECK ((jsonb_typeof(applied_input_types) = 'object'::text)),
+    CONSTRAINT text_moderation_evidence_categories_object CHECK ((jsonb_typeof(normalized_categories) = 'object'::text)),
+    CONSTRAINT text_moderation_evidence_community_policy_hash_check CHECK (((community_policy_hash IS NULL) OR (community_policy_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_evidence_hash_check CHECK (((evidence_hash IS NULL) OR (evidence_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(requested_model_identifier) <> ''::text) AND (requested_model_identifier = btrim(requested_model_identifier)) AND ((response_model_identifier IS NULL) OR ((btrim(response_model_identifier) <> ''::text) AND (response_model_identifier = btrim(response_model_identifier)))))),
+    CONSTRAINT text_moderation_evidence_input_hashes_array CHECK ((jsonb_typeof(input_hashes) = 'array'::text)),
+    CONSTRAINT text_moderation_evidence_input_sha256_check CHECK (((input_sha256 IS NULL) OR (input_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_outcome_check CHECK ((outcome = ANY (ARRAY['evaluated'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]))),
+    CONSTRAINT text_moderation_evidence_platform_policy_hash_check CHECK (((platform_policy_hash IS NULL) OR (platform_policy_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_policy_hash_check CHECK (((policy_hash IS NULL) OR (policy_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_rating_rule_revision_check CHECK (((rating_rule_revision IS NULL) OR (rating_rule_revision = 'accepted-adult-signals-v2'::text))),
+    CONSTRAINT text_moderation_evidence_response_sha256_check CHECK (((response_sha256 IS NULL) OR (response_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_scores_object CHECK ((jsonb_typeof(normalized_scores) = 'object'::text)),
+    CONSTRAINT text_moderation_evidence_v2_shape CHECK ((num_nonnulls(input_sha256, evidence_hash, community_id, policy_revision_id, policy_hash, platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 9])))
+);
+
+CREATE VIEW retained_content_rating_sources_v1 AS
+ SELECT 'text'::text AS source_kind,
+    s.community_id,
+    s.submission_id AS source_id,
+    s.published_post_id AS post_id,
+    s.published_comment_id AS comment_id,
+    retained_categories_rating_v1(s.matched_categories, ((e.outcome = 'evaluated'::text) AND (e.input_sha256 = s.input_sha256) AND (e.community_id = s.community_id) AND (e.evidence_hash ~ '^[0-9a-f]{64}$'::text) AND (e.policy_hash = s.policy_hash) AND (e.platform_policy_hash = s.platform_policy_hash) AND (e.community_policy_hash = s.community_policy_hash)), s.author_declared_rating) AS outcome,
+    encode(sha256(convert_to((jsonb_build_array(s.request_hash, s.input_sha256, s.evidence_ref, s.published_post_id, s.published_comment_id, s.matched_categories, s.author_declared_rating, to_jsonb(e.*)))::text, 'UTF8'::name)), 'hex'::text) AS source_hash
+   FROM (text_content_submissions s
+     LEFT JOIN text_moderation_evidence e ON ((e.evidence_ref = s.evidence_ref)))
+UNION ALL
+ SELECT 'media'::text AS source_kind,
+    s.community_id,
+    s.submission_id AS source_id,
+    s.post_id,
+    NULL::text AS comment_id,
+        CASE
+            WHEN (s.media_kind = 'song'::text) THEN retained_categories_rating_v1(((a.analysis_snapshot -> 'contentModeration'::text) -> 'matchedCategories'::text), ((a.submission_id IS NOT NULL) AND (a.audio_revision = s.audio_revision) AND (((a.analysis_snapshot -> 'contentModeration'::text) ->> 'inputSha256'::text) ~ '^[0-9a-f]{64}$'::text) AND (jsonb_typeof(((a.analysis_snapshot -> 'contentModeration'::text) -> 'providerEvidence'::text)) = 'object'::text) AND ((((a.analysis_snapshot -> 'contentModeration'::text) -> 'providerEvidence'::text) ->> 'providerId'::text) = 'openai'::text) AND (jsonb_typeof((((a.analysis_snapshot -> 'contentModeration'::text) -> 'providerEvidence'::text) -> 'inputs'::text)) = 'array'::text)), s.author_declared_rating)
+            ELSE retained_video_rating_v1(v.analysis_snapshot, e.evidence_snapshot, ((v.submission_id IS NOT NULL) AND (e.submission_id IS NOT NULL) AND (NOT e.platform_held) AND (e.request_id = ((v.analysis_snapshot -> 'safetyRequest'::text) ->> 'requestId'::text)) AND (e.evidence_ref = ((v.analysis_snapshot -> 'safetyRequest'::text) ->> 'evidenceRef'::text)) AND ((e.evidence_snapshot -> 'platformHeld'::text) = 'false'::jsonb) AND ((e.evidence_snapshot ->> 'inputDigest'::text) = e.input_sha256) AND (((e.evidence_snapshot -> 'fact'::text) ->> 'evidenceRef'::text) = e.evidence_ref) AND (NOT (EXISTS ( SELECT 1
+               FROM media_video_safety_evidence later
+              WHERE ((later.submission_id = s.submission_id) AND (later.video_revision = s.video_revision) AND ((later.creation_revision >= COALESCE(p.decision_revision, s.creation_revision)) AND (later.creation_revision <= s.creation_revision)) AND later.platform_held))))), s.author_declared_rating)
+        END AS outcome,
+    encode(sha256(convert_to((jsonb_build_array(s.creation_revision, s.audio_revision, s.video_revision, s.current_analysis_revision, s.current_decision_revision, s.current_lyrics_revision, s.post_id, s.author_declared_rating, a.analysis_snapshot, v.analysis_snapshot, to_jsonb(e.*)))::text, 'UTF8'::name)), 'hex'::text) AS source_hash
+   FROM ((((media_post_submissions s
+     LEFT JOIN media_publication_projections p ON (((p.submission_id = s.submission_id) AND (p.post_id = s.post_id))))
+     LEFT JOIN media_analysis_evidence a ON (((s.media_kind = 'song'::text) AND (a.submission_id = s.submission_id) AND (a.community_id = s.community_id) AND (a.operation_id = s.operation_id) AND (a.analysis_revision = COALESCE(p.analysis_revision, s.current_analysis_revision)))))
+     LEFT JOIN media_video_analyses v ON (((s.media_kind = 'video'::text) AND (v.submission_id = s.submission_id) AND (v.community_id = s.community_id) AND (v.operation_id = s.operation_id) AND (v.video_revision = s.video_revision) AND (v.analysis_revision = COALESCE(p.analysis_revision, s.current_analysis_revision)))))
+     LEFT JOIN media_video_safety_evidence e ON (((s.media_kind = 'video'::text) AND (e.submission_id = s.submission_id) AND (e.video_revision = s.video_revision) AND (e.creation_revision = COALESCE(p.decision_revision, s.creation_revision)))));
+
+CREATE VIEW content_rating_reconciliation_candidates_v1 AS
+ SELECT 'post'::text AS target_kind,
+    a.community_id,
+    a.post_id AS target_id,
+    0 AS depth,
+    a.outcome,
+    a.source_hash
+   FROM (retained_post_rating_assessment_v1 a
+     JOIN posts p USING (community_id, post_id))
+  WHERE (p.status = ANY (ARRAY['published'::text, 'hidden'::text]))
+UNION ALL
+ SELECT 'comment'::text AS target_kind,
+    a.community_id,
+    a.comment_id AS target_id,
+    a.depth,
+    a.outcome,
+    a.source_hash
+   FROM (retained_comment_rating_assessment_v1 a
+     JOIN comments c USING (community_id, comment_id))
+  WHERE (c.status = ANY (ARRAY['published'::text, 'hidden'::text]))
+UNION ALL
+ SELECT 'text_submission'::text AS target_kind,
+    s.community_id,
+    s.source_id AS target_id,
+    0 AS depth,
+    s.outcome,
+    s.source_hash
+   FROM (retained_content_rating_sources_v1 s
+     JOIN text_content_submissions t ON (((s.source_kind = 'text'::text) AND (t.community_id = s.community_id) AND (t.submission_id = s.source_id))))
+  WHERE (t.status = 'manual_review'::text)
+UNION ALL
+ SELECT 'media_submission'::text AS target_kind,
+    s.community_id,
+    s.source_id AS target_id,
+    0 AS depth,
+    s.outcome,
+    s.source_hash
+   FROM (retained_content_rating_sources_v1 s
+     JOIN media_post_submissions m ON (((s.source_kind = 'media'::text) AND (m.community_id = s.community_id) AND (m.submission_id = s.source_id))))
+  WHERE ((m.status = 'manual_review'::text) OR ((m.status = 'processing'::text) AND (m.phase = 'publish'::text)));
+
+CREATE TABLE content_rating_reconciliation_current (
+    target_kind text NOT NULL,
+    community_id text NOT NULL,
+    target_id text NOT NULL,
+    event_id text NOT NULL
+);
+
+CREATE TABLE content_rating_reconciliation_events (
+    event_id text NOT NULL,
+    plan_hash text NOT NULL,
+    target_kind text NOT NULL,
+    community_id text NOT NULL,
+    target_id text NOT NULL,
+    source_hash text NOT NULL,
+    outcome text NOT NULL,
+    prior_status text NOT NULL,
+    prior_rating text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT content_rating_reconciliation_events_event_id_check CHECK ((event_id ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT content_rating_reconciliation_events_outcome_check CHECK ((outcome = ANY (ARRAY['held'::text, 'general'::text, 'adult_18'::text]))),
+    CONSTRAINT content_rating_reconciliation_events_source_hash_check CHECK ((source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT content_rating_reconciliation_events_target_kind_check CHECK ((target_kind = ANY (ARRAY['post'::text, 'comment'::text, 'text_submission'::text, 'media_submission'::text])))
+);
+
+CREATE TABLE content_rating_reconciliation_operations (
+    plan_hash text NOT NULL,
+    batch_limit integer NOT NULL,
+    plan jsonb NOT NULL,
+    completed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT content_rating_reconciliation_operations_batch_limit_check CHECK (((batch_limit >= 1) AND (batch_limit <= 100))),
+    CONSTRAINT content_rating_reconciliation_operations_plan_check CHECK ((jsonb_typeof(plan) = 'array'::text)),
+    CONSTRAINT content_rating_reconciliation_operations_plan_hash_check CHECK ((plan_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE custody_solvency_observations (
     observation_id text NOT NULL,
     attestation_id text NOT NULL,
@@ -24038,6 +26498,30 @@ CREATE TABLE dance_upload_reservations (
     CONSTRAINT dance_upload_reservations_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'sealed'::text, 'expired'::text])))
 );
 
+CREATE TABLE data_operator_resume_actions (
+    registration_operation_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    operator_principal_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reason_code text NOT NULL,
+    evidence_ref text NOT NULL,
+    expected_workflow_revision bigint NOT NULL,
+    resulting_workflow_revision bigint NOT NULL,
+    resumed_attempt_id text NOT NULL,
+    outbox_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_operator_resume_actions_check CHECK ((resulting_workflow_revision = (expected_workflow_revision + 1))),
+    CONSTRAINT data_operator_resume_actions_evidence_ref_check CHECK ((evidence_ref <> ''::text)),
+    CONSTRAINT data_operator_resume_actions_expected_workflow_revision_check CHECK ((expected_workflow_revision > 0)),
+    CONSTRAINT data_operator_resume_actions_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT data_operator_resume_actions_operator_principal_id_check CHECK ((operator_principal_id <> ''::text)),
+    CONSTRAINT data_operator_resume_actions_reason_code_check CHECK ((reason_code = ANY (ARRAY['receipt_inconclusive'::text, 'terms_evidence_unavailable'::text]))),
+    CONSTRAINT data_operator_resume_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE data_registration_artifacts (
     artifact_id text NOT NULL,
     registration_operation_id text NOT NULL,
@@ -24092,6 +26576,21 @@ CREATE TABLE data_registration_command_replays (
     CONSTRAINT data_registration_replay_response_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))
 );
 
+CREATE TABLE data_registration_metadata_snapshots (
+    registration_operation_id text NOT NULL,
+    schema_revision text NOT NULL,
+    ip_metadata_bytes bytea NOT NULL,
+    nft_metadata_bytes bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_metadata_snapshots_check CHECK ((NOT (((convert_from(ip_metadata_bytes, 'UTF8'::name))::jsonb ->> 'schema_version'::text) IS DISTINCT FROM schema_revision))),
+    CONSTRAINT data_registration_metadata_snapshots_check1 CHECK ((NOT (((convert_from(nft_metadata_bytes, 'UTF8'::name))::jsonb ->> 'schema_version'::text) IS DISTINCT FROM schema_revision))),
+    CONSTRAINT data_registration_metadata_snapshots_ip_metadata_bytes_check CHECK ((octet_length(ip_metadata_bytes) > 0)),
+    CONSTRAINT data_registration_metadata_snapshots_ip_metadata_bytes_check1 CHECK ((jsonb_typeof((convert_from(ip_metadata_bytes, 'UTF8'::name))::jsonb) = 'object'::text)),
+    CONSTRAINT data_registration_metadata_snapshots_nft_metadata_bytes_check CHECK ((octet_length(nft_metadata_bytes) > 0)),
+    CONSTRAINT data_registration_metadata_snapshots_nft_metadata_bytes_check1 CHECK ((jsonb_typeof((convert_from(nft_metadata_bytes, 'UTF8'::name))::jsonb) = 'object'::text)),
+    CONSTRAINT data_registration_metadata_snapshots_schema_revision_check CHECK ((schema_revision = ANY (ARRAY['pirate-data-metadata-v1'::text, 'pirate-data-metadata-v2'::text])))
+);
+
 CREATE TABLE data_registration_operations (
     registration_operation_id text NOT NULL,
     community_id text NOT NULL,
@@ -24123,17 +26622,30 @@ CREATE TABLE data_registration_operations (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     media_kind text DEFAULT 'song'::text NOT NULL,
     rights_basis text DEFAULT 'original'::text NOT NULL,
+    attached_license_template text,
+    attached_license_terms_id text,
+    attached_license_preset text,
+    attached_commercial_rev_share_bps integer,
+    terms_attachment_transaction_hash text,
+    terms_attachment_block_number bigint,
+    terms_attachment_block_hash text,
+    terms_attachment_log_index integer,
+    CONSTRAINT data_registration_attached_license_shape CHECK ((((attached_license_template IS NULL) AND (attached_license_terms_id IS NULL) AND (attached_license_preset IS NULL) AND (attached_commercial_rev_share_bps IS NULL) AND (terms_attachment_transaction_hash IS NULL) AND (terms_attachment_block_number IS NULL) AND (terms_attachment_block_hash IS NULL) AND (terms_attachment_log_index IS NULL)) OR ((state = 'registered'::text) AND (media_kind = 'song'::text) AND (attached_license_template IS NOT NULL) AND (attached_license_terms_id IS NOT NULL) AND (attached_license_preset IS NOT NULL) AND (terms_attachment_transaction_hash IS NOT NULL) AND (terms_attachment_block_number IS NOT NULL) AND (terms_attachment_block_hash IS NOT NULL) AND (terms_attachment_log_index IS NOT NULL) AND ((attached_license_preset = 'commercial-remix'::text) = (attached_commercial_rev_share_bps IS NOT NULL))))),
     CONSTRAINT data_registration_operation_identity CHECK (((registration_operation_id = ((((('data-registration:'::text || (chain_id)::text) || ':'::text) || asset_id) || ':'::text) || (registration_revision)::text)) AND (asset_id = post_id) AND (workflow_instance_id = ((('data-registration-workflow:'::text || registration_operation_id) || ':r'::text) || (workflow_revision)::text)))),
-    CONSTRAINT data_registration_operation_media_shape CHECK ((((media_kind = 'song'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))) OR ((media_kind = 'video'::text) AND (rights_basis = 'original'::text)))),
+    CONSTRAINT data_registration_operation_media_shape CHECK ((((media_kind = 'song'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))) OR ((media_kind = 'video'::text) AND (rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))))),
     CONSTRAINT data_registration_operation_outcome_shape CHECK ((((state = 'registered'::text) AND (current_attempt_id IS NOT NULL) AND (registered_ip_id IS NOT NULL) AND (btrim(registered_ip_id) <> ''::text) AND (confirmed_transaction_hash IS NOT NULL) AND (confirmed_block_number IS NOT NULL) AND (confirmed_block_hash IS NOT NULL) AND (confirmed_log_index IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'failed'::text) AND (failure_code IS NOT NULL) AND (failure_evidence_ref IS NOT NULL) AND (confirmed_at IS NULL)) OR ((state <> ALL (ARRAY['registered'::text, 'failed'::text])) AND (registered_ip_id IS NULL) AND (confirmed_transaction_hash IS NULL) AND (confirmed_block_number IS NULL) AND (confirmed_block_hash IS NULL) AND (confirmed_log_index IS NULL) AND (confirmed_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)))),
     CONSTRAINT data_registration_operations_asset_id_check CHECK (((btrim(asset_id) <> ''::text) AND (asset_id = btrim(asset_id)) AND (octet_length(asset_id) <= 256))),
+    CONSTRAINT data_registration_operations_attached_commercial_rev_shar_check CHECK (((attached_commercial_rev_share_bps IS NULL) OR ((attached_commercial_rev_share_bps >= 0) AND (attached_commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_operations_attached_license_preset_check CHECK (((attached_license_preset IS NULL) OR (attached_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])))),
+    CONSTRAINT data_registration_operations_attached_license_template_check CHECK (((attached_license_template IS NULL) OR (attached_license_template ~ '^0x[0-9a-f]{40}$'::text))),
+    CONSTRAINT data_registration_operations_attached_license_terms_id_check CHECK (((attached_license_terms_id IS NULL) OR (attached_license_terms_id ~ '^[1-9][0-9]{0,77}$'::text))),
     CONSTRAINT data_registration_operations_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT data_registration_operations_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT data_registration_operations_confirmed_block_hash_check CHECK (((confirmed_block_hash IS NULL) OR (confirmed_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_operations_confirmed_block_number_check CHECK (((confirmed_block_number IS NULL) OR (confirmed_block_number >= 0))),
     CONSTRAINT data_registration_operations_confirmed_log_index_check CHECK (((confirmed_log_index IS NULL) OR (confirmed_log_index >= 0))),
     CONSTRAINT data_registration_operations_confirmed_transaction_hash_check CHECK (((confirmed_transaction_hash IS NULL) OR (confirmed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
-    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text])))),
+    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text, 'parent_registration_failed'::text, 'parent_license_mismatch'::text, 'parent_derivatives_not_permitted'::text, 'parent_terms_unrecorded'::text])))),
     CONSTRAINT data_registration_operations_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR ((btrim(failure_evidence_ref) <> ''::text) AND (failure_evidence_ref = btrim(failure_evidence_ref))))),
     CONSTRAINT data_registration_operations_publication_analysis_revisio_check CHECK ((publication_analysis_revision > 0)),
     CONSTRAINT data_registration_operations_publication_audio_revision_check CHECK ((publication_audio_revision > 0)),
@@ -24141,7 +26653,11 @@ CREATE TABLE data_registration_operations (
     CONSTRAINT data_registration_operations_publication_decision_revisio_check CHECK ((publication_decision_revision > 0)),
     CONSTRAINT data_registration_operations_registration_operation_id_check CHECK (((btrim(registration_operation_id) <> ''::text) AND (registration_operation_id = btrim(registration_operation_id)) AND (octet_length(registration_operation_id) <= 512))),
     CONSTRAINT data_registration_operations_registration_revision_check CHECK ((registration_revision > 0)),
-    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'waiting_parent'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_terms_attachment_block_hash_check CHECK (((terms_attachment_block_hash IS NULL) OR (terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_operations_terms_attachment_block_numbe_check CHECK (((terms_attachment_block_number IS NULL) OR (terms_attachment_block_number >= 0))),
+    CONSTRAINT data_registration_operations_terms_attachment_log_index_check CHECK (((terms_attachment_log_index IS NULL) OR (terms_attachment_log_index >= 0))),
+    CONSTRAINT data_registration_operations_terms_attachment_transaction_check CHECK (((terms_attachment_transaction_hash IS NULL) OR (terms_attachment_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_operations_workflow_instance_id_check CHECK (((btrim(workflow_instance_id) <> ''::text) AND (workflow_instance_id = btrim(workflow_instance_id)))),
     CONSTRAINT data_registration_operations_workflow_revision_check CHECK ((workflow_revision > 0))
 );
@@ -24175,6 +26691,65 @@ CREATE TABLE data_registration_outbox (
     CONSTRAINT data_registration_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND (delivery_attempts > 0) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'delivered'::text) AND (delivery_attempts > 0) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 4)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 5) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NOT NULL)))),
     CONSTRAINT data_registration_outbox_workflow_instance_id_check CHECK ((btrim(workflow_instance_id) <> ''::text)),
     CONSTRAINT data_registration_outbox_workflow_revision_check CHECK ((workflow_revision > 0))
+);
+
+CREATE TABLE data_registration_parent_references (
+    registration_operation_id text NOT NULL,
+    relationship text NOT NULL,
+    parent_asset_id text NOT NULL,
+    parent_registration_operation_id text NOT NULL,
+    expected_parent_license_preset text NOT NULL,
+    expected_parent_commercial_rev_share_bps integer,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    owner_derivative_video text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_parent_license_shape CHECK (((expected_parent_license_preset = 'commercial-remix'::text) = (expected_parent_commercial_rev_share_bps IS NOT NULL))),
+    CONSTRAINT data_registration_parent_not_self CHECK ((parent_registration_operation_id <> registration_operation_id)),
+    CONSTRAINT data_registration_parent_ref_expected_parent_commercial_r_check CHECK (((expected_parent_commercial_rev_share_bps IS NULL) OR ((expected_parent_commercial_rev_share_bps >= 0) AND (expected_parent_commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_parent_ref_expected_parent_license_pres_check CHECK ((expected_parent_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text]))),
+    CONSTRAINT data_registration_parent_reference_owner_derivative_video_check CHECK ((owner_derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text]))),
+    CONSTRAINT data_registration_parent_references_created_at_check CHECK (isfinite(created_at)),
+    CONSTRAINT data_registration_parent_references_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_references_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
+    CONSTRAINT data_registration_parent_references_parent_asset_id_check CHECK ((btrim(parent_asset_id) <> ''::text)),
+    CONSTRAINT data_registration_parent_references_relationship_check CHECK ((relationship = 'references_song'::text))
+);
+
+CREATE TABLE data_registration_parent_resolutions (
+    registration_operation_id text NOT NULL,
+    parent_registration_operation_id text NOT NULL,
+    parent_registration_revision bigint NOT NULL,
+    parent_ip_id text NOT NULL,
+    license_template text NOT NULL,
+    license_terms_id text NOT NULL,
+    license_preset text NOT NULL,
+    commercial_rev_share_bps integer,
+    parent_registration_transaction_hash text NOT NULL,
+    parent_registration_block_number bigint NOT NULL,
+    parent_registration_block_hash text NOT NULL,
+    parent_registration_log_index integer NOT NULL,
+    terms_attachment_transaction_hash text NOT NULL,
+    terms_attachment_block_number bigint NOT NULL,
+    terms_attachment_block_hash text NOT NULL,
+    terms_attachment_log_index integer NOT NULL,
+    resolved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_parent_res_parent_registration_block_ha_check CHECK ((parent_registration_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_res_parent_registration_block_nu_check CHECK ((parent_registration_block_number >= 0)),
+    CONSTRAINT data_registration_parent_res_parent_registration_log_inde_check CHECK ((parent_registration_log_index >= 0)),
+    CONSTRAINT data_registration_parent_res_parent_registration_revision_check CHECK ((parent_registration_revision >= 1)),
+    CONSTRAINT data_registration_parent_res_parent_registration_transact_check CHECK ((parent_registration_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_res_terms_attachment_block_numbe_check CHECK ((terms_attachment_block_number >= 0)),
+    CONSTRAINT data_registration_parent_res_terms_attachment_transaction_check CHECK ((terms_attachment_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_reso_terms_attachment_block_hash_check CHECK ((terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_parent_resol_terms_attachment_log_index_check CHECK ((terms_attachment_log_index >= 0)),
+    CONSTRAINT data_registration_parent_resolut_commercial_rev_share_bps_check CHECK (((commercial_rev_share_bps IS NULL) OR ((commercial_rev_share_bps >= 0) AND (commercial_rev_share_bps <= 10000)))),
+    CONSTRAINT data_registration_parent_resolution_license_shape CHECK (((license_preset = 'commercial-remix'::text) = (commercial_rev_share_bps IS NOT NULL))),
+    CONSTRAINT data_registration_parent_resolutions_license_preset_check CHECK ((license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text]))),
+    CONSTRAINT data_registration_parent_resolutions_license_template_check CHECK ((license_template ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_license_terms_id_check CHECK ((license_terms_id ~ '^[1-9][0-9]{0,77}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_parent_ip_id_check CHECK ((parent_ip_id ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT data_registration_parent_resolutions_resolved_at_check CHECK (isfinite(resolved_at))
 );
 
 CREATE TABLE data_registration_pin_verifications (
@@ -24220,6 +26795,15 @@ CREATE TABLE data_registration_receipt_observations (
     evidence_ref text NOT NULL,
     observed_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    attached_license_template text,
+    attached_license_terms_id text,
+    attached_license_preset text,
+    attached_commercial_rev_share_bps integer,
+    terms_attachment_transaction_hash text,
+    terms_attachment_block_number bigint,
+    terms_attachment_block_hash text,
+    terms_attachment_log_index integer,
+    CONSTRAINT data_registration_receipt_attached_license_shape CHECK ((((attached_license_template IS NULL) AND (attached_license_terms_id IS NULL) AND (attached_license_preset IS NULL) AND (attached_commercial_rev_share_bps IS NULL) AND (terms_attachment_transaction_hash IS NULL) AND (terms_attachment_block_number IS NULL) AND (terms_attachment_block_hash IS NULL) AND (terms_attachment_log_index IS NULL)) OR ((outcome = 'confirmed'::text) AND (attached_license_template ~ '^0x[0-9a-f]{40}$'::text) AND (attached_license_terms_id ~ '^[1-9][0-9]{0,77}$'::text) AND (attached_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])) AND ((attached_license_preset = 'commercial-remix'::text) = (attached_commercial_rev_share_bps IS NOT NULL)) AND (attached_commercial_rev_share_bps <= 10000) AND (terms_attachment_transaction_hash = transaction_hash) AND (terms_attachment_block_number >= 0) AND (terms_attachment_block_hash ~ '^0x[0-9a-f]{64}$'::text) AND (terms_attachment_log_index >= 0) AND (attached_license_template IS NOT NULL) AND (attached_license_terms_id IS NOT NULL) AND (attached_license_preset IS NOT NULL) AND (terms_attachment_transaction_hash IS NOT NULL) AND (terms_attachment_block_number IS NOT NULL) AND (terms_attachment_block_hash IS NOT NULL) AND (terms_attachment_log_index IS NOT NULL)))),
     CONSTRAINT data_registration_receipt_identity CHECK ((receipt_observation_id = ((submission_attempt_id || ':receipt:'::text) || (observation_sequence)::text))),
     CONSTRAINT data_registration_receipt_observat_receipt_observation_id_check CHECK ((btrim(receipt_observation_id) <> ''::text)),
     CONSTRAINT data_registration_receipt_observatio_observation_sequence_check CHECK ((observation_sequence > 0)),
@@ -24404,6 +26988,7 @@ CREATE TABLE handle_claims (
     grant_id text,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
+    nationality_decision_id text,
     CONSTRAINT handle_claim_state_shape CHECK ((((state = 'issued'::text) AND (grant_id IS NOT NULL) AND (safe_reason IS NULL)) OR ((state = 'issuance_pending'::text) AND (grant_id IS NULL) AND (safe_reason = 'issuance_pending'::text)) OR ((state = ANY (ARRAY['blocked'::text, 'issuance_failed'::text])) AND (grant_id IS NULL) AND is_handle_sales_identifier_v1(safe_reason, 64)))),
     CONSTRAINT handle_claims_atomic_amount_check CHECK ((atomic_amount = (0)::numeric)),
     CONSTRAINT handle_claims_family_check CHECK ((family = 'hns'::text)),
@@ -24506,6 +27091,76 @@ CREATE TABLE handle_key_fences (
     CONSTRAINT handle_key_fence_shape CHECK (((live_reservation_id IS NOT NULL) OR (permanent_grant_id IS NOT NULL)))
 );
 
+CREATE TABLE handle_nationality_decisions (
+    decision_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    purpose text NOT NULL,
+    resource_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_revision bigint NOT NULL,
+    offering_hash text NOT NULL,
+    qualification_policy_id text NOT NULL,
+    qualification_policy_revision bigint NOT NULL,
+    qualification_policy_hash text NOT NULL,
+    requirement_hash text NOT NULL,
+    outcome text NOT NULL,
+    reason text,
+    selected_provider_id text,
+    selected_provider_binding_hash text,
+    evaluated_at timestamp with time zone NOT NULL,
+    CONSTRAINT handle_nationality_decisions_check CHECK ((((outcome = 'pass'::text) AND (reason IS NULL) AND (selected_provider_id IS NOT NULL) AND (selected_provider_binding_hash IS NOT NULL)) OR ((outcome <> 'pass'::text) AND (reason IS NOT NULL) AND (selected_provider_id IS NULL) AND (selected_provider_binding_hash IS NULL)))),
+    CONSTRAINT handle_nationality_decisions_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_outcome_check CHECK ((outcome = ANY (ARRAY['pass'::text, 'needs_evidence'::text, 'fail'::text, 'indeterminate'::text]))),
+    CONSTRAINT handle_nationality_decisions_purpose_check CHECK ((purpose = ANY (ARRAY['quote'::text, 'reservation'::text, 'claim'::text]))),
+    CONSTRAINT handle_nationality_decisions_qualification_policy_hash_check CHECK ((qualification_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_selected_provider_binding_ha_check CHECK ((selected_provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_decisions_selected_provider_id_check CHECK ((selected_provider_id = ANY (ARRAY['self.pass'::text, 'zkpassport'::text])))
+);
+
+CREATE TABLE handle_nationality_evidence_uses (
+    evidence_use_id text NOT NULL,
+    decision_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    assertion_id text NOT NULL,
+    evidence_receipt_id text NOT NULL,
+    subject_key_id text NOT NULL,
+    subject_binding_event_id text NOT NULL,
+    subject_binding_epoch bigint NOT NULL,
+    CONSTRAINT handle_nationality_evidence_uses_subject_binding_epoch_check CHECK ((subject_binding_epoch > 0))
+);
+
+CREATE TABLE handle_nationality_policy_actions (
+    action_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    community_id text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    authoring_reference text NOT NULL,
+    policy_id text NOT NULL,
+    policy_revision bigint NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT handle_nationality_policy_actions_authoring_reference_check CHECK ((authoring_reference ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_nationality_policy_actions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/handle-nationality-qualification-policies'::text)),
+    CONSTRAINT handle_nationality_policy_actions_idempotency_key_check CHECK (is_handle_sales_identifier_v1(idempotency_key, 128)),
+    CONSTRAINT handle_nationality_policy_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE handle_nationality_qualification_intents (
+    qualification_intent_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_revision bigint NOT NULL,
+    offering_hash text NOT NULL,
+    handle_label text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT handle_nationality_qualification_intents_check CHECK ((expires_at > created_at)),
+    CONSTRAINT handle_nationality_qualification_intents_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE handle_persona_link_confirmation_actions (
     action_id text NOT NULL,
     actor_account_id text NOT NULL,
@@ -24598,11 +27253,12 @@ CREATE TABLE handle_qualification_policy_revisions (
     status text NOT NULL,
     created_by_account_id text,
     created_at timestamp with time zone NOT NULL,
+    nationality_policy jsonb,
     CONSTRAINT handle_qualification_policy_revisions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_qualification_policy_revisions_policy_kind_check CHECK ((policy_kind = ANY (ARRAY['none_v1'::text, 'curated_policy_v1'::text]))),
+    CONSTRAINT handle_qualification_policy_revisions_policy_kind_check CHECK ((policy_kind = ANY (ARRAY['none_v1'::text, 'curated_policy_v1'::text, 'curated_nationality_v1'::text]))),
     CONSTRAINT handle_qualification_policy_revisions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT handle_qualification_policy_revisions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text]))),
-    CONSTRAINT handle_qualification_policy_shape CHECK ((((policy_kind = 'none_v1'::text) AND (community_id IS NULL) AND (requirement_id IS NULL) AND (requirement_revision IS NULL) AND (requirement_kind IS NULL) AND (subject_account_id IS NULL) AND (provider_binding_kind IS NULL) AND (provider_binding_version IS NULL) AND (provider_binding_hash IS NULL) AND (created_by_account_id IS NULL)) OR ((policy_kind = 'curated_policy_v1'::text) AND (community_id IS NOT NULL) AND is_handle_sales_identifier_v1(requirement_id, 128) AND (requirement_revision = 1) AND (requirement_kind = 'account_allowlist_v1'::text) AND (subject_account_id IS NOT NULL) AND (provider_binding_kind = 'account_directory_v1'::text) AND is_handle_sales_identifier_v1(provider_binding_version, 128) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (created_by_account_id IS NOT NULL))))
+    CONSTRAINT handle_qualification_policy_shape CHECK ((((((policy_kind = 'none_v1'::text) AND (community_id IS NULL) AND (requirement_id IS NULL) AND (requirement_revision IS NULL) AND (requirement_kind IS NULL) AND (subject_account_id IS NULL) AND (provider_binding_kind IS NULL) AND (provider_binding_version IS NULL) AND (provider_binding_hash IS NULL) AND (created_by_account_id IS NULL)) OR ((policy_kind = 'curated_policy_v1'::text) AND (community_id IS NOT NULL) AND is_handle_sales_identifier_v1(requirement_id, 128) AND (requirement_revision = 1) AND (requirement_kind = 'account_allowlist_v1'::text) AND (subject_account_id IS NOT NULL) AND (provider_binding_kind = 'account_directory_v1'::text) AND is_handle_sales_identifier_v1(provider_binding_version, 128) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (created_by_account_id IS NOT NULL))) AND (nationality_policy IS NULL)) OR (((policy_kind = 'curated_nationality_v1'::text) AND (community_id IS NOT NULL) AND (created_by_account_id IS NOT NULL) AND (policy_revision > 0) AND (requirement_kind = 'nationality_allowed_v1'::text) AND (requirement_id IS NULL) AND (requirement_revision IS NULL) AND (subject_account_id IS NULL) AND (provider_binding_kind IS NULL) AND (provider_binding_version IS NULL) AND (provider_binding_hash IS NULL) AND (jsonb_typeof(nationality_policy) = 'object'::text) AND ((nationality_policy ->> 'policy_version_id'::text) = 'curated-nationality-v1'::text) AND ((nationality_policy ->> 'policy_hash'::text) = policy_hash) AND (((nationality_policy ->> 'policy_revision'::text))::bigint = policy_revision) AND ((nationality_policy ->> 'requirement_hash'::text) ~ '^[0-9a-f]{64}$'::text) AND ((nationality_policy ->> 'required_assurance'::text) = 'document_zk'::text) AND (((nationality_policy -> 'requirement'::text) ->> 'claim_id'::text) = 'nationality.allowed'::text) AND (jsonb_typeof(((nationality_policy -> 'requirement'::text) -> 'allowed_countries'::text)) = 'array'::text) AND ((jsonb_array_length(((nationality_policy -> 'requirement'::text) -> 'allowed_countries'::text)) >= 1) AND (jsonb_array_length(((nationality_policy -> 'requirement'::text) -> 'allowed_countries'::text)) <= 256)) AND (((nationality_policy -> 'evidence_lifetime'::text) ->> 'kind'::text) = 'max_age_seconds'::text) AND (((((nationality_policy -> 'evidence_lifetime'::text) ->> 'seconds'::text))::bigint >= 1) AND ((((nationality_policy -> 'evidence_lifetime'::text) ->> 'seconds'::text))::bigint <= '9007199254740991'::bigint)) AND (jsonb_array_length((nationality_policy -> 'provider_bindings'::text)) = 2) AND ((((nationality_policy -> 'provider_bindings'::text) -> 0) ->> 'provider_id'::text) = 'self.pass'::text) AND ((((nationality_policy -> 'provider_bindings'::text) -> 1) ->> 'provider_id'::text) = 'zkpassport'::text)) IS TRUE)))
 );
 
 CREATE TABLE handle_quote_actions (
@@ -24617,11 +27273,12 @@ CREATE TABLE handle_quote_actions (
     owner_persona_id text NOT NULL,
     eligibility_reason text,
     committed_at timestamp with time zone NOT NULL,
-    CONSTRAINT handle_quote_action_result_shape CHECK ((((result_kind = 'quoted'::text) AND (quote_id IS NOT NULL) AND (eligibility_reason IS NULL)) OR ((result_kind = 'eligibility_required'::text) AND (quote_id IS NULL) AND (eligibility_reason IS NOT NULL)))),
+    qualification_intent_id text,
+    CONSTRAINT handle_quote_action_result_shape CHECK ((((result_kind = 'quoted'::text) AND (quote_id IS NOT NULL) AND (eligibility_reason IS NULL) AND (qualification_intent_id IS NULL)) OR ((result_kind = 'eligibility_required'::text) AND (quote_id IS NULL) AND (eligibility_reason IS NOT NULL) AND (qualification_intent_id IS NULL)) OR ((result_kind = 'nationality_required'::text) AND (quote_id IS NULL) AND (eligibility_reason IS NOT NULL) AND (qualification_intent_id IS NOT NULL)))),
     CONSTRAINT handle_quote_actions_eligibility_reason_check CHECK ((eligibility_reason = ANY (ARRAY['evidence_required'::text, 'qualification_unsatisfied'::text]))),
     CONSTRAINT handle_quote_actions_endpoint_template_check CHECK ((endpoint_template = '/handle-quotes'::text)),
     CONSTRAINT handle_quote_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quote_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['quoted'::text, 'eligibility_required'::text])))
+    CONSTRAINT handle_quote_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['quoted'::text, 'eligibility_required'::text, 'nationality_required'::text])))
 );
 
 CREATE TABLE handle_quotes (
@@ -24655,6 +27312,9 @@ CREATE TABLE handle_quotes (
     quoted_at timestamp with time zone NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     consumed_at timestamp with time zone,
+    nationality_qualification_pin jsonb,
+    nationality_decision_id text,
+    CONSTRAINT handle_nationality_quote_pin_pair CHECK ((((nationality_qualification_pin IS NULL) AND (nationality_decision_id IS NULL)) OR ((nationality_qualification_pin IS NOT NULL) AND (nationality_decision_id IS NOT NULL) AND (jsonb_typeof(nationality_qualification_pin) = 'object'::text)))),
     CONSTRAINT handle_quote_link_shape CHECK ((((public_link_confirmation_id IS NULL) AND (public_link_confirmation_hash IS NULL)) OR ((public_link_confirmation_id IS NOT NULL) AND (public_link_confirmation_hash ~ '^[0-9a-f]{64}$'::text)))),
     CONSTRAINT handle_quote_state_shape CHECK ((((status = 'quoted'::text) AND (consumed_at IS NULL)) OR ((status = 'consumed'::text) AND (consumed_at IS NOT NULL)) OR ((status = 'expired'::text) AND (consumed_at IS NULL)))),
     CONSTRAINT handle_quote_time_order CHECK (((expires_at > quoted_at) AND (evaluated_at = quoted_at))),
@@ -24701,6 +27361,7 @@ CREATE TABLE handle_reservations (
     reserved_at timestamp with time zone NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     transitioned_at timestamp with time zone,
+    nationality_decision_id text,
     CONSTRAINT handle_reservation_state_shape CHECK ((((status = 'reserved'::text) AND (transitioned_at IS NULL)) OR ((status <> 'reserved'::text) AND (transitioned_at IS NOT NULL)))),
     CONSTRAINT handle_reservation_time_order CHECK ((expires_at > reserved_at)),
     CONSTRAINT handle_reservations_family_check CHECK ((family = 'hns'::text)),
@@ -25053,6 +27714,41 @@ CREATE TABLE hns_dns_zone_lifecycle_operations (
     CONSTRAINT hns_dns_zone_lifecycle_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND ((expected_activation_generation >= 1) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND is_hns_host_persistence_identity(reason_code, 256) AND (result_activation_generation = (expected_activation_generation + 1))))
 );
 
+CREATE TABLE hns_lifecycle_schema_cutover (
+    cutover_version text NOT NULL,
+    compatible_service_versions text[] NOT NULL,
+    compatible_job_envelope_versions text[] NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_lifecycle_schema_cutover_envelope_check CHECK ((cardinality(compatible_job_envelope_versions) >= 1)),
+    CONSTRAINT hns_lifecycle_schema_cutover_service_check CHECK ((cardinality(compatible_service_versions) >= 1)),
+    CONSTRAINT hns_lifecycle_schema_cutover_version_shape CHECK ((cutover_version ~ '^[0-9]{4}$'::text))
+);
+
+CREATE TABLE hns_lifecycle_service_identity (
+    service_name text NOT NULL,
+    service_version text NOT NULL,
+    bundle_sha256 text NOT NULL,
+    executor_id text NOT NULL,
+    process_started_at timestamp with time zone NOT NULL,
+    probe_outcome text NOT NULL,
+    probe_reason text,
+    attempt_id text,
+    probe_job_id bigint,
+    lease_fence bigint,
+    expected_bundle_sha256 text,
+    measured_bundle_sha256 text,
+    probe_completed_at timestamp with time zone,
+    CONSTRAINT hns_lifecycle_service_identity_attempt_shape CHECK (((attempt_id IS NULL) OR ((btrim(attempt_id) = attempt_id) AND ((octet_length(attempt_id) >= 8) AND (octet_length(attempt_id) <= 128)) AND (attempt_id ~ '^[A-Za-z0-9._:-]+$'::text)))),
+    CONSTRAINT hns_lifecycle_service_identity_bundle_check CHECK ((bundle_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_lifecycle_service_identity_executor_check CHECK (((btrim(executor_id) = executor_id) AND ((octet_length(executor_id) >= 1) AND (octet_length(executor_id) <= 256)) AND (executor_id !~ '[[:cntrl:]]'::text))),
+    CONSTRAINT hns_lifecycle_service_identity_expected_bundle_shape CHECK (((expected_bundle_sha256 IS NULL) OR (expected_bundle_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_lifecycle_service_identity_measured_bundle_shape CHECK (((measured_bundle_sha256 IS NULL) OR (measured_bundle_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_lifecycle_service_identity_name_check CHECK ((service_name = 'pirate-hns-authority-provisioner'::text)),
+    CONSTRAINT hns_lifecycle_service_identity_outcome_check CHECK ((probe_outcome = ANY (ARRAY['ready'::text, 'replayed'::text, 'failed'::text, 'probe_absent'::text, 'lease_conflict'::text]))),
+    CONSTRAINT hns_lifecycle_service_identity_reason_shape CHECK (((probe_reason IS NULL) OR ((btrim(probe_reason) = probe_reason) AND ((octet_length(probe_reason) >= 1) AND (octet_length(probe_reason) <= 128)) AND (probe_reason !~ '[[:cntrl:]]'::text)))),
+    CONSTRAINT hns_lifecycle_service_identity_version_check CHECK ((service_version ~ '^[A-Za-z0-9._:@/-]{1,128}$'::text))
+);
+
 CREATE TABLE hns_operator_control_promotion_receipts (
     receipt_id text NOT NULL,
     operation_id text NOT NULL,
@@ -25087,6 +27783,54 @@ CREATE TABLE hns_operator_control_promotion_receipts (
     CONSTRAINT hns_operator_control_promotion_receipts_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE hns_readiness_single_owner_cutover_receipt (
+    cutover_receipt_id bigint NOT NULL,
+    applied_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    dispositioned_jobs bigint NOT NULL,
+    successor_jobs bigint NOT NULL,
+    duplicate_jobs bigint DEFAULT 0 NOT NULL,
+    inconsistent_jobs bigint DEFAULT 0 NOT NULL,
+    superseded_jobs bigint DEFAULT 0 NOT NULL,
+    legacy_readiness_functions bigint,
+    readiness_writers bigint,
+    ownership_functions bigint,
+    CONSTRAINT hns_readiness_single_owner_cutover_receipt_counts CHECK (((dispositioned_jobs >= 0) AND (successor_jobs >= 0) AND (duplicate_jobs >= 0) AND (inconsistent_jobs >= 0) AND (superseded_jobs >= 0)))
+);
+
+ALTER TABLE hns_readiness_single_owner_cutover_receipt ALTER COLUMN cutover_receipt_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_readiness_single_owner_cutover_recei_cutover_receipt_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE hns_readiness_single_owner_cutover_unresolved (
+    unresolved_id bigint NOT NULL,
+    root_import_session_id text NOT NULL,
+    blocker text NOT NULL,
+    required_evidence jsonb NOT NULL,
+    recovery_owner text NOT NULL,
+    observed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    resolved_at timestamp with time zone,
+    resolution text,
+    CONSTRAINT hns_readiness_cutover_unresolved_blocker_check CHECK ((blocker = 'missing_lifecycle_row'::text)),
+    CONSTRAINT hns_readiness_cutover_unresolved_evidence_shape CHECK (((jsonb_typeof(required_evidence) = 'array'::text) AND (jsonb_array_length(required_evidence) > 0))),
+    CONSTRAINT hns_readiness_cutover_unresolved_identity_shape CHECK (((btrim(root_import_session_id) = root_import_session_id) AND ((octet_length(root_import_session_id) >= 1) AND (octet_length(root_import_session_id) <= 256)) AND (root_import_session_id !~ '[[:cntrl:]]'::text))),
+    CONSTRAINT hns_readiness_cutover_unresolved_owner_check CHECK ((recovery_owner = 'operator_authorized_recovery_adoption'::text)),
+    CONSTRAINT hns_readiness_cutover_unresolved_resolution_shape CHECK ((((resolved_at IS NULL) = (resolution IS NULL)) AND ((resolved_at IS NULL) OR (resolved_at >= observed_at)) AND ((resolution IS NULL) OR ((btrim(resolution) = resolution) AND ((octet_length(resolution) >= 1) AND (octet_length(resolution) <= 128)) AND (resolution !~ '[[:cntrl:]]'::text)))))
+);
+
+ALTER TABLE hns_readiness_single_owner_cutover_unresolved ALTER COLUMN unresolved_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME hns_readiness_single_owner_cutover_unresolved_unresolved_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 CREATE TABLE hns_root_health_renewal_jobs (
     renewal_job_id text NOT NULL,
     root_import_session_id text NOT NULL,
@@ -25107,9 +27851,12 @@ CREATE TABLE hns_root_health_renewal_jobs (
     next_attempt_at timestamp with time zone,
     expected_app_generation bigint,
     expected_sale_generation bigint,
+    request_bytes bytea,
+    request_sha256 text,
     CONSTRAINT hns_root_health_renewal_jobs_expected_app_generation_check CHECK (((expected_app_generation >= 1) AND (expected_app_generation <= '9007199254740991'::bigint))),
     CONSTRAINT hns_root_health_renewal_jobs_expected_sale_generation_check CHECK (((expected_sale_generation >= 1) AND (expected_sale_generation <= '9007199254740991'::bigint))),
     CONSTRAINT hns_root_health_renewal_jobs_identity_check CHECK ((is_hns_host_persistence_identity(renewal_job_id, 256) AND ((activation_generation >= 1) AND (activation_generation <= '9007199254740991'::bigint)) AND ((expected_health_generation >= 1) AND (expected_health_generation <= '9007199254740990'::bigint)) AND ((attempt_count >= 0) AND (attempt_count <= 1024)) AND ((lease_fence >= 0) AND (lease_fence <= '9007199254740991'::bigint)))),
+    CONSTRAINT hns_root_health_renewal_jobs_request_envelope_shape CHECK ((((request_bytes IS NULL) = (request_sha256 IS NULL)) AND ((request_sha256 IS NULL) OR ((octet_length(request_bytes) >= 1) AND (octet_length(request_bytes) <= 65536) AND (request_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(request_bytes), 'hex'::text) = request_sha256))))),
     CONSTRAINT hns_root_health_renewal_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'delayed'::text, 'completed'::text, 'terminal'::text]))),
     CONSTRAINT hns_root_health_renewal_jobs_state_shape CHECK ((((state = 'queued'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL) AND (next_attempt_at IS NULL)) OR ((state = 'leased'::text) AND is_hns_host_persistence_identity(leased_by, 256) AND (lease_expires_at IS NOT NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (failure_code IS NULL) AND (completed_at IS NULL) AND (next_attempt_at IS NULL)) OR ((state = 'delayed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL) AND (next_attempt_at IS NOT NULL) AND is_hns_host_persistence_identity(failure_code, 128)) OR ((state = 'completed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND ((octet_length(result_bytes) >= 1) AND (octet_length(result_bytes) <= 1048576)) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256) AND (failure_code IS NULL) AND (completed_at IS NOT NULL) AND (next_attempt_at IS NULL)) OR ((state = 'terminal'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND is_hns_host_persistence_identity(failure_code, 128) AND (completed_at IS NOT NULL) AND (next_attempt_at IS NULL)))),
     CONSTRAINT hns_root_health_renewal_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
@@ -25147,17 +27894,6 @@ CREATE TABLE hns_root_import_activation_operations (
     CONSTRAINT hns_root_import_activation_operations_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (attachment_intent_id IS NOT NULL))))
 );
 
-CREATE TABLE hns_root_import_execution_ownership (
-    responsibility text NOT NULL,
-    enabled boolean DEFAULT false NOT NULL,
-    enabled_at timestamp with time zone,
-    evidence_ref text,
-    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT hns_root_import_execution_ownership_evidence_shape CHECK (((evidence_ref IS NULL) OR ((btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 512))))),
-    CONSTRAINT hns_root_import_execution_ownership_marker_shape CHECK (((enabled AND (enabled_at IS NOT NULL)) OR ((NOT enabled) AND (enabled_at IS NULL)))),
-    CONSTRAINT hns_root_import_execution_ownership_responsibility_check CHECK ((responsibility = 'readiness'::text))
-);
-
 CREATE TABLE hns_root_import_lifecycle (
     root_import_session_id text NOT NULL,
     root_label text NOT NULL,
@@ -25188,6 +27924,8 @@ CREATE TABLE hns_root_import_lifecycle (
     last_observation_commitment_height bigint,
     last_observation_at timestamp with time zone,
     last_observation_recorded_at timestamp with time zone,
+    readiness_accepted_at timestamp with time zone,
+    synthetic boolean DEFAULT false NOT NULL,
     CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
     CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
     CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
@@ -25835,104 +28573,6 @@ CREATE TABLE media_alignment_projections (
     CONSTRAINT media_alignment_projections_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'ready'::text, 'unavailable'::text])))
 );
 
-CREATE TABLE media_analysis_evidence (
-    submission_id text NOT NULL,
-    community_id text NOT NULL,
-    actor_user_id text NOT NULL,
-    operation_id text NOT NULL,
-    analysis_version text NOT NULL,
-    audio_revision bigint NOT NULL,
-    analysis_revision bigint NOT NULL,
-    canonical_audio_sha256 text NOT NULL,
-    finalized_audio_ref text NOT NULL,
-    probe_evidence_ref text NOT NULL,
-    embedded_metadata_evidence_ref text NOT NULL,
-    embedded_metadata_adapter_revision text NOT NULL,
-    embedded_title text,
-    embedded_title_provenance text NOT NULL,
-    cover_status text NOT NULL,
-    cover_artifact_ref text,
-    cover_artifact_sha256 text,
-    cover_media_type text,
-    cover_width integer,
-    cover_height integer,
-    cover_normalization_revision text,
-    cover_safety_policy_revision text,
-    cover_facts jsonb NOT NULL,
-    speech_status text NOT NULL,
-    transcript_artifact_ref text,
-    transcript_sha256 text,
-    explicitness text,
-    primary_language_bcp47 text,
-    secondary_language_bcp47 text,
-    speech_evidence_ref text,
-    speech_policy_revision text,
-    speech_adapter_revision text,
-    acr_decision text NOT NULL,
-    acr_evidence_ref text NOT NULL,
-    acr_policy_revision text NOT NULL,
-    acr_adapter_revision text NOT NULL,
-    media_safety text NOT NULL,
-    lyrics_safety text NOT NULL,
-    bound_reference_asset_id text,
-    bound_reference_audio_revision bigint,
-    bound_reference_analysis_revision bigint,
-    bound_reference_audio_sha256 text,
-    bound_reference_upstream_share_bps integer,
-    analysis_snapshot jsonb NOT NULL,
-    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
-    author_persona_id text NOT NULL,
-    transcript_revision bigint,
-    lyrics_revision bigint,
-    material_disagreement boolean DEFAULT false NOT NULL,
-    cover_moderation_decision text NOT NULL,
-    cover_moderation_reason text NOT NULL,
-    cover_moderation_provider_id text,
-    cover_moderation_requested_model text,
-    cover_moderation_returned_model text,
-    cover_moderation_input_sha256 text,
-    cover_moderation_matched_categories jsonb NOT NULL,
-    cover_moderation_evidence_ref text,
-    cover_moderation_evidence jsonb,
-    CONSTRAINT media_analysis_cover_moderation_categories_check CHECK ((jsonb_typeof(cover_moderation_matched_categories) = 'array'::text)),
-    CONSTRAINT media_analysis_cover_moderation_decision_check CHECK ((cover_moderation_decision = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'withheld'::text]))),
-    CONSTRAINT media_analysis_cover_moderation_evidence_check CHECK (((cover_moderation_evidence IS NULL) OR (jsonb_typeof(cover_moderation_evidence) = 'object'::text))),
-    CONSTRAINT media_analysis_cover_moderation_hash_check CHECK (((cover_moderation_input_sha256 IS NULL) OR (cover_moderation_input_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT media_analysis_cover_moderation_model_check CHECK ((((cover_moderation_provider_id IS NULL) AND (cover_moderation_requested_model IS NULL) AND (cover_moderation_returned_model IS NULL)) OR ((cover_moderation_provider_id = 'openai'::text) AND (cover_moderation_requested_model = 'omni-moderation-2024-09-26'::text) AND ((cover_moderation_returned_model IS NULL) OR (cover_moderation_returned_model = cover_moderation_requested_model))))),
-    CONSTRAINT media_analysis_cover_moderation_provider_check CHECK (((cover_moderation_provider_id IS NULL) OR (cover_moderation_provider_id = 'openai'::text))),
-    CONSTRAINT media_analysis_cover_moderation_reason_check CHECK ((cover_moderation_reason = ANY (ARRAY['not_embedded'::text, 'clean'::text, 'matched_category'::text, 'provider_unavailable'::text, 'invalid_image'::text, 'limits_exceeded'::text]))),
-    CONSTRAINT media_analysis_cover_moderation_shape CHECK ((((cover_moderation_decision = 'not_applicable'::text) AND (cover_moderation_reason = 'not_embedded'::text) AND (cover_status = 'absent'::text)) OR ((cover_moderation_decision = 'allow'::text) AND (cover_moderation_reason = 'clean'::text) AND (cover_status = 'ready'::text) AND (media_safety = 'allow'::text) AND (cover_moderation_provider_id = 'openai'::text) AND (cover_moderation_returned_model = cover_moderation_requested_model) AND (cover_moderation_input_sha256 = cover_artifact_sha256) AND (cover_moderation_matched_categories = '[]'::jsonb) AND (cover_moderation_evidence_ref IS NOT NULL) AND (cover_moderation_evidence IS NOT NULL)) OR ((cover_moderation_decision = 'withheld'::text) AND (cover_status <> 'absent'::text)))),
-    CONSTRAINT media_analysis_cover_shape CHECK ((((cover_status = 'ready'::text) AND (cover_artifact_ref IS NOT NULL) AND (cover_artifact_sha256 IS NOT NULL) AND (cover_media_type = ANY (ARRAY['image/jpeg'::text, 'image/png'::text, 'image/webp'::text])) AND (cover_width IS NOT NULL) AND (cover_height IS NOT NULL) AND (cover_width > 0) AND (cover_height > 0) AND (btrim(cover_normalization_revision) <> ''::text) AND (btrim(cover_safety_policy_revision) <> ''::text) AND (NOT (cover_facts ? 'reasonCode'::text))) OR ((cover_status = 'absent'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = 'not_embedded'::text) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)) OR ((cover_status = 'rejected'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = ANY (ARRAY['invalid'::text, 'unsafe'::text, 'limits_exceeded'::text])) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)))),
-    CONSTRAINT media_analysis_evidence_acr_adapter_revision_check CHECK ((btrim(acr_adapter_revision) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_acr_decision_check CHECK ((acr_decision = ANY (ARRAY['allow'::text, 'requires_reference'::text, 'inconclusive'::text, 'skipped'::text]))),
-    CONSTRAINT media_analysis_evidence_acr_evidence_ref_check CHECK ((btrim(acr_evidence_ref) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_acr_policy_revision_check CHECK ((btrim(acr_policy_revision) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_analysis_revision_check CHECK ((analysis_revision > 0)),
-    CONSTRAINT media_analysis_evidence_analysis_snapshot_check CHECK ((jsonb_typeof(analysis_snapshot) = 'object'::text)),
-    CONSTRAINT media_analysis_evidence_analysis_version_check CHECK ((analysis_version = 'song-trusted-analysis-v1'::text)),
-    CONSTRAINT media_analysis_evidence_audio_revision_check CHECK ((audio_revision > 0)),
-    CONSTRAINT media_analysis_evidence_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT media_analysis_evidence_cover_artifact_sha256_check CHECK (((cover_artifact_sha256 IS NULL) OR (cover_artifact_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT media_analysis_evidence_cover_facts_check CHECK ((jsonb_typeof(cover_facts) = 'object'::text)),
-    CONSTRAINT media_analysis_evidence_cover_status_check CHECK ((cover_status = ANY (ARRAY['ready'::text, 'absent'::text, 'rejected'::text]))),
-    CONSTRAINT media_analysis_evidence_embedded_metadata_adapter_revisio_check CHECK ((btrim(embedded_metadata_adapter_revision) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_embedded_metadata_evidence_ref_check CHECK ((btrim(embedded_metadata_evidence_ref) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_embedded_title_provenance_check CHECK ((embedded_title_provenance = ANY (ARRAY['embedded'::text, 'absent'::text]))),
-    CONSTRAINT media_analysis_evidence_explicitness_check CHECK (((explicitness IS NULL) OR (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])))),
-    CONSTRAINT media_analysis_evidence_lyrics_safety_check CHECK ((lyrics_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'review_required'::text, 'blocked'::text]))),
-    CONSTRAINT media_analysis_evidence_media_safety_check CHECK ((media_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'cover_withheld'::text, 'visual_provider_unavailable'::text, 'draft'::text, 'review_required'::text, 'blocked'::text]))),
-    CONSTRAINT media_analysis_evidence_probe_evidence_ref_check CHECK ((btrim(probe_evidence_ref) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_speech_adapter_revision_check CHECK ((btrim(speech_adapter_revision) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_speech_evidence_ref_check CHECK ((btrim(speech_evidence_ref) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_speech_policy_revision_check CHECK ((btrim(speech_policy_revision) <> ''::text)),
-    CONSTRAINT media_analysis_evidence_speech_status_check CHECK ((speech_status = ANY (ARRAY['ready'::text, 'not_applicable'::text, 'unavailable'::text]))),
-    CONSTRAINT media_analysis_evidence_transcript_sha256_check CHECK (((transcript_sha256 IS NULL) OR (transcript_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT media_analysis_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 = canonical_audio_sha256) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
-    CONSTRAINT media_analysis_speech_shape CHECK ((((speech_status = 'ready'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (transcript_revision IS NULL) AND (lyrics_revision > 0) AND (material_disagreement = false) AND (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])) AND (primary_language_bcp47 IS NOT NULL) AND (char_length(primary_language_bcp47) <= 35) AND (primary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text) AND ((secondary_language_bcp47 IS NULL) OR ((char_length(secondary_language_bcp47) <= 35) AND (secondary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text) AND (secondary_language_bcp47 IS DISTINCT FROM primary_language_bcp47))) AND (speech_evidence_ref IS NOT NULL) AND (speech_policy_revision IS NOT NULL) AND (speech_adapter_revision IS NOT NULL) AND (lyrics_safety = ANY (ARRAY['allow'::text, 'review_required'::text, 'blocked'::text]))) OR ((speech_status = 'not_applicable'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (transcript_revision IS NULL) AND (lyrics_revision IS NULL) AND (material_disagreement = false) AND (explicitness IS NULL) AND (primary_language_bcp47 IS NULL) AND (secondary_language_bcp47 IS NULL) AND (speech_evidence_ref IS NULL) AND (speech_policy_revision IS NULL) AND (speech_adapter_revision IS NULL) AND (lyrics_safety = 'not_applicable'::text)) OR ((speech_status = 'unavailable'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (transcript_revision IS NULL) AND (lyrics_revision > 0) AND (material_disagreement = false) AND (explicitness = 'uncertain'::text) AND (primary_language_bcp47 IS NULL) AND (secondary_language_bcp47 IS NULL) AND (speech_evidence_ref IS NOT NULL) AND (speech_policy_revision IS NOT NULL) AND (speech_adapter_revision IS NOT NULL) AND (lyrics_safety = 'review_required'::text)))),
-    CONSTRAINT media_analysis_title_shape CHECK ((((embedded_title_provenance = 'embedded'::text) AND (embedded_title IS NOT NULL) AND (btrim(embedded_title) <> ''::text) AND (char_length(embedded_title) <= 200)) OR ((embedded_title_provenance = 'absent'::text) AND (embedded_title IS NULL))))
-);
-
 CREATE TABLE media_audio_revisions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -25956,7 +28596,7 @@ CREATE TABLE media_immutable_objects (
     immutable_ref text NOT NULL,
     community_id text NOT NULL,
     actor_user_id text NOT NULL,
-    reservation_id text NOT NULL,
+    reservation_id text,
     submission_id text NOT NULL,
     operation_id text NOT NULL,
     destination_ref text NOT NULL,
@@ -25968,10 +28608,12 @@ CREATE TABLE media_immutable_objects (
     sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
+    identity_kind text DEFAULT 'upload_version'::text NOT NULL,
     CONSTRAINT media_immutable_objects_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_immutable_objects_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
     CONSTRAINT media_immutable_objects_destination_ref_check CHECK ((btrim(destination_ref) <> ''::text)),
     CONSTRAINT media_immutable_objects_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_immutable_objects_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
     CONSTRAINT media_immutable_objects_immutable_ref_check CHECK ((btrim(immutable_ref) <> ''::text)),
     CONSTRAINT media_immutable_objects_object_version_check CHECK ((btrim(object_version) <> ''::text)),
     CONSTRAINT media_immutable_objects_size_bytes_check CHECK ((size_bytes > 0))
@@ -26026,114 +28668,35 @@ CREATE TABLE media_moderation_projections (
     CONSTRAINT media_moderation_projections_status_check CHECK ((status = ANY (ARRAY['none'::text, 'open'::text, 'approved'::text, 'blocked'::text, 'closed'::text])))
 );
 
-CREATE TABLE media_post_submissions (
+CREATE TABLE media_operator_reprocess_actions (
+    operation_id text NOT NULL,
     submission_id text NOT NULL,
     community_id text NOT NULL,
     actor_user_id text NOT NULL,
-    operation_id text NOT NULL,
-    endpoint_template text DEFAULT '/communities/:communityId/media-post-submissions'::text NOT NULL,
+    operator_principal_id text NOT NULL,
     idempotency_key text NOT NULL,
     request_hash text NOT NULL,
-    title text,
-    song_type text,
-    start_input jsonb NOT NULL,
-    audio_reservation_id text NOT NULL,
-    creation_revision bigint DEFAULT 1 NOT NULL,
-    audio_revision bigint DEFAULT 0 NOT NULL,
-    analysis_revision bigint DEFAULT 0 NOT NULL,
-    decision_revision bigint DEFAULT 0 NOT NULL,
-    workflow_revision bigint DEFAULT 0 NOT NULL,
-    event_sequence bigint DEFAULT 1 NOT NULL,
-    current_terms_revision bigint,
-    current_immutable_ref text,
-    current_analysis_revision bigint,
-    current_decision_revision bigint,
-    bound_reference_asset_id text,
-    bound_reference_evidence_ref text,
-    bound_reference_audio_revision bigint,
-    bound_reference_analysis_revision bigint,
-    bound_reference_audio_sha256 text,
-    bound_reference_upstream_share_bps integer,
-    status text DEFAULT 'processing'::text NOT NULL,
-    phase text DEFAULT 'reserve'::text,
-    post_id text,
-    failure_code text,
-    retry_count integer DEFAULT 0 NOT NULL,
-    failure_retry_count integer,
-    retryable boolean,
-    last_safe_phase text,
-    action_kind text,
-    action_reference_request_ref text,
-    action_expires_at timestamp with time zone,
-    held_revision bigint,
-    review_ref text,
-    review_reason_code text,
-    review_exhaustion_code text,
-    review_exhaustion_attempt_id text,
-    moderator_action_id text,
-    moderator_actor_id text,
-    moderator_evidence_ref text,
-    moderator_approval_kind text,
-    moderator_reason_code text,
-    abandonment_reason text,
-    retention_disposition text,
-    response_snapshot_bytes bytea NOT NULL,
-    response_snapshot_sha256 text NOT NULL,
+    expected_creation_revision bigint NOT NULL,
+    resulting_creation_revision bigint NOT NULL,
+    expected_workflow_revision bigint NOT NULL,
+    resulting_workflow_revision bigint NOT NULL,
+    replacement_budget_before bigint NOT NULL,
+    replacement_budget_after bigint DEFAULT 0 NOT NULL,
+    outbox_event_id text NOT NULL,
+    reason_code text NOT NULL,
+    evidence_ref text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
-    author_persona_id text NOT NULL,
-    lyrics_revision bigint DEFAULT 0 NOT NULL,
-    current_lyrics_revision bigint,
-    workflow_replacement_sequence bigint DEFAULT 0 NOT NULL,
-    author_declared_rating text DEFAULT 'general'::text NOT NULL,
-    resulting_content_rating text DEFAULT 'general'::text NOT NULL,
-    media_kind text DEFAULT 'song'::text NOT NULL,
-    video_intent text,
-    caption text,
-    video_revision bigint DEFAULT 0 NOT NULL,
-    poster_timestamp_ms bigint,
-    video_state_snapshot jsonb,
-    failure_evidence_ref text,
-    CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
-    CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
-    CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),
-    CONSTRAINT media_post_submissions_audio_revision_check CHECK ((audio_revision >= 0)),
-    CONSTRAINT media_post_submissions_author_declared_rating_check CHECK ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
-    CONSTRAINT media_post_submissions_creation_revision_check CHECK ((creation_revision > 0)),
-    CONSTRAINT media_post_submissions_decision_revision_check CHECK ((decision_revision >= 0)),
-    CONSTRAINT media_post_submissions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-post-submissions'::text)),
-    CONSTRAINT media_post_submissions_event_sequence_check CHECK ((event_sequence > 0)),
-    CONSTRAINT media_post_submissions_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['invalid_media'::text, 'unsupported_media'::text, 'probe_failed'::text, 'hash_failed'::text, 'transform_failed'::text, 'publication_failed'::text, 'upload_seal_conflict'::text, 'poster_undecodable'::text, 'poster_timestamp_out_of_range'::text])) OR ((media_kind = 'video'::text) AND (failure_code = ANY (ARRAY['membership_required'::text, 'provider_submission_unconfirmed'::text]))))),
-    CONSTRAINT media_post_submissions_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR (btrim(failure_evidence_ref) <> ''::text))),
-    CONSTRAINT media_post_submissions_failure_retry_count_check CHECK (((failure_retry_count IS NULL) OR ((failure_retry_count >= 0) AND (failure_retry_count <= 3)))),
-    CONSTRAINT media_post_submissions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
-    CONSTRAINT media_post_submissions_last_safe_phase_check CHECK (((last_safe_phase IS NULL) OR (last_safe_phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
-    CONSTRAINT media_post_submissions_lyrics_revision_check CHECK ((lyrics_revision >= 0)),
-    CONSTRAINT media_post_submissions_lyrics_shape CHECK ((((lyrics_revision = 0) AND (current_lyrics_revision IS NULL)) OR ((lyrics_revision > 0) AND (current_lyrics_revision = lyrics_revision)))),
-    CONSTRAINT media_post_submissions_moderator_approval_kind_check CHECK (((moderator_approval_kind IS NULL) OR (moderator_approval_kind = ANY (ARRAY['standard'::text, 'acr_override'::text])))),
-    CONSTRAINT media_post_submissions_moderator_reason_code_check CHECK (((moderator_reason_code IS NULL) OR (moderator_reason_code = ANY (ARRAY['acr_inconclusive'::text, 'acr_exhausted'::text, 'acr_skipped'::text, 'policy_violation'::text])))),
-    CONSTRAINT media_post_submissions_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
-    CONSTRAINT media_post_submissions_phase_check CHECK (((phase IS NULL) OR (phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
-    CONSTRAINT media_post_submissions_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_evidence_ref IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_evidence_ref IS NOT NULL) AND (btrim(bound_reference_evidence_ref) <> ''::text) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
-    CONSTRAINT media_post_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT media_post_submissions_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
-    CONSTRAINT media_post_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT media_post_submissions_resulting_content_rating_check CHECK ((resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
-    CONSTRAINT media_post_submissions_retention_disposition_check CHECK (((retention_disposition IS NULL) OR (retention_disposition = ANY (ARRAY['no_object'::text, 'retain_for_reconciliation'::text, 'retain_until_expiry'::text])))),
-    CONSTRAINT media_post_submissions_retry_count_check CHECK (((retry_count >= 0) AND (retry_count <= 3))),
-    CONSTRAINT media_post_submissions_review_exhaustion_code_check CHECK (((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))),
-    CONSTRAINT media_post_submissions_review_exhaustion_shape CHECK ((((review_exhaustion_code IS NULL) AND (review_exhaustion_attempt_id IS NULL)) OR ((review_exhaustion_code = 'acr_exhausted'::text) AND (review_exhaustion_attempt_id IS NOT NULL) AND (status = 'manual_review'::text)))),
-    CONSTRAINT media_post_submissions_review_reason_code_check CHECK (((review_reason_code IS NULL) OR (review_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'video_review'::text])))),
-    CONSTRAINT media_post_submissions_revision_shape CHECK ((((media_kind = 'song'::text) AND (video_revision = 0) AND (((audio_revision = 0) AND (current_immutable_ref IS NULL)) OR ((audio_revision > 0) AND (current_immutable_ref IS NOT NULL)))) OR ((media_kind = 'video'::text) AND (audio_revision = 0) AND (((video_revision = 0) AND (current_immutable_ref IS NULL)) OR ((video_revision > 0) AND (current_immutable_ref IS NOT NULL)))))),
-    CONSTRAINT media_post_submissions_shape CHECK ((((status = 'processing'::text) AND (phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'action_required'::text) AND (phase IS NULL) AND (action_kind = 'reference_required'::text) AND (action_reference_request_ref IS NOT NULL) AND (action_expires_at IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL)) OR ((status = 'manual_review'::text) AND (phase IS NULL) AND (review_ref IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL) AND ((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))) OR ((status = 'published'::text) AND (phase IS NULL) AND (post_id IS NOT NULL) AND (failure_code IS NULL)) OR ((status = 'blocked'::text) AND (phase IS NULL) AND (post_id IS NULL)) OR ((status = 'processing_failed'::text) AND (phase IS NULL) AND (failure_code IS NOT NULL) AND (failure_retry_count IS NOT NULL) AND (retryable IS NOT NULL) AND (last_safe_phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'abandoned'::text) AND (phase IS NULL) AND (post_id IS NULL) AND (abandonment_reason IS NOT NULL) AND (retention_disposition IS NOT NULL) AND (action_kind IS NULL) AND (action_reference_request_ref IS NULL) AND (action_expires_at IS NULL) AND (review_ref IS NULL) AND (review_reason_code IS NULL) AND (review_exhaustion_code IS NULL) AND (held_revision IS NULL) AND (moderator_action_id IS NULL) AND (moderator_actor_id IS NULL) AND (moderator_evidence_ref IS NULL) AND (moderator_approval_kind IS NULL) AND (moderator_reason_code IS NULL)))),
-    CONSTRAINT media_post_submissions_start_input_check CHECK ((jsonb_typeof(start_input) = 'object'::text)),
-    CONSTRAINT media_post_submissions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'published'::text, 'blocked'::text, 'processing_failed'::text, 'abandoned'::text]))),
-    CONSTRAINT media_post_submissions_submission_id_check CHECK ((btrim(submission_id) <> ''::text)),
-    CONSTRAINT media_post_submissions_track_shape CHECK ((((media_kind = 'song'::text) AND (title IS NOT NULL) AND (btrim(title) <> ''::text) AND (char_length(title) <= 200) AND (song_type = ANY (ARRAY['original'::text, 'remix'::text])) AND (video_intent IS NULL) AND (caption IS NULL) AND (video_revision = 0) AND (poster_timestamp_ms IS NULL) AND (video_state_snapshot IS NULL)) OR ((media_kind = 'video'::text) AND (title IS NULL) AND (song_type IS NULL) AND (video_intent = 'original_audio'::text) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (audio_revision = 0) AND (lyrics_revision = 0) AND (current_terms_revision IS NULL) AND (current_lyrics_revision IS NULL) AND (bound_reference_asset_id IS NULL) AND (video_revision >= 0) AND (jsonb_typeof(video_state_snapshot) = 'object'::text) AND ((poster_timestamp_ms IS NULL) OR ((poster_timestamp_ms >= 0) AND (poster_timestamp_ms <= 179999)))))),
-    CONSTRAINT media_post_submissions_workflow_replacement_sequence_check CHECK ((workflow_replacement_sequence >= 0)),
-    CONSTRAINT media_post_submissions_workflow_revision_check CHECK ((workflow_revision >= 0)),
-    CONSTRAINT media_video_submission_reconciliation_shape CHECK (((media_kind <> 'video'::text) OR (((NOT (video_state_snapshot ? 'reconciliationRequired'::text)) OR (jsonb_typeof((video_state_snapshot -> 'reconciliationRequired'::text)) = 'boolean'::text)) AND (((video_state_snapshot ->> 'reconciliationRequired'::text) IS DISTINCT FROM 'true'::text) OR ((status = 'processing_failed'::text) AND (retryable IS FALSE))))))
+    CONSTRAINT media_operator_reprocess_actio_expected_creation_revision_check CHECK ((expected_creation_revision > 0)),
+    CONSTRAINT media_operator_reprocess_actio_expected_workflow_revision_check CHECK ((expected_workflow_revision > 0)),
+    CONSTRAINT media_operator_reprocess_action_replacement_budget_before_check CHECK ((replacement_budget_before >= 0)),
+    CONSTRAINT media_operator_reprocess_actions_check CHECK ((resulting_creation_revision = (expected_creation_revision + 1))),
+    CONSTRAINT media_operator_reprocess_actions_check1 CHECK ((resulting_workflow_revision = (expected_workflow_revision + 1))),
+    CONSTRAINT media_operator_reprocess_actions_evidence_ref_check CHECK ((evidence_ref <> ''::text)),
+    CONSTRAINT media_operator_reprocess_actions_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT media_operator_reprocess_actions_operator_principal_id_check CHECK ((operator_principal_id <> ''::text)),
+    CONSTRAINT media_operator_reprocess_actions_reason_code_check CHECK ((reason_code = 'workflow_terminal_unconverged'::text)),
+    CONSTRAINT media_operator_reprocess_actions_replacement_budget_after_check CHECK ((replacement_budget_after = 0)),
+    CONSTRAINT media_operator_reprocess_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE media_processing_attempts (
@@ -26211,59 +28774,6 @@ CREATE TABLE media_publication_decisions (
     CONSTRAINT media_publication_decisions_policy_revision_check CHECK ((btrim(policy_revision) <> ''::text))
 );
 
-CREATE TABLE media_publication_projections (
-    submission_id text NOT NULL,
-    community_id text NOT NULL,
-    actor_user_id text NOT NULL,
-    operation_id text NOT NULL,
-    post_id text NOT NULL,
-    creation_revision bigint NOT NULL,
-    audio_revision bigint NOT NULL,
-    analysis_revision bigint NOT NULL,
-    decision_revision bigint NOT NULL,
-    canonical_audio_sha256 text,
-    title text,
-    audio_asset_ref text,
-    cover_artifact_ref text,
-    language_status text NOT NULL,
-    primary_language_bcp47 text,
-    secondary_language_bcp47 text,
-    lyrics_explicitness text NOT NULL,
-    analysis_badges jsonb DEFAULT '[]'::jsonb NOT NULL,
-    alignment text DEFAULT 'pending'::text NOT NULL,
-    data_registration text DEFAULT 'pending'::text NOT NULL,
-    locked_delivery text DEFAULT 'not_required'::text NOT NULL,
-    projected_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
-    author_persona_id text NOT NULL,
-    lyrics_status text DEFAULT 'no_lyrics'::text NOT NULL,
-    lyrics_revision bigint,
-    lyrics_text text,
-    visibility text DEFAULT 'public'::text NOT NULL,
-    content_rating text DEFAULT 'general'::text NOT NULL,
-    media_kind text DEFAULT 'song'::text NOT NULL,
-    video_revision bigint DEFAULT 0 NOT NULL,
-    caption text,
-    video_asset_ref text,
-    poster_artifact_ref text,
-    original_sound_id text,
-    canonical_video_sha256 text,
-    CONSTRAINT media_publication_lyrics_shape CHECK ((((lyrics_status = 'ready'::text) AND (lyrics_revision > 0) AND (lyrics_text IS NOT NULL)) OR ((lyrics_status = 'no_lyrics'::text) AND (lyrics_revision IS NULL) AND (lyrics_text IS NULL)))),
-    CONSTRAINT media_publication_projection_track_shape CHECK ((((media_kind = 'song'::text) AND (video_revision = 0) AND (caption IS NULL) AND (video_asset_ref IS NULL) AND (poster_artifact_ref IS NULL) AND (original_sound_id IS NULL) AND (canonical_video_sha256 IS NULL) AND (title IS NOT NULL) AND (audio_asset_ref IS NOT NULL) AND (canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)) OR ((media_kind = 'video'::text) AND (audio_revision = 0) AND (video_revision > 0) AND (title IS NULL) AND (audio_asset_ref IS NULL) AND (canonical_audio_sha256 IS NULL) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (video_asset_ref IS NOT NULL) AND (btrim(video_asset_ref) <> ''::text) AND (poster_artifact_ref IS NOT NULL) AND (btrim(poster_artifact_ref) <> ''::text) AND (original_sound_id IS NOT NULL) AND (btrim(original_sound_id) <> ''::text) AND (canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text)))),
-    CONSTRAINT media_publication_projections_alignment_check CHECK ((alignment = ANY (ARRAY['not_applicable'::text, 'pending'::text, 'ready'::text, 'unavailable'::text]))),
-    CONSTRAINT media_publication_projections_analysis_badges_check CHECK ((analysis_badges = ANY (ARRAY['[]'::jsonb, '["reference_bound"]'::jsonb]))),
-    CONSTRAINT media_publication_projections_audio_asset_ref_check CHECK ((btrim(audio_asset_ref) <> ''::text)),
-    CONSTRAINT media_publication_projections_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT media_publication_projections_content_rating_check CHECK ((content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
-    CONSTRAINT media_publication_projections_data_registration_check CHECK ((data_registration = ANY (ARRAY['pending'::text, 'registered'::text, 'failed'::text]))),
-    CONSTRAINT media_publication_projections_language_status_check CHECK ((language_status = ANY (ARRAY['ready'::text, 'not_applicable'::text, 'unavailable'::text]))),
-    CONSTRAINT media_publication_projections_locked_delivery_check CHECK ((locked_delivery = ANY (ARRAY['not_required'::text, 'preparing'::text, 'ready'::text, 'failed'::text]))),
-    CONSTRAINT media_publication_projections_lyrics_explicitness_check CHECK ((lyrics_explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'not_applicable'::text, 'uncertain'::text, 'unavailable'::text]))),
-    CONSTRAINT media_publication_projections_lyrics_status_check CHECK ((lyrics_status = ANY (ARRAY['ready'::text, 'no_lyrics'::text]))),
-    CONSTRAINT media_publication_projections_title_check CHECK ((btrim(title) <> ''::text)),
-    CONSTRAINT media_publication_projections_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
-);
-
 CREATE TABLE media_reference_evidence (
     community_id text NOT NULL,
     actor_user_id text NOT NULL,
@@ -26288,6 +28798,39 @@ CREATE TABLE media_reference_evidence (
     CONSTRAINT media_reference_evidence_inherited_commercial_rev_share_b_check CHECK (((inherited_commercial_rev_share_bps IS NULL) OR ((inherited_commercial_rev_share_bps >= 0) AND (inherited_commercial_rev_share_bps <= 10000)))),
     CONSTRAINT media_reference_evidence_inherited_license_preset_check CHECK (((inherited_license_preset IS NULL) OR (inherited_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])))),
     CONSTRAINT media_reference_evidence_upstream_commercial_rev_share_bp_check CHECK (((upstream_commercial_rev_share_bps IS NULL) OR ((upstream_commercial_rev_share_bps >= 0) AND (upstream_commercial_rev_share_bps <= 10000))))
+);
+
+CREATE TABLE media_song_canonical_timings (
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    song_community_id text NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    state text NOT NULL,
+    sample_rate_hz integer DEFAULT 48000 NOT NULL,
+    duration_samples bigint,
+    prober_identity text,
+    prober_policy_revision integer,
+    failure_code text,
+    attempts integer DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    requested_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    measured_at timestamp with time zone,
+    CONSTRAINT media_song_canonical_timings_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT media_song_canonical_timings_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT media_song_canonical_timings_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_canonical_timings_duration_samples_check CHECK (((duration_samples IS NULL) OR ((duration_samples > 0) AND (duration_samples <= '9007199254740991'::bigint)))),
+    CONSTRAINT media_song_canonical_timings_failure_code_check CHECK (((failure_code IS NULL) OR (btrim(failure_code) <> ''::text))),
+    CONSTRAINT media_song_canonical_timings_lease_expires_at_check CHECK (((lease_expires_at IS NULL) OR isfinite(lease_expires_at))),
+    CONSTRAINT media_song_canonical_timings_measured_at_check CHECK (((measured_at IS NULL) OR isfinite(measured_at))),
+    CONSTRAINT media_song_canonical_timings_prober_identity_check CHECK (((prober_identity IS NULL) OR (btrim(prober_identity) <> ''::text))),
+    CONSTRAINT media_song_canonical_timings_prober_policy_revision_check CHECK (((prober_policy_revision IS NULL) OR (prober_policy_revision >= 1))),
+    CONSTRAINT media_song_canonical_timings_requested_at_check CHECK (isfinite(requested_at)),
+    CONSTRAINT media_song_canonical_timings_sample_rate_hz_check CHECK ((sample_rate_hz = 48000)),
+    CONSTRAINT media_song_canonical_timings_song_community_id_check CHECK ((btrim(song_community_id) <> ''::text)),
+    CONSTRAINT media_song_canonical_timings_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text)),
+    CONSTRAINT media_song_canonical_timings_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'ready'::text, 'failed'::text]))),
+    CONSTRAINT song_canonical_timing_failed_shape CHECK (((state = 'failed'::text) = (failure_code IS NOT NULL))),
+    CONSTRAINT song_canonical_timing_ready_shape CHECK (((state = 'ready'::text) = ((duration_samples IS NOT NULL) AND (prober_identity IS NOT NULL) AND (prober_policy_revision IS NOT NULL) AND (measured_at IS NOT NULL))))
 );
 
 CREATE TABLE media_song_lyrics_revisions (
@@ -26316,6 +28859,122 @@ CREATE TABLE media_song_lyrics_revisions (
     CONSTRAINT media_song_lyrics_revisions_lyrics_sha256_check CHECK ((lyrics_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_song_lyrics_revisions_lyrics_text_check CHECK (((char_length(lyrics_text) >= 1) AND (char_length(lyrics_text) <= 200000) AND (octet_length(convert_to(lyrics_text, 'UTF8'::name)) <= 800000))),
     CONSTRAINT media_song_lyrics_revisions_provenance_check CHECK ((provenance = ANY (ARRAY['asr_accepted'::text, 'pasted'::text, 'corrected'::text])))
+);
+
+CREATE TABLE media_song_video_accepted_masters (
+    plan_id text NOT NULL,
+    master_revision_id text NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_accepted_masters_accepted_at_check CHECK (isfinite(accepted_at))
+);
+
+CREATE TABLE media_song_video_masters (
+    master_revision_id text NOT NULL,
+    plan_id text NOT NULL,
+    attempt_id text NOT NULL,
+    attempt_generation integer NOT NULL,
+    plan_submission_id text NOT NULL,
+    source_immutable_ref text NOT NULL,
+    source_sha256 text NOT NULL,
+    master_sha256 text NOT NULL,
+    master_byte_length bigint NOT NULL,
+    verified_object_key text NOT NULL,
+    verified_object_version text NOT NULL,
+    measured_video_duration_samples bigint NOT NULL,
+    measured_audio_duration_samples bigint NOT NULL,
+    measured_audio_sample_rate_hz integer NOT NULL,
+    measured_audio_channels integer NOT NULL,
+    master_ceiling_bytes bigint NOT NULL,
+    master_policy_revision integer NOT NULL,
+    renderer_identity text NOT NULL,
+    renderer_policy_revision integer NOT NULL,
+    decision_clip_start_samples bigint NOT NULL,
+    decision_clip_duration_samples bigint NOT NULL,
+    sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    soundtrack_sha256 text NOT NULL,
+    verified_object_etag text,
+    CONSTRAINT media_song_video_masters_attempt_generation_check CHECK ((attempt_generation >= 1)),
+    CONSTRAINT media_song_video_masters_decision_clip_duration_samples_check CHECK ((decision_clip_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_decision_clip_start_samples_check CHECK ((decision_clip_start_samples >= 0)),
+    CONSTRAINT media_song_video_masters_master_byte_length_check CHECK ((master_byte_length > 0)),
+    CONSTRAINT media_song_video_masters_master_ceiling_bytes_check CHECK ((master_ceiling_bytes > 0)),
+    CONSTRAINT media_song_video_masters_master_policy_revision_check CHECK ((master_policy_revision = 1)),
+    CONSTRAINT media_song_video_masters_master_revision_id_check CHECK (((length(master_revision_id) >= 1) AND (length(master_revision_id) <= 128) AND (btrim(master_revision_id) = master_revision_id))),
+    CONSTRAINT media_song_video_masters_master_sha256_check CHECK ((master_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_measured_audio_channels_check CHECK ((measured_audio_channels >= 1)),
+    CONSTRAINT media_song_video_masters_measured_audio_duration_samples_check CHECK ((measured_audio_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_measured_audio_sample_rate_hz_check CHECK ((measured_audio_sample_rate_hz = 48000)),
+    CONSTRAINT media_song_video_masters_measured_video_duration_samples_check CHECK ((measured_video_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_renderer_identity_check CHECK ((btrim(renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_masters_renderer_policy_revision_check CHECK ((renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_masters_sealed_at_check CHECK (isfinite(sealed_at)),
+    CONSTRAINT media_song_video_masters_soundtrack_sha256_check CHECK ((soundtrack_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_source_sha256_check CHECK ((source_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_verified_object_etag_check CHECK (((verified_object_etag IS NULL) OR (btrim(verified_object_etag) <> ''::text))),
+    CONSTRAINT media_song_video_masters_verified_object_key_check CHECK ((btrim(verified_object_key) <> ''::text)),
+    CONSTRAINT media_song_video_masters_verified_object_version_check CHECK ((btrim(verified_object_version) <> ''::text)),
+    CONSTRAINT song_video_master_identity_distinct CHECK ((master_sha256 <> source_sha256)),
+    CONSTRAINT song_video_master_ratified_ceiling CHECK ((master_ceiling_bytes = 524288000)),
+    CONSTRAINT song_video_master_tracks_cover_interval CHECK (((measured_video_duration_samples = decision_clip_duration_samples) AND (measured_audio_duration_samples = decision_clip_duration_samples))),
+    CONSTRAINT song_video_master_within_ceiling CHECK ((master_byte_length <= master_ceiling_bytes))
+);
+
+CREATE TABLE media_song_video_render_attempts (
+    attempt_id text NOT NULL,
+    plan_id text NOT NULL,
+    generation integer NOT NULL,
+    state text NOT NULL,
+    dispatch_output_key text NOT NULL,
+    dispatch_renderer_identity text NOT NULL,
+    dispatch_renderer_policy_revision integer NOT NULL,
+    disposition text,
+    started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    execution_phase text DEFAULT 'recorded'::text NOT NULL,
+    execution_started_at timestamp with time zone,
+    expected_output_sha256 text,
+    expected_output_byte_length bigint,
+    execution_refusal_reason text,
+    execution_claim_id text,
+    execution_claimed_at timestamp with time zone,
+    CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_render_attem_expected_output_byte_length_check CHECK (((expected_output_byte_length IS NULL) OR (expected_output_byte_length > 0))),
+    CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempt_claim_shape CHECK (((execution_claim_id IS NULL) = (execution_claimed_at IS NULL))),
+    CONSTRAINT media_song_video_render_attempt_execution_shape CHECK (((execution_phase = 'recorded'::text) = (execution_started_at IS NULL))),
+    CONSTRAINT media_song_video_render_attempt_outcome_shape CHECK ((((expected_output_sha256 IS NULL) = (expected_output_byte_length IS NULL)) AND ((execution_refusal_reason IS NULL) OR (expected_output_sha256 IS NULL)))),
+    CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK (((length(attempt_id) >= 1) AND (length(attempt_id) <= 128) AND (btrim(attempt_id) = attempt_id))),
+    CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_execution_claim_id_check CHECK (((execution_claim_id IS NULL) OR ((length(execution_claim_id) >= 1) AND (length(execution_claim_id) <= 128) AND (btrim(execution_claim_id) = execution_claim_id)))),
+    CONSTRAINT media_song_video_render_attempts_execution_claimed_at_check CHECK (((execution_claimed_at IS NULL) OR isfinite(execution_claimed_at))),
+    CONSTRAINT media_song_video_render_attempts_execution_phase_check CHECK ((execution_phase = ANY (ARRAY['recorded'::text, 'submitting'::text, 'submitted'::text]))),
+    CONSTRAINT media_song_video_render_attempts_execution_refusal_reason_check CHECK (((execution_refusal_reason IS NULL) OR (btrim(execution_refusal_reason) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_execution_started_at_check CHECK (((execution_started_at IS NULL) OR isfinite(execution_started_at))),
+    CONSTRAINT media_song_video_render_attempts_expected_output_sha256_check CHECK (((expected_output_sha256 IS NULL) OR (expected_output_sha256 ~ '^[a-f0-9]{64}$'::text))),
+    CONSTRAINT media_song_video_render_attempts_generation_check CHECK ((generation >= 1)),
+    CONSTRAINT media_song_video_render_attempts_started_at_check CHECK (isfinite(started_at)),
+    CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text])))
+);
+
+CREATE TABLE media_song_video_render_plans (
+    plan_id text NOT NULL,
+    submission_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_asset_id text NOT NULL,
+    audio_revision integer NOT NULL,
+    song_duration_samples bigint NOT NULL,
+    clip_start_samples bigint NOT NULL,
+    clip_duration_samples bigint NOT NULL,
+    frozen_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_render_plans_audio_revision_check CHECK ((audio_revision >= 0)),
+    CONSTRAINT media_song_video_render_plans_clip_duration_samples_check CHECK ((clip_duration_samples > 0)),
+    CONSTRAINT media_song_video_render_plans_clip_start_samples_check CHECK ((clip_start_samples >= 0)),
+    CONSTRAINT media_song_video_render_plans_frozen_at_check CHECK (isfinite(frozen_at)),
+    CONSTRAINT media_song_video_render_plans_plan_id_check CHECK (((length(plan_id) >= 1) AND (length(plan_id) <= 128) AND (btrim(plan_id) = plan_id))),
+    CONSTRAINT media_song_video_render_plans_song_asset_id_check CHECK ((btrim(song_asset_id) <> ''::text)),
+    CONSTRAINT media_song_video_render_plans_song_duration_samples_check CHECK ((song_duration_samples > 0)),
+    CONSTRAINT media_song_video_render_plans_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text)),
+    CONSTRAINT song_video_plan_canonical_containment CHECK (((clip_start_samples + clip_duration_samples) <= song_duration_samples))
 );
 
 CREATE TABLE media_submission_command_replays (
@@ -26530,7 +29189,7 @@ CREATE TABLE media_upload_reservations (
     CONSTRAINT media_upload_reservations_expected_size_bytes_check CHECK ((expected_size_bytes > 0)),
     CONSTRAINT media_upload_reservations_expiry_shape CHECK (((state <> 'expired'::text) OR (expires_at <= updated_at))),
     CONSTRAINT media_upload_reservations_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
-    CONSTRAINT media_upload_reservations_media_shape CHECK ((((media_kind = 'song'::text) AND (video_intent IS NULL) AND (ingest_policy_revision IS NULL) AND (multipart_upload_id IS NULL) AND (multipart_part_size_bytes IS NULL) AND (multipart_part_count IS NULL) AND (multipart_manifest IS NULL) AND (multipart_completed_at IS NULL) AND (multipart_aborted_at IS NULL) AND (upload_url IS NOT NULL) AND (btrim(upload_url) <> ''::text)) OR ((media_kind = 'video'::text) AND (video_intent = 'original_audio'::text) AND (ingest_policy_revision > 0) AND (multipart_upload_id IS NOT NULL) AND (btrim(multipart_upload_id) <> ''::text) AND (multipart_part_size_bytes > 0) AND (multipart_part_count > 0) AND ((multipart_manifest IS NULL) OR (jsonb_typeof(multipart_manifest) = 'array'::text)) AND (NOT ((multipart_completed_at IS NOT NULL) AND (multipart_aborted_at IS NOT NULL))) AND (upload_url IS NULL) AND (upload_headers = '[]'::jsonb)))),
+    CONSTRAINT media_upload_reservations_media_shape CHECK ((((media_kind = 'song'::text) AND (video_intent IS NULL) AND (ingest_policy_revision IS NULL) AND (multipart_upload_id IS NULL) AND (multipart_part_size_bytes IS NULL) AND (multipart_part_count IS NULL) AND (multipart_manifest IS NULL) AND (multipart_completed_at IS NULL) AND (multipart_aborted_at IS NULL) AND (upload_url IS NOT NULL) AND (btrim(upload_url) <> ''::text)) OR ((media_kind = 'video'::text) AND (video_intent = ANY (ARRAY['original_audio'::text, 'song_reference'::text])) AND (ingest_policy_revision > 0) AND (multipart_upload_id IS NOT NULL) AND (btrim(multipart_upload_id) <> ''::text) AND (multipart_part_size_bytes > 0) AND (multipart_part_count > 0) AND ((multipart_manifest IS NULL) OR (jsonb_typeof(multipart_manifest) = 'array'::text)) AND (NOT ((multipart_completed_at IS NOT NULL) AND (multipart_aborted_at IS NOT NULL))) AND (upload_url IS NULL) AND (upload_headers = '[]'::jsonb)))),
     CONSTRAINT media_upload_reservations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_upload_reservations_reservation_id_check CHECK ((btrim(reservation_id) <> ''::text)),
     CONSTRAINT media_upload_reservations_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
@@ -26544,21 +29203,6 @@ CREATE TABLE media_upload_reservations (
     CONSTRAINT media_upload_reservations_terminal_shape CHECK ((((state = 'rejected'::text) AND (terminal_reason IS NOT NULL) AND (terminal_evidence_ref IS NOT NULL) AND (terminal_evidence_digest IS NOT NULL) AND (terminal_at IS NOT NULL) AND (terminal_fence IS NOT NULL)) OR ((state <> 'rejected'::text) AND (terminal_reason IS NULL) AND (terminal_evidence_ref IS NULL) AND (terminal_evidence_digest IS NULL) AND (terminal_at IS NULL) AND (terminal_fence IS NULL)))),
     CONSTRAINT media_upload_reservations_upload_headers_check CHECK ((jsonb_typeof(upload_headers) = 'array'::text)),
     CONSTRAINT media_upload_reservations_video_limits CHECK (((media_kind <> 'video'::text) OR ((expected_content_type = ANY (ARRAY['video/mp4'::text, 'video/quicktime'::text])) AND ((expected_size_bytes >= 1) AND (expected_size_bytes <= 524288000)))))
-);
-
-CREATE TABLE media_video_analyses (
-    submission_id text NOT NULL,
-    community_id text NOT NULL,
-    actor_user_id text NOT NULL,
-    operation_id text NOT NULL,
-    video_revision bigint NOT NULL,
-    analysis_revision bigint NOT NULL,
-    canonical_video_sha256 text NOT NULL,
-    analysis_snapshot jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT media_video_analyses_analysis_revision_check CHECK ((analysis_revision > 0)),
-    CONSTRAINT media_video_analyses_analysis_snapshot_check CHECK ((jsonb_typeof(analysis_snapshot) = 'object'::text)),
-    CONSTRAINT media_video_analyses_canonical_video_sha256_check CHECK ((canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE media_video_analysis_outbox (
@@ -26700,6 +29344,41 @@ CREATE TABLE media_video_reservation_command_replays (
     CONSTRAINT media_video_reservation_replay_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)))
 );
 
+CREATE TABLE media_video_reservation_song_plans (
+    reservation_id text NOT NULL,
+    reservation_community_id text NOT NULL,
+    reservation_intent text DEFAULT 'song_reference'::text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    song_duration_samples bigint NOT NULL,
+    song_asset_id text NOT NULL,
+    clip_start_samples bigint NOT NULL,
+    clip_duration_samples bigint NOT NULL,
+    interval_policy_revision integer NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    derivative_video text NOT NULL,
+    selected_from_kind text NOT NULL,
+    origin_post_id text,
+    origin_verified boolean NOT NULL,
+    frozen_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_reservation_song_pla_interval_policy_revision_check CHECK ((interval_policy_revision >= 1)),
+    CONSTRAINT media_video_reservation_song_plans_clip_duration_samples_check CHECK (((clip_duration_samples >= 144000) AND (clip_duration_samples <= 8640000))),
+    CONSTRAINT media_video_reservation_song_plans_clip_start_samples_check CHECK ((clip_start_samples >= 0)),
+    CONSTRAINT media_video_reservation_song_plans_derivative_video_check CHECK ((derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text]))),
+    CONSTRAINT media_video_reservation_song_plans_frozen_at_check CHECK (isfinite(frozen_at)),
+    CONSTRAINT media_video_reservation_song_plans_origin_post_id_check CHECK (((origin_post_id IS NULL) OR (btrim(origin_post_id) <> ''::text))),
+    CONSTRAINT media_video_reservation_song_plans_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_reservation_song_plans_owner_policy_revision_check CHECK ((owner_policy_revision >= 1)),
+    CONSTRAINT media_video_reservation_song_plans_reservation_intent_check CHECK ((reservation_intent = 'song_reference'::text)),
+    CONSTRAINT media_video_reservation_song_plans_selected_from_kind_check CHECK ((selected_from_kind = ANY (ARRAY['library'::text, 'feed'::text]))),
+    CONSTRAINT media_video_reservation_song_plans_song_asset_id_check CHECK ((btrim(song_asset_id) <> ''::text)),
+    CONSTRAINT song_video_reservation_plan_containment CHECK (((clip_start_samples + clip_duration_samples) <= song_duration_samples)),
+    CONSTRAINT song_video_reservation_plan_origin_shape CHECK (((selected_from_kind = 'feed'::text) = (origin_post_id IS NOT NULL))),
+    CONSTRAINT song_video_reservation_plan_origin_verified CHECK (((selected_from_kind = 'feed'::text) OR (origin_verified = false)))
+);
+
 CREATE TABLE media_video_review_holds (
     submission_id text NOT NULL,
     creation_revision bigint NOT NULL,
@@ -26741,29 +29420,8 @@ CREATE TABLE media_video_rights (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_video_rights_access_mode_check CHECK ((access_mode = 'public'::text)),
     CONSTRAINT media_video_rights_offered_license_check CHECK ((offered_license IS NULL)),
-    CONSTRAINT media_video_rights_rights_basis_check CHECK ((rights_basis = 'original'::text)),
+    CONSTRAINT media_video_rights_rights_basis_check CHECK ((rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))),
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
-);
-
-CREATE TABLE media_video_safety_evidence (
-    submission_id text NOT NULL,
-    video_revision bigint NOT NULL,
-    creation_revision bigint NOT NULL,
-    request_id text NOT NULL,
-    input_sha256 text NOT NULL,
-    evidence_ref text NOT NULL,
-    evidence_snapshot jsonb NOT NULL,
-    platform_held boolean NOT NULL,
-    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT media_video_safety_evidence_creation_revision_check CHECK ((creation_revision > 0)),
-    CONSTRAINT media_video_safety_evidence_evidence_ref_check CHECK ((evidence_ref ~ '^evidence_[a-f0-9]{64}$'::text)),
-    CONSTRAINT media_video_safety_evidence_evidence_snapshot_check CHECK (((jsonb_typeof(evidence_snapshot) = 'object'::text) AND (octet_length((evidence_snapshot)::text) <= 65536))),
-    CONSTRAINT media_video_safety_evidence_input_sha256_check CHECK ((input_sha256 ~ '^[a-f0-9]{64}$'::text)),
-    CONSTRAINT media_video_safety_evidence_request_id_check CHECK ((btrim(request_id) <> ''::text)),
-    CONSTRAINT media_video_safety_evidence_video_revision_check CHECK ((video_revision > 0)),
-    CONSTRAINT video_safety_evidence_identity CHECK (COALESCE((((evidence_snapshot ->> 'requestId'::text) = request_id) AND ((evidence_snapshot ->> 'inputDigest'::text) = input_sha256) AND (((evidence_snapshot -> 'fact'::text) ->> 'evidenceRef'::text) = evidence_ref) AND (((evidence_snapshot ->> 'platformHeld'::text))::boolean = platform_held)), false)),
-    CONSTRAINT video_safety_hold_blocked CHECK (((NOT platform_held) OR (((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = 'blocked'::text) OR (((evidence_snapshot -> 'fact'::text) ->> 'captionSafety'::text) = 'blocked'::text))),
-    CONSTRAINT video_safety_no_visual_allow CHECK (COALESCE(((((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = ANY (ARRAY['review_required'::text, 'blocked'::text])) AND (((evidence_snapshot -> 'fact'::text) -> 'minorSafetyEvidenceRef'::text) = 'null'::jsonb)), false))
 );
 
 CREATE TABLE media_video_source_grants (
@@ -26780,6 +29438,7 @@ CREATE TABLE media_video_source_grants (
     issued_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     revoked_at timestamp with time zone,
+    identity_kind text DEFAULT 'upload_version'::text NOT NULL,
     CONSTRAINT media_video_source_grants_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_check CHECK ((isfinite(expires_at) AND (expires_at > issued_at))),
@@ -26787,6 +29446,7 @@ CREATE TABLE media_video_source_grants (
     CONSTRAINT media_video_source_grants_consumer_check CHECK ((consumer = ANY (ARRAY['qencode'::text, 'stream'::text]))),
     CONSTRAINT media_video_source_grants_content_type_check CHECK ((content_type = ANY (ARRAY['video/mp4'::text, 'video/quicktime'::text]))),
     CONSTRAINT media_video_source_grants_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_video_source_grants_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
     CONSTRAINT media_video_source_grants_issued_at_check CHECK (isfinite(issued_at)),
     CONSTRAINT media_video_source_grants_object_version_check CHECK ((btrim(object_version) <> ''::text)),
     CONSTRAINT media_video_source_grants_physical_key_check CHECK (((length(physical_key) >= 11) AND (length(physical_key) <= 778))),
@@ -27659,6 +30319,61 @@ CREATE TABLE namespace_ownership_start_reservations (
     CONSTRAINT namespace_ownership_start_reservations_time_order CHECK ((updated_at >= created_at))
 );
 
+CREATE TABLE nationality_ceremony_attempts (
+    ceremony_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    action_kind text NOT NULL,
+    intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    generation bigint NOT NULL,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    reservation_request_hash text NOT NULL,
+    reservation_request jsonb NOT NULL,
+    reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT nationality_ceremony_attempts_action_kind_check CHECK ((action_kind = ANY (ARRAY['community_join'::text, 'handle_claim'::text, 'community_creation'::text]))),
+    CONSTRAINT nationality_ceremony_attempts_generation_check CHECK ((generation > 0)),
+    CONSTRAINT nationality_ceremony_attempts_hash_shape_check CHECK (((requirement_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_binding_hash ~ '^[0-9a-f]{64}$'::text) AND (reservation_request_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT nationality_ceremony_attempts_identifiers_not_blank CHECK (((btrim(ceremony_intent_id) <> ''::text) AND (ceremony_intent_id = btrim(ceremony_intent_id)) AND (btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
+    CONSTRAINT nationality_ceremony_attempts_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT nationality_ceremony_attempts_requirement_kind_check CHECK ((requirement_kind = 'nationality'::text)),
+    CONSTRAINT nationality_ceremony_attempts_reservation_request_check CHECK ((jsonb_typeof(reservation_request) = 'object'::text))
+);
+
+CREATE TABLE nationality_requirement_states (
+    action_kind text NOT NULL,
+    intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    actor_id text NOT NULL,
+    status text NOT NULL,
+    requirement_hash text NOT NULL,
+    accepted_provider_ids jsonb NOT NULL,
+    generation bigint DEFAULT 0 NOT NULL,
+    current_ceremony_intent_id text,
+    current_provider_id text,
+    current_provider_binding_hash text,
+    current_provider_configuration_kind text,
+    current_provider_configuration_ref text,
+    current_provider_configuration_version text,
+    satisfied_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT nationality_requirement_states_accepted_providers_shape CHECK (((jsonb_typeof(accepted_provider_ids) = 'array'::text) AND (jsonb_array_length(accepted_provider_ids) = 2))),
+    CONSTRAINT nationality_requirement_states_action_kind_check CHECK ((action_kind = ANY (ARRAY['community_join'::text, 'handle_claim'::text, 'community_creation'::text]))),
+    CONSTRAINT nationality_requirement_states_generation_check CHECK ((generation >= 0)),
+    CONSTRAINT nationality_requirement_states_hash_shape_check CHECK (((requirement_hash ~ '^[0-9a-f]{64}$'::text) AND ((current_provider_binding_hash IS NULL) OR (current_provider_binding_hash ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT nationality_requirement_states_progress_shape CHECK ((((status = 'unmet'::text) AND (generation = 0) AND (current_ceremony_intent_id IS NULL) AND (current_provider_id IS NULL) AND (current_provider_binding_hash IS NULL) AND (current_provider_configuration_kind IS NULL) AND (current_provider_configuration_ref IS NULL) AND (current_provider_configuration_version IS NULL) AND (satisfied_at IS NULL)) OR ((status = ANY (ARRAY['pending'::text, 'failed'::text, 'expired'::text])) AND (generation > 0) AND (btrim(current_ceremony_intent_id) <> ''::text) AND (current_ceremony_intent_id = btrim(current_ceremony_intent_id)) AND (btrim(current_provider_id) <> ''::text) AND (current_provider_binding_hash IS NOT NULL) AND (current_provider_configuration_kind IS NOT NULL) AND (current_provider_configuration_ref IS NOT NULL) AND (current_provider_configuration_version IS NOT NULL) AND (satisfied_at IS NULL)) OR ((status = 'satisfied'::text) AND (generation > 0) AND (btrim(current_ceremony_intent_id) <> ''::text) AND (current_provider_id IS NOT NULL) AND (satisfied_at IS NOT NULL)))),
+    CONSTRAINT nationality_requirement_states_requirement_kind_check CHECK ((requirement_kind = 'nationality'::text)),
+    CONSTRAINT nationality_requirement_states_status_check CHECK ((status = ANY (ARRAY['unmet'::text, 'pending'::text, 'failed'::text, 'expired'::text, 'satisfied'::text]))),
+    CONSTRAINT nationality_requirement_states_time_order CHECK ((updated_at >= created_at))
+);
+
 CREATE TABLE observations (
     observation_id text NOT NULL,
     user_id text NOT NULL,
@@ -28109,36 +30824,6 @@ CREATE TABLE post_votes (
     CONSTRAINT post_votes_vote_value_check CHECK ((vote_value = ANY (ARRAY['-1'::integer, 1])))
 );
 
-CREATE TABLE posts (
-    community_id text NOT NULL,
-    post_id text NOT NULL,
-    author_user_id text,
-    post_type text DEFAULT 'text'::text NOT NULL,
-    status text DEFAULT 'published'::text NOT NULL,
-    visibility text DEFAULT 'public'::text NOT NULL,
-    title text,
-    body text,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    idempotency_key text DEFAULT ''::text NOT NULL,
-    idempotency_body_hash text,
-    comments_locked boolean DEFAULT false NOT NULL,
-    comment_count integer DEFAULT 0 NOT NULL,
-    upvote_count integer DEFAULT 0 NOT NULL,
-    downvote_count integer DEFAULT 0 NOT NULL,
-    author_persona_id text,
-    author_declared_rating text,
-    content_rating text,
-    CONSTRAINT posts_author_persona_shape CHECK ((((author_user_id IS NULL) AND (author_persona_id IS NULL)) OR ((author_user_id IS NOT NULL) AND (author_persona_id IS NOT NULL)))),
-    CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
-    CONSTRAINT posts_downvote_count_nonnegative CHECK ((downvote_count >= 0)),
-    CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
-    CONSTRAINT posts_rated_content_shape CHECK ((((post_type = ANY (ARRAY['text'::text, 'song'::text, 'video'::text])) AND (author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND ((content_rating = 'adult_18'::text) OR (author_declared_rating = 'general'::text))) OR ((post_type <> ALL (ARRAY['text'::text, 'song'::text, 'video'::text])) AND (author_declared_rating IS NULL) AND (content_rating IS NULL)))),
-    CONSTRAINT posts_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'published'::text, 'failed'::text, 'hidden'::text, 'removed'::text, 'deleted'::text]))),
-    CONSTRAINT posts_upvote_count_nonnegative CHECK ((upvote_count >= 0)),
-    CONSTRAINT posts_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
-);
-
 CREATE TABLE proof_session_completion_events (
     completion_event_id text NOT NULL,
     proof_session_id text NOT NULL,
@@ -28245,6 +30930,14 @@ CREATE TABLE qualification_policy_versions (
     CONSTRAINT qualification_policy_kind_shape CHECK ((((activity_key = 'study'::text) AND (policy_kind = 'study_session_first_pass_v2'::text)) OR ((activity_key = 'karaoke'::text) AND (policy_kind = ANY (ARRAY['karaoke_qualification_v1'::text, 'karaoke_qualification_v2'::text]))))),
     CONSTRAINT qualification_policy_version_qualification_policy_version_check CHECK (((btrim(qualification_policy_version_id) <> ''::text) AND (qualification_policy_version_id = btrim(qualification_policy_version_id)) AND (octet_length(qualification_policy_version_id) <= 128))),
     CONSTRAINT qualification_policy_versions_policy_document_check CHECK ((jsonb_typeof(policy_document) = 'object'::text))
+);
+
+CREATE TABLE recovery_inspection_cursors (
+    cursor_key text NOT NULL,
+    last_updated_at timestamp with time zone NOT NULL,
+    last_identifier text NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT recovery_inspection_cursors_cursor_key_check CHECK ((btrim(cursor_key) <> ''::text))
 );
 
 CREATE TABLE reward_activity_availability_observations (
@@ -29525,63 +32218,6 @@ CREATE TABLE text_content_held_revisions (
     CONSTRAINT text_content_held_revisions_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
 
-CREATE TABLE text_content_submissions (
-    community_id text NOT NULL,
-    submission_id text NOT NULL,
-    actor_user_id text NOT NULL,
-    surface text NOT NULL,
-    idempotency_key text NOT NULL,
-    request_hash text NOT NULL,
-    status text NOT NULL,
-    moderation_decision text NOT NULL,
-    public_reason_code text,
-    policy_revision_id text NOT NULL,
-    policy_hash text NOT NULL,
-    input_sha256 text NOT NULL,
-    internal_reason_codes jsonb NOT NULL,
-    evidence_ref text,
-    published_post_id text,
-    published_comment_id text,
-    review_ref text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    operation_id text NOT NULL,
-    response_snapshot_bytes bytea NOT NULL,
-    response_snapshot_sha256 text NOT NULL,
-    target_post_id text,
-    target_parent_comment_id text,
-    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
-    author_persona_id text NOT NULL,
-    platform_policy_revision_id text,
-    platform_policy_hash text,
-    community_policy_revision_id text,
-    community_policy_hash text,
-    author_declared_rating text,
-    resulting_content_rating text,
-    matched_categories jsonb,
-    category_decisions jsonb,
-    effective_policy_decision text,
-    CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
-    CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
-    CONSTRAINT text_content_submissions_operation_id_not_blank CHECK (((btrim(operation_id) <> ''::text) AND (operation_id = btrim(operation_id)))),
-    CONSTRAINT text_content_submissions_policy_evidence_shape CHECK ((num_nonnulls(platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 4]))),
-    CONSTRAINT text_content_submissions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT text_content_submissions_public_reason_code_check CHECK (((public_reason_code IS NULL) OR (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'policy_violation'::text])))),
-    CONSTRAINT text_content_submissions_reasons_array CHECK ((valid_text_moderation_reason_codes(internal_reason_codes) AND (((moderation_decision = 'allow'::text) AND (jsonb_array_length(internal_reason_codes) = 0)) OR ((moderation_decision = 'manual_review'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ? 'sexual_minors'::text))) OR ((moderation_decision = 'blocked'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ?| ARRAY['age_gate_required'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))))),
-    CONSTRAINT text_content_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT text_content_submissions_response_snapshot_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
-    CONSTRAINT text_content_submissions_response_snapshot_nonempty CHECK ((octet_length(response_snapshot_bytes) > 0)),
-    CONSTRAINT text_content_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT text_content_submissions_status_check CHECK ((status = ANY (ARRAY['published'::text, 'manual_review'::text, 'blocked'::text]))),
-    CONSTRAINT text_content_submissions_status_shape CHECK ((((status = 'published'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (((surface = 'text_post'::text) AND (published_post_id IS NOT NULL) AND (published_comment_id IS NULL)) OR ((surface = ANY (ARRAY['comment'::text, 'reply'::text])) AND (published_post_id IS NULL) AND (published_comment_id IS NOT NULL)))) OR ((status = 'manual_review'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text])) AND (review_ref IS NOT NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)) OR ((status = 'blocked'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = 'policy_violation'::text) AND (review_ref IS NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)))),
-    CONSTRAINT text_content_submissions_surface_check CHECK ((surface = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
-    CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
-    CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at)),
-    CONSTRAINT text_content_submissions_v2_decision_evidence_shape CHECK (((num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = ANY (ARRAY[0, 5])) AND ((author_declared_rating IS NULL) OR ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (jsonb_typeof(matched_categories) = 'array'::text) AND (jsonb_typeof(category_decisions) = 'object'::text) AND (effective_policy_decision = ANY (ARRAY['permit'::text, 'review'::text, 'block'::text])))))),
-    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL))))
-);
-
 CREATE TABLE text_moderation_cases (
     community_id text NOT NULL,
     case_id text NOT NULL,
@@ -29600,42 +32236,6 @@ CREATE TABLE text_moderation_cases (
     CONSTRAINT text_moderation_cases_status_check CHECK ((status = ANY (ARRAY['open'::text, 'approved'::text, 'dismissed'::text, 'blocked'::text]))),
     CONSTRAINT text_moderation_cases_status_shape CHECK ((((status = 'open'::text) AND (resolved_by_user_id IS NULL)) OR ((status <> 'open'::text) AND (resolved_by_user_id IS NOT NULL)))),
     CONSTRAINT text_moderation_cases_time_order CHECK ((updated_at >= created_at))
-);
-
-CREATE TABLE text_moderation_evidence (
-    evidence_ref text NOT NULL,
-    provider_id text NOT NULL,
-    requested_model_identifier text NOT NULL,
-    response_model_identifier text,
-    outcome text NOT NULL,
-    normalized_categories jsonb DEFAULT '{}'::jsonb NOT NULL,
-    normalized_scores jsonb DEFAULT '{}'::jsonb NOT NULL,
-    response_sha256 text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    applied_input_types jsonb DEFAULT '{}'::jsonb NOT NULL,
-    input_sha256 text,
-    input_hashes jsonb DEFAULT '[]'::jsonb NOT NULL,
-    evidence_hash text,
-    community_id text,
-    policy_revision_id text,
-    policy_hash text,
-    platform_policy_revision_id text,
-    platform_policy_hash text,
-    community_policy_revision_id text,
-    community_policy_hash text,
-    CONSTRAINT text_moderation_evidence_applied_types_object CHECK ((jsonb_typeof(applied_input_types) = 'object'::text)),
-    CONSTRAINT text_moderation_evidence_categories_object CHECK ((jsonb_typeof(normalized_categories) = 'object'::text)),
-    CONSTRAINT text_moderation_evidence_community_policy_hash_check CHECK (((community_policy_hash IS NULL) OR (community_policy_hash ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_evidence_hash_check CHECK (((evidence_hash IS NULL) OR (evidence_hash ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(requested_model_identifier) <> ''::text) AND (requested_model_identifier = btrim(requested_model_identifier)) AND ((response_model_identifier IS NULL) OR ((btrim(response_model_identifier) <> ''::text) AND (response_model_identifier = btrim(response_model_identifier)))))),
-    CONSTRAINT text_moderation_evidence_input_hashes_array CHECK ((jsonb_typeof(input_hashes) = 'array'::text)),
-    CONSTRAINT text_moderation_evidence_input_sha256_check CHECK (((input_sha256 IS NULL) OR (input_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_outcome_check CHECK ((outcome = ANY (ARRAY['evaluated'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]))),
-    CONSTRAINT text_moderation_evidence_platform_policy_hash_check CHECK (((platform_policy_hash IS NULL) OR (platform_policy_hash ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_policy_hash_check CHECK (((policy_hash IS NULL) OR (policy_hash ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_response_sha256_check CHECK (((response_sha256 IS NULL) OR (response_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_scores_object CHECK ((jsonb_typeof(normalized_scores) = 'object'::text)),
-    CONSTRAINT text_moderation_evidence_v2_shape CHECK ((num_nonnulls(input_sha256, evidence_hash, community_id, policy_revision_id, policy_hash, platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 9])))
 );
 
 CREATE TABLE text_moderation_policy_current (
@@ -29735,13 +32335,13 @@ INSERT INTO handle_issuance_driver_revisions VALUES ('hns', 'hosted_persona-loca
 
 INSERT INTO handle_pricing_revisions VALUES ('platform_free_handles_v1', 1, 'cb24f410dbe3ea268df0ea438d56c48dc060f2319794ab2913717585b74809f8', 'free_v1', 0, 'active', '2000-01-01 00:00:00+00');
 
-INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00');
+INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00', NULL);
 
 INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04cfc7880c630f8e46a0b8ccfdfc7390ed704d2be542fff3bbe17b233c2307ed', 'hns', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
 
 INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
 
-INSERT INTO hns_root_import_execution_ownership VALUES ('readiness', false, NULL, NULL, '2000-01-01 00:00:00+00');
+INSERT INTO hns_lifecycle_schema_cutover VALUES ('0169', '{pirate-hns-authority-provisioner-v2}', '{hns-lifecycle-job-envelope-v1,hns-root-observation-envelope-v1}', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
@@ -29767,10 +32367,19 @@ INSERT INTO qualification_policy_versions VALUES ('study_session_first_pass_v2@1
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v1@1', 'karaoke', 'karaoke_qualification_v1', '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["full_mix"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 
+INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');
 
 INSERT INTO text_moderation_policy_current VALUES (true, 'text-moderation-policy-openai-omni-2024-09-26-v1', '2000-01-01 00:00:00+00');
+
+ALTER TABLE ONLY account_age_verification_current
+    ADD CONSTRAINT account_age_verification_current_intent_id_key UNIQUE (intent_id);
+
+ALTER TABLE ONLY account_age_verification_current
+    ADD CONSTRAINT account_age_verification_current_pkey PRIMARY KEY (account_id);
 
 ALTER TABLE ONLY account_aliases
     ADD CONSTRAINT account_aliases_pkey PRIMARY KEY (source_user_id);
@@ -29828,6 +32437,27 @@ ALTER TABLE ONLY activity_qualifications
 
 ALTER TABLE ONLY activity_registry
     ADD CONSTRAINT activity_registry_pkey PRIMARY KEY (activity_key);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_actor_ceremony_unique UNIQUE (actor_id, ceremony_intent_id);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_generation_unique UNIQUE (action_kind, intent_id, requirement_kind, generation);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_identity_unique UNIQUE (actor_id, action_kind, intent_id, requirement_kind, generation, ceremony_intent_id);
+
+ALTER TABLE ONLY age_verification_ceremony_attempts
+    ADD CONSTRAINT age_verification_ceremony_attempts_pkey PRIMARY KEY (ceremony_intent_id);
+
+ALTER TABLE ONLY age_verification_requirement_states
+    ADD CONSTRAINT age_verification_requirement_states_actor_generation_unique UNIQUE (actor_id, action_kind, intent_id, requirement_kind, generation);
+
+ALTER TABLE ONLY age_verification_requirement_states
+    ADD CONSTRAINT age_verification_requirement_states_actor_intent_unique UNIQUE (actor_id, intent_id);
+
+ALTER TABLE ONLY age_verification_requirement_states
+    ADD CONSTRAINT age_verification_requirement_states_pkey PRIMARY KEY (action_kind, intent_id, requirement_kind);
 
 ALTER TABLE ONLY assertion_bindings
     ADD CONSTRAINT assertion_bindings_id_user_unique UNIQUE (binding_group_id, user_id);
@@ -30073,7 +32703,7 @@ ALTER TABLE ONLY community_policy_current
     ADD CONSTRAINT community_policy_current_pk PRIMARY KEY (community_id, policy_key);
 
 ALTER TABLE ONLY community_policy_provider_bindings
-    ADD CONSTRAINT community_policy_provider_bindings_pkey PRIMARY KEY (community_id, policy_key, policy_version_id);
+    ADD CONSTRAINT community_policy_provider_bindings_pkey PRIMARY KEY (community_id, policy_key, policy_version_id, provider_id);
 
 ALTER TABLE ONLY community_purchase_allocation_snapshots
     ADD CONSTRAINT community_purchase_allocation_snapshots_pkey PRIMARY KEY (snapshot_id);
@@ -30396,6 +33026,18 @@ ALTER TABLE ONLY content_publication_outbox
 ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_pkey PRIMARY KEY (outbox_event_id);
 
+ALTER TABLE ONLY content_rating_reconciliation_current
+    ADD CONSTRAINT content_rating_reconciliation_current_pkey PRIMARY KEY (target_kind, community_id, target_id);
+
+ALTER TABLE ONLY content_rating_reconciliation_events
+    ADD CONSTRAINT content_rating_reconciliation_event_id_target_kind_communit_key UNIQUE (event_id, target_kind, community_id, target_id);
+
+ALTER TABLE ONLY content_rating_reconciliation_events
+    ADD CONSTRAINT content_rating_reconciliation_events_pkey PRIMARY KEY (event_id);
+
+ALTER TABLE ONLY content_rating_reconciliation_operations
+    ADD CONSTRAINT content_rating_reconciliation_operations_pkey PRIMARY KEY (plan_hash);
+
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_pkey PRIMARY KEY (observation_id);
 
@@ -30564,6 +33206,15 @@ ALTER TABLE ONLY dance_upload_reservations
 ALTER TABLE ONLY dance_upload_reservations
     ADD CONSTRAINT dance_upload_reservations_session_id_key UNIQUE (session_id);
 
+ALTER TABLE ONLY data_operator_resume_actions
+    ADD CONSTRAINT data_operator_resume_actions_outbox_id_key UNIQUE (outbox_id);
+
+ALTER TABLE ONLY data_operator_resume_actions
+    ADD CONSTRAINT data_operator_resume_actions_pkey PRIMARY KEY (registration_operation_id, resulting_workflow_revision);
+
+ALTER TABLE ONLY data_operator_resume_actions
+    ADD CONSTRAINT data_operator_resume_actions_registration_operation_id_idem_key UNIQUE (registration_operation_id, idempotency_key);
+
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_pkey PRIMARY KEY (artifact_id);
 
@@ -30585,6 +33236,9 @@ ALTER TABLE ONLY data_registration_attempt_transitions
 ALTER TABLE ONLY data_registration_command_replays
     ADD CONSTRAINT data_registration_command_replays_pkey PRIMARY KEY (endpoint_template, idempotency_key);
 
+ALTER TABLE ONLY data_registration_metadata_snapshots
+    ADD CONSTRAINT data_registration_metadata_snapshots_pkey PRIMARY KEY (registration_operation_id);
+
 ALTER TABLE ONLY data_registration_operations
     ADD CONSTRAINT data_registration_operations_chain_id_asset_id_registration_key UNIQUE (chain_id, asset_id, registration_revision);
 
@@ -30605,6 +33259,15 @@ ALTER TABLE ONLY data_registration_outbox
 
 ALTER TABLE ONLY data_registration_outbox
     ADD CONSTRAINT data_registration_outbox_registration_operation_id_workflow_key UNIQUE (registration_operation_id, workflow_revision, event_type);
+
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_reference_pair UNIQUE (registration_operation_id, parent_registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_references_pkey PRIMARY KEY (registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_resolutions
+    ADD CONSTRAINT data_registration_parent_resolutions_pkey PRIMARY KEY (registration_operation_id);
 
 ALTER TABLE ONLY data_registration_pin_verifications
     ADD CONSTRAINT data_registration_pin_verific_registration_operation_id_art_key UNIQUE (registration_operation_id, artifact_id, role, provider_id, attempt_number);
@@ -30686,6 +33349,24 @@ ALTER TABLE ONLY handle_issuance_driver_revisions
 
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fences_pkey PRIMARY KEY (family, namespace_root, handle_label);
+
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_pkey PRIMARY KEY (decision_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_u_decision_id_assertion_id_evid_key UNIQUE (decision_id, assertion_id, evidence_receipt_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_uses_pkey PRIMARY KEY (evidence_use_id);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_act_actor_account_id_endpoint_tem_key UNIQUE (actor_account_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_actions_pkey PRIMARY KEY (action_id);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualification_intents_pkey PRIMARY KEY (qualification_intent_id);
 
 ALTER TABLE ONLY handle_persona_link_confirmation_actions
     ADD CONSTRAINT handle_persona_link_confirmation_action_replay_unique UNIQUE (actor_account_id, endpoint_template, idempotency_key);
@@ -30852,6 +33533,12 @@ ALTER TABLE ONLY hns_dns_zone_lifecycle_operations
 ALTER TABLE ONLY hns_dns_zone_lifecycle_operations
     ADD CONSTRAINT hns_dns_zone_lifecycle_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY hns_lifecycle_schema_cutover
+    ADD CONSTRAINT hns_lifecycle_schema_cutover_pkey PRIMARY KEY (cutover_version);
+
+ALTER TABLE ONLY hns_lifecycle_service_identity
+    ADD CONSTRAINT hns_lifecycle_service_identity_pkey PRIMARY KEY (service_name);
+
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotio_operator_principal_id_idempot_key UNIQUE (operator_principal_id, idempotency_key);
 
@@ -30863,6 +33550,12 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotion_receipts_pkey PRIMARY KEY (receipt_id);
+
+ALTER TABLE ONLY hns_readiness_single_owner_cutover_receipt
+    ADD CONSTRAINT hns_readiness_single_owner_cutover_receipt_pkey PRIMARY KEY (cutover_receipt_id);
+
+ALTER TABLE ONLY hns_readiness_single_owner_cutover_unresolved
+    ADD CONSTRAINT hns_readiness_single_owner_cutover_unresolved_pkey PRIMARY KEY (unresolved_id);
 
 ALTER TABLE ONLY hns_root_import_recovery_authorizations
     ADD CONSTRAINT hns_recovery_authorization_unique UNIQUE (recovery_finding_id);
@@ -30890,9 +33583,6 @@ ALTER TABLE ONLY hns_root_import_activation_operations
 
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_operations_pkey PRIMARY KEY (operation_id);
-
-ALTER TABLE ONLY hns_root_import_execution_ownership
-    ADD CONSTRAINT hns_root_import_execution_ownership_pkey PRIMARY KEY (responsibility);
 
 ALTER TABLE ONLY hns_root_import_lifecycle_history
     ADD CONSTRAINT hns_root_import_lifecycle_history_pkey PRIMARY KEY (history_id);
@@ -31069,9 +33759,6 @@ ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_submission_id_audio_revision_canonica_key UNIQUE (submission_id, audio_revision, canonical_sha256, immutable_ref);
 
 ALTER TABLE ONLY media_immutable_objects
-    ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_operatio_key UNIQUE (community_id, actor_user_id, operation_id);
-
-ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_immutable_ref_canonica_key UNIQUE (community_id, immutable_ref, canonical_sha256, content_type, size_bytes);
 
 ALTER TABLE ONLY media_immutable_objects
@@ -31082,6 +33769,9 @@ ALTER TABLE ONLY media_immutable_objects
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_pkey PRIMARY KEY (immutable_ref);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_submission_key UNIQUE (immutable_ref, submission_id);
 
 ALTER TABLE ONLY media_moderation_actions
     ADD CONSTRAINT media_moderation_actions_community_id_authority_actor_user__key UNIQUE (community_id, authority_actor_user_id, action_id);
@@ -31094,6 +33784,18 @@ ALTER TABLE ONLY media_moderation_projections
 
 ALTER TABLE ONLY media_moderation_projections
     ADD CONSTRAINT media_moderation_projections_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_operator_reprocess_actions
+    ADD CONSTRAINT media_operator_reprocess_acti_submission_id_resulting_creat_key UNIQUE (submission_id, resulting_creation_revision);
+
+ALTER TABLE ONLY media_operator_reprocess_actions
+    ADD CONSTRAINT media_operator_reprocess_actio_operation_id_idempotency_key_key UNIQUE (operation_id, idempotency_key);
+
+ALTER TABLE ONLY media_operator_reprocess_actions
+    ADD CONSTRAINT media_operator_reprocess_actions_outbox_event_id_key UNIQUE (outbox_event_id);
+
+ALTER TABLE ONLY media_operator_reprocess_actions
+    ADD CONSTRAINT media_operator_reprocess_actions_pkey PRIMARY KEY (operation_id, resulting_creation_revision);
 
 ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_actor_lineage_unique UNIQUE (community_id, actor_user_id, submission_id, operation_id);
@@ -31140,6 +33842,12 @@ ALTER TABLE ONLY media_publication_projections
 ALTER TABLE ONLY media_reference_evidence
     ADD CONSTRAINT media_reference_evidence_pkey PRIMARY KEY (community_id, actor_user_id, submission_id, operation_id, asset_id, evidence_audio_revision, evidence_analysis_revision, evidence_audio_sha256);
 
+ALTER TABLE ONLY media_song_canonical_timings
+    ADD CONSTRAINT media_song_canonical_timings_fact_key UNIQUE (song_post_id, audio_revision, canonical_audio_sha256, duration_samples);
+
+ALTER TABLE ONLY media_song_canonical_timings
+    ADD CONSTRAINT media_song_canonical_timings_pkey PRIMARY KEY (song_post_id, audio_revision);
+
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_revisions_pkey PRIMARY KEY (submission_id, lyrics_revision);
 
@@ -31148,6 +33856,51 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_revisions_submission_id_audio_revision_ly_key UNIQUE (submission_id, audio_revision, lyrics_revision);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_master_revision_id_key UNIQUE (master_revision_id);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_pair_key UNIQUE (master_revision_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_pkey PRIMARY KEY (plan_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_digest_key UNIQUE (master_revision_id, master_sha256);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_pkey PRIMARY KEY (master_revision_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attem_attempt_id_plan_id_generation_key UNIQUE (attempt_id, plan_id, generation);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_attempt_id_plan_id_key UNIQUE (attempt_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_dispatch_output_key_key UNIQUE (dispatch_output_key);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_plan_id_generation_key UNIQUE (plan_id, generation);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_interval_key UNIQUE (plan_id, clip_start_samples, clip_duration_samples);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_pkey PRIMARY KEY (plan_id);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_submission_key UNIQUE (plan_id, submission_id);
 
 ALTER TABLE ONLY media_submission_events
     ADD CONSTRAINT media_submission_events_event_id_key UNIQUE (event_id);
@@ -31187,6 +33940,9 @@ ALTER TABLE ONLY media_upload_reservations
 
 ALTER TABLE ONLY media_upload_reservations
     ADD CONSTRAINT media_upload_reservations_identity_unique UNIQUE (community_id, actor_user_id, reservation_id);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_intent_key UNIQUE (reservation_id, community_id, video_intent);
 
 ALTER TABLE ONLY media_upload_reservations
     ADD CONSTRAINT media_upload_reservations_persona_identity_unique UNIQUE (community_id, actor_user_id, actor_persona_id, reservation_id);
@@ -31236,6 +33992,9 @@ ALTER TABLE ONLY media_video_publication_wakeups
 ALTER TABLE ONLY media_video_reservation_command_replays
     ADD CONSTRAINT media_video_reservation_command_replays_pkey PRIMARY KEY (actor_account_id, actor_persona_id, endpoint_template, idempotency_key);
 
+ALTER TABLE ONLY media_video_reservation_song_plans
+    ADD CONSTRAINT media_video_reservation_song_plans_pkey PRIMARY KEY (reservation_id);
+
 ALTER TABLE ONLY media_video_review_holds
     ADD CONSTRAINT media_video_review_holds_pkey PRIMARY KEY (submission_id, creation_revision, hold_kind);
 
@@ -31250,6 +34009,15 @@ ALTER TABLE ONLY media_video_safety_evidence
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_request_id_key UNIQUE (request_id);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_master_revision_id_key UNIQUE (master_revision_id);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_post_id_key UNIQUE (post_id);
 
 ALTER TABLE ONLY media_video_source_grants
     ADD CONSTRAINT media_video_source_grants_pkey PRIMARY KEY (capability_sha256);
@@ -31497,6 +34265,24 @@ ALTER TABLE ONLY namespace_ownership_start_reservations
 ALTER TABLE ONLY namespace_ownership_start_reservations
     ADD CONSTRAINT namespace_ownership_start_reservations_session_unique UNIQUE (namespace_session_id, actor_id);
 
+ALTER TABLE ONLY nationality_ceremony_attempts
+    ADD CONSTRAINT nationality_ceremony_attempts_actor_ceremony_unique UNIQUE (actor_id, ceremony_intent_id);
+
+ALTER TABLE ONLY nationality_ceremony_attempts
+    ADD CONSTRAINT nationality_ceremony_attempts_generation_unique UNIQUE (action_kind, intent_id, requirement_kind, generation);
+
+ALTER TABLE ONLY nationality_ceremony_attempts
+    ADD CONSTRAINT nationality_ceremony_attempts_identity_unique UNIQUE (actor_id, action_kind, intent_id, requirement_kind, generation, ceremony_intent_id);
+
+ALTER TABLE ONLY nationality_ceremony_attempts
+    ADD CONSTRAINT nationality_ceremony_attempts_pkey PRIMARY KEY (ceremony_intent_id);
+
+ALTER TABLE ONLY nationality_requirement_states
+    ADD CONSTRAINT nationality_requirement_states_actor_generation_unique UNIQUE (actor_id, action_kind, intent_id, requirement_kind, generation);
+
+ALTER TABLE ONLY nationality_requirement_states
+    ADD CONSTRAINT nationality_requirement_states_pkey PRIMARY KEY (action_kind, intent_id, requirement_kind);
+
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_id_user_unique UNIQUE (observation_id, user_id);
 
@@ -31704,6 +34490,9 @@ ALTER TABLE ONLY qualification_policy_versions
 ALTER TABLE ONLY qualification_policy_versions
     ADD CONSTRAINT qualification_policy_versions_qualification_policy_version__key UNIQUE (qualification_policy_version_id, activity_key);
 
+ALTER TABLE ONLY recovery_inspection_cursors
+    ADD CONSTRAINT recovery_inspection_cursors_pkey PRIMARY KEY (cursor_key);
+
 ALTER TABLE ONLY reward_activity_availability_observations
     ADD CONSTRAINT reward_activity_availability__community_id_post_id_audio_re_key UNIQUE (community_id, post_id, audio_revision, activity_key, evidence_hash);
 
@@ -31763,6 +34552,9 @@ ALTER TABLE ONLY schema_migrations
 
 ALTER TABLE ONLY song_dance_presentations
     ADD CONSTRAINT song_dance_presentations_pkey PRIMARY KEY (community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY song_derivative_video_policy_observations
+    ADD CONSTRAINT song_derivative_video_policy_observation_snapshot_key UNIQUE (operation_id, observed_at_transition, creation_revision, community_id, post_id, audio_revision, actor_account_id, owner_policy_revision, owner_policy_hash, derivative_video, permitted);
 
 ALTER TABLE ONLY song_derivative_video_policy_observations
     ADD CONSTRAINT song_derivative_video_policy_observations_pkey PRIMARY KEY (operation_id, observed_at_transition, creation_revision);
@@ -32285,6 +35077,8 @@ CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_obs
 
 CREATE INDEX hns_dns_zone_activation_operations_live_idx ON hns_dns_zone_activation_operations USING btree (lease_expires_at, operation_id) WHERE (state = 'reserved'::text);
 
+CREATE UNIQUE INDEX hns_readiness_cutover_unresolved_open_key ON hns_readiness_single_owner_cutover_unresolved USING btree (root_import_session_id) WHERE (resolved_at IS NULL);
+
 CREATE INDEX hns_root_health_renewal_jobs_claim_idx ON hns_root_health_renewal_jobs USING btree (state, created_at, renewal_job_id);
 
 CREATE INDEX hns_root_health_renewal_jobs_delayed_idx ON hns_root_health_renewal_jobs USING btree (next_attempt_at, renewal_job_id) WHERE (state = 'delayed'::text);
@@ -32296,6 +35090,8 @@ CREATE UNIQUE INDEX hns_root_import_lifecycle_history_identity_idx ON hns_root_i
 CREATE INDEX hns_root_import_lifecycle_history_order_idx ON hns_root_import_lifecycle_history USING btree (root_import_session_id, recorded_at, history_id);
 
 CREATE INDEX hns_root_import_lifecycle_jobs_due_idx ON hns_root_import_lifecycle_jobs USING btree (state, due_at, lifecycle_job_id);
+
+CREATE INDEX hns_root_import_lifecycle_operational_idx ON hns_root_import_lifecycle USING btree (phase) WHERE (NOT synthetic);
 
 CREATE INDEX hns_root_import_lifecycle_phase_next_check_idx ON hns_root_import_lifecycle USING btree (phase, next_check_at) WHERE (next_check_at IS NOT NULL);
 
@@ -32329,11 +35125,23 @@ CREATE INDEX karaoke_sessions_revision_score_idx ON karaoke_sessions USING btree
 
 CREATE INDEX learner_audio_artifacts_stored_account_idx ON learner_audio_artifacts USING btree (account_id, created_at, learner_audio_artifact_id) WHERE (recording_state = 'stored'::text);
 
+CREATE UNIQUE INDEX media_immutable_objects_reservation_operation_key ON media_immutable_objects USING btree (community_id, actor_user_id, operation_id) WHERE (reservation_id IS NOT NULL);
+
 CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (community_id, actor_user_id, updated_at DESC, submission_id);
 
 CREATE UNIQUE INDEX media_post_submissions_localization_identity_uidx ON media_post_submissions USING btree (community_id, actor_user_id, post_id, submission_id);
 
 CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts USING btree (state, next_eligible_at, lease_expires_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'poll_wait'::text]));
+
+CREATE INDEX media_song_canonical_timings_pending_idx ON media_song_canonical_timings USING btree (requested_at) WHERE (state = 'pending'::text);
+
+CREATE INDEX media_song_video_render_attempt_dispatch_idx ON media_song_video_render_attempts USING btree (plan_id) WHERE ((state = 'started'::text) AND (execution_claim_id IS NULL));
+
+CREATE INDEX media_song_video_render_attempts_plan_idx ON media_song_video_render_attempts USING btree (plan_id, state);
+
+CREATE UNIQUE INDEX media_song_video_render_plans_one_per_submission ON media_song_video_render_plans USING btree (submission_id);
+
+CREATE INDEX media_song_video_render_plans_submission_idx ON media_song_video_render_plans USING btree (submission_id);
 
 CREATE UNIQUE INDEX media_submission_command_replays_account_replay_uidx ON media_submission_command_replays USING btree (actor_account_id, endpoint_template, idempotency_key) WHERE (actor_persona_id IS NULL);
 
@@ -32505,6 +35313,36 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
+CREATE OR REPLACE VIEW retained_comment_rating_base_v1 AS
+ SELECT c.community_id,
+    c.comment_id,
+    c.post_id,
+    c.parent_comment_id,
+    c.depth,
+        CASE
+            WHEN ((count(s.source_id) <> 1) OR bool_or((s.outcome = 'held'::text))) THEN 'held'::text
+            WHEN ((c.content_rating = 'adult_18'::text) OR (c.author_declared_rating = 'adult_18'::text) OR bool_or((s.outcome = 'adult_18'::text))) THEN 'adult_18'::text
+            ELSE 'general'::text
+        END AS outcome,
+    encode(sha256(convert_to((jsonb_build_array(c.post_id, c.parent_comment_id, c.author_declared_rating, jsonb_agg(jsonb_build_array(s.source_id, s.source_hash, s.outcome) ORDER BY s.source_id)))::text, 'UTF8'::name)), 'hex'::text) AS source_hash
+   FROM (comments c
+     LEFT JOIN retained_content_rating_sources_v1 s ON (((s.community_id = c.community_id) AND (s.comment_id = c.comment_id))))
+  GROUP BY c.community_id, c.comment_id;
+
+CREATE OR REPLACE VIEW retained_post_rating_base_v1 AS
+ SELECT p.community_id,
+    p.post_id,
+    p.post_type,
+        CASE
+            WHEN ((p.post_type <> ALL (ARRAY['text'::text, 'song'::text, 'video'::text])) OR (count(s.source_id) <> 1) OR bool_or((s.outcome = 'held'::text))) THEN 'held'::text
+            WHEN ((p.content_rating = 'adult_18'::text) OR (p.author_declared_rating = 'adult_18'::text) OR bool_or((s.outcome = 'adult_18'::text))) THEN 'adult_18'::text
+            ELSE 'general'::text
+        END AS outcome,
+    encode(sha256(convert_to((jsonb_build_array(p.post_type, p.author_declared_rating, jsonb_agg(jsonb_build_array(s.source_kind, s.source_id, s.source_hash, s.outcome) ORDER BY s.source_kind, s.source_id)))::text, 'UTF8'::name)), 'hex'::text) AS source_hash
+   FROM (posts p
+     LEFT JOIN retained_content_rating_sources_v1 s ON (((s.community_id = p.community_id) AND (s.post_id = p.post_id))))
+  GROUP BY p.community_id, p.post_id;
+
 CREATE TRIGGER aaa_song_reward_leg_qualification_terms BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION freeze_reward_leg_qualification_terms();
 
 CREATE TRIGGER account_language_preferences_delete_guard BEFORE DELETE ON account_language_preferences FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
@@ -32529,6 +35367,14 @@ CREATE TRIGGER activity_qualifications_project_megapot_share AFTER INSERT ON act
 
 CREATE TRIGGER activity_registry_change_guard BEFORE DELETE OR UPDATE ON activity_registry FOR EACH ROW EXECUTE FUNCTION guard_activity_registry_change();
 
+CREATE TRIGGER age_verification_ceremony_attempt_append_only BEFORE DELETE OR UPDATE ON age_verification_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_age_verification_ceremony_mutation();
+
+CREATE TRIGGER age_verification_ceremony_attempt_insert_guard BEFORE INSERT ON age_verification_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_age_verification_ceremony_attempt_insert();
+
+CREATE TRIGGER age_verification_requirement_state_provider_guard BEFORE INSERT OR UPDATE ON age_verification_requirement_states FOR EACH ROW EXECUTE FUNCTION validate_age_verification_requirement_state_providers();
+
+CREATE TRIGGER age_verification_requirement_state_update_guard BEFORE UPDATE ON age_verification_requirement_states FOR EACH ROW EXECUTE FUNCTION guard_age_verification_requirement_state_update();
+
 CREATE TRIGGER assertion_bindings_append_only BEFORE DELETE OR UPDATE ON assertion_bindings FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER assertion_revalidation_events_append_only BEFORE DELETE OR UPDATE ON assertion_revalidation_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
@@ -32541,7 +35387,11 @@ CREATE TRIGGER comment_publication_rating_guard_v1 BEFORE INSERT OR UPDATE OF co
 
 CREATE TRIGGER comments_active_persona BEFORE INSERT ON comments FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
-CREATE TRIGGER comments_text_rating_ancestry_v1 BEFORE INSERT OR UPDATE OF community_id, post_id, parent_comment_id, content_rating ON comments FOR EACH ROW EXECUTE FUNCTION enforce_text_rating_ancestry_v1();
+CREATE TRIGGER comments_current_rating_cascade_v2 AFTER UPDATE OF content_rating ON comments FOR EACH ROW WHEN ((old.content_rating IS DISTINCT FROM new.content_rating)) EXECUTE FUNCTION cascade_current_content_rating_v2();
+
+CREATE TRIGGER comments_current_rating_floor_v2 BEFORE INSERT OR UPDATE OF community_id, post_id, parent_comment_id, content_rating ON comments FOR EACH ROW EXECUTE FUNCTION enforce_current_content_rating_floor_v2();
+
+CREATE TRIGGER comments_unresolved_rating_hold BEFORE INSERT OR UPDATE OF status ON comments FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
 
 CREATE CONSTRAINT TRIGGER communities_canonical_route_binding_guard AFTER INSERT OR UPDATE OF status, canonical_route_binding_id, route_authority_version ON communities DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_canonical_route_reference();
 
@@ -32617,7 +35467,7 @@ CREATE TRIGGER community_handle_offering_actions_append_only BEFORE DELETE OR UP
 
 CREATE TRIGGER community_handle_offering_current_change_guard BEFORE INSERT OR DELETE OR UPDATE ON community_handle_offering_current FOR EACH ROW EXECUTE FUNCTION guard_community_handle_offering_current_change_v1();
 
-CREATE TRIGGER community_handle_offering_revision_insert_guard BEFORE INSERT ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION validate_community_handle_offering_revision_insert_v2();
+CREATE TRIGGER community_handle_offering_revision_insert_guard BEFORE INSERT ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION validate_community_handle_offering_revision_insert_v3();
 
 CREATE TRIGGER community_handle_offering_revisions_append_only BEFORE DELETE OR UPDATE ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
@@ -32841,13 +35691,31 @@ CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDAT
 
 CREATE TRIGGER dance_upload_reservations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_upload_reservations FOR EACH ROW EXECUTE FUNCTION guard_dance_upload_reservation();
 
+CREATE TRIGGER data_metadata_artifact_snapshot_guard BEFORE INSERT OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_metadata_artifact_snapshot();
+
+CREATE TRIGGER data_metadata_snapshot_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_metadata_snapshots FOR EACH ROW EXECUTE FUNCTION guard_data_metadata_snapshot();
+
+CREATE CONSTRAINT TRIGGER data_operator_resume_action_transition AFTER INSERT ON data_operator_resume_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_data_operator_resume_action();
+
+CREATE TRIGGER data_operator_resume_actions_append_only BEFORE DELETE OR UPDATE ON data_operator_resume_actions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
 CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
 
+CREATE TRIGGER data_registration_attempt_parent BEFORE INSERT ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION require_data_registration_attempt_parent();
+
 CREATE TRIGGER data_registration_operation_update_guard BEFORE DELETE OR UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_operation_update();
 
+CREATE TRIGGER data_registration_operator_resume_guard BEFORE UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION require_data_operator_resume_audit();
+
 CREATE TRIGGER data_registration_outbox_update_guard BEFORE DELETE OR UPDATE ON data_registration_outbox FOR EACH ROW EXECUTE FUNCTION guard_data_registration_outbox_update();
+
+CREATE TRIGGER data_registration_parent_reference_guard BEFORE DELETE OR UPDATE ON data_registration_parent_references FOR EACH ROW EXECUTE FUNCTION guard_data_registration_parent_reference();
+
+CREATE TRIGGER data_registration_parent_resolution_evidence BEFORE INSERT ON data_registration_parent_resolutions FOR EACH ROW EXECUTE FUNCTION require_data_registration_parent_resolution_evidence();
+
+CREATE TRIGGER data_registration_parent_resolutions_append_only BEFORE DELETE OR UPDATE ON data_registration_parent_resolutions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_pins_append_only BEFORE DELETE OR UPDATE ON data_registration_pin_verifications FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
@@ -32858,6 +35726,8 @@ CREATE TRIGGER data_registration_receipts_append_only BEFORE DELETE OR UPDATE ON
 CREATE TRIGGER data_registration_replays_append_only BEFORE DELETE OR UPDATE ON data_registration_command_replays FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_transitions_append_only BEFORE DELETE OR UPDATE ON data_registration_attempt_transitions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
+CREATE CONSTRAINT TRIGGER data_registration_video_parent_shape AFTER INSERT ON data_registration_operations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'video'::text)) EXECUTE FUNCTION require_data_registration_video_parent_shape();
 
 CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_records FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -32888,6 +35758,30 @@ CREATE TRIGGER handle_grant_insert_guard BEFORE INSERT ON handle_grants FOR EACH
 CREATE TRIGGER handle_grant_public_linkage_advance AFTER INSERT ON handle_grants FOR EACH ROW EXECUTE FUNCTION advance_handle_linkage_after_grant_v1();
 
 CREATE TRIGGER handle_issuance_driver_revisions_append_only BEFORE DELETE OR UPDATE ON handle_issuance_driver_revisions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER handle_nationality_claim_insert_guard BEFORE INSERT ON handle_claims FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_action_insert();
+
+CREATE TRIGGER handle_nationality_decision_insert_guard BEFORE INSERT ON handle_nationality_decisions FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_decision_insert();
+
+CREATE TRIGGER handle_nationality_decisions_immutable BEFORE DELETE OR UPDATE ON handle_nationality_decisions FOR EACH ROW EXECUTE FUNCTION reject_handle_nationality_decision_mutation();
+
+CREATE TRIGGER handle_nationality_evidence_use_insert_guard BEFORE INSERT ON handle_nationality_evidence_uses FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_use_insert();
+
+CREATE TRIGGER handle_nationality_evidence_uses_immutable BEFORE DELETE OR UPDATE ON handle_nationality_evidence_uses FOR EACH ROW EXECUTE FUNCTION reject_handle_nationality_decision_mutation();
+
+CREATE TRIGGER handle_nationality_policy_action_insert_guard BEFORE INSERT ON handle_nationality_policy_actions FOR EACH ROW EXECUTE FUNCTION guard_handle_nationality_authoring_v1();
+
+CREATE TRIGGER handle_nationality_policy_actions_append_only BEFORE DELETE OR UPDATE ON handle_nationality_policy_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER handle_nationality_policy_insert_guard BEFORE INSERT ON handle_qualification_policy_revisions FOR EACH ROW EXECUTE FUNCTION guard_handle_nationality_authoring_v1();
+
+CREATE TRIGGER handle_nationality_qualification_intents_immutable BEFORE DELETE OR UPDATE ON handle_nationality_qualification_intents FOR EACH ROW EXECUTE FUNCTION reject_handle_nationality_decision_mutation();
+
+CREATE TRIGGER handle_nationality_quote_action_guard BEFORE INSERT ON handle_quote_actions FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_quote_action();
+
+CREATE TRIGGER handle_nationality_quote_insert_guard BEFORE INSERT ON handle_quotes FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_action_insert();
+
+CREATE TRIGGER handle_nationality_reservation_insert_guard BEFORE INSERT ON handle_reservations FOR EACH ROW EXECUTE FUNCTION validate_handle_nationality_action_insert();
 
 CREATE TRIGGER handle_persona_link_confirmation_actions_append_only BEFORE DELETE OR UPDATE ON handle_persona_link_confirmation_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
@@ -32989,6 +35883,8 @@ CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_
 
 CREATE TRIGGER hns_root_import_lifecycle_jobs_generation_fill BEFORE INSERT ON hns_root_import_lifecycle_jobs FOR EACH ROW EXECUTE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1();
 
+CREATE TRIGGER hns_root_import_lifecycle_readiness_acceptance BEFORE UPDATE ON hns_root_import_lifecycle FOR EACH ROW EXECUTE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1();
+
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_observation_jobs_retain BEFORE DELETE ON hns_root_import_observation_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
@@ -33051,7 +35947,7 @@ CREATE TRIGGER media_analysis_lineage_guard BEFORE INSERT ON media_analysis_evid
 
 CREATE TRIGGER media_analysis_lyrics_lineage_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
 
-CREATE TRIGGER media_analysis_snapshot_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_analysis_snapshot_v2();
+CREATE TRIGGER media_analysis_snapshot_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_analysis_snapshot_v3();
 
 CREATE TRIGGER media_audio_lineage_guard BEFORE INSERT ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
@@ -33088,6 +35984,14 @@ CREATE TRIGGER media_moderation_actions_append_only BEFORE DELETE OR UPDATE ON m
 CREATE TRIGGER media_moderation_projection_insert_guard BEFORE INSERT ON media_moderation_projections FOR EACH ROW EXECUTE FUNCTION validate_media_moderation_projection_insert();
 
 CREATE TRIGGER media_moderation_projection_update_guard BEFORE UPDATE ON media_moderation_projections FOR EACH ROW EXECUTE FUNCTION guard_media_moderation_projection_update();
+
+CREATE TRIGGER media_operator_reprocess_action_immutable BEFORE DELETE OR UPDATE ON media_operator_reprocess_actions FOR EACH ROW EXECUTE FUNCTION guard_media_operator_reprocess_action();
+
+CREATE CONSTRAINT TRIGGER media_operator_reprocess_action_pair AFTER INSERT ON media_operator_reprocess_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_media_operator_reprocess_action();
+
+CREATE TRIGGER media_operator_reprocess_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (old.status = 'processing_failed'::text) AND (old.failure_code = 'workflow_terminal_unconverged'::text) AND (new.status = 'processing'::text))) EXECUTE FUNCTION guard_media_submission_update();
+
+CREATE TRIGGER media_operator_reset_launch_guard BEFORE INSERT ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION guard_media_operator_reset_launch();
 
 CREATE TRIGGER media_outbox_payload_guard BEFORE INSERT ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION validate_media_outbox_payload_v2();
 
@@ -33141,7 +36045,11 @@ CREATE TRIGGER media_publication_projection_insert_guard BEFORE INSERT ON media_
 
 CREATE CONSTRAINT TRIGGER media_publication_projection_rating_guard_v1 AFTER INSERT OR UPDATE ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'song'::text)) EXECUTE FUNCTION enforce_song_rating_projection_v1();
 
+CREATE CONSTRAINT TRIGGER media_publication_projection_song_video_edge AFTER INSERT OR UPDATE ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'video'::text) AND (new.song_video_plan_id IS NOT NULL))) EXECUTE FUNCTION require_song_video_projection_edge();
+
 CREATE TRIGGER media_publication_projection_update_guard BEFORE UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION guard_media_publication_projection_update();
+
+CREATE CONSTRAINT TRIGGER media_publication_projection_video_decision_anchor AFTER INSERT ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'video'::text)) EXECUTE FUNCTION require_video_publication_decision_anchor();
 
 CREATE TRIGGER media_publication_song_owner_policy_initialize AFTER INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1();
 
@@ -33151,19 +36059,27 @@ CREATE TRIGGER media_reference_evidence_append_only BEFORE DELETE OR UPDATE ON m
 
 CREATE CONSTRAINT TRIGGER media_reservation_claim_pair AFTER INSERT OR UPDATE ON media_upload_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'song'::text)) EXECUTE FUNCTION validate_media_reservation_claim_pair();
 
+CREATE TRIGGER media_song_canonical_timing_guard BEFORE DELETE OR UPDATE ON media_song_canonical_timings FOR EACH ROW EXECUTE FUNCTION guard_media_song_canonical_timing();
+
 CREATE TRIGGER media_song_lyrics_append_only BEFORE DELETE OR UPDATE ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION guard_media_lyrics_append_only();
 
 CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_insert();
 
 CREATE TRIGGER media_song_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'song'::text)) EXECUTE FUNCTION guard_media_reservation_update();
 
-CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update();
+CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update_rating_v2();
+
+CREATE TRIGGER media_song_video_render_attempt_execution_guard BEFORE UPDATE ON media_song_video_render_attempts FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_attempt_execution();
+
+CREATE TRIGGER media_song_video_render_plan_frozen BEFORE INSERT ON media_song_video_render_plans FOR EACH ROW EXECUTE FUNCTION require_song_video_render_plan_frozen();
+
+CREATE TRIGGER media_song_video_render_plan_guard BEFORE DELETE OR UPDATE ON media_song_video_render_plans FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_plan();
 
 CREATE TRIGGER media_submission_command_replays_active_persona BEFORE INSERT ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION require_active_replay_persona();
 
 CREATE TRIGGER media_submission_command_replays_append_only BEFORE DELETE OR UPDATE ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
-CREATE CONSTRAINT TRIGGER media_submission_event_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT ((old.status = 'processing'::text) AND (old.phase = 'publish'::text) AND (new.status = 'published'::text))) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION validate_media_submission_event_pair();
+CREATE CONSTRAINT TRIGGER media_submission_event_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT ((old.status = 'processing'::text) AND (old.phase = 'publish'::text) AND (new.status = 'published'::text))) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))) AND (NOT is_current_media_rating_raise_v2(old.*, new.*)))) EXECUTE FUNCTION validate_media_submission_event_pair();
 
 CREATE TRIGGER media_submission_events_append_only BEFORE DELETE OR UPDATE ON media_submission_events FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
@@ -33172,6 +36088,8 @@ CREATE CONSTRAINT TRIGGER media_submission_initial_event AFTER INSERT ON media_p
 CREATE TRIGGER media_submission_insert_authority_guard BEFORE INSERT ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION validate_media_submission_authority();
 
 CREATE TRIGGER media_submission_terms_append_only BEFORE DELETE OR UPDATE ON media_submission_terms FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
+
+CREATE TRIGGER media_submissions_unresolved_rating_hold BEFORE UPDATE OF status ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
 
 CREATE TRIGGER media_terms_lineage_guard BEFORE INSERT ON media_submission_terms FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
@@ -33189,13 +36107,23 @@ CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON
 
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
+CREATE TRIGGER media_video_reservation_song_plan_guard BEFORE DELETE OR UPDATE ON media_video_reservation_song_plans FOR EACH ROW EXECUTE FUNCTION guard_media_video_reservation_song_plan();
+
+CREATE CONSTRAINT TRIGGER media_video_reservation_song_plan_required AFTER INSERT ON media_upload_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'video'::text) AND (new.video_intent = 'song_reference'::text))) EXECUTE FUNCTION require_media_video_reservation_song_plan();
+
 CREATE TRIGGER media_video_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_reservation_update();
+
+CREATE CONSTRAINT TRIGGER media_video_rights_basis_matches_intent AFTER INSERT OR UPDATE ON media_video_rights DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_media_video_rights_basis_matches_intent();
 
 CREATE TRIGGER media_video_safety_evidence_immutable BEFORE UPDATE ON media_video_safety_evidence FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
+CREATE TRIGGER media_video_song_reference_guard BEFORE DELETE OR UPDATE ON media_video_song_references FOR EACH ROW EXECUTE FUNCTION guard_media_video_song_reference();
+
+CREATE CONSTRAINT TRIGGER media_video_song_reference_rating_floor AFTER INSERT ON media_video_song_references DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_song_video_rating_floor();
+
 CREATE TRIGGER media_video_stage_fact_immutable BEFORE UPDATE ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
-CREATE TRIGGER media_video_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_submission_update();
+CREATE TRIGGER media_video_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_submission_update_rating_v2();
 
 CREATE CONSTRAINT TRIGGER megapot_allocation_batch_exact AFTER INSERT ON megapot_allocation_batches DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_allocation_batch();
 
@@ -33295,6 +36223,14 @@ CREATE TRIGGER namespace_ownership_start_reservation_change_guard BEFORE INSERT 
 
 CREATE CONSTRAINT TRIGGER namespace_ownership_start_reservation_coherence AFTER INSERT OR UPDATE ON namespace_ownership_start_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_namespace_ownership_start_coherence();
 
+CREATE TRIGGER nationality_ceremony_attempt_append_only BEFORE DELETE OR UPDATE ON nationality_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_nationality_ceremony_mutation();
+
+CREATE TRIGGER nationality_ceremony_attempt_insert_guard BEFORE INSERT ON nationality_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_nationality_ceremony_attempt_insert();
+
+CREATE TRIGGER nationality_requirement_state_provider_guard BEFORE INSERT OR UPDATE ON nationality_requirement_states FOR EACH ROW EXECUTE FUNCTION validate_nationality_requirement_state_providers();
+
+CREATE TRIGGER nationality_requirement_state_update_guard BEFORE UPDATE ON nationality_requirement_states FOR EACH ROW EXECUTE FUNCTION guard_nationality_requirement_state_update();
+
 CREATE TRIGGER observations_append_only BEFORE DELETE OR UPDATE ON observations FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER operator_managed_root_registry_current_change_guard BEFORE DELETE OR UPDATE ON operator_managed_root_registry_current FOR EACH ROW EXECUTE FUNCTION guard_operator_managed_root_registry_current_change();
@@ -33353,7 +36289,13 @@ CREATE TRIGGER post_slug_aliases_immutable BEFORE DELETE OR UPDATE ON post_slug_
 
 CREATE TRIGGER posts_active_persona BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
+CREATE TRIGGER posts_current_rating_cascade_v2 AFTER UPDATE OF content_rating ON posts FOR EACH ROW WHEN ((old.content_rating IS DISTINCT FROM new.content_rating)) EXECUTE FUNCTION cascade_current_content_rating_v2();
+
+CREATE TRIGGER posts_current_rating_floor_v2 BEFORE UPDATE OF content_rating ON posts FOR EACH ROW EXECUTE FUNCTION enforce_current_content_rating_floor_v2();
+
 CREATE TRIGGER posts_text_rating_default_v1 BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION default_text_post_rating_v1();
+
+CREATE TRIGGER posts_unresolved_rating_hold BEFORE INSERT OR UPDATE OF status ON posts FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
 
 CREATE TRIGGER proof_session_completion_events_append_only BEFORE DELETE OR UPDATE ON proof_session_completion_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -33372,6 +36314,12 @@ CREATE TRIGGER public_handle_index_pending_first_guard BEFORE INSERT OR UPDATE O
 CREATE CONSTRAINT TRIGGER public_handle_index_redirect_integrity AFTER INSERT OR UPDATE OF status, owner_user_id, owner_persona_id, redirect_target_handle_id ON public_handle_index DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public_handle_index_validate_redirects();
 
 CREATE TRIGGER qualification_policy_versions_append_only BEFORE DELETE OR UPDATE ON qualification_policy_versions FOR EACH ROW EXECUTE FUNCTION reject_qualification_policy_version_change();
+
+CREATE TRIGGER rating_reconciliation_current_guard BEFORE INSERT OR DELETE OR UPDATE ON content_rating_reconciliation_current FOR EACH ROW EXECUTE FUNCTION guard_rating_reconciliation_current_v1();
+
+CREATE TRIGGER rating_reconciliation_events_history BEFORE DELETE OR UPDATE ON content_rating_reconciliation_events FOR EACH ROW EXECUTE FUNCTION guard_rating_reconciliation_history_v1();
+
+CREATE TRIGGER rating_reconciliation_operations_history BEFORE DELETE OR UPDATE ON content_rating_reconciliation_operations FOR EACH ROW EXECUTE FUNCTION guard_rating_reconciliation_history_v1();
 
 CREATE TRIGGER reward_activity_availability_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_activity_availability_observations FOR EACH ROW EXECUTE FUNCTION guard_reward_availability_observation();
 
@@ -33483,11 +36431,13 @@ CREATE TRIGGER text_content_held_revisions_append_only BEFORE DELETE OR UPDATE O
 
 CREATE TRIGGER text_content_submission_delete_guard BEFORE DELETE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
-CREATE CONSTRAINT TRIGGER text_content_submission_relations_guard AFTER INSERT OR UPDATE ON text_content_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_text_content_submission_relations();
+CREATE CONSTRAINT TRIGGER text_content_submission_relations_guard AFTER UPDATE ON text_content_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((NOT is_current_text_rating_raise_v2(old.*, new.*))) EXECUTE FUNCTION validate_text_content_submission_relations();
+
+CREATE CONSTRAINT TRIGGER text_content_submission_relations_insert_guard AFTER INSERT ON text_content_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_text_content_submission_relations();
 
 CREATE TRIGGER text_content_submission_response_snapshot_guard BEFORE UPDATE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_content_submission_response_snapshot();
 
-CREATE TRIGGER text_content_submission_update_guard BEFORE UPDATE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_content_submission_update();
+CREATE TRIGGER text_content_submission_update_guard BEFORE UPDATE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_content_submission_update_rating_v2();
 
 CREATE TRIGGER text_content_submissions_active_persona BEFORE INSERT ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
@@ -33511,9 +36461,14 @@ CREATE TRIGGER text_moderation_evidence_require_v2 BEFORE INSERT ON text_moderat
 
 CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPDATE ON text_moderation_policy_revisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
+CREATE TRIGGER text_submissions_unresolved_rating_hold BEFORE UPDATE OF status ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
+
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
+
+ALTER TABLE ONLY account_age_verification_current
+    ADD CONSTRAINT account_age_verification_current_account_id_intent_id_fkey FOREIGN KEY (account_id, intent_id) REFERENCES age_verification_requirement_states(actor_id, intent_id);
 
 ALTER TABLE ONLY account_language_preferences
     ADD CONSTRAINT account_language_preferences_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -34259,6 +37214,12 @@ ALTER TABLE ONLY content_publication_outbox
 ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
 
+ALTER TABLE ONLY content_rating_reconciliation_current
+    ADD CONSTRAINT content_rating_reconciliation_event_id_target_kind_communi_fkey FOREIGN KEY (event_id, target_kind, community_id, target_id) REFERENCES content_rating_reconciliation_events(event_id, target_kind, community_id, target_id);
+
+ALTER TABLE ONLY content_rating_reconciliation_events
+    ADD CONSTRAINT content_rating_reconciliation_events_plan_hash_fkey FOREIGN KEY (plan_hash) REFERENCES content_rating_reconciliation_operations(plan_hash);
+
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_attestation_id_chain_id_fkey FOREIGN KEY (attestation_id, chain_id) REFERENCES megapot_deployment_attestations(attestation_id, chain_id);
 
@@ -34385,6 +37346,9 @@ ALTER TABLE ONLY data_registration_attempt_transitions
 ALTER TABLE ONLY data_registration_command_replays
     ADD CONSTRAINT data_registration_command_replay_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
 
+ALTER TABLE ONLY data_registration_metadata_snapshots
+    ADD CONSTRAINT data_registration_metadata_snaps_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
+
 ALTER TABLE ONLY data_registration_operations
     ADD CONSTRAINT data_registration_operations_community_id_actor_user_id_po_fkey FOREIGN KEY (community_id, actor_user_id, post_id) REFERENCES media_publication_projections(community_id, actor_user_id, post_id);
 
@@ -34396,6 +37360,15 @@ ALTER TABLE ONLY data_registration_operations
 
 ALTER TABLE ONLY data_registration_outbox
     ADD CONSTRAINT data_registration_outbox_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
+
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_refe_parent_registration_operatio_fkey FOREIGN KEY (parent_registration_operation_id) REFERENCES data_registration_operations(registration_operation_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY data_registration_parent_references
+    ADD CONSTRAINT data_registration_parent_referen_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY data_registration_parent_resolutions
+    ADD CONSTRAINT data_registration_parent_reso_registration_operation_id_pa_fkey FOREIGN KEY (registration_operation_id, parent_registration_operation_id) REFERENCES data_registration_parent_references(registration_operation_id, parent_registration_operation_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY data_registration_pin_verifications
     ADD CONSTRAINT data_registration_pin_verifi_registration_operation_id_ar_fkey1 FOREIGN KEY (registration_operation_id, artifact_id) REFERENCES data_registration_artifacts(registration_operation_id, artifact_id);
@@ -34455,6 +37428,9 @@ ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claims_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_claims
+    ADD CONSTRAINT handle_claims_nationality_decision_id_fkey FOREIGN KEY (nationality_decision_id) REFERENCES handle_nationality_decisions(decision_id);
+
+ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claims_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES handle_quotes(quote_id);
 
 ALTER TABLE ONLY handle_claims
@@ -34495,6 +37471,42 @@ ALTER TABLE ONLY handle_key_fences
 
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fences_live_reservation_id_fkey FOREIGN KEY (live_reservation_id) REFERENCES handle_reservations(reservation_id);
+
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_offering_id_offering_revision_fkey FOREIGN KEY (offering_id, offering_revision) REFERENCES community_handle_offering_revisions(offering_id, offering_revision);
+
+ALTER TABLE ONLY handle_nationality_decisions
+    ADD CONSTRAINT handle_nationality_decisions_qualification_policy_id_quali_fkey FOREIGN KEY (qualification_policy_id, qualification_policy_revision) REFERENCES handle_qualification_policy_revisions(policy_id, policy_revision);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_u_assertion_id_actor_account_i_fkey FOREIGN KEY (assertion_id, actor_account_id) REFERENCES assertions(assertion_id, user_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_u_evidence_receipt_id_subject__fkey FOREIGN KEY (evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, actor_account_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
+
+ALTER TABLE ONLY handle_nationality_evidence_uses
+    ADD CONSTRAINT handle_nationality_evidence_uses_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES handle_nationality_decisions(decision_id);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_action_policy_id_policy_revision_fkey FOREIGN KEY (policy_id, policy_revision) REFERENCES handle_qualification_policy_revisions(policy_id, policy_revision);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_nationality_policy_actions
+    ADD CONSTRAINT handle_nationality_policy_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualificat_offering_id_offering_revisio_fkey FOREIGN KEY (offering_id, offering_revision) REFERENCES community_handle_offering_revisions(offering_id, offering_revision);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualification_intents_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_nationality_qualification_intents
+    ADD CONSTRAINT handle_nationality_qualification_intents_owner_persona_id_fkey FOREIGN KEY (owner_persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY handle_persona_link_confirmation_actions
     ADD CONSTRAINT handle_persona_link_confirmation_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
@@ -34539,6 +37551,9 @@ ALTER TABLE ONLY handle_quote_actions
     ADD CONSTRAINT handle_quote_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_quote_actions
+    ADD CONSTRAINT handle_quote_actions_qualification_intent_id_fkey FOREIGN KEY (qualification_intent_id) REFERENCES handle_nationality_qualification_intents(qualification_intent_id);
+
+ALTER TABLE ONLY handle_quote_actions
     ADD CONSTRAINT handle_quote_actions_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES handle_quotes(quote_id);
 
 ALTER TABLE ONLY handle_quotes
@@ -34554,6 +37569,9 @@ ALTER TABLE ONLY handle_quotes
     ADD CONSTRAINT handle_quotes_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_quotes
+    ADD CONSTRAINT handle_quotes_nationality_decision_id_fkey FOREIGN KEY (nationality_decision_id) REFERENCES handle_nationality_decisions(decision_id);
+
+ALTER TABLE ONLY handle_quotes
     ADD CONSTRAINT handle_quotes_public_link_confirmation_id_fkey FOREIGN KEY (public_link_confirmation_id) REFERENCES handle_persona_link_confirmations(confirmation_id);
 
 ALTER TABLE ONLY handle_reservation_actions
@@ -34567,6 +37585,9 @@ ALTER TABLE ONLY handle_reservations
 
 ALTER TABLE ONLY handle_reservations
     ADD CONSTRAINT handle_reservations_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_reservations
+    ADD CONSTRAINT handle_reservations_nationality_decision_id_fkey FOREIGN KEY (nationality_decision_id) REFERENCES handle_nationality_decisions(decision_id);
 
 ALTER TABLE ONLY handle_reservations
     ADD CONSTRAINT handle_reservations_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES handle_quotes(quote_id);
@@ -34892,6 +37913,9 @@ ALTER TABLE ONLY media_post_submissions
 ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_reservation_fk FOREIGN KEY (community_id, actor_user_id, audio_reservation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, reservation_id);
 
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_video_intent_fk FOREIGN KEY (audio_reservation_id, community_id, video_intent) REFERENCES media_upload_reservations(reservation_id, community_id, video_intent);
+
 ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
@@ -34921,6 +37945,12 @@ ALTER TABLE ONLY media_publication_decisions
 
 ALTER TABLE ONLY media_publication_projections
     ADD CONSTRAINT media_publication_lyrics_fk FOREIGN KEY (submission_id, audio_revision, lyrics_revision, canonical_audio_sha256) REFERENCES media_song_lyrics_revisions(submission_id, audio_revision, lyrics_revision, canonical_audio_sha256);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projection_song_video_digest_fk FOREIGN KEY (song_video_master_revision_id, canonical_video_sha256) REFERENCES media_song_video_masters(master_revision_id, master_sha256) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projection_song_video_master_fk FOREIGN KEY (song_video_master_revision_id, song_video_plan_id) REFERENCES media_song_video_accepted_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_publication_projections
     ADD CONSTRAINT media_publication_projections_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
@@ -34954,6 +37984,30 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_transcript_fk FOREIGN KEY (submission_id, audio_revision, base_transcript_revision, canonical_audio_sha256) REFERENCES media_transcript_artifacts(submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_maste_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_attempt_id_plan_id_attempt_genera_fkey FOREIGN KEY (attempt_id, plan_id, attempt_generation) REFERENCES media_song_video_render_attempts(attempt_id, plan_id, generation) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_id_decision_clip_start_sampl_fkey FOREIGN KEY (plan_id, decision_clip_start_samples, decision_clip_duration_samples) REFERENCES media_song_video_render_plans(plan_id, clip_start_samples, clip_duration_samples) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_id_plan_submission_id_fkey FOREIGN KEY (plan_id, plan_submission_id) REFERENCES media_song_video_render_plans(plan_id, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_source_immutable_ref_plan_submiss_fkey FOREIGN KEY (source_immutable_ref, plan_submission_id) REFERENCES media_immutable_objects(immutable_ref, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_verified_object_key_fkey FOREIGN KEY (verified_object_key) REFERENCES media_song_video_render_attempts(dispatch_output_key) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES media_song_video_render_plans(plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_submission_command_replays
     ADD CONSTRAINT media_submission_command_replays_actor_persona_fk FOREIGN KEY (actor_account_id, actor_persona_id) REFERENCES personas(account_id, persona_id);
@@ -35074,6 +38128,18 @@ ALTER TABLE ONLY media_video_rights
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_accepted_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_operation_id_policy_transition_fkey FOREIGN KEY (operation_id, policy_transition, creation_revision, song_community_id, song_post_id, audio_revision, actor_account_id, owner_policy_revision, owner_policy_hash, derivative_video, policy_permitted) REFERENCES song_derivative_video_policy_observations(operation_id, observed_at_transition, creation_revision, community_id, post_id, audio_revision, actor_account_id, owner_policy_revision, owner_policy_hash, derivative_video, permitted) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_plan_id_submission_id_fkey FOREIGN KEY (plan_id, submission_id) REFERENCES media_song_video_render_plans(plan_id, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_song_references
+    ADD CONSTRAINT media_video_song_references_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_video_source_grants
     ADD CONSTRAINT media_video_source_grants_immutable_ref_fkey FOREIGN KEY (immutable_ref) REFERENCES media_immutable_objects(immutable_ref) ON DELETE CASCADE;
@@ -35749,6 +38815,12 @@ ALTER TABLE ONLY song_streaks
 
 ALTER TABLE ONLY song_streaks
     ADD CONSTRAINT song_streaks_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY media_video_reservation_song_plans
+    ADD CONSTRAINT song_video_reservation_plan_reservation_fk FOREIGN KEY (reservation_id, reservation_community_id, reservation_intent) REFERENCES media_upload_reservations(reservation_id, community_id, video_intent) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_reservation_song_plans
+    ADD CONSTRAINT song_video_reservation_plan_timing_fk FOREIGN KEY (song_post_id, audio_revision, canonical_audio_sha256, song_duration_samples) REFERENCES media_song_canonical_timings(song_post_id, audio_revision, canonical_audio_sha256, duration_samples) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY sponsor_daily_ticket_totals
     ADD CONSTRAINT sponsor_daily_ticket_totals_sponsor_account_id_fkey FOREIGN KEY (sponsor_account_id) REFERENCES users(user_id);

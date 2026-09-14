@@ -11,6 +11,9 @@ export const videoPostProjectionSelect = `video_projection.media_kind AS video_m
   video_projection.original_sound_id AS video_original_sound_id,
   original_sound.origin_video_post_id AS video_origin_post_id,
   origin_post.author_persona_id AS video_origin_author_persona_id,
+  song_edge.song_post_id AS video_song_post_id,
+  song_post.title AS video_song_title,
+  song_post.author_persona_id AS video_song_author_persona_id,
   stream_ingest.state AS video_stream_state,
   stream_ingest.provider_video_id AS video_playback_ref,
   stream_enrichment.state AS video_stream_enrichment_state,
@@ -34,6 +37,15 @@ export const videoPostProjectionJoins = `LEFT JOIN media_publication_projections
    AND origin_post.post_id = original_sound.origin_video_post_id
    AND origin_post.post_type = 'video'
    AND origin_post.status = 'published'
+  LEFT JOIN media_video_song_references AS song_edge
+    ON song_edge.submission_id = video_projection.submission_id
+   AND song_edge.post_id = video_projection.post_id
+   AND song_edge.plan_id = video_projection.song_video_plan_id
+   AND song_edge.master_revision_id = video_projection.song_video_master_revision_id
+  LEFT JOIN posts AS song_post
+    ON song_post.community_id = song_edge.song_community_id
+   AND song_post.post_id = song_edge.song_post_id
+   AND song_post.post_type = 'song'
   LEFT JOIN media_video_stream_ingests AS stream_ingest
     ON stream_ingest.operation_id = video_projection.operation_id
   LEFT JOIN media_video_enrichment_outbox AS thumbnail_enrichment
@@ -50,7 +62,8 @@ export const videoPostProjectionJoins = `LEFT JOIN media_publication_projections
     ON video_data_registration.submission_id = video_projection.submission_id
    AND video_data_registration.post_id = video_projection.post_id
    AND video_data_registration.media_kind = 'video'
-   AND video_data_registration.rights_basis = 'original'
+   AND video_data_registration.rights_basis =
+       CASE video_submission.video_intent WHEN 'song_reference' THEN 'derivative' ELSE 'original' END
    AND video_data_registration.registration_revision = 1`;
 
 const requiredText = (row: Row, key: string): string | null => {
@@ -82,11 +95,45 @@ const dataRegistrationState = (
   }
 };
 
+/**
+ * Original audio names its original sound. A song reference names the song it
+ * rendered, canonically, and never a capture-recognition verdict.
+ */
+const soundtrackFromRow = (row: Row): PublicVideoPostProjection["soundtrack"] | null => {
+  if (row.video_intent === "original_audio") {
+    const originalSoundId = requiredText(row, "video_original_sound_id");
+    const originVideoPostId = requiredText(row, "video_origin_post_id");
+    const originAuthorPersonaId = requiredText(row, "video_origin_author_persona_id");
+    if (originalSoundId === null || originVideoPostId === null || originAuthorPersonaId === null)
+      return null;
+    return {
+      kind: "original_audio",
+      original_sound_id: originalSoundId,
+      origin_video_post_id: originVideoPostId,
+      origin_author_persona_id: originAuthorPersonaId,
+    };
+  }
+  if (row.video_intent === "song_reference") {
+    const songPostId = requiredText(row, "video_song_post_id");
+    const songTitle = requiredText(row, "video_song_title");
+    const songAuthorPersonaId = requiredText(row, "video_song_author_persona_id");
+    if (songPostId === null || songTitle === null || songAuthorPersonaId === null) return null;
+    return {
+      kind: "song_reference",
+      song_reference: {
+        song_post_id: songPostId,
+        song_title: songTitle,
+        song_author_persona_id: songAuthorPersonaId,
+      },
+      render_mode: "canonical_replace",
+    };
+  }
+  return null;
+};
+
 export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection | null => {
   const caption = nullableText(row, "video_caption");
-  const originalSoundId = requiredText(row, "video_original_sound_id");
-  const originVideoPostId = requiredText(row, "video_origin_post_id");
-  const originAuthorPersonaId = requiredText(row, "video_origin_author_persona_id");
+  const soundtrack = soundtrackFromRow(row);
   const streamState = requiredText(row, "video_stream_state");
   const playbackRef = nullableText(row, "video_playback_ref");
   const thumbnailState = requiredText(row, "video_thumbnail_state");
@@ -95,11 +142,8 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
 
   if (
     row.video_media_kind !== "video" ||
-    row.video_intent !== "original_audio" ||
     caption === undefined ||
-    originalSoundId === null ||
-    originVideoPostId === null ||
-    originAuthorPersonaId === null ||
+    soundtrack === null ||
     (streamState === null && row.video_stream_state !== null) ||
     playbackRef === undefined ||
     thumbnailState === null ||
@@ -139,12 +183,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
     caption,
     caption_dir: caption === null ? null : "auto",
     caption_lang: null,
-    soundtrack: {
-      kind: "original_audio",
-      original_sound_id: originalSoundId,
-      origin_video_post_id: originVideoPostId,
-      origin_author_persona_id: originAuthorPersonaId,
-    },
+    soundtrack,
     playback: row.video_stream_enrichment_state === "failed" ? { status: "unavailable" } : playback,
     thumbnail,
     data_registration: registration,

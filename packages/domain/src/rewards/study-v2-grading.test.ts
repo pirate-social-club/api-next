@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   gradeAcceptedTextV2,
   gradeEnglishTranscriptV2,
+  gradeEnglishTranscriptV3,
   gradeExactChoiceV2,
   gradeTranscriptV2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V1,
   STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V3,
   studyTranscriptReviewGrade,
 } from "./study-v2-grading.ts";
 
@@ -127,5 +129,102 @@ describe("Study v2 graders", () => {
     expect(grade.correct).toBe(true);
     expect(Object.keys(grade)).not.toContain("pronunciation_score");
     expect(Object.keys(grade)).not.toContain("accent_score");
+  });
+});
+
+describe("Study v3 grader revision", () => {
+  test("refuses the audited meaning-changing negation acceptance", () => {
+    expect(gradeEnglishTranscriptV3("I can love you", "I cannot love you")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+    expect(gradeEnglishTranscriptV3("I can love you", "I can't love you")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+    expect(gradeEnglishTranscriptV3("I do love you", "I do not love you")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+  });
+
+  test("refuses numeric substitutions that vanish from the phoneme stream", () => {
+    expect(gradeEnglishTranscriptV3("I have 2 hearts", "I have 9 hearts")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+      substituted: [{ expected: { token: "2", position: 2 }, heard: "9" }],
+    });
+    expect(gradeEnglishTranscriptV3("I have 2 hearts", "I have hearts")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+      missing: [{ token: "2", position: 2 }],
+    });
+  });
+
+  test("refuses the vacuous article-only comparison against an empty transcript", () => {
+    expect(gradeEnglishTranscriptV3("the", "")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+      missing: [{ token: "the", position: 0 }],
+    });
+    expect(gradeEnglishTranscriptV3("the", "the")).toMatchObject({
+      correct: true,
+      matchKind: "exact",
+    });
+    expect(gradeEnglishTranscriptV3("", "")).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
+  test("keeps the calibrated accepted variations under v3", () => {
+    expect(gradeEnglishTranscriptV3("hold me close", "hold me closed")).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV3("Shoo-be-doo", "shooby doo")).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV3("love", "loved")).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV3("The cafés won't stay", "cafe will not stays").correct).toBe(
+      true,
+    );
+  });
+
+  test("retains the transcript diff on phonetic acceptance", () => {
+    const grade = gradeEnglishTranscriptV3("hold me close", "hold me closed");
+    expect(grade.matchKind).toBe("phonetic");
+    expect(grade.substituted).toEqual([
+      { expected: { token: "close", position: 2 }, heard: "closed" },
+    ]);
+    expect(grade.matched).toEqual([
+      { token: "hold", position: 0 },
+      { token: "me", position: 1 },
+    ]);
+  });
+
+  test("keeps v2 behavior immutable for historical rows", () => {
+    expect(
+      gradeTranscriptV2(
+        "I can love you",
+        "I cannot love you",
+        "en",
+        STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+      ),
+    ).toMatchObject({ correct: true, matchKind: "phonetic" });
+    expect(gradeTranscriptV2("the", "", "en", STUDY_TRANSCRIPT_GRADER_POLICY_V2)).toMatchObject({
+      correct: true,
+      matchKind: "exact",
+    });
+    expect(
+      gradeTranscriptV2("hold me close", "hold me closed", "en", STUDY_TRANSCRIPT_GRADER_POLICY_V1),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
+  test("never applies English phonetics to a non-English source profile under v3", () => {
+    expect(
+      gradeTranscriptV2("hold me close", "hold me closed", "es", STUDY_TRANSCRIPT_GRADER_POLICY_V3),
+    ).toMatchObject({ correct: false, matchKind: "none" });
   });
 });

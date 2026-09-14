@@ -1,0 +1,418 @@
+Running as unit: run-re874a00c1fb244b097e89087e4690b72.scope; invocation ID: 12efcb855b9f4d6783e647ed2f9cdaa7
+$ bun scripts/generate-postgres-baseline.ts
+Focused database proof only: tagged song moderation persistence and all private video safety cases. Other media cases are intentionally filtered; no full-suite sentinel claim.
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/video-safety-evidence.pg.test.ts:
+(pass) private video safety evidence PostgreSQL fences > identical replay retains one fact and a divergent snapshot cannot overwrite it [943.14ms]
+(pass) private video safety evidence PostgreSQL fences > automatic hold and evidence are one immutable row; superseded creation cannot write [116.07ms]
+(pass) private video safety evidence PostgreSQL fences > a missing fact or invented visual allow cannot be persisted [1.54ms]
+
+packages/platform-cf/src/media-persistence.pg.test.ts:
+(pass) song media persistence PostgreSQL 17 race suite > persists provider unavailability as a review hold without a publication decision [2922.74ms]
+
+ 4 pass
+ 48 filtered out
+ 0 fail
+ 24 expect() calls
+Ran 4 tests across 2 files. [6.83s]
+$ bun run check:knip && bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run check:binding-contract && bun run check:persona-collector && bun run check:community-creator-activation && bun run lint:deps && bun run lint:http-boundary && bun run check:migrations:worktree && bun run check:fresh && bun run verify:api-client
+$ node scripts/knip-ratchet.mjs
+knip-ratchet: files 0/0, exports 37/37, types 79/79, duplicates 0/0
+$ node scripts/check-effect-version.mjs
+check:effect — Effect packages pinned to 4.0.0-rc.109
+$ bun scripts/ensure-tsgo-executable.mjs && bunx effect-tsgo diagnostics --project tsconfig.json --format text --strict --severity error && bunx effect-tsgo diagnostics --project tsconfig.workers.json --format text --strict --severity error
+Checked 812 files out of 812 files.
+0 errors, 0 warnings and 0 messages.
+Checked 648 files out of 648 files.
+0 errors, 0 warnings and 0 messages.
+packages/platform-cf/src/karaoke-finalization-recovery.ts:152:9 lint/complexity/noUselessContinue  FIXABLE  ━━━━━━━━━━
+
+  i Unnecessary continue statement
+
+    150 │       } else if (result.outcome === "fenced") {
+    151 │         // Durable maintenance denial is terminal for this redrive.
+  > 152 │         continue;
+        │         ^^^^^^^^^
+    153 │       } else {
+    154 │         if (result.outcome === "scheduled") scheduled += 1;
+
+  i Safe fix: Delete the unnecessary continue statement
+
+    149 149 │           missing += 1;
+    150 150 │         } else if (result.outcome === "fenced") {
+    151     │ - ········//·Durable·maintenance·denial·is·terminal·for·this·redrive.
+    152     │ - ········continue;
+    153 151 │         } else {
+    154 152 │           if (result.outcome === "scheduled") scheduled += 1;
+
+
+packages/application/src/karaoke-runtime/tests/scoring-offset.test.ts:65:14 lint/style/noNonNullAssertion  FIXABLE  ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    63 │     expect(calibration.state).toBe("calibrated");
+    64 │     for (const ls of lineScores) {
+  > 65 │       expect(ls.timingScore!.score).toBeGreaterThan(0.98);
+       │              ^^^^^^^^^^^^^^^
+    66 │     }
+    67 │   });
+
+  i Unsafe fix: Replace with optional chain operator ?. This operator includes runtime checks, so it is safer than the compile-only non-null assertion operator
+
+     63  63 │       expect(calibration.state).toBe("calibrated");
+     64  64 │       for (const ls of lineScores) {
+     65     │ - ······expect(ls.timingScore!.score).toBeGreaterThan(0.98);
+         65 │ + ······expect(ls.timingScore?.score).toBeGreaterThan(0.98);
+     66  66 │       }
+     67  67 │     });
+
+
+packages/application/src/karaoke-runtime/tests/scoring-offset.test.ts:108:12 lint/style/noNonNullAssertion  FIXABLE  ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    106 │     expect(Math.abs(offsetMs)).toBeLessThanOrEqual(10);
+    107 │     // The two wildly off lines still carry a real timing penalty.
+  > 108 │     expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+        │            ^^^^^^^^^^^^^^
+    109 │     expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+    110 │     // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+
+  i Unsafe fix: Replace with optional chain operator ?. This operator includes runtime checks, so it is safer than the compile-only non-null assertion operator
+
+    106 106 │       expect(Math.abs(offsetMs)).toBeLessThanOrEqual(10);
+    107 107 │       // The two wildly off lines still carry a real timing penalty.
+    108     │ - ····expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+        108 │ + ····expect(lineScores[0]?.timingScore!.score).toBeLessThan(0.7);
+    109 109 │       expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+    110 110 │       // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+
+
+packages/application/src/karaoke-runtime/tests/scoring-offset.test.ts:108:12 lint/style/noNonNullAssertion  FIXABLE  ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    106 │     expect(Math.abs(offsetMs)).toBeLessThanOrEqual(10);
+    107 │     // The two wildly off lines still carry a real timing penalty.
+  > 108 │     expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+        │            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    109 │     expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+    110 │     // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+
+  i Unsafe fix: Replace with optional chain operator ?. This operator includes runtime checks, so it is safer than the compile-only non-null assertion operator
+
+    106 106 │       expect(Math.abs(offsetMs)).toBeLessThanOrEqual(10);
+    107 107 │       // The two wildly off lines still carry a real timing penalty.
+    108     │ - ····expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+        108 │ + ····expect(lineScores[0]!.timingScore?.score).toBeLessThan(0.7);
+    109 109 │       expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+    110 110 │       // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+
+
+packages/application/src/karaoke-runtime/tests/scoring-offset.test.ts:109:12 lint/style/noNonNullAssertion  FIXABLE  ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    107 │     // The two wildly off lines still carry a real timing penalty.
+    108 │     expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+  > 109 │     expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+        │            ^^^^^^^^^^^^^^
+    110 │     // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+    111 │     expect(lineScores[0]!.timingScore!.score).toBeGreaterThan(0.1);
+
+  i Unsafe fix: Replace with optional chain operator ?. This operator includes runtime checks, so it is safer than the compile-only non-null assertion operator
+
+    107 107 │       // The two wildly off lines still carry a real timing penalty.
+    108 108 │       expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+    109     │ - ····expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+        109 │ + ····expect(lineScores[2]?.timingScore!.score).toBeLessThan(0.7);
+    110 110 │       // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+    111 111 │       expect(lineScores[0]!.timingScore!.score).toBeGreaterThan(0.1);
+
+
+packages/application/src/karaoke-runtime/tests/scoring-offset.test.ts:109:12 lint/style/noNonNullAssertion  FIXABLE  ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    107 │     // The two wildly off lines still carry a real timing penalty.
+    108 │     expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+  > 109 │     expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+        │            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    110 │     // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+    111 │     expect(lineScores[0]!.timingScore!.score).toBeGreaterThan(0.1);
+
+  i Unsafe fix: Replace with optional chain operator ?. This operator includes runtime checks, so it is safer than the compile-only non-null assertion operator
+
+    107 107 │       // The two wildly off lines still carry a real timing penalty.
+    108 108 │       expect(lineScores[0]!.timingScore!.score).toBeLessThan(0.7);
+    109     │ - ····expect(lineScores[2]!.timingScore!.score).toBeLessThan(0.7);
+        109 │ + ····expect(lineScores[2]!.timingScore?.score).toBeLessThan(0.7);
+    110 110 │       // …but neither is zeroed: they were measured, and a measured line keeps a floor.
+    111 111 │       expect(lineScores[0]!.timingScore!.score).toBeGreaterThan(0.1);
+
+
+packages/application/src/karaoke-runtime/tests/scoring-timing-alignment.test.ts:49:20 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    47 │     ]);
+    48 │
+  > 49 │     const timing = scoreKaraokeLineTiming({ expectedLine: line, recognizedWords: words })!;
+       │                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    50 │
+    51 │     expect(timing.matchedWordCount).toBe(3);
+
+
+packages/application/src/karaoke-runtime/tests/scoring-timing-alignment.test.ts:74:20 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    72 │     ]);
+    73 │
+  > 74 │     const timing = scoreKaraokeLineTiming({ expectedLine: line, recognizedWords: words })!;
+       │                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    75 │
+    76 │     expect(timing.matchedWordCount).toBe(3);
+
+
+packages/application/src/karaoke-runtime/tests/scoring-timing-alignment.test.ts:92:20 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    90 │     ]);
+    91 │
+  > 92 │     const timing = scoreKaraokeLineTiming({ expectedLine: line, recognizedWords: words })!;
+       │                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    93 │
+    94 │     expect(timing.matchedWordCount).toBe(2);
+
+
+packages/application/src/karaoke-runtime/tests/scoring-timing-alignment.test.ts:115:20 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    113 │     ]);
+    114 │
+  > 115 │     const timing = scoreKaraokeLineTiming({ expectedLine: line, recognizedWords: words })!;
+        │                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    116 │
+    117 │     expect(timing.medianSignedDeltaMs).toBe(60);
+
+
+packages/application/src/namespace-ownership/hns-root-import-lifecycle-projection.ts:105:24 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    103 │           Math.min(
+    104 │             3_600,
+  > 105 │             Math.ceil((state.next_check_at_epoch_ms! - input.server_now_epoch_ms) / 1_000),
+        │                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    106 │           ),
+    107 │         );
+
+
+packages/domain/src/hns-root-import-lifecycle.test.ts:564:25 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    562 │     );
+    563 │     const awaiting = exposed.next_state ?? state("awaiting_publication");
+  > 564 │     const inclusionAt = awaiting.plan_exposed_at_epoch_ms! + 5 * 86_400 * SECOND;
+        │                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    565 │     const included = decideHnsRootImportLifecycleV1(awaiting, qualifyingCurrent(inclusionAt));
+    566 │     const waiting = included.next_state ?? awaiting;
+
+
+packages/platform-cf/src/gates-v2-community-nationality.pg.test.ts:246:9 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━
+
+  ! This variable receiptId is unused.
+
+    244 │   const subjectId = `subject-palm-${suffix}`;
+    245 │   const bindingEventId = `binding-event-palm-${suffix}`;
+  > 246 │   const receiptId = `receipt-palm-${suffix}`;
+        │         ^^^^^^^^^
+    247 │   await admin.query("BEGIN");
+    248 │   try {
+
+  i Unused variables are often the result of typos, incomplete refactors, or other sources of bugs.
+
+  i Unsafe fix: If this is intentional, prepend receiptId with an underscore.
+
+     244  244 │     const subjectId = `subject-palm-${suffix}`;
+     245  245 │     const bindingEventId = `binding-event-palm-${suffix}`;
+     246      │ - ··const·receiptId·=·`receipt-palm-${suffix}`;
+          246 │ + ··const·_receiptId·=·`receipt-palm-${suffix}`;
+     247  247 │     await admin.query("BEGIN");
+     248  248 │     try {
+
+
+packages/platform-cf/src/handle-nationality-qualification-repository.ts:212:17 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    210 │               const attempt = attempts.rows[0];
+    211 │               if (
+  > 212 │                 !attempt ||
+        │                 ^^^^^^^^^^^
+  > 213 │                 attempt.state_status !== "pending" ||
+        │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    214 │                 attempt.current_ceremony_intent_id !== input.intent_id ||
+    215 │                 integer(attempt, "generation") !== integer(attempt, "current_generation")
+
+  i Unsafe fix: Change to an optional chain.
+
+    210 210 │                 const attempt = attempts.rows[0];
+    211 211 │                 if (
+    212     │ - ················!attempt·||
+    213     │ - ················attempt.state_status·!==·"pending"·||
+        212 │ + ················attempt?.state_status·!==·"pending"·||
+    214 213 │                   attempt.current_ceremony_intent_id !== input.intent_id ||
+    215 214 │                   integer(attempt, "generation") !== integer(attempt, "current_generation")
+
+
+packages/platform-cf/src/handle-nationality-qualification-repository.ts:233:17 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    231 │               const state = current.rows[0];
+    232 │               if (
+  > 233 │                 !state ||
+        │                 ^^^^^^^^^
+  > 234 │                 state.status !== "pending" ||
+        │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    235 │                 state.current_ceremony_intent_id !== input.intent_id ||
+    236 │                 integer(state, "generation") !== integer(attempt, "generation")
+
+  i Unsafe fix: Change to an optional chain.
+
+    231 231 │                 const state = current.rows[0];
+    232 232 │                 if (
+    233     │ - ················!state·||
+    234     │ - ················state.status·!==·"pending"·||
+        233 │ + ················state?.status·!==·"pending"·||
+    235 234 │                   state.current_ceremony_intent_id !== input.intent_id ||
+    236 235 │                   integer(state, "generation") !== integer(attempt, "generation")
+
+
+packages/platform-cf/src/hns-lifecycle-projection.pg.test.ts:352:31 lint/correctness/noUnusedFunctionParameters  FIXABLE  ━━━━━━━━━━
+
+  ! This parameter connection is unused.
+
+    350 │     "the operational snapshot excludes synthetic rows and reports overdue work and failures",
+    351 │     async () => {
+  > 352 │       await withSchema(async (connection, admin) => {
+        │                               ^^^^^^^^^^
+    353 │         await seed(admin, { lifecycle: true });
+    354 │         // A synthetic probe row must never appear as an operation, even though
+
+  i Unused parameters might be the result of an incomplete refactoring.
+
+  i Unsafe fix: If this is intentional, prepend connection with an underscore.
+
+    350 350 │       "the operational snapshot excludes synthetic rows and reports overdue work and failures",
+    351 351 │       async () => {
+    352     │ - ······await·withSchema(async·(connection,·admin)·=>·{
+        352 │ + ······await·withSchema(async·(_connection,·admin)·=>·{
+    353 353 │           await seed(admin, { lifecycle: true });
+    354 354 │           // A synthetic probe row must never appear as an operation, even though
+
+
+packages/platform-cf/src/hns-readiness-ownership.pg.test.ts:195:16 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━
+
+  ! This function requireClaimLegacy is unused.
+
+    193 │ }
+    194 │
+  > 195 │ async function requireClaimLegacy(admin: Client, executorId = "legacy-executor") {
+        │                ^^^^^^^^^^^^^^^^^^
+    196 │   const job = await claimLegacy(admin, executorId);
+    197 │   if (job === undefined) throw new Error("no legacy job was claimable");
+
+  i Unused variables are often the result of typos, incomplete refactors, or other sources of bugs.
+
+  i Unsafe fix: If this is intentional, prepend requireClaimLegacy with an underscore.
+
+     193  193 │   }
+     194  194 │
+     195      │ - async·function·requireClaimLegacy(admin:·Client,·executorId·=·"legacy-executor")·{
+          195 │ + async·function·_requireClaimLegacy(admin:·Client,·executorId·=·"legacy-executor")·{
+     196  196 │     const job = await claimLegacy(admin, executorId);
+     197  197 │     if (job === undefined) throw new Error("no legacy job was claimable");
+
+
+packages/platform-cf/src/song-video-interval-repository.pg.test.ts:280:10 lint/style/noNonNullAssertion ━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    279 │     await intervals.complete({
+  > 280 │       ...claimed[0]!,
+        │          ^^^^^^^^^^^
+    281 │       durationSamples: MEASURED,
+    282 │       proberIdentity: "ffmpeg-pinned-test",
+
+
+packages/platform-cf/src/song-video-render-repository.pg.test.ts:65:9 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━
+
+  ! This variable outputBytes is unused.
+
+    63 │   // A fixture output object. Its bytes are real; the prober is a port, so this
+    64 │   // proves binding and hashing, not real media verification.
+  > 65 │   const outputBytes = new TextEncoder().encode("rendered-song-video-master");
+       │         ^^^^^^^^^^^
+    66 │   // Each attempt is dispatched to its own output address before execution.
+    67 │   const dispatchFor = (attemptId: string) => ({
+
+  i Unused variables are often the result of typos, incomplete refactors, or other sources of bugs.
+
+  i Unsafe fix: If this is intentional, prepend outputBytes with an underscore.
+
+      63   63 │     // A fixture output object. Its bytes are real; the prober is a port, so this
+      64   64 │     // proves binding and hashing, not real media verification.
+      65      │ - ··const·outputBytes·=·new·TextEncoder().encode("rendered-song-video-master");
+           65 │ + ··const·_outputBytes·=·new·TextEncoder().encode("rendered-song-video-master");
+      66   66 │     // Each attempt is dispatched to its own output address before execution.
+      67   67 │     const dispatchFor = (attemptId: string) => ({
+
+
+packages/platform-cf/src/song-video-render-repository.pg.test.ts:274:42 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━
+
+  ! This variable digest is unused.
+
+    272 │     {
+    273 │       await bindPlan("plan-race");
+  > 274 │       for (const [attemptId, revisionId, digest, generation] of [
+        │                                          ^^^^^^
+    275 │         ["attempt-race-a", "master-race-a", "b".repeat(64), 1],
+    276 │         ["attempt-race-b", "master-race-b", "c".repeat(64), 2],
+
+  i Unused variables are often the result of typos, incomplete refactors, or other sources of bugs.
+
+  i Unsafe fix: If this is intentional, prepend digest with an underscore.
+
+     272  272 │       {
+     273  273 │         await bindPlan("plan-race");
+     274      │ - ······for·(const·[attemptId,·revisionId,·digest,·generation]·of·[
+          274 │ + ······for·(const·[attemptId,·revisionId,·_digest,·generation]·of·[
+     275  275 │           ["attempt-race-a", "master-race-a", "b".repeat(64), 1],
+     276  276 │           ["attempt-race-b", "master-race-b", "c".repeat(64), 2],
+
+
+The number of diagnostics exceeds the limit allowed. Use --max-diagnostics to increase it.
+Diagnostics not shown: 38.
+Checked 1771 files in 9s. No fixes applied.
+Found 53 warnings.
+Found 5 infos.
+$ tsc --noEmit -p tsconfig.binding-contract.json
+$ tsc --noEmit -p tsconfig.persona-collector.json && tsc --noEmit -p tsconfig.persona-executor.json
+$ bun scripts/community-creator-activation-invariant.ts
+community-creator-activation-invariant: ok
+$ node scripts/check-deps.mjs
+lint:deps — dependency matrix clean (1392 files walked)
+$ bun scripts/check-http-worker-import-boundary.mjs
+http-worker import boundary clean
+$ bun scripts/check-postgres-migration-worktree.ts
+Postgres migration worktree is consistent (178 migrations).
+$ bun scripts/check-contract-fresh.ts
+$ bun scripts/verify-api-client-package.ts
+api-client package verification passed (/tmp/pirate-api-client-BW6teq/pack/pirate-api-client-0.77.0.tgz)

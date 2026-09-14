@@ -9,6 +9,7 @@ import {
   applyCloudflareQueueDisposition,
   classifyWorkflowCreateBatch,
   cloudflareDigestWorkflowId,
+  isFinishedWorkflowStatus,
   isPresentWorkflowStatus,
 } from "../cloudflare-orchestration-primitives.ts";
 
@@ -49,7 +50,8 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
     try {
       const instance = await binding.get(await cloudflareDataRegistrationWorkflowId(instanceId));
       const status = (await instance.status()).status;
-      return isPresentWorkflowStatus(status) ? "present" : "missing";
+      if (isPresentWorkflowStatus(status)) return "present";
+      return isFinishedWorkflowStatus(status) ? "finished" : "indeterminate";
     } catch (error) {
       if (isMissing(error)) return "missing";
       throw error;

@@ -123,6 +123,54 @@ function analyzed(acrDecision: TrustedSongAnalysis["acr"]["decision"] = "allow")
 }
 
 describe("song media Spec 013 machine", () => {
+  test("recovery allocates a fresh decision without treating its historical counter as approval", () => {
+    const recovered: MediaSubmissionState = { ...analyzed(), decisionRevision: 1, decision: null };
+    const renewed = ok(
+      transitionMediaSubmission(
+        { ...recovered, phase: "analysis" },
+        {
+          event: "blocking_analysis_completed",
+          actorId,
+          expectedAudioRevision: 1,
+          expectedCanonicalAudioSha256: audioHash,
+          analysis: { ...analysis(), analysisRevision: 2 },
+        },
+      ),
+    );
+    expect(renewed).toMatchObject({ decisionRevision: 1, decision: null, phase: "decision" });
+    const decision: PublicationDecision = {
+      decisionRevision: 2,
+      outcome: "allow",
+      creationRevision: recovered.creationRevision,
+      audioRevision: recovered.audioRevision,
+      analysisRevision: recovered.analysisRevision,
+      lyricsRevision: null,
+      canonicalAudioSha256: audioHash,
+      policyRevision: "publication-v1",
+      evidenceRef: "operator-recovery-decision",
+    };
+    const command = {
+      event: "publication_allowed" as const,
+      actorId,
+      expectedCreationRevision: recovered.creationRevision,
+      expectedAudioRevision: recovered.audioRevision,
+      expectedAnalysisRevision: recovered.analysisRevision,
+      decision,
+    };
+    expect(ok(transitionMediaSubmission(recovered, command))).toMatchObject({
+      phase: "publish",
+      decisionRevision: 2,
+      decision,
+    });
+    expect(
+      transitionMediaSubmission(recovered, {
+        ...command,
+        decision: { ...decision, decisionRevision: 1 },
+      }).ok,
+    ).toBe(false);
+    expect(transitionMediaSubmission({ ...recovered, phase: "publish" }, command).ok).toBe(false);
+  });
+
   test("starts form-light and uses the exact workflow identity", () => {
     expect(created).toMatchObject({
       status: "processing",

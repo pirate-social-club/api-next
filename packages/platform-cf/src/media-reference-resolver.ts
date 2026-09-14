@@ -158,7 +158,7 @@ export function makeMediaReferenceResolver(
       WHERE p.post_id=$1 AND s.status='published' AND post.status='published' AND c.status='active'
         AND (post.visibility='public' OR (post.visibility='members_only' AND EXISTS (
           SELECT 1 FROM community_memberships m WHERE m.community_id=p.community_id AND m.user_id=$2 AND m.status='member')))
-        AND (post.content_rating IS NULL OR can_account_view_content_rating_v1($2,post.content_rating))
+        AND can_account_view_content_rating_v1($2,post.content_rating)
       LIMIT 2`,
         [input.upstreamAssetId, input.actorUserId],
       );

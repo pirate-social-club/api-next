@@ -264,6 +264,7 @@ const VERIFICATION_EXPORTS = {
     ],
   },
   "packages/testing": {
+    "./nationality-start.ts": ["startNationalityFixture"],
     "./fake-provider.ts": [
       "FAKE_PROVIDER_MANIFEST",
       "FakeProviderMode",
@@ -323,6 +324,27 @@ const GATES_V2_EXPORTS = {
     "HumanMembershipRequiredClaim",
     "evaluateCuratedHumanMembership",
     "humanMembershipPolicyCanonicalPreimage",
+  ],
+  // Spec 006 section 2.2 adds predicate-bound nationality without widening provider boundaries.
+  "./nationality-evaluator.ts": [
+    "NationalityEvaluation",
+    "NationalityEvaluatorInput",
+    "evaluateNationality",
+  ],
+  "./account-age-verification-policy.ts": [
+    "ACCOUNT_AGE_18_REQUIREMENTS",
+    "ACCOUNT_AGE_18_REQUIREMENT_HASH",
+    "compileAccountAgeVerificationPolicy",
+    "ageVerificationReservationHash",
+    "AccountAgeVerificationPolicy",
+  ],
+  "./document-provider-binding.ts": ["documentProviderBindingHash"],
+  "./nationality-policy.ts": [
+    "NationalityPolicy",
+    "NationalityPolicyCompilation",
+    "compileNationalityPolicy",
+    "nationalityCeremonyReservationHash",
+    "nationalityProviderBindingHash",
   ],
 };
 

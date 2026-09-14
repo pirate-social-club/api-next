@@ -36,10 +36,10 @@ import {
 } from "./registry";
 
 export const HNS_ROUTE_REVALIDATION_JOB = "hns-route-revalidation.poll";
-export const HNS_ROUTE_REVALIDATION_LANE = "hns-route-revalidation";
-export const HNS_ROUTE_REVALIDATION_SCHEDULE = "*/5 * * * *";
-export const HNS_ROUTE_REVALIDATION_TIMEOUT = "45 seconds";
-export const HNS_ROUTE_REVALIDATION_PRINCIPAL_ID = "route-revalidation-scheduler";
+const HNS_ROUTE_REVALIDATION_LANE = "hns-route-revalidation";
+const HNS_ROUTE_REVALIDATION_SCHEDULE = "*/5 * * * *";
+const HNS_ROUTE_REVALIDATION_TIMEOUT = "45 seconds";
+const HNS_ROUTE_REVALIDATION_PRINCIPAL_ID = "route-revalidation-scheduler";
 export const HNS_ROUTE_RECOVERY_BACKOFF_SECONDS = 24 * 60 * 60;
 export const HNS_ROUTE_EXPIRY_PRINCIPAL_ID = "route-expiry-scheduler";
 export const HNS_ROUTE_EXPIRY_BATCH_LIMIT = 1;

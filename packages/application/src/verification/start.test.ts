@@ -9,6 +9,7 @@ import type {
 import { VerificationProviderUnavailable } from "./adapter.ts";
 import { makeVerificationProviderRegistry } from "./registry.ts";
 import {
+  type StartVerificationInput,
   startVerification,
   type VerificationSessionStartFinalizeOutcome,
   type VerificationSessionStartReservationInput,
@@ -125,11 +126,13 @@ async function services(input: {
     ),
   );
   const commits: ProviderSessionStart[] = [];
+  const resolvedInputs: StartVerificationInput[] = [];
   const reservations: VerificationSessionStartReservationInput[] = [];
   let releases = 0;
   let resolveCalls = 0;
   return {
     commits,
+    resolvedInputs,
     reservations,
     get resolveCalls() {
       return resolveCalls;
@@ -140,7 +143,8 @@ async function services(input: {
     value: {
       registry,
       intents: {
-        resolve: () => {
+        resolve: (resolvedInput: StartVerificationInput) => {
+          resolvedInputs.push(resolvedInput);
           const resolution =
             input.intentResolutions !== undefined && resolveCalls < input.intentResolutions.length
               ? input.intentResolutions[resolveCalls]
@@ -389,6 +393,98 @@ describe("verification start use case", () => {
     expect(changed.releases).toBe(1);
     expect(startCalls.value).toBe(0);
     expect(changed.commits).toEqual([]);
+  });
+
+  test("reserves, revalidates and starts the server-issued child after a provider switch", async () => {
+    const service = await services({
+      intent: { ...PLAN_INPUT, resolved_intent_id: "ceremony-generation-2" },
+    });
+    const input = {
+      actor_id: "user-1",
+      intent_id: "ceremony-generation-1",
+      provider_id: MANIFEST.provider_id,
+    };
+    await Effect.runPromise(startVerification(input, service.value));
+    expect(service.reservations[0]?.start.intent_id).toBe("ceremony-generation-2");
+    expect(service.commits[0]?.session.intent_id).toBe("ceremony-generation-2");
+    expect(service.resolvedInputs).toEqual([
+      input,
+      { ...input, intent_id: "ceremony-generation-2" },
+    ]);
+    expect(service.reservations[0]?.creation).toBeUndefined();
+    expect(service.reservations[0]?.start).not.toHaveProperty("resolved_intent_id");
+  });
+
+  test("a second provider switch before dispatch releases the reservation and never starts", async () => {
+    const startCalls = { value: 0 };
+    const service = await services({
+      intentResolutions: [
+        { ...PLAN_INPUT, resolved_intent_id: "ceremony-generation-2" },
+        { ...PLAN_INPUT, resolved_intent_id: "ceremony-generation-3" },
+      ],
+      startCalls,
+    });
+    const result = await Effect.runPromiseExit(
+      startVerification(
+        {
+          actor_id: "user-1",
+          intent_id: "ceremony-generation-1",
+          provider_id: MANIFEST.provider_id,
+        },
+        service.value,
+      ),
+    );
+    expect(failureOf(result)).toEqual(
+      new VerificationStartRejected({ reason: "intent_unavailable" }),
+    );
+    expect(service.releases).toBe(1);
+    expect(startCalls.value).toBe(0);
+    expect(service.commits).toEqual([]);
+  });
+
+  test("a generic child resolution cannot redirect the frozen creation reservation variant", async () => {
+    const service = await services({
+      intent: { ...PLAN_INPUT, resolved_intent_id: "nationality-child" },
+    });
+    const result = await Effect.runPromiseExit(
+      startVerification(
+        {
+          actor_id: "user-1",
+          provider_id: MANIFEST.provider_id,
+          creation_intent_id: "creation-1",
+          ceremony_intent_id: "creation-ceremony-1",
+          requirement: "human_identity",
+          generation: 2,
+          expected_revision: 3,
+          idempotency_key: "creation-launch-1",
+        },
+        service.value,
+      ),
+    );
+    expect(failureOf(result)).toEqual(
+      new VerificationStartRejected({ reason: "intent_unavailable" }),
+    );
+    expect(service.reservations).toEqual([]);
+  });
+
+  test("a malformed resolved identity cannot be stripped into an unbound plan", async () => {
+    for (const resolved_intent_id of ["", null, 42]) {
+      const service = await services({ intent: { ...PLAN_INPUT, resolved_intent_id } });
+      const result = await Effect.runPromiseExit(
+        startVerification(
+          {
+            actor_id: "user-1",
+            intent_id: "ceremony-generation-1",
+            provider_id: MANIFEST.provider_id,
+          },
+          service.value,
+        ),
+      );
+      expect(failureOf(result)).toEqual(
+        new VerificationStartRejected({ reason: "intent_unavailable" }),
+      );
+      expect(service.reservations).toEqual([]);
+    }
   });
 
   test("allows a released provider failure to retry and persist the next success", async () => {

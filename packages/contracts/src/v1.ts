@@ -5,6 +5,7 @@ import {
   MinimumAgeAttestationV1,
   PutMyMinimumAgeAttestation,
 } from "./age-access.ts";
+import { GetMyAgeVerification } from "./age-verification.ts";
 import { Auth } from "./auth.ts";
 import { ContentRatingV1 } from "./community-moderation-policy.ts";
 import {
@@ -24,6 +25,7 @@ import {
   BadRequest,
   CommentsLocked,
   Conflict,
+  EligibilityFailed,
   GateUnsatisfied,
   IdempotencyConflict,
   InternalError,
@@ -32,6 +34,7 @@ import {
   PostVoteIdempotencyConflict,
   RateLimited,
   ReplyDepthExceeded,
+  RetryableConflict,
   UploadObjectMissing,
 } from "./errors.ts";
 import { LanguageTagV1 } from "./language.ts";
@@ -623,6 +626,8 @@ export const VideoSoundtrackProjectionV1 = Schema.Union([
       song_title: Schema.String,
       song_author_persona_id: PersonaIdV1,
     }),
+    /** The soundtrack is the canonical song interval; the capture's audio is discarded. */
+    render_mode: Schema.Literal("canonical_replace"),
   }),
 ]);
 export type VideoSoundtrackProjectionV1 = Schema.Schema.Type<typeof VideoSoundtrackProjectionV1>;
@@ -765,6 +770,9 @@ const NonNegativeRevision = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const NonNegativeSafeInteger = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+);
 export const SONG_LYRICS_TEXT_MAX_LENGTH = 200_000 as const;
 const SongLyricsText = Schema.NonEmptyString.check(Schema.isMaxLength(SONG_LYRICS_TEXT_MAX_LENGTH));
 const SongAuthorString = Schema.NonEmptyString;
@@ -869,9 +877,85 @@ export const ReserveVideoUploadV1 = Schema.Union([
       Schema.Struct({ kind: Schema.Literal("library") }),
       Schema.Struct({ kind: Schema.Literal("feed"), origin_post_id: SongAuthorString }),
     ]),
+    /**
+     * The audio revision the author selected against, as returned by preflight.
+     * Reservation refuses it if the song has moved on, rather than freezing an
+     * interval chosen on different audio.
+     */
+    audio_revision: PositiveRevision,
+    /** The selected interval, half-open, in integer 48 kHz samples. */
+    clip_start_samples: NonNegativeSafeInteger,
+    clip_duration_samples: PositiveSafeInteger,
   }),
 ]);
 export type ReserveVideoUploadV1 = Schema.Schema.Type<typeof ReserveVideoUploadV1>;
+
+/** Why an interval cannot be rendered from the canonical song. */
+export const SongVideoIntervalRefusalV1 = Schema.Literals([
+  "invalid_interval",
+  "interval_too_short",
+  "interval_too_long",
+  "canonical_song_interval_uncovered",
+]);
+
+/**
+ * Interval preflight for a song-backed video. The server answers with the
+ * canonical song's own timing — its audio revision and probed duration in
+ * 48 kHz samples — so a client never supplies either. It is advice for choosing
+ * an interval: reservation revalidates every value itself, and neither
+ * establishes that a recording made later will be usable.
+ */
+export const SongVideoIntervalPreflightInputV1 = Schema.Struct({
+  song_post_id: SongAuthorString,
+  interval: Schema.optional(
+    Schema.Struct({
+      clip_start_samples: NonNegativeSafeInteger,
+      clip_duration_samples: PositiveSafeInteger,
+    }),
+  ),
+});
+export type SongVideoIntervalPreflightInputV1 = Schema.Schema.Type<
+  typeof SongVideoIntervalPreflightInputV1
+>;
+
+const SongVideoIntervalPolicyV1 = Schema.Struct({
+  policy_revision: PositiveRevision,
+  sample_rate_hz: Schema.Literal(48_000),
+  min_clip_duration_samples: PositiveSafeInteger,
+  max_clip_duration_samples: PositiveSafeInteger,
+});
+
+export const SongVideoIntervalPreflightV1 = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("ready"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    canonical_duration_samples: PositiveSafeInteger,
+    interval_policy: SongVideoIntervalPolicyV1,
+    /** The verdict on a proposed interval, or null when none was proposed. */
+    interval: Schema.NullOr(
+      Schema.Union([
+        Schema.Struct({ accepted: Schema.Literal(true) }),
+        Schema.Struct({ accepted: Schema.Literal(false), reason: SongVideoIntervalRefusalV1 }),
+      ]),
+    ),
+  }),
+  /** The canonical duration has not been measured yet for this revision. */
+  Schema.Struct({
+    state: Schema.Literal("measuring"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    retry_after_ms: PositiveSafeInteger,
+  }),
+  /** Measurement failed; this revision cannot back a video until remeasured. */
+  Schema.Struct({
+    state: Schema.Literal("unavailable"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    reason: Schema.Literal("canonical_timing_unavailable"),
+  }),
+]);
+export type SongVideoIntervalPreflightV1 = Schema.Schema.Type<typeof SongVideoIntervalPreflightV1>;
 
 const VideoMultipartPartV1 = Schema.Struct({
   part_number: PositiveSafeInteger,
@@ -912,6 +996,12 @@ export const VideoUploadReservationV1 = Schema.Union([
       owner_policy_hash: Sha256Hex,
       derivative_video: Schema.Literals(["allowed", "owner_only", "blocked"]),
       observed_at: SongAuthorString,
+    }),
+    /** The render plan's interval as frozen, against the canonical duration. */
+    interval: Schema.Struct({
+      clip_start_samples: NonNegativeSafeInteger,
+      clip_duration_samples: PositiveSafeInteger,
+      song_duration_samples: PositiveSafeInteger,
     }),
   }),
 ]);
@@ -1169,6 +1259,7 @@ export const SongMediaPostSubmissionV1 = Schema.Union([
       "hash_failed",
       "transform_failed",
       "publication_failed",
+      "workflow_terminal_unconverged",
       "upload_seal_conflict",
     ]),
     retry_count: Schema.Literals([0, 1, 2, 3]),
@@ -1192,7 +1283,8 @@ const VideoMediaSubmissionCommon = {
   author_persona: PublicPersonaV1,
   href: SongAuthorString,
   track: Schema.Literal("video"),
-  intent: Schema.Literal("original_audio"),
+  /** Immutable from reservation; a song-reference snapshot must never read as original audio. */
+  intent: Schema.Literals(["original_audio", "song_reference"]),
   creation_revision: PositiveRevision,
   video_revision: NonNegativeRevision,
   caption: Schema.NullOr(Schema.String.check(Schema.isMaxLength(5_000))),
@@ -1232,8 +1324,18 @@ export const VideoPostSubmissionV1 = Schema.Union([
       "known_recording_requires_song_reference",
       "policy_violation",
       "rights_violation",
+      "song_reference_invalid",
     ]),
     song_post_id: Schema.optional(SongAuthorString),
+    /** Present with `song_reference_invalid`: why the referenced song can no longer be used. */
+    song_reason_code: Schema.optional(
+      Schema.Literals([
+        "song_not_published",
+        "song_audio_revision_missing",
+        "derivative_video_blocked",
+        "derivative_video_owner_only",
+      ]),
+    ),
   }),
   Schema.Struct({
     ...VideoMediaSubmissionCommon,
@@ -1648,7 +1750,7 @@ const JoinNextAction = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("none"), reason: Schema.Literal("already_joined") }),
 ]);
 
-const JoinEligibility = Schema.Struct({
+const JoinEligibilityV1 = Schema.Struct({
   community: Schema.String,
   membership_mode: Schema.Literals(["open", "request", "gated"]),
   human_verification_lane: Schema.NullOr(Schema.Literals(["very", "self"])),
@@ -1715,6 +1817,191 @@ const JoinEligibility = Schema.Struct({
   gate_evaluation: Schema.optional(Schema.NullOr(JsonObject)),
   next_action: JoinNextAction,
 });
+
+/**
+ * The provider-choice successor. A composed join adds explicit per-requirement
+ * progress and both document-provider alternatives so a client never ranks
+ * providers or compiles a start action from omitted facts. Proof completion
+ * only satisfies the requirement state; the separate join transaction still
+ * re-evaluates the account evidence before membership is granted.
+ */
+const JoinAcceptedDocumentProviders = Schema.Tuple([
+  Schema.Literal("self.pass"),
+  Schema.Literal("zkpassport"),
+]);
+
+const JoinHumanIdentityProgressV2 = Schema.Struct({
+  requirement: Schema.Literal("human_identity"),
+  status: Schema.Literals(["pending", "satisfied"]),
+  provider_id: Schema.Literal("very.web"),
+});
+
+const JoinNationalityProgressV2 = Schema.Struct({
+  requirement: Schema.Literal("nationality"),
+  status: Schema.Literals(["pending", "satisfied"]),
+  requirement_hash: Sha256Hex,
+  provider_id: VerificationProviderId,
+  accepted_provider_ids: JoinAcceptedDocumentProviders,
+  ceremony_intent_id: Schema.NonEmptyString,
+  generation: NonNegativeSafeInteger,
+}).check(
+  Schema.makeFilter((progress) =>
+    (progress.accepted_provider_ids as readonly string[]).includes(progress.provider_id) &&
+    progress.generation > 0
+      ? undefined
+      : "Expected the currently bound document provider and a started ceremony",
+  ),
+);
+
+const JoinEligibilityRequirementsV2 = Schema.Struct({
+  human_identity: Schema.optional(JoinHumanIdentityProgressV2),
+  nationality: Schema.optional(JoinNationalityProgressV2),
+}).check(
+  Schema.makeFilter((requirements) =>
+    requirements.human_identity !== undefined || requirements.nationality !== undefined
+      ? undefined
+      : "Composed eligibility requires at least one requirement entry",
+  ),
+);
+
+const JoinNextActionV2 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("start_verification"),
+    requirement: Schema.Literals(["human_identity", "nationality"]),
+    provider_id: VerificationProviderId,
+    intent_id: Schema.NonEmptyString,
+  }),
+  Schema.Struct({ kind: Schema.Literal("join") }),
+  Schema.Struct({ kind: Schema.Literal("request_membership") }),
+  Schema.Struct({
+    kind: Schema.Literal("wait"),
+    requirement: Schema.NullOr(Schema.Literals(["human_identity", "nationality"])),
+    reason_code: JoinNextActionWaitReasonCode,
+    retry_after_seconds: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("blocked"),
+    reason: Schema.Literals(["banned", "gate_failed", "unsupported"]),
+  }),
+  Schema.Struct({ kind: Schema.Literal("none"), reason: Schema.Literal("already_joined") }),
+]);
+
+const JoinEligibilityV2 = Schema.Struct({
+  join_eligibility_version: Schema.Literal("provider_choice_v2"),
+  community: Schema.String,
+  membership_mode: Schema.Literals(["open", "request", "gated"]),
+  human_verification_lane: Schema.NullOr(Schema.Literals(["very", "self"])),
+  preferred_verification_provider: Schema.optional(Schema.NullOr(VerificationProviderId)),
+  joinable_now: Schema.Boolean,
+  status: Schema.Literals([
+    "joinable",
+    "requestable",
+    "pending_request",
+    "verification_required",
+    "gate_failed",
+    "already_joined",
+    "banned",
+  ]),
+  requirements: JoinEligibilityRequirementsV2,
+  membership_gate_summaries: Schema.Array(MembershipGateSummary),
+  membership_gate_expression: Schema.optional(Schema.NullOr(MembershipGateExpression)),
+  missing_capabilities: Schema.optional(
+    Schema.Array(Schema.Literals(["human_identity", "nationality"])),
+  ),
+  suggested_verification_provider: Schema.optional(Schema.NullOr(VerificationProviderId)),
+  suggested_verification_intent: Schema.optional(
+    Schema.NullOr(Schema.Literals(["community_join"])),
+  ),
+  failure_reason: Schema.optional(
+    Schema.NullOr(
+      Schema.Literals([
+        "missing_verification",
+        "provider_not_accepted",
+        "nationality_mismatch",
+        "gender_mismatch",
+        "minimum_age_mismatch",
+        "erc721_holding_required",
+        "erc721_inventory_match_required",
+        "token_inventory_unavailable",
+        "wallet_score_too_low",
+        "asset_balance_too_low",
+        "unsupported",
+        "banned",
+      ]),
+    ),
+  ),
+  gate_evaluation: Schema.optional(Schema.NullOr(JsonObject)),
+  next_action: JoinNextActionV2,
+}).check(
+  Schema.makeFilter((eligibility) => {
+    if (eligibility.status === "joinable") {
+      return eligibility.next_action.kind === "join"
+        ? undefined
+        : "Joinable eligibility requires the join action";
+    }
+    if (eligibility.status === "verification_required") {
+      if (eligibility.next_action.kind === "start_verification") {
+        const progress =
+          eligibility.next_action.requirement === "nationality"
+            ? eligibility.requirements.nationality
+            : eligibility.requirements.human_identity;
+        if (progress === undefined) {
+          return "Verification start must name a present requirement";
+        }
+        if (eligibility.next_action.requirement === "nationality") {
+          return progress.requirement === "nationality" &&
+            progress.status === "pending" &&
+            progress.provider_id === eligibility.next_action.provider_id &&
+            progress.ceremony_intent_id === eligibility.next_action.intent_id
+            ? undefined
+            : "Nationality start action must match its requirement progress";
+        }
+        return progress.requirement === "human_identity" &&
+          progress.provider_id === eligibility.next_action.provider_id
+          ? undefined
+          : "Human start action must match its requirement progress";
+      }
+      if (eligibility.next_action.kind === "wait") {
+        const requirement = eligibility.next_action.requirement;
+        if (requirement === null) return undefined;
+        return eligibility.requirements[requirement] === undefined
+          ? "Verification wait must name a present requirement"
+          : undefined;
+      }
+      return "Verification-required eligibility requires a typed verification action";
+    }
+    if (eligibility.status === "gate_failed") {
+      return eligibility.next_action.kind === "blocked" &&
+        eligibility.next_action.reason === "gate_failed"
+        ? undefined
+        : "Gate-failed eligibility requires its blocked action";
+    }
+    if (eligibility.status === "banned") {
+      return eligibility.next_action.kind === "blocked" &&
+        eligibility.next_action.reason === "banned"
+        ? undefined
+        : "Banned eligibility requires its blocked action";
+    }
+    if (eligibility.status === "already_joined") {
+      return eligibility.next_action.kind === "none" &&
+        eligibility.next_action.reason === "already_joined"
+        ? undefined
+        : "Joined eligibility requires its terminal action";
+    }
+    if (eligibility.status === "pending_request") {
+      return eligibility.next_action.kind === "wait" &&
+        eligibility.next_action.reason_code === "membership_pending"
+        ? undefined
+        : "Pending requests require the membership wait";
+    }
+    return eligibility.next_action.kind === "request_membership"
+      ? undefined
+      : "Requestable eligibility requires the request action";
+  }),
+);
+export type JoinEligibilityV2 = Schema.Schema.Type<typeof JoinEligibilityV2>;
+
+export const JoinEligibility = Schema.Union([JoinEligibilityV2, JoinEligibilityV1]);
 
 export const GetJoinEligibility = endpoint({
   method: "GET",
@@ -1801,6 +2088,16 @@ export const CreatePost = endpoint({
 
 // --- song media -----------------------------------------------------------
 
+export const PreflightSongVideoInterval = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/song-video-interval-preflights",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathCommunity, body: SongVideoIntervalPreflightInputV1 },
+  response: SongVideoIntervalPreflightV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, EligibilityFailed, NotFound, RateLimited],
+});
+
 export const CreateMediaUploadReservation = endpoint({
   method: "POST",
   path: "/communities/:communityId/media-upload-reservations",
@@ -1812,10 +2109,12 @@ export const CreateMediaUploadReservation = endpoint({
     AuthError,
     BadRequest,
     Conflict,
+    EligibilityFailed,
     IdempotencyConflict,
     MembershipRequired,
     NotFound,
     RateLimited,
+    RetryableConflict,
   ],
 });
 
@@ -2101,6 +2400,7 @@ export const v1Registry = {
   SessionExchange,
   RegisterIdentity,
   SessionLogout,
+  GetMyAgeVerification,
   GetMyAgeCapability,
   PutMyMinimumAgeAttestation,
   GetCurrentUser,
@@ -2113,6 +2413,7 @@ export const v1Registry = {
   FollowCommunity,
   UnfollowCommunity,
   CreatePost,
+  PreflightSongVideoInterval,
   CreateMediaUploadReservation,
   CreateMediaPostSubmission,
   BindMediaPostSubmissionTerms,
