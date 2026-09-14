@@ -184,7 +184,6 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
     event: MediaProcessingWorkflowEvent,
     step: MediaProcessingWorkflowStep,
   ): Promise<MediaProcessingWorkflowResult> => {
-    const composition = applyRuntimePosture(env, resolve(env));
     let payload = event.payload;
     let eventType: MediaProcessingEventType | null = null;
     let sequence = 0;
@@ -197,6 +196,7 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
         `media-processing-${sequence}-${eventType ?? "launch"}`,
         SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
         async () => {
+          const composition = applyRuntimePosture(env, resolve(env));
           const resolvedEventType =
             eventType ??
             (await composition.workflow.store.getOutbox(payload.outboxId))?.eventType ??
