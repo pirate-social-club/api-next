@@ -112,6 +112,7 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-reset-replay.pg.test.ts",
   "scripts/staging-persona-reconstruct.pg.test.ts",
   "scripts/staging-persona-phased-reset.pg.test.ts",
+  "scripts/staging-persona-disposable-reset.pg.test.ts",
   "scripts/staging-reset-release-live-runtime.pg.test.ts",
   "scripts/staging-hns-post-migration-entry.pg.test.ts",
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
