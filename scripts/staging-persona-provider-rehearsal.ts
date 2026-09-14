@@ -86,8 +86,9 @@ export async function rehearseProviderReset(execute: boolean, diagnostic = false
   // The bound branch must be one this backup actually restored, not merely a
   // branch that agrees about its source.
   assertRestoredFromApprovedBackup(boundTarget, backup);
-  // r16 measured 808 removal batches at roughly 9–10 seconds each before the
-  // replay batches, so the complete workload can exceed two hours. Never
+  // r16 completed 627 removal batches at roughly 9–10 seconds each before its
+  // two-hour deadline. The reviewed workload covers 808 removal roots plus
+  // replay, so the complete run needs the larger predeclared budget. Never
   // extend this validity during a run.
   const validUntilMs = Date.now() + REHEARSAL_VALIDITY_MS;
   // The owner-authorized diagnostic run only: capture the raw failure chain
