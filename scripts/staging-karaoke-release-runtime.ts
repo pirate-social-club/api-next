@@ -16,7 +16,10 @@ import {
 import { loadKaraokeReleaseConfiguration } from "./staging-karaoke-release-config.ts";
 import { makeKaraokeDatabaseRelease } from "./staging-karaoke-release-database.ts";
 import { makeKaraokeIngressRelease } from "./staging-karaoke-release-ingress.ts";
-import { makeKaraokeProducerRelease } from "./staging-karaoke-release-producers.ts";
+import {
+  makeKaraokeProducerRelease,
+  makeKaraokeVersionRelease,
+} from "./staging-karaoke-release-producers.ts";
 import { makeStagingKaraokeSigningReaders } from "./staging-karaoke-signing-readers.ts";
 
 /** Factories validate configuration without provider calls; the authenticated
@@ -31,6 +34,7 @@ export async function runStagingKaraokeRelease(input: KaraokeCollectorInput) {
     ...config.restoration.database,
     reviewedGrantDigest: config.plan.reviewedGrantDigest,
   });
+  const versions = makeKaraokeVersionRelease({ ...transport, plan: config.plan });
   const producers = makeKaraokeProducerRelease({
     ...transport,
     plan: config.plan,
@@ -78,11 +82,13 @@ export async function runStagingKaraokeRelease(input: KaraokeCollectorInput) {
       readers,
       evidence,
       surfaces: {
+        versions: versions.execute,
         database: database.execute,
         producers: producers.execute,
         ingress: ingress.execute,
       },
       observeRestored: {
+        versions: observed(versions),
         database: observed(database),
         producers: observed(producers),
         ingress: observed(ingress),

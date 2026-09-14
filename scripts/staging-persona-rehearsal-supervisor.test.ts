@@ -1,0 +1,56 @@
+import { expect, test } from "bun:test";
+import {
+  providerDiagnosticEnvironment,
+  resolveDiagnosticIntent,
+} from "./staging-persona-diagnostic-mode.ts";
+import { superviseRehearsalProcess } from "./staging-persona-rehearsal-supervisor.ts";
+
+const completed =
+  'console.log(JSON.stringify({event:"staging_rehearsal_completed",mode:"dry-run"}));';
+
+function observe(source: string, timeoutMs = 5_000) {
+  const child = Bun.spawn([process.execPath, "-e", source], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return superviseRehearsalProcess(child, "dry-run", { timeoutMs, report: () => {} });
+}
+
+test("requires a terminal record and a successful real child exit", async () => {
+  await observe(completed);
+  await expect(observe("")).rejects.toThrow("rehearsal_completion_unproven");
+  await expect(observe('console.log("phase began")')).rejects.toThrow(
+    "rehearsal_completion_unproven",
+  );
+  await expect(observe(`${completed} process.exitCode=1;`)).rejects.toThrow(
+    "rehearsal_process_failed",
+  );
+});
+
+test("rejects a mismatched mode or duplicate completion instead of accepting ambiguous evidence", async () => {
+  await expect(observe(completed.replace('mode:"dry-run"', 'mode:"execute"'))).rejects.toThrow(
+    "rehearsal_completion_unproven",
+  );
+  await expect(observe(completed + completed)).rejects.toThrow("rehearsal_completion_unproven");
+});
+
+test("terminates a stalled child at the deadline without retry", async () => {
+  await expect(observe("setInterval(()=>{},1000)", 100)).rejects.toThrow(
+    "rehearsal_process_deadline_exceeded",
+  );
+});
+
+test("the supervisor reasserts diagnostic intent after secret injection", () => {
+  expect(providerDiagnosticEnvironment({ STAGING_REHEARSAL_DIAGNOSTIC: "1" }, false)).toMatchObject(
+    { STAGING_REHEARSAL_DIAGNOSTIC: "0" },
+  );
+  expect(providerDiagnosticEnvironment({ STAGING_REHEARSAL_DIAGNOSTIC: "0" }, true)).toMatchObject({
+    STAGING_REHEARSAL_DIAGNOSTIC: "1",
+  });
+  expect(resolveDiagnosticIntent("--execute", "--diagnostic").diagnostic).toBe(true);
+  expect(resolveDiagnosticIntent("--execute", "--no-diagnostic").diagnostic).toBe(false);
+  expect(() => resolveDiagnosticIntent("--dry-run", "--diagnostic")).toThrow(
+    "rehearsal_diagnostic_mode_invalid",
+  );
+});

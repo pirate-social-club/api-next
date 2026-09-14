@@ -24,7 +24,11 @@ export function makeKaraokeReleaseHttp(input: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     body?: unknown,
   ) => {
-    if (!/^\/(?:queues|workers\/scripts|access\/apps)(?:[/?][a-zA-Z0-9/?=&_-]+)$/u.test(path))
+    // The fixed-target ingress reversal creates the fence with
+    // `POST /access/apps`, so the collection path itself is in scope; every
+    // path still has to be one of these four reviewed prefixes or a subpath of
+    // one. Nothing else reaches the provider with the window credential.
+    if (!/^\/(?:queues|workers\/scripts|access\/apps)(?:[/?][a-zA-Z0-9/?=&_-]+)?$/u.test(path))
       throw new Error("karaoke_release_transport_path_denied");
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;

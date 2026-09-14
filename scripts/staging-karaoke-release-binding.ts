@@ -48,7 +48,7 @@ const SurfaceScope = {
   scope: Schema.Literal("staging-karaoke-release-surface"),
   planDigest: ReconciliationDigest,
   intentId: ReconciliationDigest,
-  surface: Schema.Literals(["database", "producers", "ingress"]),
+  surface: Schema.Literals(["versions", "database", "producers", "ingress"]),
 };
 const SurfaceRecord = Schema.Union([
   Schema.Struct({ ...SurfaceScope, phase: Schema.Literal("intent") }),
@@ -276,7 +276,7 @@ export function makeKaraokeReleaseBinding(input: {
   const planDigest = reconciliationDigest(JSON.stringify(plan));
   const observeSurfaces = () =>
     Promise.all(
-      (["ingress", "producers", "database"] as const).map((surface) =>
+      (["versions", "ingress", "producers", "database"] as const).map((surface) =>
         observeKaraokeReleasedSurface({
           surface,
           observe: async () => input.observeRestored[surface]?.() ?? "uncertain",
@@ -413,10 +413,8 @@ export function makeKaraokeReleaseBinding(input: {
         return { disposition: "unresolved" };
       const receiptSurfaces = new Set(receipts.map((receipt) => receipt.surface));
       if (
-        receipts.length !== 3 ||
-        !["database", "producers", "ingress"].every((surface) =>
-          receiptSurfaces.has(surface as KaraokeReleaseSurface),
-        )
+        receipts.length !== plan.surfaceOrder.length ||
+        !plan.surfaceOrder.every((surface) => receiptSurfaces.has(surface))
       )
         return { disposition: "unresolved" };
       const releasedAt = receipts.at(-1)?.releasedAt;

@@ -19,6 +19,15 @@ export const KaraokeLiveReleaseConfiguration = Schema.Struct({
     database: Schema.Struct({
       targetBindingDigest: ReconciliationDigest,
       restoreRuntimeConnect: Schema.Literal(true),
+      // Verified against the runtime connection before the fence denies it,
+      // then rechecked after restoration. Discovering it during the release
+      // would need the very connection the fence exists to refuse.
+      runtimeRole: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_]{1,63}$/u)),
+      // Digest of the pre-fence SQL identity observation that established the
+      // role above. Provider metadata agreeing with the configured name does
+      // not show that anyone ever connected and asked, so the evidence is
+      // pinned rather than inferred.
+      runtimeIdentityEvidence: ReconciliationDigest,
     }),
     producers: Schema.Struct({ schedules: KaraokeReleasedSchedules }),
   }),
@@ -31,7 +40,7 @@ export function validateKaraokeReleaseConfiguration(value: unknown) {
     config.approvedPlanDigest !== reconciliationDigest(JSON.stringify(config.plan))
   )
     throw new Error("karaoke_release_approved_plan_changed");
-  if (JSON.stringify(config.plan.surfaceOrder) !== '["database","producers","ingress"]')
+  if (JSON.stringify(config.plan.surfaceOrder) !== '["versions","database","ingress","producers"]')
     throw new Error("karaoke_release_approved_order_changed");
   return config;
 }

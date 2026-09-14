@@ -91,6 +91,7 @@ export const freshSchemaPostgresTestSuites = [
 
 export const noBaselinePostgresTestSuites = [
   "scripts/staging-karaoke-release-database.pg.test.ts",
+  "scripts/staging-persona-prepare-reset.pg.test.ts",
   "scripts/staging-persona-reset-denied-grants.pg.test.ts",
   "scripts/staging-persona-recovery.pg.test.ts",
   "scripts/staging-persona-dependency-scan.pg.test.ts",
@@ -102,6 +103,8 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-reset-replay.pg.test.ts",
   "scripts/staging-persona-reconstruct.pg.test.ts",
   "scripts/staging-persona-phased-reset.pg.test.ts",
+  "scripts/staging-reset-release-live-runtime.pg.test.ts",
+  "scripts/staging-hns-post-migration-entry.pg.test.ts",
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
   "packages/platform-cf/src/hns-admission-privileges.pg.test.ts",
   "packages/platform-cf/src/video-reconciliation-operator.pg.test.ts",

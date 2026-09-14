@@ -17,7 +17,7 @@ const Worker = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128
  * privileges. An incomplete plan refuses before any mutation and names the
  * missing decision. */
 export const KaraokeReleasePlan = Schema.Struct({
-  version: Schema.Literal("staging-karaoke-release-plan-v1"),
+  version: Schema.Literal("staging-karaoke-release-plan-v2"),
   ingressApplicationId: Id,
   resumeQueues: Schema.Array(Schema.Struct({ name: ReconciliationText, id: Id })).check(
     Schema.isMinLength(1),
@@ -29,14 +29,13 @@ export const KaraokeReleasePlan = Schema.Struct({
   ),
   reviewedGrantDigest: ReconciliationDigest,
   restorationDigest: Schema.optional(ReconciliationDigest),
-  surfaceOrder: Schema.Array(Schema.Literals(["ingress", "producers", "database"] as const)).check(
-    Schema.isMinLength(3),
-    Schema.isMaxLength(3),
-  ),
+  surfaceOrder: Schema.Array(
+    Schema.Literals(["versions", "ingress", "producers", "database"] as const),
+  ).check(Schema.isMinLength(4), Schema.isMaxLength(4)),
 });
 export type KaraokeReleasePlan = typeof KaraokeReleasePlan.Type;
 
-export type KaraokeReleaseSurface = "ingress" | "producers" | "database";
+export type KaraokeReleaseSurface = "versions" | "ingress" | "producers" | "database";
 
 export type KaraokeSurfaceReceipt = {
   readonly surface: KaraokeReleaseSurface;
@@ -71,8 +70,10 @@ function missingDecision(plan: Partial<KaraokeReleasePlan>): string | null {
   const order = plan.surfaceOrder;
   if (
     order === undefined ||
-    new Set(order).size !== 3 ||
-    !["ingress", "producers", "database"].every((surface) => order.includes(surface as never))
+    new Set(order).size !== 4 ||
+    !["versions", "ingress", "producers", "database"].every((surface) =>
+      order.includes(surface as never),
+    )
   )
     return "approved release surface order";
   return null;
@@ -98,6 +99,11 @@ export async function executeKaraokeFenceRelease(input: {
     readonly receipt?: KaraokeSurfaceReceipt;
     readonly failure?: { readonly stage: string; readonly sqlstate: string | null };
   }) => void;
+  /** Gate run before a surface executes, for conditions this operation cannot
+   * observe: reset completion while the fence is held, and product acceptance
+   * once ingress is open. A rejection leaves the remaining surfaces unreleased
+   * with the receipts that did complete; it never retries and never skips. */
+  readonly beforeSurface?: (surface: KaraokeReleaseSurface) => Promise<void>;
   readonly now?: () => string;
 }) {
   const now = input.now ?? (() => new Date().toISOString());
@@ -112,9 +118,12 @@ export async function executeKaraokeFenceRelease(input: {
     new Set(plan.servingWorkers.map((worker) => worker.worker)).size !== plan.servingWorkers.length
   )
     throw new Error("karaoke_release_plan_duplicate_target");
+  // Serving versions and delivery resumption are separate surfaces because a
+  // deployed pair must be accepted before background writers act on it.
   const directives: Record<KaraokeReleaseSurface, unknown> = {
+    versions: { servingWorkers: plan.servingWorkers },
     ingress: { applicationId: plan.ingressApplicationId },
-    producers: { resumeQueues: plan.resumeQueues, servingWorkers: plan.servingWorkers },
+    producers: { resumeQueues: plan.resumeQueues },
     database: { reviewedGrantDigest: plan.reviewedGrantDigest },
   };
   const order = plan.surfaceOrder.map(
@@ -124,6 +133,7 @@ export async function executeKaraokeFenceRelease(input: {
   for (const [surface, directive] of order) {
     input.onAttempt?.({ surface, phase: "intent" });
     try {
+      await input.beforeSurface?.(surface);
       const startedAt = decodeReconciliation(ReconciliationTime, now());
       const priorConfirmation = receipts.at(-1)?.releasedAt;
       if (priorConfirmation !== undefined && startedAt < priorConfirmation)
