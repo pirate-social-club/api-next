@@ -90,9 +90,15 @@ test("text and photo revisions edit each other while other kind changes still re
     "edit",
   );
   expect(decideTelegramDelivery({ ...base, desiredKind: "video", confirmedKind: "photo" })).toBe(
-    "review",
+    "edit",
   );
   expect(decideTelegramDelivery({ ...base, desiredKind: "text", confirmedKind: "video" })).toBe(
+    "edit",
+  );
+  expect(decideTelegramDelivery({ ...base, desiredKind: "voice", confirmedKind: "text" })).toBe(
+    "review",
+  );
+  expect(decideTelegramDelivery({ ...base, desiredKind: "text", confirmedKind: "audio" })).toBe(
     "review",
   );
 });

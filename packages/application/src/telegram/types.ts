@@ -163,6 +163,7 @@ export interface TelegramApi {
     operation: "send" | "edit" | "delete",
     audio?: Uint8Array,
     photo?: Readonly<{ bytes: Uint8Array; contentType: "image/jpeg" }>,
+    video?: Readonly<{ bytes: Uint8Array; contentType: "video/mp4" }>,
   ): Promise<TelegramDispatchOutcome>;
   downloadVoice(token: string, fileId: string): Promise<Uint8Array>;
 }
@@ -317,6 +318,9 @@ export interface TelegramStore {
   publicationPoster(
     post: Readonly<{ id: string; communityId: string }>,
   ): Promise<TelegramPublicationPoster | null>;
+  publicationVideo(
+    post: Readonly<{ id: string; communityId: string }>,
+  ): Promise<TelegramPublicationVideoSource | null>;
 }
 
 /**
@@ -330,6 +334,13 @@ export type TelegramPublicationPoster = Readonly<{
   sha256: string;
   sourceSha256: string;
   policyRevision: string;
+}>;
+
+/** Accepted video source identity; the reader verifies the canonical hash. */
+export type TelegramPublicationVideoSource = Readonly<{
+  physicalKey: string;
+  canonicalSha256: string;
+  rights: "original" | "derivative";
 }>;
 
 export interface TelegramServices {
@@ -346,6 +357,10 @@ export interface TelegramServices {
   ) => Promise<void>;
   /** Reads the sealed poster bytes for an authorized identity, or null. */
   posterBytes?: (poster: TelegramPublicationPoster) => Promise<Uint8Array | null>;
+  /** Reads the accepted video source bytes for an authorized identity, or null. */
+  videoSourceBytes?: (
+    source: TelegramPublicationVideoSource,
+  ) => Promise<Readonly<{ bytes: Uint8Array; contentType: "video/mp4" }> | null>;
 }
 
 export function integrationView(record: IntegrationRecord): TelegramIntegration {

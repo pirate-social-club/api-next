@@ -257,3 +257,30 @@ test("a media identity without transferable bytes falls back to text", async () 
   expect(body.text).toBe("Public post");
   expect(body).not.toHaveProperty("photo");
 });
+
+test("an accepted video source transfers as a captioned video", async () => {
+  const f = fixture(() => Response.json({ ok: true, result: { message_id: 30 } }));
+  expect(
+    await f.api.dispatch(
+      token,
+      {
+        ...delivery,
+        desired: {
+          kind: "video",
+          text: "Public post",
+          media: "immutable/operation-1/video/1",
+          buttons: [],
+        },
+      },
+      "send",
+      undefined,
+      undefined,
+      { bytes: new Uint8Array([1, 2]), contentType: "video/mp4" },
+    ),
+  ).toEqual({ kind: "confirmed", messageId: 30 });
+  expect(String(f.urls[0])).toContain("/sendVideo");
+  const form = f.requests[0]?.body as FormData;
+  expect(form.get("caption")).toBe("Public post");
+  expect(form.get("video")).toBeInstanceOf(Blob);
+  expect(form.get("photo")).toBeNull();
+});

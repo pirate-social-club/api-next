@@ -12,6 +12,7 @@ import { makeTelegramAssistantProviders } from "./telegram-assistant-providers.t
 import { makeTelegramCredentialVault } from "./telegram-credential-vault.ts";
 import { makeTelegramPosterBytes, type SealedMediaBucket } from "./telegram-poster-bytes.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
+import { makeTelegramVideoSourceBytes } from "./telegram-video-source-bytes.ts";
 
 export interface TelegramBindings {
   readonly TELEGRAM_ENABLED?: string;
@@ -31,6 +32,7 @@ export async function makeTelegramServices(
   bindings: TelegramBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   mediaDerived?: SealedMediaBucket,
+  mediaImmutable?: SealedMediaBucket,
 ): Promise<TelegramServices | null> {
   if (bindings.TELEGRAM_ENABLED !== "true") return null;
   if (
@@ -57,6 +59,9 @@ export async function makeTelegramServices(
   }
   const queue = bindings.TELEGRAM_QUEUE;
   const posterBytes = mediaDerived ? makeTelegramPosterBytes(mediaDerived) : undefined;
+  const videoSourceBytes = mediaImmutable
+    ? makeTelegramVideoSourceBytes(mediaImmutable)
+    : undefined;
   return {
     store: makeControlPlaneTelegramStore(runtime, bindings.TELEGRAM_PUBLIC_ORIGIN),
     api: makeTelegramApi(fetch),
@@ -70,6 +75,7 @@ export async function makeTelegramServices(
     now: Date.now,
     wake: (work, options) => queue.send(work, options),
     ...(posterBytes ? { posterBytes } : {}),
+    ...(videoSourceBytes ? { videoSourceBytes } : {}),
   };
 }
 

@@ -12,6 +12,7 @@ import { makeTelegramSettingsStore } from "./telegram-settings-store.ts";
 import { makeTelegramSetupStore } from "./telegram-setup-store.ts";
 import { makeTelegramStageStore } from "./telegram-stage-store.ts";
 import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
+import { makeTelegramVideoSource } from "./video-post-source-authority.ts";
 import { makeVideoPosterAuthority } from "./video-poster-authority.ts";
 
 export function makeControlPlaneTelegramStore(
@@ -21,6 +22,7 @@ export function makeControlPlaneTelegramStore(
   const db = makeTelegramDatabase(runtime);
   const authorizePoster = makeVideoPublicationAuthorization(runtime);
   const resolvePosterAuthority = makeVideoPosterAuthority(runtime);
+  const videoSource = makeTelegramVideoSource(db);
   const publicationPoster = makeTelegramPublicationPoster({
     authorize: (postId, communityId) => Effect.runPromise(authorizePoster({ postId, communityId })),
     posterArtifactRef: async (postId, communityId) => {
@@ -35,6 +37,12 @@ export function makeControlPlaneTelegramStore(
   });
   return {
     publicationPoster,
+    async publicationVideo(post) {
+      const allowed = await Effect.runPromise(
+        authorizePoster({ postId: post.id, communityId: post.communityId }),
+      );
+      return allowed ? videoSource(post) : null;
+    },
     ...makeTelegramSettingsStore(db),
     ...makeTelegramDeliveryStore(db),
     ...makeTelegramInboxStore(db),

@@ -40,7 +40,14 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
         throw new TelegramFailure({ reason: "unavailable" });
       }
     },
-    async dispatch(token, delivery, operation, audio, photo): Promise<TelegramDispatchOutcome> {
+    async dispatch(
+      token,
+      delivery,
+      operation,
+      audio,
+      photo,
+      video,
+    ): Promise<TelegramDispatchOutcome> {
       const message = delivery.desired;
       const payload: Record<string, unknown> = { chat_id: delivery.chatId };
       let method: string;
@@ -67,13 +74,13 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
             // is edited through editMessageCaption instead.
             method = "editMessageCaption";
             if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
-          } else if (photo) {
-            // Replace the media itself so a poster upgrade or replacement is
-            // not mistaken for a caption-only edit.
+          } else if (photo || video) {
+            // Replace the media itself so an upgrade or replacement is not
+            // mistaken for a caption-only edit.
             method = "editMessageMedia";
             payload.media = {
-              type: "photo",
-              media: "attach://photo",
+              type: video ? "video" : "photo",
+              media: video ? "attach://video" : "attach://photo",
               ...(message.text !== "" ? { caption: boundedTelegramText(message.text, true) } : {}),
             };
           } else {
@@ -81,6 +88,9 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
             payload.media = { type: message.kind, media: message.media, caption: message.text };
           }
           payload.reply_markup ??= { inline_keyboard: [] };
+        } else if (video) {
+          method = "sendVideo";
+          if (message.text !== "") payload.caption = boundedTelegramText(message.text, true);
         } else if (photo) {
           // The authorized sealed poster transfers as a photo with the text as
           // its caption; a later edit updates that caption through
@@ -114,10 +124,10 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
         }
       }
       let body: Record<string, unknown> | FormData = payload;
-      if (audio || photo) {
+      if (audio || photo || video) {
         const form = new FormData();
         for (const [key, value] of Object.entries(payload))
-          if (key !== "voice" && key !== "photo")
+          if (key !== "voice" && key !== "photo" && key !== "video")
             form.set(key, typeof value === "string" ? value : JSON.stringify(value));
         if (audio)
           form.set("voice", new Blob([new Uint8Array(audio)], { type: "audio/mpeg" }), "reply.mp3");
@@ -126,6 +136,12 @@ export function makeTelegramApi(fetcher: typeof fetch): TelegramApi {
             "photo",
             new Blob([new Uint8Array(photo.bytes)], { type: photo.contentType }),
             "poster.jpg",
+          );
+        if (video)
+          form.set(
+            "video",
+            new Blob([new Uint8Array(video.bytes)], { type: video.contentType }),
+            "video.mp4",
           );
         body = form;
       }

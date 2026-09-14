@@ -131,6 +131,7 @@ export interface JobsWorkerEnv
   readonly CONTROL_PLANE?: HyperdriveConnection;
   readonly LEARNER_AUDIO?: R2Bucket;
   readonly MEDIA_DERIVED?: import("../../../packages/platform-cf/src/telegram-poster-bytes.ts").SealedMediaBucket;
+  readonly MEDIA_IMMUTABLE_ORIGINALS?: import("../../../packages/platform-cf/src/telegram-poster-bytes.ts").SealedMediaBucket;
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
   readonly KARAOKE_FINALIZATION_RECOVERY_ENABLED?: string;
@@ -738,6 +739,7 @@ export default {
         env,
         makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
         env.MEDIA_DERIVED,
+        env.MEDIA_IMMUTABLE_ORIGINALS,
       );
       if (services === null) {
         batch.retryAll({ delaySeconds: 300 });
@@ -801,7 +803,12 @@ export default {
     const scheduledWork: Promise<unknown>[] = Array.from(dueByLane, ([lane, laneJobs]) =>
       handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
     );
-    const telegram = await makeTelegramServices(env, runtime, env.MEDIA_DERIVED);
+    const telegram = await makeTelegramServices(
+      env,
+      runtime,
+      env.MEDIA_DERIVED,
+      env.MEDIA_IMMUTABLE_ORIGINALS,
+    );
     if (telegram !== null) scheduledWork.push(runTelegramMaintenance(telegram));
     if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
     if (dataRegistrationMaintenance !== null) {

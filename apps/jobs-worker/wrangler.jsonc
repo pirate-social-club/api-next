@@ -42,7 +42,8 @@
       "binding": "LEARNER_AUDIO",
       "bucket_name": "pirate-learner-audio-development"
     },
-    { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-development" }
+    { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-development" },
+    { "binding": "MEDIA_IMMUTABLE_ORIGINALS", "bucket_name": "pirate-media-immutable-development" }
   ],
   "workflows": [
     {
@@ -259,6 +260,7 @@
           "bucket_name": "pirate-learner-audio-staging"
         },
         { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" },
+        { "binding": "MEDIA_IMMUTABLE_ORIGINALS", "bucket_name": "pirate-media-immutable-staging" },
         {
           "binding": "MEGAPOT_COMMITMENTS",
           "bucket_name": "pirate-megapot-commitments-staging",
@@ -399,7 +401,8 @@
       // No learner-audio binding: the first production cron admits renewal only.
       "r2_buckets": [
         { "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-production" },
-        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-production" }
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-production" },
+        { "binding": "MEDIA_IMMUTABLE_ORIGINALS", "bucket_name": "pirate-media-immutable-production" }
       ],
       "secrets": {
         "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]

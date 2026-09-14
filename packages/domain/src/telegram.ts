@@ -45,12 +45,11 @@ export function decideTelegramDelivery(input: {
   if (input.messageId === null) return "send";
   if (input.state === "delivered" && input.confirmedHash === input.desiredHash) return "unchanged";
   if (input.confirmedKind !== input.desiredKind) {
-    // Text and photo swap through an edit so a poster can arrive later or be
-    // replaced; any other media-kind change still needs operator review.
-    const mediaSwap =
-      (input.confirmedKind === "text" && input.desiredKind === "photo") ||
-      (input.confirmedKind === "photo" && input.desiredKind === "text");
-    if (!mediaSwap) return "review";
+    // Text, photo and video swap through an edit so a poster or video source
+    // can arrive later or be replaced; other kind changes still need review.
+    const swappable = (kind: typeof input.confirmedKind) =>
+      kind === "text" || kind === "photo" || kind === "video";
+    if (!swappable(input.confirmedKind) || !swappable(input.desiredKind)) return "review";
   }
   return "edit";
 }

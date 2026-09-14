@@ -111,6 +111,12 @@ async function publicationMessage(
 ): Promise<TelegramMessage> {
   const base = telegramPublication(post);
   try {
+    const video = await services.store.publicationVideo({ id: post.id, communityId });
+    if (video) return { ...base, kind: "video", media: video.physicalKey };
+  } catch {
+    /* Video enrichment is best-effort. */
+  }
+  try {
     const poster = await services.store.publicationPoster({
       id: post.id,
       communityId,
@@ -245,30 +251,54 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
     return;
   }
   let photo: { bytes: Uint8Array; contentType: "image/jpeg" } | undefined;
+  let video: { bytes: Uint8Array; contentType: "video/mp4" } | undefined;
+  let posterArtifactRef: string | null = null;
   if (
     delivery.kind === "publication" &&
     delivery.postId &&
     decision !== "delete" &&
-    delivery.desired?.kind === "photo" &&
-    services.posterBytes
+    (delivery.desired?.kind === "photo" || delivery.desired?.kind === "video")
   ) {
-    try {
-      // Eligibility and the sealed identity are re-resolved at dispatch, and
-      // the bucket reader validates the object before transfer. Any miss
-      // degrades to the text publication instead of failing it.
-      const poster = await services.store.publicationPoster({
-        id: delivery.postId,
-        communityId: delivery.communityId,
-      });
-      const bytes = poster === null ? null : await services.posterBytes(poster);
-      if (bytes !== null && bytes.byteLength > 0 && bytes.byteLength <= 5_242_880)
-        photo = { bytes, contentType: "image/jpeg" };
-    } catch {
-      /* Poster transfer is optional; the text publication stands. */
+    if (delivery.desired.kind === "video" && services.videoSourceBytes) {
+      try {
+        const source = await services.store.publicationVideo({
+          id: delivery.postId,
+          communityId: delivery.communityId,
+        });
+        const read = source === null ? null : await services.videoSourceBytes(source);
+        if (read !== null && read.bytes.byteLength > 0)
+          video = { bytes: read.bytes, contentType: "video/mp4" };
+      } catch {
+        /* Video transfer is optional; the poster or text publication stands. */
+      }
+    }
+    if (video === undefined && services.posterBytes) {
+      try {
+        const poster = await services.store.publicationPoster({
+          id: delivery.postId,
+          communityId: delivery.communityId,
+        });
+        const bytes = poster === null ? null : await services.posterBytes(poster);
+        if (bytes !== null && bytes.byteLength > 0 && bytes.byteLength <= 5_242_880) {
+          photo = { bytes, contentType: "image/jpeg" };
+          posterArtifactRef = poster?.artifactRef ?? null;
+        }
+      } catch {
+        /* Poster transfer is optional; the text publication stands. */
+      }
     }
   }
-  if (delivery.desired?.kind === "photo" && photo === undefined && decision === "edit") {
-    // A requested poster replacement or upgrade must not be confirmed as a
+  const mediaRequested = delivery.desired?.kind === "photo" || delivery.desired?.kind === "video";
+  const mediaActuallySent =
+    video !== undefined
+      ? "video"
+      : photo !== undefined
+        ? "photo"
+        : delivery.desired?.kind === "video" || delivery.desired?.kind === "photo"
+          ? "text"
+          : null;
+  if (mediaRequested && mediaActuallySent === "text" && decision === "edit") {
+    // A requested media replacement or upgrade must not be confirmed as a
     // caption-only edit; retry while storage or the artifact is unavailable.
     await services.store.finishDelivery(
       delivery,
@@ -277,16 +307,33 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
     );
     return;
   }
-  const outcome = await services.api.dispatch(credentials.token, delivery, decision, audio, photo);
+  const outcome = await services.api.dispatch(
+    credentials.token,
+    delivery,
+    decision,
+    audio,
+    photo,
+    video,
+  );
   if (
     outcome.kind === "confirmed" &&
     decision === "send" &&
-    delivery.desired?.kind === "photo" &&
-    photo === undefined
+    delivery.desired !== null &&
+    mediaActuallySent !== null &&
+    mediaActuallySent !== delivery.desired.kind
   ) {
-    // The adapter sent the text fallback. Record what was actually sent so the
-    // next revision can upgrade the message to the poster once bytes exist.
-    const sent = { ...delivery.desired, kind: "text" as const, media: null };
+    // Record what was actually sent so the next revision can upgrade the
+    // message once bytes exist.
+    const sent = {
+      ...delivery.desired,
+      kind: mediaActuallySent as "text" | "photo" | "video",
+      media:
+        mediaActuallySent === "text"
+          ? null
+          : mediaActuallySent === "video"
+            ? delivery.desired.media
+            : posterArtifactRef,
+    };
     await services.store.finishDelivery(delivery, outcome, decision, {
       message: sent,
       hash: await services.vault.hash(JSON.stringify(sent)),
