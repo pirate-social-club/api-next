@@ -213,5 +213,9 @@ export default defineConfig({
   resolve: { alias },
   test: {
     include: ["tests/workerd-http/**/*.test.ts"],
+    // Each file imports the full HTTP Worker graph. Keep those transforms serial
+    // instead of multiplying the same graph across concurrent worker processes.
+    fileParallelism: false,
+    maxWorkers: 1,
   },
 });

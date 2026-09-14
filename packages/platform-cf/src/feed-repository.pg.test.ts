@@ -66,6 +66,7 @@ async function insertProjectedPost(
   admin: Client,
   input: {
     readonly id: string;
+    readonly postType?: "text" | "image" | "link" | "file" | "crosspost";
     readonly community?: "com_alpha" | "com_hidden";
     readonly status?: "published" | "processing";
     readonly visibility?: "public" | "members_only";
@@ -84,9 +85,9 @@ async function insertProjectedPost(
      VALUES (
        $1, $2, 'usr_member',
        (SELECT persona_id FROM personas WHERE account_id='usr_member' AND is_first_persona),
-       'text', $3, $4, $2, $5, $5
+       $6, $3, $4, $2, $5, $5
      )`,
-    [community, input.id, status, visibility, created],
+    [community, input.id, status, visibility, created, input.postType ?? "text"],
   );
   await admin.query(
     `INSERT INTO home_feed_projection
@@ -205,8 +206,35 @@ suite("Postgres 17 home feed repository", () => {
     completedTestCount += 1;
   });
 
+  test("unrated content types stay content-free for anonymous viewers and the community owner", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seedCommunity(admin);
+      for (const postType of ["image", "link", "file", "crosspost"] as const) {
+        await insertProjectedPost(admin, { id: `private_${postType}`, postType });
+      }
+      const store = makeControlPlaneFeedStore(makeDirectPostgresControlPlaneLayer(connection));
+      for (const viewerUserId of [undefined, "usr_member"]) {
+        const result = await Effect.runPromise(
+          Effect.scoped(
+            store.listHome({ query: {}, ...(viewerUserId === undefined ? {} : { viewerUserId }) }),
+          ),
+        );
+        expect(result.items).toEqual(
+          Array.from({ length: 4 }, () => ({
+            kind: "age_locked",
+            content_rating: "adult_18",
+            next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+          })),
+        );
+        expect(JSON.stringify(result.items)).not.toContain("private_");
+      }
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 3) {
+    if (connectionString !== undefined && completedTestCount === 4) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

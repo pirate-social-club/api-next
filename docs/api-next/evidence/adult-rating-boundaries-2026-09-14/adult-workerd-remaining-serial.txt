@@ -1,0 +1,48 @@
+Running as unit: run-r69c366e63c2a4ca39470811805b0eaf7.scope; invocation ID: 7b20768233de4c8d9b26465a88ec6a8f
+Checked 1 file in 5ms. No fixes applied.
+
+ RUN  v4.1.10 <api-worktree>
+
+uncaught exception; source = Uncaught (in promise); stack = Error: karaoke_reset_operator_denied
+    at admitKaraokeResetOperator (<api-worktree>/packages/platform-cf/src/karaoke-reset-operator-auth.ts:48:11)
+    at KaraokeResetOperatorEntrypoint.apply (<api-worktree>/packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts:36:5)
+uncaught exception; exception = workerd/io/io-context.c++:1593: failed: jsg.Error: The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response. Refer to: https://developers.cloudflare.com/workers/observability/errors/
+stack: <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@35923c8
+uncaught exception; source = Uncaught (in promise); stack = TypeError: Durable Object ID is not valid for this namespace.
+    at KaraokeResetOperatorEntrypoint.apply (<api-worktree>/packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts:38:48)
+uncaught exception; exception = workerd/io/io-context.c++:1593: failed: jsg.Error: The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response. Refer to: https://developers.cloudflare.com/workers/observability/errors/
+stack: <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@35923c8
+
+ Test Files  22 passed (22)
+      Tests  74 passed (74)
+   Start at  08:00:51
+   Duration  90.61s (transform 6.44s, setup 0ms, import 77.95s, tests 2.02s, environment 1ms)
+
+
+ RUN  v4.1.10 <api-worktree>
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  08:02:23
+   Duration  2.54s (transform 954ms, setup 0ms, import 22ms, tests 1.94s, environment 0ms)
+
+
+ RUN  v4.1.10 <api-worktree>
+
+
+ Test Files  7 passed (7)
+      Tests  10 passed (10)
+   Start at  08:02:27
+   Duration  23.85s (transform 2.47s, setup 0ms, import 20.88s, tests 103ms, environment 1ms)
+
+
+ RUN  v4.1.10 <api-worktree>
+
+exception = workerd/api/streams/internal.c++:2641: disconnected: pump canceled
+stack: <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@365128d <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@33deee0 <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@2b771e0 <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@58c15c0 <api-worktree>/node_modules/.bun/@cloudflare+workerd-linux-64@1.20260811.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@25d5400
+
+ Test Files  4 passed (4)
+      Tests  15 passed (15)
+   Start at  08:02:52
+   Duration  24.75s (transform 3.31s, setup 0ms, import 16.52s, tests 6.32s, environment 1ms)

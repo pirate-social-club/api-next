@@ -75,7 +75,16 @@ suite("private video safety evidence PostgreSQL fences", () => {
     await admin.end();
   });
   test("identical replay retains one fact and a divergent snapshot cannot overwrite it", async () => {
-    const saved = evidence();
+    const previous = evidence();
+    const saved: VideoSafetyEvidence = {
+      ...previous,
+      ratingRuleRevision: "accepted-adult-signals-v2",
+      fact: {
+        ...previous.fact,
+        adapterRevision: "video-openai-safety-v2",
+        automatedRating: "adult_18",
+      },
+    };
     expect(await store.save(input, saved)).toEqual(saved.fact);
     expect(await store.save(input, saved)).toEqual(saved.fact);
     expect(await store.load(input, saved.inputDigest)).toEqual(saved.fact);

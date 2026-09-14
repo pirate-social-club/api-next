@@ -1,4 +1,8 @@
-import { canonicalTextModerationInput, resolveCommunityModerationPolicy } from "@pirate/domain";
+import {
+  canonicalTextModerationInput,
+  MODERATION_RATING_RULE_V2,
+  resolveCommunityModerationPolicyV2,
+} from "@pirate/domain";
 import { Cause, Effect } from "effect";
 import {
   MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS,
@@ -646,14 +650,15 @@ function moderateSongText(
       if (provider.input_sha256 !== canonical.sha256) {
         return yield* Effect.die(new TypeError("moderation input mismatch"));
       }
-      const resolution = resolveCommunityModerationPolicy({
+      const resolution = resolveCommunityModerationPolicyV2({
         platform_floor: policy.platform_policy,
         community_policy: policy.community_policy,
         matched_categories: provider.matched_categories,
         author_declared_rating: authority.authorDeclaredRating,
       });
       const evidencePreimage = JSON.stringify([
-        "song-text-moderation-evidence-v1",
+        "song-text-moderation-evidence-v2",
+        MODERATION_RATING_RULE_V2,
         authority.communityId,
         authority.submissionId,
         canonical.sha256,
@@ -675,6 +680,7 @@ function moderateSongText(
             : resolution.effective_policy_decision === "review"
               ? ("manual_review" as const)
               : ("blocked" as const),
+        ratingRuleRevision: MODERATION_RATING_RULE_V2,
         resultingContentRating: resolution.resulting_content_rating,
         inputSha256: canonical.sha256,
         matchedCategories: resolution.matched_categories,

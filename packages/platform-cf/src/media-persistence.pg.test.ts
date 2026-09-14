@@ -1130,7 +1130,21 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 
   test("persists provider unavailability as a review hold without a publication decision", async () => {
     await withCurrentSchema(async (admin, connection) => {
-      await createThroughDecision(connection, decision, analysis, true);
+      const moderation = analysis.contentModeration;
+      if (moderation === undefined) throw new Error("missing moderation fixture");
+      const taggedAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        contentModeration: { ...moderation, ratingRuleRevision: "accepted-adult-signals-v2" },
+      };
+      await createThroughDecision(connection, decision, taggedAnalysis, true);
+      expect(
+        (
+          await admin.query(
+            "SELECT analysis_snapshot->'contentModeration'->>'ratingRuleRevision' AS rule FROM media_analysis_evidence WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ rule: "accepted-adult-signals-v2" }]);
       const layer = makeDirectPostgresControlPlaneLayer(connection);
       const store = makeMediaProcessingStore(layer);
       const authority = await store.loadAuthority(submission, operation);

@@ -5,7 +5,7 @@ export { normalizePostgresConnectionString } from "./postgres-connection-string.
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { ControlPlaneDb } from "@pirate/application";
+import { ControlPlaneDb, ControlPlaneStatementFailed } from "@pirate/application";
 import { Effect } from "effect";
 import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
 import {
@@ -14,6 +14,7 @@ import {
   POSTGRES_MIGRATION_VERSION_PATTERN,
   type PostgresMigration,
 } from "../packages/platform-cf/src/postgres-migrations.ts";
+import { makeMigrationDiagnosticClient } from "./postgres-migration-diagnostics.ts";
 
 type ChecksumsManifest = {
   readonly algorithm: "sha256";
@@ -102,6 +103,7 @@ export async function runPostgresMigrations(
     throw new Error("CONTROL_PLANE_POSTGRES_ADMIN_URL is required for migrations");
   }
 
+  const diagnostics = makeMigrationDiagnosticClient(migrations);
   const result = await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -109,11 +111,18 @@ export async function runPostgresMigrations(
         return yield* applyPostgresMigrations(migrations);
       }).pipe(
         Effect.provide(
-          makeDirectPostgresControlPlaneLayer(normalizePostgresConnectionString(connectionString)),
+          makeDirectPostgresControlPlaneLayer(normalizePostgresConnectionString(connectionString), {
+            clientFactory: diagnostics.clientFactory,
+          }),
         ),
       ),
     ),
-  );
+  ).catch((error: unknown) => {
+    if (error instanceof ControlPlaneStatementFailed) {
+      throw new Error(diagnostics.describe(error), { cause: error });
+    }
+    throw error;
+  });
   return { dryRun: false, result };
 }
 

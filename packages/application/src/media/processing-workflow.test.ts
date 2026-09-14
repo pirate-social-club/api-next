@@ -633,6 +633,23 @@ test("song moderation raises the durable rating for an adult category", async ()
   expect(store.current.decision?.contentRating).toBe("adult_18");
 });
 
+test("held and blocked song signals retain the successor adult floor", async () => {
+  for (const decision of ["review", "block"] as const) {
+    const store = new FakeStore(authority({ lyrics: null }));
+    store.communityDecisions.set("sexual", decision);
+    await runWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, providers([], { matchedCategories: ["sexual"] })),
+    );
+    expect(store.current.analysis?.contentModeration).toMatchObject({
+      ratingRuleRevision: "accepted-adult-signals-v2",
+      resultingContentRating: "adult_18",
+      decision: decision === "review" ? "manual_review" : "blocked",
+    });
+  }
+});
+
 test("publishes a song with OpenAI-cleared general-audience artwork", async () => {
   const store = new FakeStore(authority({ lyrics: null }));
   const result = await runWorkflow(

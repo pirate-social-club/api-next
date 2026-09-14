@@ -1059,13 +1059,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           ) {
             return yield* invalid("get-post");
           }
-          if (
-            (post.post_type === "text" ||
-              post.post_type === "song" ||
-              post.post_type === "video") &&
-            contentRating === "adult_18" &&
-            !ratingViewAllowed
-          ) {
+          if (!ratingViewAllowed) {
             return {
               kind: "age_locked",
               content_rating: "adult_18",

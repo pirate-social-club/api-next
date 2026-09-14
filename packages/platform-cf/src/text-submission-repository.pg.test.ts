@@ -598,12 +598,14 @@ suite("Postgres 17 terminal text submission repository", () => {
         platform_policy: string;
         community_policy: string;
         evidence_count: number;
+        rating_rule_revision: string;
       }>(
         `SELECT submission.evidence_ref,
                   submission.policy_revision_id AS provider_policy,
                   submission.platform_policy_revision_id AS platform_policy,
                   submission.community_policy_revision_id AS community_policy,
-                  count(evidence.evidence_ref)::int AS evidence_count
+                  count(evidence.evidence_ref)::int AS evidence_count,
+                  min(evidence.rating_rule_revision) AS rating_rule_revision
              FROM text_content_submissions AS submission
              JOIN text_moderation_evidence AS evidence
                ON evidence.evidence_ref = submission.evidence_ref
@@ -619,6 +621,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           platform_policy: "moderation-platform-floor-v1",
           community_policy: "community-moderation-policy:text-community:r1",
           evidence_count: 1,
+          rating_rule_revision: "accepted-adult-signals-v2",
         },
       ]);
     }, migrations);
