@@ -6,6 +6,7 @@ import type { Client } from "pg";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import { normalizePostgresConnectionString } from "./postgres-migrations.ts";
 import {
+  hasCommunityCreationCredentials,
   makeCommunityCreationAcceptance,
   writeCommunityCreationEvidence,
 } from "./staging-community-creation-acceptance.ts";
@@ -609,10 +610,15 @@ export async function runStagingResetReleaseLive(
   assertCheckouts(repositoryRoot);
   // The product acceptance is constructed before any provider contact so a
   // missing journey target or credential refuses while the window is still
-  // untouched. A failed or timed-out journey refuses the producer release.
+  // untouched. Credentials are checked before the sibling checkout is even
+  // resolved, so an incomplete secret injection fails for its own reason. A
+  // failed or timed-out journey refuses the producer release.
   const makeCommunityCreation =
     options.dependencies?.makeCommunityCreation ?? makeCommunityCreationAcceptance;
   const communityCreation = disposable.communityCreation;
+  if (communityCreation !== undefined && !hasCommunityCreationCredentials(env)) {
+    throw new Error("staging_community_creation_credentials_missing");
+  }
   const communityCreationAcceptance =
     communityCreation === undefined
       ? undefined

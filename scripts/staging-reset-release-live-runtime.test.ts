@@ -418,6 +418,8 @@ async function launcherHarness() {
         CLOUDFLARE_API_TOKEN: "token",
         CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
         CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+        E2E_PRIVY_EMAIL: "e2e@example.test",
+        E2E_PRIVY_OTP: "123456",
       },
       provider,
       connect: () => clients.shift() as Client,
@@ -517,6 +519,8 @@ test("an acceptance failure after ingress opens re-fences through the production
           CLOUDFLARE_API_TOKEN: "token",
           CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
           CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+          E2E_PRIVY_EMAIL: "e2e@example.test",
+          E2E_PRIVY_OTP: "123456",
         },
         provider,
         connect: () => clients.shift() as Client,
@@ -611,6 +615,8 @@ test("a stalled probe records ingress failure and the database re-fence still ru
           CLOUDFLARE_API_TOKEN: "token",
           CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
           CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+          E2E_PRIVY_EMAIL: "e2e@example.test",
+          E2E_PRIVY_OTP: "123456",
         },
         provider,
         connect: () => clients.shift() as Client,
@@ -671,6 +677,8 @@ test("a launcher whose reversal cannot be read refuses before any mutation", asy
           CLOUDFLARE_API_TOKEN: "token",
           CONTROL_PLANE_POSTGRES_ADMIN_URL: credentials("operator"),
           CONTROL_PLANE_POSTGRES_RUNTIME_URL: credentials("runtime_role"),
+          E2E_PRIVY_EMAIL: "e2e@example.test",
+          E2E_PRIVY_OTP: "123456",
         },
         fetch: (async () => {
           throw new Error("access transport unavailable");
@@ -707,6 +715,11 @@ test("missing journey credentials refuse before any provider contact", async () 
         },
         dependencies: {
           assertCheckouts: () => ({ api: "reviewed-api", solid: "reviewed-solid" }),
+          // The launcher must refuse on the missing credential itself; if this
+          // ran, the window would already have resolved the Solid checkout.
+          makeCommunityCreation: (() => {
+            throw new Error("community creation must not be constructed");
+          }) as never,
         },
         provider: async () => {
           providerCalls++;
