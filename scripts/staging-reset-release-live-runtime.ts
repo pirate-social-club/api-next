@@ -568,6 +568,14 @@ export function makeSolidServingVerifier(input: {
  * runs the composed reset/release in one process. The dependencies seam exists
  * so the composed path can be exercised against isolated fixtures; production
  * callers omit it. */
+/** The acceptance factory's input without the sibling checkout. The default
+ * factory resolves the Solid checkout itself, so an injected factory cannot
+ * trigger a filesystem resolution the launch does not need. */
+type CommunityCreationAcceptanceInput = Omit<
+  Parameters<typeof makeCommunityCreationAcceptance>[0],
+  "solidRoot"
+>;
+
 export interface StagingLiveLaunchDependencies {
   readonly assertCheckouts: typeof assertLiveStagingCheckouts;
   readonly measureAdmission: typeof measureStagingLiveAdmission;
@@ -577,7 +585,9 @@ export interface StagingLiveLaunchDependencies {
   readonly makeVerifier: typeof makeSolidServingVerifier;
   readonly makeApplier: typeof makeLiveStagingUpgradeApplier;
   readonly reset: typeof reconstructDisposableStaging;
-  readonly makeCommunityCreation: typeof makeCommunityCreationAcceptance;
+  readonly makeCommunityCreation: (
+    input: CommunityCreationAcceptanceInput,
+  ) => ReturnType<typeof makeCommunityCreationAcceptance>;
 }
 
 export async function runStagingResetReleaseLive(
@@ -611,10 +621,17 @@ export async function runStagingResetReleaseLive(
   // The product acceptance is constructed before any provider contact so a
   // missing journey target or credential refuses while the window is still
   // untouched. Credentials are checked before the sibling checkout is even
-  // resolved, so an incomplete secret injection fails for its own reason. A
-  // failed or timed-out journey refuses the producer release.
+  // resolved, so an incomplete secret injection fails for its own reason. The
+  // sibling Solid checkout belongs to the default factory; an injected factory
+  // never triggers that resolution. A failed or timed-out journey refuses the
+  // producer release.
   const makeCommunityCreation =
-    options.dependencies?.makeCommunityCreation ?? makeCommunityCreationAcceptance;
+    options.dependencies?.makeCommunityCreation ??
+    ((input: CommunityCreationAcceptanceInput) =>
+      makeCommunityCreationAcceptance({
+        ...input,
+        solidRoot: findSiblingRepository(repositoryRoot, "pirate-web-solid"),
+      }));
   const communityCreation = disposable.communityCreation;
   if (communityCreation !== undefined && !hasCommunityCreationCredentials(env)) {
     throw new Error("staging_community_creation_credentials_missing");
@@ -623,7 +640,6 @@ export async function runStagingResetReleaseLive(
     communityCreation === undefined
       ? undefined
       : makeCommunityCreation({
-          solidRoot: findSiblingRepository(repositoryRoot, "pirate-web-solid"),
           baseUrl: communityCreation.baseUrl,
           timeoutMs: communityCreation.timeoutMs,
           env,

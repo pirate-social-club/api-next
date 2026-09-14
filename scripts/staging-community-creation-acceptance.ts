@@ -81,7 +81,10 @@ export async function writeCommunityCreationEvidence(
  * reset can mutate anything, and a failed or timed-out journey refuses the
  * producer release. */
 export function makeCommunityCreationAcceptance(input: {
-  readonly solidRoot: string;
+  /** Resolved when the acceptance is constructed, not when it runs, so a
+   * missing checkout refuses before any mutation. A thunk keeps test doubles
+   * from resolving the real workspace layout. */
+  readonly solidRoot: string | (() => string);
   readonly baseUrl: string;
   readonly timeoutMs: number;
   readonly env?: Readonly<Record<string, string | undefined>>;
@@ -93,7 +96,8 @@ export function makeCommunityCreationAcceptance(input: {
     throw new Error("staging_community_creation_timeout_invalid");
   if (!/^https:\/\/[a-z0-9][a-z0-9.-]*$/u.test(input.baseUrl))
     throw new Error("staging_community_creation_target_invalid");
-  if (!input.solidRoot) throw new Error("staging_community_creation_checkout_missing");
+  const solidRoot = typeof input.solidRoot === "function" ? input.solidRoot() : input.solidRoot;
+  if (!solidRoot) throw new Error("staging_community_creation_checkout_missing");
   const env = input.env ?? process.env;
   if (!hasCommunityCreationCredentials(env))
     throw new Error("staging_community_creation_credentials_missing");
@@ -101,7 +105,7 @@ export function makeCommunityCreationAcceptance(input: {
   const now = input.now ?? (() => new Date().toISOString());
   return async (): Promise<void> => {
     const result = await run({
-      cwd: input.solidRoot,
+      cwd: solidRoot,
       env: {
         ...env,
         E2E_ALLOW_MUTATION: "1",
