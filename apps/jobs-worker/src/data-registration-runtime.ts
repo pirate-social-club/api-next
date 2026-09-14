@@ -38,6 +38,7 @@ export type DataRegistrationMaintenanceResult = Readonly<{
   stale: number;
   limitReached: number;
   lookupFailed: number;
+  recoveryFailed: number;
 }>;
 
 export type DataRegistrationWorkflowCandidate = Readonly<{
@@ -69,6 +70,7 @@ export async function recoverDataRegistrationWorkflowCandidates(
     | "stale"
     | "limitReached"
     | "lookupFailed"
+    | "recoveryFailed"
   >
 > {
   const counts = {
@@ -85,6 +87,7 @@ export async function recoverDataRegistrationWorkflowCandidates(
     stale: 0,
     limitReached: 0,
     lookupFailed: 0,
+    recoveryFailed: 0,
   };
   for (const candidate of candidates) {
     counts.inspected += 1;
@@ -100,17 +103,28 @@ export async function recoverDataRegistrationWorkflowCandidates(
       counts.present += 1;
       continue;
     }
-    // A finished instance is never replaced: the persisted transaction and
-    // receipt evidence reconciles the operation, and pending or unavailable
-    // evidence is reported without authorizing a resubmission.
     if (workflowStatus === "finished") {
       counts.finished += 1;
-      const outcome = await dependencies.store.reconcileTerminalWorkflow(
-        candidate.registration_operation_id,
-        revision,
-      );
-      if (outcome === "stale") counts.stale += 1;
-      else counts[outcome] += 1;
+      try {
+        const outcome = await dependencies.store.reconcileTerminalWorkflow(
+          candidate.registration_operation_id,
+          revision,
+        );
+        if (outcome === "stale") counts.stale += 1;
+        else counts[outcome] += 1;
+        if (outcome !== "pending" && outcome !== "unavailable") continue;
+        if (dataWorkflowReplacementLimitReached(revision)) {
+          counts.limitReached += 1;
+          continue;
+        }
+        await dependencies.store.replaceMissingWorkflow(
+          candidate.registration_operation_id,
+          revision,
+        );
+        counts.replaced += 1;
+      } catch {
+        counts.recoveryFailed += 1;
+      }
       continue;
     }
     // An existing instance with an unrecognized status proves no absence.

@@ -200,16 +200,20 @@ const mediaProviderFailureAlert = (row: ProviderFailureRow) => ({
   outcome: "terminal" as const,
 });
 
-const missingWorkflowCeilingAlert = (subsystem: Subsystem, row: WorkflowCeilingRow) => ({
+const workflowCeilingAlert = (
+  subsystem: Subsystem,
+  row: WorkflowCeilingRow,
+  status: "missing" | "finished",
+) => ({
   key: `song-pipeline:${subsystem}-replacement-limit-reached`,
   severity: "high" as const,
-  body: "A current song-pipeline Workflow is missing at the replacement ceiling.",
-  entity: `${subsystem}:${row.operation_id}:r${row.workflow_revision}:workflow-missing`,
+  body: `A current song-pipeline Workflow is ${status} at the replacement ceiling.`,
+  entity: `${subsystem}:${row.operation_id}:r${row.workflow_revision}:workflow-${status}`,
   subsystem,
   operation: subsystem === "media" ? ("media-analysis" as const) : ("data-registration" as const),
   operation_id: row.operation_id,
   workflow_revision: Number(row.workflow_revision),
-  failure_class: "workflow_missing_at_replacement_limit",
+  failure_class: `workflow_${status}_at_replacement_limit`,
   outcome: "terminal" as const,
 });
 
@@ -247,11 +251,11 @@ function decodeDlqBody(body: unknown): string | null {
   return validIdentity(record.outbox_id) ? record.outbox_id : null;
 }
 
-async function workflowIsMissing(
+async function workflowCeilingStatus(
   subsystem: Subsystem,
   row: WorkflowCeilingRow,
   bindings: SongPipelineTerminalWorkflowBindings,
-): Promise<boolean | null> {
+): Promise<"missing" | "finished" | null> {
   try {
     if (subsystem === "media") {
       if (bindings.media === undefined) return null;
@@ -259,14 +263,15 @@ async function workflowIsMissing(
         bindings.media,
         isWorkflowInstanceMissingError,
       );
-      return (await workflow.get(row.workflow_instance_id)) === "missing";
+      return (await workflow.get(row.workflow_instance_id)) === "missing" ? "missing" : null;
     }
     if (bindings.data === undefined) return null;
     const workflow = makeCloudflareDataRegistrationWorkflowLauncher(
       bindings.data,
       isWorkflowInstanceMissingError,
     );
-    return (await workflow.get(row.workflow_instance_id)) === "missing";
+    const status = await workflow.get(row.workflow_instance_id);
+    return status === "missing" || status === "finished" ? status : null;
   } catch {
     report(`song-pipeline ${subsystem} Workflow observation unavailable`);
     return null;
@@ -384,9 +389,11 @@ export function collectSongPipelineTerminalAlerts(
           ) {
             continue;
           }
-          const missing = yield* Effect.promise(() => workflowIsMissing(subsystem, row, bindings));
-          if (missing !== true) continue;
-          yield* collector.emit(missingWorkflowCeilingAlert(subsystem, row));
+          const status = yield* Effect.promise(() =>
+            workflowCeilingStatus(subsystem, row, bindings),
+          );
+          if (status === null) continue;
+          yield* collector.emit(workflowCeilingAlert(subsystem, row, status));
           emitted += 1;
         }
       }
