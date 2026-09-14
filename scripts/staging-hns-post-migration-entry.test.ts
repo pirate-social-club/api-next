@@ -19,6 +19,7 @@ import {
   HnsStagingPostMigrationRefused,
   postMigrationRefusalJson,
   runHnsStagingPostMigration,
+  verifyStagingMigrationLedger,
 } from "./staging-hns-post-migration-entry.ts";
 import { postMigrationFailureJson } from "./staging-hns-post-migration-runtime.ts";
 
@@ -446,6 +447,43 @@ describe("HNS staging post-migration entry point", () => {
       step: "target_and_ledger",
       reason: "migration_missing",
       detail: { version: "0173_unreviewed.sql" },
+    });
+  });
+
+  test("requires unique ordered pinned and applied migration chains", () => {
+    const migrationAt = (index: number) => {
+      const migration = pinnedMigrations[index];
+      if (migration === undefined) throw new Error("migration fixture missing");
+      return migration;
+    };
+    const first = migrationAt(0);
+    const second = migrationAt(1);
+    const last = migrationAt(pinnedMigrations.length - 1);
+    const verify = (pinned = pinnedMigrations, ledger = pinnedMigrations) =>
+      verifyStagingMigrationLedger({ pinned, ledger, endpoint });
+    const refusal = (run: () => unknown) => {
+      try {
+        run();
+      } catch (error) {
+        expect(error).toBeInstanceOf(HnsStagingPostMigrationRefused);
+        return (error as HnsStagingPostMigrationRefused).refusal;
+      }
+      throw new Error("expected migration ledger refusal");
+    };
+
+    expect(
+      refusal(() => verify(pinnedMigrations, [second, first, ...pinnedMigrations.slice(2)])),
+    ).toMatchObject({
+      reason: "migration_order_mismatch",
+    });
+    expect(refusal(() => verify(pinnedMigrations, [...pinnedMigrations, last]))).toMatchObject({
+      reason: "migration_duplicate",
+    });
+    expect(refusal(() => verify([second, first, ...pinnedMigrations.slice(2)]))).toMatchObject({
+      reason: "migration_pinned_chain_invalid",
+    });
+    expect(refusal(() => verify([...pinnedMigrations, last]))).toMatchObject({
+      reason: "migration_pinned_chain_invalid",
     });
   });
 
