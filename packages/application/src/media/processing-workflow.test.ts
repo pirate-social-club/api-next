@@ -21,7 +21,10 @@ import type {
   MediaProcessingProviders,
   MediaProcessingStore,
 } from "./processing-contracts.ts";
-import { runMediaProcessingWorkflow } from "./processing-workflow.ts";
+import {
+  MediaProcessingInvariantError,
+  runMediaProcessingWorkflow,
+} from "./processing-workflow.ts";
 
 const runWorkflow = (...args: Parameters<typeof runMediaProcessingWorkflow>) =>
   Effect.runPromise(runMediaProcessingWorkflow(...args));
@@ -874,6 +877,21 @@ describe("media processing workflow", () => {
     expect(sampleCalls).toBe(2);
     expect(providerEvents.filter((event) => event.startsWith("effect:probe"))).toHaveLength(1);
     expect(store.events.filter((event) => event === "complete:probe")).toHaveLength(1);
+  });
+
+  test("rejects a replay result from the wrong durable stage as an invariant", async () => {
+    class WrongStageReplayStore extends FakeStore {
+      override startAttempt: MediaProcessingStore["startAttempt"] = async () => ({
+        kind: "replay",
+        result: { kind: "alignment", status: "unavailable", failureCode: "audio_missing" },
+      });
+    }
+    const store = new WrongStageReplayStore(authority({ lyrics: null }));
+
+    await expect(
+      runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, providers([]))),
+    ).rejects.toBeInstanceOf(MediaProcessingInvariantError);
+    expect(store.publications).toBe(0);
   });
 
   test("runs the terms-first fake-transport golden vertical and consumes the sealed hash", async () => {

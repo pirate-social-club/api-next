@@ -7,6 +7,7 @@ import type {
 } from "../../../packages/application/src/media/processing-contracts.ts";
 import type { MediaProcessingQueueDependencies } from "../../../packages/application/src/media/processing-queue.ts";
 import {
+  MediaProcessingInvariantError,
   type MediaProcessingWorkflowDependencies,
   type MediaProcessingWorkflowResult,
   runMediaProcessingWorkflow,
@@ -178,6 +179,7 @@ export interface MediaProcessingWorkflowStep
  */
 export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWorkerEnv>(
   resolve: ResolveMediaProcessorComposition<Env>,
+  nonRetryableError: (message: string) => Error,
 ) {
   return async (
     env: Env,
@@ -196,23 +198,30 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
         `media-processing-${sequence}-${eventType ?? "launch"}`,
         SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
         async () => {
-          const composition = applyRuntimePosture(env, resolve(env));
-          const resolvedEventType =
-            eventType ??
-            (await composition.workflow.store.getOutbox(payload.outboxId))?.eventType ??
-            null;
-          if (resolvedEventType === null) {
+          try {
+            const composition = applyRuntimePosture(env, resolve(env));
+            const resolvedEventType =
+              eventType ??
+              (await composition.workflow.store.getOutbox(payload.outboxId))?.eventType ??
+              null;
+            if (resolvedEventType === null) {
+              return {
+                eventType: "analysis_launch" as const,
+                result: { outcome: "inert" as const },
+              };
+            }
             return {
-              eventType: "analysis_launch" as const,
-              result: { outcome: "inert" as const },
+              eventType: resolvedEventType,
+              result: await Effect.runPromise(
+                runMediaProcessingWorkflow(payload, resolvedEventType, composition.workflow),
+              ),
             };
+          } catch (error) {
+            if (error instanceof MediaProcessingInvariantError) {
+              throw nonRetryableError(error.message);
+            }
+            throw error;
           }
-          return {
-            eventType: resolvedEventType,
-            result: await Effect.runPromise(
-              runMediaProcessingWorkflow(payload, resolvedEventType, composition.workflow),
-            ),
-          };
         },
       );
       eventType = execution.eventType;
