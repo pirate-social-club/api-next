@@ -270,7 +270,7 @@
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",

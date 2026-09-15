@@ -12,7 +12,11 @@ import {
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
 import { Effect } from "effect";
-import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
+import {
+  makeLazySongRewardOfferHandlers,
+  makeSongRewardOfferHandlers,
+  makeUnavailableSongRewardOfferHandlers,
+} from "./rewards-song-offer-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -297,6 +301,46 @@ function fixture(
 }
 
 describe("song reward offer HTTP handlers", () => {
+  test("returns typed unavailability while retaining authentication boundaries", async () => {
+    const worker = createHttpWorker({
+      config: { corsOrigin: "https://app.pirate.test" },
+      handlers: makeUnavailableSongRewardOfferHandlers(),
+      authenticate: () => ({ kind: "user", subject: "account_1" }),
+      authorize: () => undefined,
+    });
+    const publicProjection = await worker.request(
+      "/communities/community_1/posts/post_1/rewards/megapot-pool",
+    );
+    expect(publicProjection.status).toBe(502);
+    expect(await publicProjection.json()).toMatchObject({
+      error: { code: "provider_unavailable", retryable: true },
+    });
+
+    const protectedRoute = await worker.request("/rewards/qualification-policies");
+    expect(protectedRoute.status).toBe(401);
+    expect(await protectedRoute.json()).toMatchObject({ error: { code: "auth_error" } });
+  });
+
+  test("contains an attestation load failure and retries instead of retaining its rejection", async () => {
+    let attempts = 0;
+    const readyHandlers = {
+      ...makeUnavailableSongRewardOfferHandlers(),
+      GetSongMegapotPool: async () => ({ state: "ready" }),
+    };
+    const handlers = makeLazySongRewardOfferHandlers(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("attestation unavailable");
+      return readyHandlers;
+    });
+    const request = { body: undefined, headers: undefined, params: {}, query: {}, principal: null };
+
+    await expect(handlers.GetSongMegapotPool(request)).rejects.toMatchObject({
+      code: "provider_unavailable",
+    });
+    await expect(handlers.GetSongMegapotPool(request)).resolves.toEqual({ state: "ready" });
+    expect(attempts).toBe(2);
+  });
+
   test("serves bounded authenticated asset discovery and distinguishes unavailable storage", async () => {
     const asset = {
       chain_id: 84_532,

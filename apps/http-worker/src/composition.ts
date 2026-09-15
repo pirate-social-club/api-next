@@ -243,7 +243,11 @@ import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handl
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makePublicCommunityThreadsHandler } from "./public-community-threads-handler.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
-import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
+import {
+  makeLazySongRewardOfferHandlers,
+  makeSongRewardOfferHandlers,
+  makeUnavailableSongRewardOfferHandlers,
+} from "./rewards-song-offer-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
 import {
   makeSongPlaybackHandlers,
@@ -598,6 +602,12 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
     ) {
       throw new Error("enabled Megapot rewards require an RPC binding");
+    }
+    if (config.MEGAPOT_REWARDS_ENABLED) {
+      // The RPC endpoint is mandatory Worker configuration. Only attestation
+      // and database I/O are allowed to degrade the reward routes at request
+      // time; malformed endpoint configuration must still fail closed here.
+      fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV);
     }
     const openAiApiKey = Redacted.value(config.OPENAI_API_KEY);
     if (
@@ -1381,51 +1391,47 @@ export async function createProductionHttpWorker(
   );
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
-      ? await (async () => {
-          try {
-            const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
-            const candidate = await Effect.runPromise(
-              observationStore.loadCandidate(config.MEGAPOT_ATTESTATION_ID),
-            );
-            const rpc = makeMegapotV2RpcClient({
-              rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
-              attestation: {
-                attestationId: candidate.attestationId,
-                environment: candidate.environment,
-                chainId: candidate.chainId,
-                jackpotAddress: candidate.jackpotAddress,
-                ticketNftAddress: candidate.ticketNftAddress,
-                usdcAddress: candidate.usdcAddress,
-                custodyAddress: candidate.custodyAddress,
-                referrerAddress: candidate.referrerAddress,
-                jackpotCodeHash: candidate.jackpotCodeHash,
-                ticketNftCodeHash: candidate.ticketNftCodeHash,
-                usdcCodeHash: candidate.usdcCodeHash,
-              },
-            });
-            const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
-            return makeSongRewardOfferHandlers({
-              rewardCatalogAuthority:
-                config.API_NEXT_ENV === "production"
-                  ? null
-                  : {
-                      environment: config.API_NEXT_ENV === "staging" ? "staging" : "test",
-                      attestationId: config.MEGAPOT_ATTESTATION_ID,
-                    },
-              clock: { now: Effect.sync(() => Date.now()) },
-              ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
-              store: makeControlPlaneSongRewardOfferStore(controlPlane),
-              fundingStore: rewardFundingStore,
-              projections: makeControlPlaneRewardProjectionStore(controlPlane),
-              funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
-              requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
-              externalFallbackPolicy: null,
-            });
-          } catch {
-            throw new Error("HTTP worker configuration is incomplete or invalid");
-          }
-        })()
-      : {};
+      ? makeLazySongRewardOfferHandlers(async () => {
+          const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
+          const candidate = await Effect.runPromise(
+            observationStore.loadCandidate(config.MEGAPOT_ATTESTATION_ID),
+          );
+          const rpc = makeMegapotV2RpcClient({
+            rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
+            attestation: {
+              attestationId: candidate.attestationId,
+              environment: candidate.environment,
+              chainId: candidate.chainId,
+              jackpotAddress: candidate.jackpotAddress,
+              ticketNftAddress: candidate.ticketNftAddress,
+              usdcAddress: candidate.usdcAddress,
+              custodyAddress: candidate.custodyAddress,
+              referrerAddress: candidate.referrerAddress,
+              jackpotCodeHash: candidate.jackpotCodeHash,
+              ticketNftCodeHash: candidate.ticketNftCodeHash,
+              usdcCodeHash: candidate.usdcCodeHash,
+            },
+          });
+          const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
+          return makeSongRewardOfferHandlers({
+            rewardCatalogAuthority:
+              config.API_NEXT_ENV === "production"
+                ? null
+                : {
+                    environment: config.API_NEXT_ENV === "staging" ? "staging" : "test",
+                    attestationId: config.MEGAPOT_ATTESTATION_ID,
+                  },
+            clock: { now: Effect.sync(() => Date.now()) },
+            ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+            store: makeControlPlaneSongRewardOfferStore(controlPlane),
+            fundingStore: rewardFundingStore,
+            projections: makeControlPlaneRewardProjectionStore(controlPlane),
+            funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
+            requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+            externalFallbackPolicy: null,
+          });
+        })
+      : makeUnavailableSongRewardOfferHandlers();
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {
     proofVerifier,

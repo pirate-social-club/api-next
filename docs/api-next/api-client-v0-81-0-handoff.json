@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.81.0",
+  "sourceBranch": "fix/reward-unavailability",
+  "wireContract": "Additive typed ProviderUnavailable responses for reward routes when rewards are disabled or attestation and database dependencies are unavailable. Existing authentication, authorization and non-reward configuration boundaries remain unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.81.0.tgz",
+    "sha256": "dbdd4ac1131f3c13901d8803854066fe4a6c91f9cd0e06031223629efaa259f6"
+  },
+  "validation": {
+    "status": "local full validation passed",
+    "notes": "Generated from the reward-unavailability contract and runtime changes. Version 0.80.0 was already committed by the active HNS app-capability lane, so this C2 release uses the next free version. Local `bun run check` passed; `bun run test` passed with 4,444 tests, one expected PostgreSQL 18.6 skip, all Node groups and all Workerd groups green. Trusted pull-request PostgreSQL, staging and live acceptance remain separate gates. The next free proposal for C3 is 0.82.0. Nothing deployed or enabled."
+  }
+}
