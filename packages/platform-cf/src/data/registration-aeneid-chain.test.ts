@@ -206,6 +206,12 @@ const attempt: DataRegistrationSigningAttempt = {
   failureEvidenceRef: null,
 };
 
+const preparedAttempt: DataRegistrationSigningAttempt = {
+  ...attempt,
+  transactionHash: null,
+  state: "prepared",
+};
+
 const ipRegisteredEvent = {
   type: "event",
   name: "IPRegistered",
@@ -367,6 +373,101 @@ const derivativeLink = (
       DATA_REGISTRATION_AENEID_LICENSE_TEMPLATE,
     ],
   ),
+});
+
+describe("Aeneid DATA transaction broadcast recovery", () => {
+  test("recovers a mined signed transaction without broadcasting it again", async () => {
+    const calls: string[] = [];
+    const rpc = async (method: string) => {
+      calls.push(method);
+      if (method === "eth_getTransactionReceipt") return { transactionHash };
+      throw new Error("unexpected RPC method");
+    };
+
+    expect(await chain(baseAuthority, rpc).broadcast(operation, preparedAttempt)).toEqual({
+      status: "broadcast",
+      transactionHash,
+      evidenceRef: `data-registration://aeneid/broadcast-recovered/${attempt.submissionAttemptId}`,
+    });
+    expect(calls).toEqual(["eth_getTransactionReceipt"]);
+  });
+
+  test("recovers a pending signed transaction without broadcasting it again", async () => {
+    const calls: string[] = [];
+    const rpc = async (method: string) => {
+      calls.push(method);
+      if (method === "eth_getTransactionReceipt") return null;
+      if (method === "eth_getTransactionByHash") return { hash: transactionHash };
+      throw new Error("unexpected RPC method");
+    };
+
+    expect(await chain(baseAuthority, rpc).broadcast(operation, preparedAttempt)).toMatchObject({
+      status: "broadcast",
+      transactionHash,
+    });
+    expect(calls).toEqual(["eth_getTransactionReceipt", "eth_getTransactionByHash"]);
+  });
+
+  test("broadcasts once after the signed transaction is absent", async () => {
+    const calls: string[] = [];
+    const rpc = async (method: string) => {
+      calls.push(method);
+      if (method === "eth_getTransactionReceipt" || method === "eth_getTransactionByHash") {
+        return null;
+      }
+      if (method === "eth_sendRawTransaction") return transactionHash;
+      throw new Error("unexpected RPC method");
+    };
+
+    expect(await chain(baseAuthority, rpc).broadcast(operation, preparedAttempt)).toMatchObject({
+      status: "broadcast",
+      transactionHash,
+    });
+    expect(calls).toEqual([
+      "eth_getTransactionReceipt",
+      "eth_getTransactionByHash",
+      "eth_sendRawTransaction",
+    ]);
+  });
+
+  test("recovers by hash when a broadcast response is lost", async () => {
+    const calls: string[] = [];
+    let receiptReads = 0;
+    const rpc = async (method: string) => {
+      calls.push(method);
+      if (method === "eth_getTransactionReceipt") {
+        receiptReads += 1;
+        return receiptReads === 1 ? null : { transactionHash };
+      }
+      if (method === "eth_getTransactionByHash") return null;
+      if (method === "eth_sendRawTransaction") throw new Error("response lost");
+      throw new Error("unexpected RPC method");
+    };
+
+    expect(await chain(baseAuthority, rpc).broadcast(operation, preparedAttempt)).toMatchObject({
+      status: "broadcast",
+      transactionHash,
+    });
+    expect(calls).toEqual([
+      "eth_getTransactionReceipt",
+      "eth_getTransactionByHash",
+      "eth_sendRawTransaction",
+      "eth_getTransactionReceipt",
+    ]);
+  });
+
+  test("waits without broadcasting when transaction lookup is unavailable", async () => {
+    const calls: string[] = [];
+    const rpc = async (method: string) => {
+      calls.push(method);
+      throw new Error("RPC unavailable");
+    };
+
+    expect(await chain(baseAuthority, rpc).broadcast(operation, preparedAttempt)).toEqual({
+      status: "retryable",
+    });
+    expect(calls).toEqual(["eth_getTransactionReceipt"]);
+  });
 });
 
 describe("Aeneid DATA registration of a song-reference video", () => {

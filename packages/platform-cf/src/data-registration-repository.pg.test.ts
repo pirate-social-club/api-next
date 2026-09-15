@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
+import type { ControlPlaneDb } from "@pirate/application";
 import {
   type DataRegistrationArtifact,
   deterministicDataRegistrationArtifactId,
@@ -11,17 +12,26 @@ import {
   deterministicDataRegistrationSigningIntentId,
   deterministicDataRegistrationWorkflowId,
 } from "@pirate/application/data/registration-persistence";
+import { consumeDataRegistrationQueueMessage } from "@pirate/application/data/registration-workflow-queue";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { makeDataRegistrationMaintenance } from "../../../apps/jobs-worker/src/data-registration-runtime.ts";
 import { runDataOperatorResume } from "../../../scripts/data-registration-operator-resume.ts";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type {
+  PublicationDecision,
+  SongTerms,
+  TrustedSongAnalysis,
+} from "../../domain/src/media-submission.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import {
   type MetadataDocuments,
   makePostgresMetadataSnapshotResolver,
 } from "./data/metadata-snapshot.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
+import { makeMediaProcessingStore } from "./media-processing-store.ts";
+import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
@@ -80,7 +90,7 @@ async function withSchema<A>(
   }
 }
 
-async function seedPublishedSong(admin: Client): Promise<{
+async function seedLegacyPublishedSong(admin: Client): Promise<{
   accountId: string;
   communityId: string;
   personaId: string;
@@ -153,6 +163,236 @@ async function seedPublishedSong(admin: Client): Promise<{
   } finally {
     await admin.query("SET session_replication_role = origin");
   }
+  return { accountId, communityId, personaId, submissionId, mediaOperationId, postId };
+}
+
+async function seedPublishedSong(
+  admin: Client,
+  connection: string,
+  registerWithData = false,
+): Promise<{
+  accountId: string;
+  communityId: string;
+  personaId: string;
+  submissionId: string;
+  mediaOperationId: string;
+  postId: string;
+}> {
+  const accountId = "account-data-registration";
+  const communityId = "community-data-registration";
+  const submissionId = "submission-data-registration";
+  const mediaOperationId = "data-registration";
+  const postId = `media-post-${mediaOperationId}`;
+  const reservationId = "reservation-data-registration";
+  const responseSnapshotBytes = new TextEncoder().encode("{}");
+  const responseSnapshotSha256 = await sha256Hex(responseSnapshotBytes);
+  const requestHash = hash("1");
+  const canonicalAudioSha256 = hash("a");
+  await admin.query("INSERT INTO users (user_id,status,account) VALUES ($1,'active','{}'::jsonb)", [
+    accountId,
+  ]);
+  await activatePendingPersonaFixtures(admin);
+  const personas = await admin.query<{ persona_id: string }>(
+    "SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona",
+    [accountId],
+  );
+  const personaId = personas.rows[0]?.persona_id;
+  if (personaId === undefined) throw new Error("first persona was not provisioned");
+  await admin.query(
+    "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'DATA registration','active',$2,clock_timestamp(),clock_timestamp())",
+    [communityId, accountId],
+  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId,
+    membershipId: "membership-data-registration",
+    userId: accountId,
+  });
+  await admin.query(
+    `INSERT INTO persona_community_bindings
+       (persona_id,account_id,community_id,binding_source)
+     VALUES ($1,$2,$3,'first_membership')`,
+    [personaId, accountId, communityId],
+  );
+  const layer = makeDirectPostgresControlPlaneLayer(connection);
+  const submissions = makeControlPlaneMediaSubmissionRepository();
+  const runMedia = <A, E>(program: Effect.Effect<A, E, ControlPlaneDb>): Promise<A> =>
+    Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(layer))));
+  const command = (endpointTemplate: string, idempotencyKey: string) => ({
+    communityId,
+    submissionId,
+    actorUserId: accountId,
+    personaId,
+    endpointTemplate,
+    idempotencyKey,
+    requestHash,
+    responseBytes: responseSnapshotBytes,
+    responseSha256: responseSnapshotSha256,
+  });
+  const terms: SongTerms = {
+    licensePreset: "non-commercial",
+    commercialRemixShareBps: 0,
+    royaltyAllocations: [{ recipientId: personaId, shareBps: 10_000 }],
+    accessMode: "public",
+  };
+  const analysis: TrustedSongAnalysis = {
+    version: "song-trusted-analysis-v1",
+    operationId: mediaOperationId,
+    analysisRevision: 1,
+    audioRevision: 1,
+    canonicalAudioSha256,
+    finalizedAudioRef: "r2://sealed/data-registration",
+    probeEvidenceRef: "data-registration-probe-evidence",
+    embeddedMetadata: {
+      evidenceRef: "data-registration-metadata-evidence",
+      adapterRevision: "metadata-adapter-v1",
+      trackTitle: null,
+      cover: { status: "absent", reasonCode: "not_embedded" },
+    },
+    lyricsAnalysis: { status: "not_applicable" },
+    acr: {
+      decision: "allow",
+      evidenceRef: "data-registration-acr-evidence",
+      policyRevision: "acr-policy-v1",
+      adapterRevision: "acr-adapter-v1",
+    },
+    mediaSafety: "allow",
+    lyricsSafety: "not_applicable",
+    contentModeration: {
+      decision: "allow",
+      resultingContentRating: "general",
+      inputSha256: hash("b"),
+      matchedCategories: [],
+      policyRevision: "moderation-policy-v1",
+      platformPolicyRevision: "platform-policy-v1",
+      communityPolicyRevision: "community-policy-v1",
+      evidenceRef: "data-registration-moderation-evidence",
+      providerEvidence: {
+        providerId: "openai",
+        requestedModel: "omni-moderation-2024-09-26",
+        returnedModel: "omni-moderation-2024-09-26",
+        inputs: [{ surface: "song_title" }],
+      },
+    },
+    boundReference: null,
+  };
+  const decision: PublicationDecision = {
+    decisionRevision: 1,
+    outcome: "allow",
+    contentRating: "general",
+    creationRevision: 2,
+    audioRevision: 1,
+    analysisRevision: 1,
+    lyricsRevision: null,
+    canonicalAudioSha256,
+    policyRevision: "publication-policy-v1",
+    evidenceRef: "data-registration-publication-evidence",
+  };
+  await runMedia(
+    submissions.reserve({
+      communityId,
+      actorUserId: accountId,
+      personaId,
+      idempotencyKey: "data-registration-media-reserve",
+      requestHash,
+      expectedContentType: "audio/mpeg",
+      expectedSizeBytes: 1,
+      expectedSha256: canonicalAudioSha256,
+      uploadUrl: "https://upload.invalid/data-registration",
+      expiresAt: "2099-09-14T00:00:00.000Z",
+      responseBytes: responseSnapshotBytes,
+      responseSha256: responseSnapshotSha256,
+      reservationId,
+    }),
+  );
+  await runMedia(
+    submissions.createSubmission({
+      communityId,
+      actorUserId: accountId,
+      personaId,
+      idempotencyKey: "data-registration-media-create",
+      requestHash,
+      title: "DATA fixture",
+      songType: "original",
+      reservationId,
+      submissionId,
+      operationId: mediaOperationId,
+      responseBytes: responseSnapshotBytes,
+      responseSha256: responseSnapshotSha256,
+    }),
+  );
+  await runMedia(
+    submissions.bindTerms({
+      ...command("/media-post-submissions/:submissionId/terms", "data-registration-terms"),
+      expectedCreationRevision: 1,
+      terms,
+    }),
+  );
+  const finalizeFence = {
+    communityId,
+    submissionId,
+    actorUserId: accountId,
+    personaId,
+    reservationId,
+    idempotencyKey: "data-registration-finalize",
+    requestHash,
+    expectedCreationRevision: 2,
+  };
+  await runMedia(submissions.beginFinalize(finalizeFence));
+  await runMedia(
+    submissions.finalizeSealed({
+      ...command("/media-post-submissions/:submissionId/finalize", "data-registration-finalize"),
+      expectedCreationRevision: 2,
+      expectedAudioRevision: 0,
+      reservationId,
+      immutableObject: {
+        immutableRef: analysis.finalizedAudioRef,
+        destinationRef: analysis.finalizedAudioRef,
+        etag: "data-registration-etag",
+        objectVersion: "data-registration-version",
+        sizeBytes: 1,
+        contentType: "audio/mpeg",
+        canonicalSha256: canonicalAudioSha256,
+      },
+      outbox: {
+        outboxEventId: "data-registration-media-analysis-outbox",
+        effectIdentity: "data-registration-media-analysis-effect",
+        payload: {
+          kind: "analysis_launch",
+          submission_id: submissionId,
+          operation_id: mediaOperationId,
+          audio_revision: 1,
+          analysis_revision: 0,
+          workflow_revision: 1,
+          workflow_instance_id: `media-${mediaOperationId}-r1`,
+        },
+      },
+    }),
+  );
+  await runMedia(
+    submissions.acceptAnalysis({
+      ...command("/media-post-submissions/:submissionId/analysis", "data-registration-analysis"),
+      expectedAudioRevision: 1,
+      expectedCanonicalAudioSha256: canonicalAudioSha256,
+      analysis,
+    }),
+  );
+  await runMedia(
+    submissions.recordDecision({
+      ...command("/media-post-submissions/:submissionId/decision", "data-registration-decision"),
+      expectedCreationRevision: 2,
+      expectedAudioRevision: 1,
+      expectedAnalysisRevision: 1,
+      decision,
+    }),
+  );
+  const processing = makeMediaProcessingStore(
+    layer,
+    registerWithData ? { dataRegistrationChainId: 1315n } : {},
+  );
+  const authority = await processing.loadAuthority(submissionId, mediaOperationId);
+  if (authority === null) throw new Error("media publication authority was not created");
+  if ((await processing.commitPublication(authority)) !== "committed")
+    throw new Error("media publication was not committed");
   return { accountId, communityId, personaId, submissionId, mediaOperationId, postId };
 }
 
@@ -317,7 +557,7 @@ suite("DATA registration persistence", () => {
     if (dataPersistenceIndex < 1) throw new Error("0057 must follow the pre-DATA foundation");
     const beforeDataPersistence = migrations.slice(0, dataPersistenceIndex);
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedLegacyPublishedSong(admin);
       await Effect.runPromise(
         Effect.scoped(
           applyPostgresMigrations(migrations.slice(0, dataPersistenceIndex + 1)).pipe(
@@ -342,9 +582,87 @@ suite("DATA registration persistence", () => {
     }, beforeDataPersistence);
   }, 40_000);
 
+  test("creates the DATA operation and launch outbox from media publication", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const media = await seedPublishedSong(admin, scopedConnection, true);
+      const runtime = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const store = makeDataRegistrationStore(runtime);
+      const registrationOperationId = deterministicDataRegistrationOperationId(
+        1315n,
+        media.postId,
+        1n,
+      );
+      const operation = await store.getOperation(registrationOperationId);
+      expect(operation).toMatchObject({
+        registrationOperationId,
+        submissionId: media.submissionId,
+        mediaOperationId: media.mediaOperationId,
+        postId: media.postId,
+        state: "pending",
+        workflowRevision: 1n,
+        workflowInstanceId: deterministicDataRegistrationWorkflowId(registrationOperationId, 1n),
+      });
+      const outboxId = deterministicDataRegistrationOutboxId(registrationOperationId, 1n);
+      expect(await store.getOutbox(outboxId)).toMatchObject({
+        outboxId,
+        registrationOperationId,
+        workflowRevision: 1n,
+        workflowInstanceId: deterministicDataRegistrationWorkflowId(registrationOperationId, 1n),
+        eventType: "registration_launch",
+        state: "pending",
+      });
+      const projection = await admin.query<{ data_registration: string }>(
+        "SELECT data_registration FROM media_publication_projections WHERE post_id=$1",
+        [media.postId],
+      );
+      expect(projection.rows[0]?.data_registration).toBe("pending");
+      const queued: { outbox_id: string }[] = [];
+      const maintenance = makeDataRegistrationMaintenance(
+        {
+          DATA_REGISTRATION_ENABLED: "true",
+          DATA_REGISTRATION_QUEUE: { send: async (message) => void queued.push(message) },
+          DATA_REGISTRATION_WORKFLOW: {
+            get: async () => {
+              throw new Error("a pending launch is not a sweep candidate");
+            },
+            createBatch: async () => {
+              throw new Error("the dispatcher must enqueue before Workflow creation");
+            },
+          },
+        },
+        runtime,
+      );
+      if (maintenance === null) throw new Error("DATA maintenance was not composed");
+      expect(await maintenance()).toMatchObject({ dispatched: 1, dispatchFailed: 0 });
+      expect(queued).toEqual([{ outbox_id: outboxId }]);
+      const launches: unknown[] = [];
+      expect(
+        await consumeDataRegistrationQueueMessage(queued[0], {
+          store,
+          workflow: {
+            get: async () => "missing",
+            create: async (instanceId, payload) => {
+              launches.push({ instanceId, payload });
+              return "created";
+            },
+          },
+          workerId: "data-publication-composition",
+          leaseSeconds: 60,
+        }),
+      ).toEqual({ disposition: "ack" });
+      expect(launches).toEqual([
+        {
+          instanceId: deterministicDataRegistrationWorkflowId(registrationOperationId, 1n),
+          payload: { outboxId, registrationOperationId, workflowRevision: 1n },
+        },
+      ]);
+      expect(await store.getOutbox(outboxId)).toMatchObject({ state: "delivered" });
+    });
+  }, 40_000);
+
   test("fences pins, attempts, nonces, receipts, replays, reorgs, and Workflow replacement", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const runtime = makeDirectPostgresControlPlaneLayer(scopedConnection);
       const store = makeDataRegistrationStore(runtime);
       const chainId = 1315n;
@@ -783,7 +1101,7 @@ suite("DATA registration persistence", () => {
 
   test("reconciles a finished Workflow from submitted transaction and receipt evidence", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -996,7 +1314,7 @@ suite("DATA registration persistence", () => {
 
   test("escalates a confirmed receipt whose terms were never persisted", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1063,7 +1381,7 @@ suite("DATA registration persistence", () => {
 
   test("completes a confirmed song registration from persisted terms without another submission", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1160,7 +1478,7 @@ suite("DATA registration persistence", () => {
 
   test("completes a confirmed video registration through the media-kind projection fence", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1369,7 +1687,7 @@ suite("DATA registration persistence", () => {
 
   test("operator resume re-arms observation and rejects unauthorized or orphan audits", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1468,7 +1786,7 @@ suite("DATA registration persistence", () => {
 
   test("operator resume command previews without writing and rejects non-admin database credentials", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1535,7 +1853,7 @@ suite("DATA registration persistence", () => {
 
   test("resolves a song-reference video's parent only from the parent's confirmed row", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1863,7 +2181,7 @@ suite("DATA registration persistence", () => {
 
   test("backfills a legacy song's attached terms from its confirming transaction in place", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const media = await seedPublishedSong(admin);
+      const media = await seedPublishedSong(admin, scopedConnection);
       const store = makeDataRegistrationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -2030,7 +2348,7 @@ suite("DATA registration persistence", () => {
 });
 
 async function metadataOperation(admin: Client, connection: string) {
-  const media = await seedPublishedSong(admin);
+  const media = await seedPublishedSong(admin, connection);
   const runtime = makeDirectPostgresControlPlaneLayer(connection);
   const store = makeDataRegistrationStore(runtime);
   const id = deterministicDataRegistrationOperationId(1315n, media.postId, 1n);

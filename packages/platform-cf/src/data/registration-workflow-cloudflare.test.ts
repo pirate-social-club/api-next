@@ -17,13 +17,17 @@ describe("Cloudflare DATA registration adapters", () => {
   test("converges a duplicate Workflow create through the deterministic instance", async () => {
     let present = false;
     const providerIds: string[] = [];
+    const providerParams: unknown[] = [];
     const binding: CloudflareDataRegistrationWorkflowBinding = {
       get: async (instanceId) => {
         providerIds.push(instanceId);
         return { status: async () => ({ status: present ? "running" : "unknown" }) };
       },
       createBatch: async ([input]) => {
-        if (input !== undefined) providerIds.push(input.id);
+        if (input !== undefined) {
+          providerIds.push(input.id);
+          providerParams.push(input.params);
+        }
         if (present) return [];
         present = true;
         return [{}];
@@ -36,6 +40,10 @@ describe("Cloudflare DATA registration adapters", () => {
     expect(await launcher.get("workflow-1")).toBe("present");
     const providerId = await cloudflareDataRegistrationWorkflowId("workflow-1");
     expect(providerIds).toEqual([providerId, providerId, providerId]);
+    expect(providerParams).toEqual([
+      { ...payload, workflowRevision: "1" },
+      { ...payload, workflowRevision: "1" },
+    ]);
     expect(providerId).toMatch(/^drw-[0-9a-f]{64}$/u);
     expect(providerId).toBe(`drw-${createHash("sha256").update("workflow-1").digest("hex")}`);
     expect(providerId.length).toBeLessThanOrEqual(100);

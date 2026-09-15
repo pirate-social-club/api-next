@@ -937,6 +937,33 @@ export async function finalizeMediaSubmission(
   requireMediaHumanActor(input.actor);
   const body = decodeBody(FinalizeSongUploadV1, input.body);
   const persona = await requireMediaPersona(input.actor, body.persona_id, services, input.signal);
+  const digest = await mediaRequestHash({ submission_id: input.submissionId }, body);
+  let authorContext: Awaited<ReturnType<MediaUploadStore["getAuthorContext"]>>;
+  try {
+    authorContext = await services.store.getAuthorContext({
+      submissionId: input.submissionId,
+      actorUserId: input.actor.userId,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (authorContext === null) throw new NotFound({ message: "Media submission not found" });
+  let replay: ReplayOutcome;
+  try {
+    replay = await services.store.replay({
+      communityId: authorContext.view.state.communityId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      endpointTemplate: MEDIA_SUBMISSION_ENDPOINTS.finalize,
+      idempotencyKey: body.idempotency_key,
+      requestHash: digest,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (replay.kind === "replay") return decodeFinalizeReplay(replay.bytes);
+  if (replay.kind === "conflict") throw idempotencyConflict(replay.submissionId);
+
   let context: MediaFinalizeContext | null;
   try {
     context = await services.store.getFinalizeContext({
@@ -949,22 +976,6 @@ export async function finalizeMediaSubmission(
     throw mapMediaStoreError(error);
   }
   if (context === null) throw new NotFound({ message: "Media submission not found" });
-  const digest = await mediaRequestHash({ submission_id: input.submissionId }, body);
-  let replay: ReplayOutcome;
-  try {
-    replay = await services.store.replay({
-      communityId: context.view.state.communityId,
-      actorUserId: input.actor.userId,
-      personaId: body.persona_id,
-      endpointTemplate: MEDIA_SUBMISSION_ENDPOINTS.finalize,
-      idempotencyKey: body.idempotency_key,
-      requestHash: digest,
-    });
-  } catch (error) {
-    throw mapMediaStoreError(error);
-  }
-  if (replay.kind === "replay") return decodeFinalizeReplay(replay.bytes);
-  if (replay.kind === "conflict") throw idempotencyConflict(replay.submissionId);
 
   const sourceKey = mediaIngressObjectKey(body.reservation_id);
   let inspection: Awaited<ReturnType<MediaUploadSealer["inspect"]>>;

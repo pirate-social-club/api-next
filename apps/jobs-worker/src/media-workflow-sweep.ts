@@ -18,6 +18,7 @@ export type MediaWorkflowSweepResult = Readonly<{
   readonly stale: number;
   readonly limitReached: number;
   readonly lookupFailed: number;
+  readonly recoveryFailed: number;
 }>;
 
 export type MediaWorkflowSweepDependencies = Readonly<{
@@ -55,6 +56,7 @@ export async function sweepMissingMediaWorkflows(
     stale: 0,
     limitReached: 0,
     lookupFailed: 0,
+    recoveryFailed: 0,
   };
   for (const candidate of candidates) {
     if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
@@ -88,6 +90,37 @@ export async function sweepMissingMediaWorkflows(
     // normal convergence path reconciles it from persisted state, and this
     // sweep only reports the unreconciled row.
     if (workflowStatus === "finished") {
+      result.finished += 1;
+      try {
+        const authority = await dependencies.store.loadAuthority(
+          candidate.submissionId,
+          candidate.operationId,
+        );
+        if (
+          authority === null ||
+          authority.workflowRevision !== candidate.workflowRevision ||
+          isMediaTerminalSubmissionStatus(authority.status)
+        ) {
+          result.stale += 1;
+          continue;
+        }
+        const disposition = await dependencies.store.reconcileTerminalWorkflow(authority);
+        if (disposition === "reconciled") result.reconciled += 1;
+        else if (disposition === "escalated") result.escalated += 1;
+        else result.stale += 1;
+        dependencies.observe?.({
+          event: "workflow_terminal",
+          operationId: authority.operationId,
+          submissionId: authority.submissionId,
+          workflowRevision: authority.workflowRevision,
+        });
+      } catch {
+        result.recoveryFailed += 1;
+      }
+      continue;
+    }
+
+    try {
       const authority = await dependencies.store.loadAuthority(
         candidate.submissionId,
         candidate.operationId,
@@ -100,49 +133,26 @@ export async function sweepMissingMediaWorkflows(
         result.stale += 1;
         continue;
       }
-      result.finished += 1;
-      const disposition = await dependencies.store.reconcileTerminalWorkflow(authority);
-      if (disposition === "reconciled") result.reconciled += 1;
-      else if (disposition === "escalated") result.escalated += 1;
-      else result.stale += 1;
-      dependencies.observe?.({
-        event: "workflow_terminal",
-        operationId: authority.operationId,
-        submissionId: authority.submissionId,
-        workflowRevision: authority.workflowRevision,
-      });
-      continue;
-    }
-
-    const authority = await dependencies.store.loadAuthority(
-      candidate.submissionId,
-      candidate.operationId,
-    );
-    if (
-      authority === null ||
-      authority.workflowRevision !== candidate.workflowRevision ||
-      isMediaTerminalSubmissionStatus(authority.status)
-    ) {
-      result.stale += 1;
-      continue;
-    }
-    // The ceiling limits replacement writes, not terminal reconciliation or
-    // escalation. A spent budget must still reach its operator resolution.
-    if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
-      result.limitReached += 1;
-      continue;
-    }
-    const committed = await dependencies.store.replaceMissingWorkflow(authority);
-    if (committed === "committed") {
-      result.replaced += 1;
-      dependencies.observe?.({
-        event: "workflow_replaced",
-        operationId: authority.operationId,
-        submissionId: authority.submissionId,
-        workflowRevision: authority.workflowRevision + 1,
-      });
-    } else {
-      result.stale += 1;
+      // The ceiling limits replacement writes, not terminal reconciliation or
+      // escalation. A spent budget must still reach its operator resolution.
+      if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
+        result.limitReached += 1;
+        continue;
+      }
+      const committed = await dependencies.store.replaceMissingWorkflow(authority);
+      if (committed === "committed") {
+        result.replaced += 1;
+        dependencies.observe?.({
+          event: "workflow_replaced",
+          operationId: authority.operationId,
+          submissionId: authority.submissionId,
+          workflowRevision: authority.workflowRevision + 1,
+        });
+      } else {
+        result.stale += 1;
+      }
+    } catch {
+      result.recoveryFailed += 1;
     }
   }
   return result;

@@ -22,6 +22,8 @@ import {
   type DataRegistrationPreparedArtifact,
   type DataRegistrationWorkflowDependencies,
   type DataRegistrationWorkflowPayload,
+  decodeDataRegistrationWorkflowWirePayload,
+  encodeDataRegistrationWorkflowPayload,
 } from "./registration-workflow";
 
 const OPERATION_ID = "data-registration:1315:asset-1:1";
@@ -30,6 +32,47 @@ const WORKFLOW_ID = deterministicDataRegistrationWorkflowId(OPERATION_ID, 1n);
 const TRANSACTION_HASH = `0x${"b".repeat(64)}`;
 const CALLDATA = new Uint8Array([0x12, 0x34, 0x56, 0x78, 0xaa]);
 const CALLDATA_HASH = "80a14a107e4724bab764e13dc3b98e044961bea9c078973e3b2956a35a098811";
+
+describe("DATA registration Workflow wire payload", () => {
+  test("round-trips revisions beyond the safe JSON integer range", () => {
+    const payload = {
+      outboxId: "outbox-1",
+      registrationOperationId: OPERATION_ID,
+      workflowRevision: 9_007_199_254_740_993n,
+    };
+
+    const encoded = encodeDataRegistrationWorkflowPayload(payload);
+
+    expect(encoded.workflowRevision).toBe("9007199254740993");
+    expect(JSON.parse(JSON.stringify(encoded))).toEqual(encoded);
+    expect(decodeDataRegistrationWorkflowWirePayload(encoded)).toEqual(payload);
+  });
+
+  test("rejects non-canonical revisions and extra fields", () => {
+    expect(
+      decodeDataRegistrationWorkflowWirePayload({
+        outboxId: "outbox-1",
+        registrationOperationId: OPERATION_ID,
+        workflowRevision: "01",
+      }),
+    ).toBeNull();
+    expect(
+      decodeDataRegistrationWorkflowWirePayload({
+        outboxId: "outbox-1",
+        registrationOperationId: OPERATION_ID,
+        workflowRevision: "1",
+        mediaRef: "must-not-cross-the-boundary",
+      }),
+    ).toBeNull();
+    expect(
+      decodeDataRegistrationWorkflowWirePayload({
+        outboxId: "outbox-1",
+        registrationOperationId: OPERATION_ID,
+        workflowRevision: "9223372036854775808",
+      }),
+    ).toBeNull();
+  });
+});
 
 const operation = (): DataRegistrationOperation => ({
   registrationOperationId: OPERATION_ID,
@@ -418,6 +461,80 @@ describe("DATA registration Workflow interpreter", () => {
         expect.objectContaining({ role: "independent_gateway", outcome: "failed" }),
       ]),
     );
+  });
+
+  test("fails durably when the gateway pin attempt budget is exhausted", async () => {
+    const state = harness();
+    const canonical = ARTIFACTS[0];
+    if (canonical === undefined) throw new Error("canonical fixture missing");
+    await state.dependencies.store.recordPinVerification({
+      pinVerificationId: `${canonical.artifact.artifactId}:pin:filebase:1`,
+      registrationOperationId: OPERATION_ID,
+      artifactId: canonical.artifact.artifactId,
+      artifactKind: canonical.artifact.artifactKind,
+      role: "primary",
+      providerId: "filebase",
+      attemptNumber: 1,
+      outcome: "verified",
+      cid: `bafy${canonical.artifact.artifactKind}`,
+      canonicalSha256: canonical.artifact.canonicalSha256,
+      byteLength: canonical.artifact.byteLength,
+      evidenceRef: "evidence://filebase/canonical_audio",
+      verifiedAt: "2026-08-27T00:00:00.000Z",
+    });
+    for (let attemptNumber = 1; attemptNumber <= 10; attemptNumber += 1) {
+      await state.dependencies.store.recordPinVerification({
+        pinVerificationId: `${canonical.artifact.artifactId}:gateway:ipfs.io:${attemptNumber}`,
+        registrationOperationId: OPERATION_ID,
+        artifactId: canonical.artifact.artifactId,
+        artifactKind: canonical.artifact.artifactKind,
+        role: "independent_gateway",
+        providerId: "ipfs.io",
+        attemptNumber,
+        outcome: "failed",
+        cid: null,
+        canonicalSha256: null,
+        byteLength: null,
+        evidenceRef: `evidence://ipfs.io/canonical_audio/${attemptNumber}`,
+        verifiedAt: null,
+      });
+    }
+    state.calls.length = 0;
+
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "failed",
+    });
+    expect(state.operation()).toMatchObject({
+      state: "failed",
+      failureCode: "pin_verification_failed",
+      failureEvidenceRef: "data-registration://pin-attempt-budget-exhausted",
+    });
+    expect(state.calls).toEqual([
+      "artifact:canonical_audio",
+      "provider-pin:canonical_audio",
+      "fail:failed",
+    ]);
+  });
+
+  test("lets a pin persistence outage retry instead of relabeling it", async () => {
+    const state = harness();
+    const persistenceError = new Error("pin store unavailable");
+    const dependencies: DataRegistrationWorkflowDependencies = {
+      ...state.dependencies,
+      store: {
+        ...state.dependencies.store,
+        recordPinVerification: async () => {
+          throw persistenceError;
+        },
+      },
+    };
+
+    await expect(advanceDataRegistrationWorkflow(payload, dependencies)).rejects.toBe(
+      persistenceError,
+    );
+    expect(state.operation()).toMatchObject({ state: "pending", failureCode: null });
+    expect(state.calls).not.toContain("fail:failed");
+    expect(state.calls).not.toContain("fail:reconciliation_required");
   });
 
   test("converges a fast-confirmed broadcast through the mined fence", async () => {

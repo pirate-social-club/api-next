@@ -1,0 +1,22 @@
+{
+  "name": "pirate-song-workflows-test",
+  "main": "./entry.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workflows": [
+    {
+      "binding": "MEDIA_PROCESSING_WORKFLOW",
+      "name": "pirate-media-processing-test",
+      "class_name": "MediaProcessingWorkflow"
+    },
+    {
+      "binding": "DATA_REGISTRATION_WORKFLOW",
+      "name": "pirate-data-registration-test",
+      "class_name": "DataRegistrationWorkflow"
+    }
+  ],
+  "vars": {
+    "MEDIA_PROCESSING_ENABLED": "true",
+    "DATA_REGISTRATION_ENABLED": "false"
+  }
+}

@@ -26,7 +26,10 @@ import {
   type VideoAnalysisWorkflowStep,
 } from "./video-workflow.ts";
 
-const concreteWorkflowRunner = makeMediaProcessingWorkflowRunner(makeMediaProcessorComposition);
+const concreteWorkflowRunner = makeMediaProcessingWorkflowRunner(
+  makeMediaProcessorComposition,
+  makeWorkflowNonRetryableError,
+);
 const CloudflareMediaProcessingWorkflow = makeCloudflareWorkflowEntrypoint<
   MediaProcessorRuntimeEnv,
   MediaProcessingWorkflowPayload,

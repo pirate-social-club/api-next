@@ -38,8 +38,8 @@ const outbox = (overrides: Partial<DataRegistrationOutbox> = {}): DataRegistrati
   ...overrides,
 });
 
-function harness(create: "created" | "already_exists" | "throw" = "created") {
-  let current = outbox();
+function harness(create: "created" | "already_exists" | "throw" = "created", initial = outbox()) {
+  let current = initial;
   const calls: string[] = [];
   const store = {
     getOutbox: async () => current,
@@ -49,7 +49,8 @@ function harness(create: "created" | "already_exists" | "throw" = "created") {
       current = {
         ...current,
         state: "running",
-        deliveryAttempts: current.deliveryAttempts + 1,
+        deliveryAttempts:
+          current.state === "running" ? current.deliveryAttempts : current.deliveryAttempts + 1,
         claimOwner: workerId,
         claimFence: current.claimFence + 1n,
       };
@@ -113,6 +114,28 @@ describe("DATA registration Queue and recovery", () => {
       ),
     ).toEqual({ disposition: "retry", delaySeconds: 15 });
     expect(state.calls.at(-1)).toBe("fail");
+  });
+
+  test("reclaims an expired fifth delivery without consuming a sixth attempt", async () => {
+    const state = harness(
+      "created",
+      outbox({
+        state: "running",
+        deliveryAttempts: 5,
+        claimOwner: "worker-5",
+        claimFence: 5n,
+        leaseExpiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+
+    expect(
+      await consumeDataRegistrationQueueMessage(
+        { outbox_id: outbox().outboxId },
+        { store: state.store, workflow: state.workflow, workerId: "worker-6", leaseSeconds: 60 },
+      ),
+    ).toEqual({ disposition: "ack" });
+    expect(state.calls).toEqual(["claim", "create", "complete"]);
+    expect(state.current().deliveryAttempts).toBe(5);
   });
 
   test("does not replace when the authority recheck finds an existing instance", async () => {

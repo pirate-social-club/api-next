@@ -16,6 +16,8 @@ import {
   makeMediaProcessorQueueWorker,
 } from "./index.ts";
 
+const nonRetryableError = (message: string): Error => new Error(`non-retryable:${message}`);
+
 describe("media processor Worker posture", () => {
   test("drill 3 launch boundary: accepted create with lost response converges through the queue Worker", async () => {
     let row: VideoAnalysisOutboxRecord = {
@@ -176,10 +178,13 @@ describe("media processor Worker posture", () => {
         maximumSampleBytes: 1_000,
       },
     } satisfies MediaProcessingWorkflowDependencies;
-    const runner = makeMediaProcessingWorkflowRunner(() => ({
-      queue: {} as MediaProcessingQueueDependencies,
-      workflow,
-    }));
+    const runner = makeMediaProcessingWorkflowRunner(
+      () => ({
+        queue: {} as MediaProcessingQueueDependencies,
+        workflow,
+      }),
+      nonRetryableError,
+    );
     const step = {
       do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => {
         stepNames.push(_name);
@@ -234,24 +239,27 @@ describe("media processor Worker posture", () => {
       }),
       loadAuthority: async () => authority,
     } as unknown as MediaProcessingStore;
-    const runner = makeMediaProcessingWorkflowRunner(() => ({
-      queue: {} as MediaProcessingQueueDependencies,
-      workflow: {
-        store,
-        providers: null,
-        options: {
-          enabled: true,
-          workerId: "worker-1",
-          now: () => 1,
-          policyRevision: "policy-v1",
-          transformAdapterRevision: "transform-v1",
-          metadataAdapterRevision: "metadata-v1",
-          classifierTimeoutMs: 1_000,
-          transformRuntimeMs: 1_000,
-          maximumSampleBytes: 1_000,
+    const runner = makeMediaProcessingWorkflowRunner(
+      () => ({
+        queue: {} as MediaProcessingQueueDependencies,
+        workflow: {
+          store,
+          providers: null,
+          options: {
+            enabled: true,
+            workerId: "worker-1",
+            now: () => 1,
+            policyRevision: "policy-v1",
+            transformAdapterRevision: "transform-v1",
+            metadataAdapterRevision: "metadata-v1",
+            classifierTimeoutMs: 1_000,
+            transformRuntimeMs: 1_000,
+            maximumSampleBytes: 1_000,
+          },
         },
-      },
-    }));
+      }),
+      nonRetryableError,
+    );
     const step = {
       do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => callback(),
       waitForEvent: async () => {

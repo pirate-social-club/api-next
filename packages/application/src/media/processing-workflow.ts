@@ -69,6 +69,10 @@ export type MediaProcessingWorkflowDependencies = Readonly<{
   readonly options: MediaProcessingWorkflowOptions;
 }>;
 
+export class MediaProcessingInvariantError extends Error {
+  override readonly name = "MediaProcessingInvariantError";
+}
+
 class DeferredAttempt extends Error {
   constructor(
     readonly reason:
@@ -170,7 +174,9 @@ function startAttempt(
 > {
   return Effect.gen(function* () {
     if (authority.audio === null)
-      return yield* Effect.die(new TypeError("attempt requires authoritative audio"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("attempt requires authoritative audio"),
+      );
     const audio = authority.audio;
     const started = yield* storeWrite(() =>
       dependencies.store.startAttempt({
@@ -252,7 +258,9 @@ function authoritativeReload(
       dependencies.store.loadAuthority(authority.submissionId, authority.operationId),
     );
     if (current === null)
-      return yield* Effect.die(new TypeError("authoritative media operation is missing"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("authoritative media operation is missing"),
+      );
     return current;
   });
 }
@@ -261,7 +269,9 @@ function requireAttemptKind<K extends MediaProcessingAttemptResult["kind"]>(
   result: MediaProcessingAttemptResult,
   kind: K,
 ): Extract<MediaProcessingAttemptResult, { readonly kind: K }> {
-  if (result.kind !== kind) throw new TypeError(`attempt replay kind mismatch: ${kind}`);
+  if (result.kind !== kind) {
+    throw new MediaProcessingInvariantError(`attempt replay kind mismatch: ${kind}`);
+  }
   return result as Extract<MediaProcessingAttemptResult, { readonly kind: K }>;
 }
 
@@ -272,7 +282,9 @@ function runProbe(
 ): WorkflowEffect<MediaTransformProbeOutcome> {
   return Effect.gen(function* () {
     if (authority.audio === null)
-      return yield* Effect.die(new TypeError("probe requires authoritative audio"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("probe requires authoritative audio"),
+      );
     const audio = authority.audio;
     const started = yield* startAttempt(
       authority,
@@ -342,7 +354,9 @@ function runSample(
 ): WorkflowEffect<MediaTransformAudioSampleOutcome> {
   return Effect.gen(function* () {
     if (authority.audio === null)
-      return yield* Effect.die(new TypeError("sample requires authoritative audio"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("sample requires authoritative audio"),
+      );
     const audio = authority.audio;
     const stage = variant === "primary" ? "sample_primary" : "sample_alternate";
     const started = yield* startAttempt(
@@ -415,7 +429,9 @@ function runAcr(
 ): WorkflowEffect<MediaIdentificationOutcome> {
   return Effect.gen(function* () {
     if (authority.audio === null) {
-      return yield* Effect.die(new TypeError("identification requires authoritative audio"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("identification requires authoritative audio"),
+      );
     }
     const audio = authority.audio;
     const stage = variant === "primary" ? "acr_primary" : "acr_alternate";
@@ -487,7 +503,9 @@ function runClassifier(
 ): WorkflowEffect<ClassifierResult> {
   return Effect.gen(function* () {
     if (authority.audio === null || authority.lyrics === null) {
-      return yield* Effect.die(new TypeError("classifier requires current accepted lyrics"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("classifier requires current accepted lyrics"),
+      );
     }
     const audio = authority.audio;
     const lyrics = authority.lyrics;
@@ -530,7 +548,9 @@ function runClassifier(
             );
             if (!isMediaClassifierResultBoundToInputs(input, value)) {
               return yield* Effect.die(
-                new TypeError("classifier result crossed accepted lyrics lineage"),
+                new MediaProcessingInvariantError(
+                  "classifier result crossed accepted lyrics lineage",
+                ),
               );
             }
             yield* completeAttempt(
@@ -648,7 +668,7 @@ function moderateSongText(
         providers.textModeration.evaluate(moderationInput),
       );
       if (provider.input_sha256 !== canonical.sha256) {
-        return yield* Effect.die(new TypeError("moderation input mismatch"));
+        return yield* Effect.die(new MediaProcessingInvariantError("moderation input mismatch"));
       }
       const resolution = resolveCommunityModerationPolicyV2({
         platform_floor: policy.platform_policy,
@@ -1117,6 +1137,20 @@ function align(
         return Effect.failCause(cause);
       }),
     );
+    if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
+    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
+    if (recovery.kind === "committed") {
+      if (started.kind === "run") {
+        yield* completeAttempt(current, started.lease, recovery.result, dependencies);
+      }
+      return { outcome: "alignment_recorded" } as const;
+    }
+    if (recovery.kind === "stale") {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    if (recovery.kind === "failed") {
+      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+    }
     if (started.kind === "exhausted") {
       const exhaustedResult = {
         kind: "alignment",
@@ -1128,18 +1162,6 @@ function align(
       );
       if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
       return { outcome: "alignment_recorded" } as const;
-    }
-    if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
-    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
-    if (recovery.kind === "committed") {
-      yield* completeAttempt(current, started.lease, recovery.result, dependencies);
-      return { outcome: "alignment_recorded" } as const;
-    }
-    if (recovery.kind === "stale") {
-      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
-    }
-    if (recovery.kind === "failed") {
-      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
     }
     let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
     if (current.lyrics === null) {
@@ -1208,6 +1230,21 @@ function align(
   });
 }
 
+function resumeCommittedDecision(
+  authority: MediaProcessingAuthority,
+  dependencies: MediaProcessingWorkflowDependencies,
+): WorkflowEffect<MediaProcessingWorkflowResult> {
+  if (authority.decision === null) return Effect.fail(new DeferredAttempt("stale_fence"));
+  if (authority.decision.outcome === "manual_review") {
+    return Effect.succeed({ outcome: "manual_review" });
+  }
+  if (authority.decision.outcome === "block") return Effect.succeed({ outcome: "blocked" });
+  if (authority.decision.outcome === "reference_required") {
+    return Effect.succeed({ outcome: "action_required" });
+  }
+  return publish(authority, dependencies);
+}
+
 /** Durable interpreter. Every effectful phase begins from a fresh authority reload. */
 function runMediaProcessingWorkflowOnce(
   rawPayload: unknown,
@@ -1264,6 +1301,8 @@ function runMediaProcessingWorkflowOnce(
       } as const;
     }
 
+    if (authority.decision !== null) return yield* resumeCommittedDecision(authority, dependencies);
+
     if (!dependencies.options.enabled || dependencies.providers === null) {
       yield* storeWrite(() =>
         dependencies.store.commitProviderUnavailableReview(
@@ -1308,7 +1347,9 @@ function runMediaProcessingWorkflowOnce(
       (authority.lyrics.audioRevision !== authority.audioRevision ||
         authority.lyrics.canonicalAudioSha256 !== authority.audio?.canonicalSha256)
     ) {
-      return yield* Effect.die(new TypeError("accepted lyrics crossed immutable audio lineage"));
+      return yield* Effect.die(
+        new MediaProcessingInvariantError("accepted lyrics crossed immutable audio lineage"),
+      );
     }
     const decision = decideMediaPublication(authority);
     if (decision === "waiting_for_terms") {
@@ -1321,10 +1362,7 @@ function runMediaProcessingWorkflowOnce(
     );
     if (decisionCommit === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
     authority = yield* authoritativeReload(authority, dependencies);
-    if (decision.outcome === "manual_review") return { outcome: "manual_review" } as const;
-    if (decision.outcome === "block") return { outcome: "blocked" } as const;
-    if (decision.outcome === "reference_required") return { outcome: "action_required" } as const;
-    return yield* publish(authority, dependencies);
+    return yield* resumeCommittedDecision(authority, dependencies);
   });
 }
 

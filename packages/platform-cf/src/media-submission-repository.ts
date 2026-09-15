@@ -1812,7 +1812,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           if (current.phase === "finalize") {
             const prior = yield* tx.execute<Row>({
               label: "media-finalize.resume",
-              text: "SELECT event_kind,evidence FROM media_submission_events WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND event_sequence=(SELECT event_sequence FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3) FOR SHARE",
+              text: "SELECT event_kind,creation_revision,evidence FROM media_submission_events WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND event_sequence=(SELECT event_sequence FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3) FOR SHARE",
               values: [
                 current.communityId,
                 current.actorId,
@@ -1821,13 +1821,18 @@ export function makeControlPlaneMediaSubmissionRepository(
               ],
               readonly: false,
             });
+            const event = prior.rows[0];
             const evidence = object(prior.rows[0]?.evidence);
+            const resumedOriginalFinalize =
+              event?.event_kind === "finalize_requested" &&
+              evidence?.idempotency_key === input.idempotencyKey &&
+              evidence?.request_hash === input.requestHash &&
+              evidence?.reservation_id === input.reservationId;
+            const resumedRetry = event?.event_kind === "retry_authorized";
             if (
               prior.rows.length !== 1 ||
-              prior.rows[0]?.event_kind !== "finalize_requested" ||
-              evidence?.idempotency_key !== input.idempotencyKey ||
-              evidence?.request_hash !== input.requestHash ||
-              evidence?.reservation_id !== input.reservationId ||
+              integer(event?.creation_revision) !== current.creationRevision ||
+              (!resumedOriginalFinalize && !resumedRetry) ||
               current.creationRevision !== input.expectedCreationRevision
             )
               return yield* Effect.fail(

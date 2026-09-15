@@ -8,6 +8,43 @@ import {
 } from "./index.ts";
 
 describe("DATA registration Worker posture", () => {
+  test("resolves provider composition inside the durable step", async () => {
+    const compositionError = new Error("signer secret unavailable");
+    let insideStep = false;
+    const runner = makeDataRegistrationWorkflowRunner(() => {
+      expect(insideStep).toBe(true);
+      throw compositionError;
+    });
+    const step = {
+      do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => {
+        insideStep = true;
+        try {
+          return await callback();
+        } finally {
+          insideStep = false;
+        }
+      },
+      sleep: async () => {
+        throw new Error("composition failure must not poll");
+      },
+    } as DataRegistrationWorkflowStep;
+
+    await expect(
+      runner(
+        {},
+        {
+          instanceId: "workflow-1",
+          payload: {
+            outboxId: "outbox-1",
+            registrationOperationId: "operation-1",
+            workflowRevision: "1",
+          },
+        },
+        step,
+      ),
+    ).rejects.toBe(compositionError);
+  });
+
   test("runs identifier-only work inside a durable step while disabled", async () => {
     const stepNames: string[] = [];
     const workflow = {
@@ -35,7 +72,7 @@ describe("DATA registration Worker posture", () => {
           payload: {
             outboxId: "outbox-1",
             registrationOperationId: "operation-1",
-            workflowRevision: 1n,
+            workflowRevision: "1",
           },
         },
         step,

@@ -37,8 +37,7 @@ const dataWorkflow = (status: string): CloudflareDataRegistrationWorkflowBinding
   createBatch: async () => [],
 });
 
-// A terminal status is not absence; the ceiling alert only fires for a
-// genuinely missing instance, which the runtime reports as this error.
+// Missing instances are reported by the binding as this error.
 const missingMediaWorkflow = (): CloudflareMediaWorkflowBinding => ({
   get: async () => {
     throw new Error("instance.not_found");
@@ -231,6 +230,43 @@ describe("song pipeline terminal alert collectors", () => {
       ),
     ).toBe(0);
     expect(logs).toEqual([]);
+  });
+
+  test("alerts when an errored DATA Workflow reaches the replacement ceiling", async () => {
+    const logs: PipelineLogFields[] = [];
+    const controlPlane = runtime((statement) =>
+      statement.label === "song-pipeline.terminal.data-workflow-ceiling"
+        ? Effect.succeed({
+            rows: [
+              {
+                operation_id: "registration-2",
+                workflow_revision: "4",
+                workflow_instance_id: "data-registration-workflow:registration-2:r4",
+              },
+            ],
+            rowCount: 1,
+          })
+        : Effect.succeed({ rows: [], rowCount: 0 }),
+    );
+
+    expect(
+      await Effect.runPromise(
+        alertTick(
+          { log: (_event, fields) => logs.push(fields) },
+          collectSongPipelineTerminalAlerts(
+            controlPlane,
+            { media: false, data: true },
+            { data: dataWorkflow("errored") },
+          ),
+        ),
+      ),
+    ).toBe(1);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        key: "song-pipeline:data-replacement-limit-reached",
+        failure_class: "workflow_finished_at_replacement_limit",
+      }),
+    );
   });
 
   test("isolates one failed collector and continues the remaining read-only collectors", async () => {

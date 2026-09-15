@@ -7,6 +7,7 @@ import type {
 } from "../../../packages/application/src/media/processing-contracts.ts";
 import type { MediaProcessingQueueDependencies } from "../../../packages/application/src/media/processing-queue.ts";
 import {
+  MediaProcessingInvariantError,
   type MediaProcessingWorkflowDependencies,
   type MediaProcessingWorkflowResult,
   runMediaProcessingWorkflow,
@@ -23,7 +24,7 @@ import type { VideoWorkflowServices } from "../../../packages/application/src/vi
 import {
   type CloudflareWorkflowStepDo,
   isExplicitlyEnabled,
-  PROCESSING_WORKFLOW_STEP_OPTIONS,
+  SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleMediaProcessingQueueBatch } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 
@@ -163,7 +164,7 @@ export type MediaProcessingWorkflowEvent = Readonly<{
 }>;
 
 export interface MediaProcessingWorkflowStep
-  extends CloudflareWorkflowStepDo<typeof PROCESSING_WORKFLOW_STEP_OPTIONS> {
+  extends CloudflareWorkflowStepDo<typeof SONG_PIPELINE_WORKFLOW_STEP_OPTIONS> {
   readonly waitForEvent: <T>(
     name: string,
     options: Readonly<{ readonly type: string; readonly timeout: string }>,
@@ -178,13 +179,13 @@ export interface MediaProcessingWorkflowStep
  */
 export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWorkerEnv>(
   resolve: ResolveMediaProcessorComposition<Env>,
+  nonRetryableError: (message: string) => Error,
 ) {
   return async (
     env: Env,
     event: MediaProcessingWorkflowEvent,
     step: MediaProcessingWorkflowStep,
   ): Promise<MediaProcessingWorkflowResult> => {
-    const composition = applyRuntimePosture(env, resolve(env));
     let payload = event.payload;
     let eventType: MediaProcessingEventType | null = null;
     let sequence = 0;
@@ -195,24 +196,32 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
         result: MediaProcessingWorkflowResult;
       }> = await step.do(
         `media-processing-${sequence}-${eventType ?? "launch"}`,
-        PROCESSING_WORKFLOW_STEP_OPTIONS,
+        SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
         async () => {
-          const resolvedEventType =
-            eventType ??
-            (await composition.workflow.store.getOutbox(payload.outboxId))?.eventType ??
-            null;
-          if (resolvedEventType === null) {
+          try {
+            const composition = applyRuntimePosture(env, resolve(env));
+            const resolvedEventType =
+              eventType ??
+              (await composition.workflow.store.getOutbox(payload.outboxId))?.eventType ??
+              null;
+            if (resolvedEventType === null) {
+              return {
+                eventType: "analysis_launch" as const,
+                result: { outcome: "inert" as const },
+              };
+            }
             return {
-              eventType: "analysis_launch" as const,
-              result: { outcome: "inert" as const },
+              eventType: resolvedEventType,
+              result: await Effect.runPromise(
+                runMediaProcessingWorkflow(payload, resolvedEventType, composition.workflow),
+              ),
             };
+          } catch (error) {
+            if (error instanceof MediaProcessingInvariantError) {
+              throw nonRetryableError(error.message);
+            }
+            throw error;
           }
-          return {
-            eventType: resolvedEventType,
-            result: await Effect.runPromise(
-              runMediaProcessingWorkflow(payload, resolvedEventType, composition.workflow),
-            ),
-          };
         },
       );
       eventType = execution.eventType;

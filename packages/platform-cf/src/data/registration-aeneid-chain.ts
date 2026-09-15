@@ -257,6 +257,30 @@ const PIL_URIS = {
 } as const;
 
 type JsonRpc = (method: string, params: readonly unknown[]) => Promise<unknown>;
+const TRANSACTION_HASH = /^0x[0-9a-f]{64}$/u;
+
+type SignedTransactionPresence = "known" | "absent" | "unavailable";
+
+const signedTransactionPresence = async (
+  rpc: JsonRpc,
+  transactionHash: string,
+): Promise<SignedTransactionPresence> => {
+  try {
+    const receipt = await rpc("eth_getTransactionReceipt", [transactionHash]);
+    if (receipt !== null) {
+      return Predicate.isObject(receipt) && receipt.transactionHash === transactionHash
+        ? "known"
+        : "unavailable";
+    }
+    const transaction = await rpc("eth_getTransactionByHash", [transactionHash]);
+    if (transaction === null) return "absent";
+    return Predicate.isObject(transaction) && transaction.hash === transactionHash
+      ? "known"
+      : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+};
 
 export type DataRegistrationAeneidChainOptions = Readonly<{
   authority: DataRegistrationArtifactAuthorityReader;
@@ -770,11 +794,24 @@ export function makeDataRegistrationAeneidChain(
       if (attempt.signedTransaction === null || attempt.signedTransactionHash === null) {
         return { status: "rejected", evidenceRef: "data-registration://prepared-bytes-missing" };
       }
+      if (!TRANSACTION_HASH.test(attempt.signedTransactionHash)) {
+        return { status: "rejected", evidenceRef: "data-registration://prepared-hash-invalid" };
+      }
+      const knownHash = attempt.signedTransactionHash;
+      const prior = await signedTransactionPresence(options.rpc, knownHash);
+      if (prior === "known") {
+        return {
+          status: "broadcast",
+          transactionHash: knownHash,
+          evidenceRef: `data-registration://aeneid/broadcast-recovered/${attempt.submissionAttemptId}`,
+        };
+      }
+      if (prior === "unavailable") return { status: "retryable" };
       try {
         const result = await options.rpc("eth_sendRawTransaction", [
           bytesToHex(attempt.signedTransaction),
         ]);
-        return typeof result === "string" && /^0x[0-9a-f]{64}$/u.test(result)
+        return typeof result === "string" && TRANSACTION_HASH.test(result)
           ? {
               status: "broadcast",
               transactionHash: result,
@@ -785,6 +822,14 @@ export function makeDataRegistrationAeneidChain(
               evidenceRef: "data-registration://aeneid/broadcast-invalid",
             };
       } catch {
+        const recovered = await signedTransactionPresence(options.rpc, knownHash);
+        if (recovered === "known") {
+          return {
+            status: "broadcast",
+            transactionHash: knownHash,
+            evidenceRef: `data-registration://aeneid/broadcast-recovered/${attempt.submissionAttemptId}`,
+          };
+        }
         return { status: "retryable" };
       }
     },

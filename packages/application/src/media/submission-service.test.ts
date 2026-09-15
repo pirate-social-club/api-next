@@ -15,6 +15,7 @@ import {
   type MediaUploadStore,
   mediaSha256Bytes,
   moderateMediaSubmission,
+  projectMediaSubmission,
   reserveMediaUpload,
 } from "./submission-service.ts";
 
@@ -98,7 +99,7 @@ function storeWith(overrides: Partial<MediaUploadStore>): MediaUploadStore {
     replay: unused,
     createSubmission: unused,
     getViewForAuthor: unused,
-    getAuthorContext: unused,
+    getAuthorContext: async () => ({ view: finalizeContext().view, personaId: persona.persona_id }),
     getViewForModerator: unused,
     getFinalizeContext: unused,
     beginFinalize: unused,
@@ -567,6 +568,35 @@ describe("media submission service upload orchestration", () => {
       ),
     ).rejects.toBeInstanceOf(UploadObjectMissing);
     expect(inspections).toBe(1);
+  });
+
+  test("replays a completed finalize before loading its phase-specific context", async () => {
+    const document = projectMediaSubmission(finalizeContext().view, persona);
+    const bytes = new TextEncoder().encode(JSON.stringify(document));
+    let finalizeContextReads = 0;
+    const services = servicesWith({
+      store: storeWith({
+        replay: async () => ({
+          kind: "replay",
+          submissionId: awaitingUpload.submissionId,
+          operationId: awaitingUpload.operationId,
+          bytes,
+          sha256: await mediaSha256Bytes(bytes),
+        }),
+        getFinalizeContext: async () => {
+          finalizeContextReads += 1;
+          throw new Error("finalize context no longer exists");
+        },
+      }),
+    });
+
+    expect(
+      await finalizeMediaSubmission(
+        { submissionId: awaitingUpload.submissionId, actor, body: finalizeBody },
+        services,
+      ),
+    ).toEqual(document);
+    expect(finalizeContextReads).toBe(0);
   });
 
   test("treats a missing source after the durable fence as a precondition failure", async () => {

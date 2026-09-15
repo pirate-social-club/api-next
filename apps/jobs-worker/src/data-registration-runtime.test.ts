@@ -20,7 +20,7 @@ const candidate: DataRegistrationWorkflowCandidate = {
 };
 
 describe("DATA registration scheduled recovery", () => {
-  test("reconciles finished instances at any budget and never replaces indeterminate ones", async () => {
+  test("reconciles finished instances and replaces resumable outcomes below the ceiling", async () => {
     const outcomes = [
       "reconciled",
       "reverted",
@@ -40,7 +40,7 @@ describe("DATA registration scheduled recovery", () => {
             store: {
               replaceMissingWorkflow: async () => {
                 replacements += 1;
-                throw new Error("unexpected replacement");
+                return {} as never;
               },
               reconcileTerminalWorkflow: async (operationId: string, expected: bigint) => {
                 fences.push([operationId, expected]);
@@ -49,10 +49,12 @@ describe("DATA registration scheduled recovery", () => {
             } as unknown as DataRegistrationStore,
           },
         );
-        expect(replacements).toBe(0);
+        const resumable = outcome === "pending" || outcome === "unavailable";
+        expect(replacements).toBe(resumable && revision === "1" ? 1 : 0);
         expect(fences).toEqual([[candidate.registration_operation_id, BigInt(revision)]]);
         expect(result.finished).toBe(1);
-        expect(result.replaced).toBe(0);
+        expect(result.replaced).toBe(resumable && revision === "1" ? 1 : 0);
+        expect(result.limitReached).toBe(resumable && revision === "4" ? 1 : 0);
         if (outcome === "stale") {
           expect(result.stale).toBe(1);
         } else {
@@ -162,6 +164,7 @@ describe("DATA registration scheduled recovery", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(second).toEqual({
       finished: 0,
@@ -177,6 +180,7 @@ describe("DATA registration scheduled recovery", () => {
       stale: 1,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     expect(replacements).toBe(1);
 
@@ -212,6 +216,7 @@ describe("DATA registration scheduled recovery", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
   });
 
@@ -245,7 +250,56 @@ describe("DATA registration scheduled recovery", () => {
       stale: 0,
       limitReached: 0,
       lookupFailed: 1,
+      recoveryFailed: 0,
     });
+  });
+
+  test("isolates a failed terminal reconciliation and replaces the next row", async () => {
+    const failing = {
+      ...candidate,
+      registration_operation_id: "operation-failing",
+      workflow_instance_id: "data-registration-workflow:operation-failing:r1",
+    };
+    let replacements = 0;
+    const result = await recoverDataRegistrationWorkflowCandidates([failing, candidate], {
+      store: {
+        reconcileTerminalWorkflow: async () => {
+          throw new Error("database unavailable");
+        },
+        getOperation: async () => ({
+          registrationOperationId: candidate.registration_operation_id,
+          workflowRevision: 1n,
+          workflowInstanceId: candidate.workflow_instance_id,
+        }),
+        replaceMissingWorkflow: async () => {
+          replacements += 1;
+          return {} as never;
+        },
+      } as unknown as DataRegistrationStore,
+      workflow: {
+        get: async (instanceId: string) =>
+          instanceId === failing.workflow_instance_id ? "finished" : "missing",
+        create: async () => "created",
+      },
+    });
+
+    expect(result).toEqual({
+      finished: 1,
+      reconciled: 0,
+      reverted: 0,
+      escalated: 0,
+      pending: 0,
+      unavailable: 0,
+      indeterminate: 0,
+      inspected: 2,
+      present: 0,
+      replaced: 1,
+      stale: 0,
+      limitReached: 0,
+      lookupFailed: 0,
+      recoveryFailed: 1,
+    });
+    expect(replacements).toBe(1);
   });
 
   test("stops after three replacement revisions", async () => {
@@ -277,6 +331,7 @@ describe("DATA registration scheduled recovery", () => {
       stale: 0,
       limitReached: 1,
       lookupFailed: 0,
+      recoveryFailed: 0,
     });
     // The ceiling limits writes, not inspection of terminal state.
     expect(reads).toBe(1);

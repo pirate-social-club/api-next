@@ -63,6 +63,31 @@ export type MediaMaintenanceDependencies = Readonly<{
   readonly sweep: () => Promise<MediaWorkflowSweepResult>;
 }>;
 
+type DispatchPart = Readonly<{ selected: number; sent: number; failed: number }>;
+
+export async function isolateMediaMaintenanceAction(
+  stage: string,
+  action: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    console.error(`media maintenance ${stage} unavailable`, error);
+  }
+}
+
+export async function isolateMediaMaintenanceDispatch(
+  stage: string,
+  dispatch: () => Promise<DispatchPart>,
+): Promise<DispatchPart> {
+  try {
+    return await dispatch();
+  } catch (error) {
+    console.error(`media maintenance ${stage} unavailable`, error);
+    return { selected: 0, sent: 0, failed: 1 };
+  }
+}
+
 /** Outbox launch and lost-instance recovery share one bounded scheduled tick. */
 export async function runMediaMaintenance(
   dependencies: MediaMaintenanceDependencies,
@@ -82,39 +107,50 @@ export function makeMediaMaintenance(
     throw new Error("media Queue and Workflow bindings are required when processing is enabled");
   }
   const queue = env.MEDIA_PROCESSING_QUEUE;
-  if (env.VIDEO_DELIVERY_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined)
-    throw new Error("video Workflow binding is required when video delivery is enabled");
-  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
-    throw new Error("video Workflow binding is required when video analysis is enabled");
+  const videoEnabled =
+    env.VIDEO_ANALYSIS_ENABLED === "true" || env.VIDEO_DELIVERY_ENABLED === "true";
+  if (videoEnabled && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
+    console.error("media maintenance video Workflow binding unavailable");
   }
-  const videoRecovery =
-    env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW !== undefined
-      ? {
-          outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
-          store: makeControlPlaneVideoPublicationStore(runtime),
-          launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
-            env.VIDEO_ANALYSIS_WORKFLOW,
-            {
-              accountId: env.VIDEO_WORKFLOW_ACCOUNT_ID,
-              workflowName: env.VIDEO_WORKFLOW_NAME,
-              scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
-              readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
-            },
-            workflowFetch,
-          ),
-        }
-      : null;
-  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.MEDIA_INGRESS === undefined)
-    throw new Error("video ingress binding is required for expired-upload cleanup");
+  let videoRecovery: Readonly<{
+    outbox: ReturnType<typeof makeControlPlaneVideoAnalysisOutboxRepository>;
+    store: ReturnType<typeof makeControlPlaneVideoPublicationStore>;
+    launcher: ReturnType<typeof makeConfiguredVideoAnalysisWorkflowLauncher>;
+  }> | null = null;
+  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW !== undefined) {
+    try {
+      videoRecovery = {
+        outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
+        store: makeControlPlaneVideoPublicationStore(runtime),
+        launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
+          env.VIDEO_ANALYSIS_WORKFLOW,
+          {
+            accountId: env.VIDEO_WORKFLOW_ACCOUNT_ID,
+            workflowName: env.VIDEO_WORKFLOW_NAME,
+            scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
+            readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
+          },
+          workflowFetch,
+        ),
+      };
+    } catch (error) {
+      console.error("media maintenance video Workflow configuration unavailable", error);
+    }
+  }
+  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.MEDIA_INGRESS === undefined) {
+    console.error("media maintenance video ingress binding unavailable");
+  }
   const cleanup =
     env.MEDIA_INGRESS === undefined
       ? null
       : makeVideoReservationCleanup(runtime, env.MEDIA_INGRESS);
   const source = makeMediaOutboxDispatchSource(runtime);
   const enrichmentSource =
-    env.VIDEO_DELIVERY_ENABLED === "true" ? makeVideoEnrichmentDispatchSource(runtime) : null;
+    env.VIDEO_DELIVERY_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW !== undefined
+      ? makeVideoEnrichmentDispatchSource(runtime)
+      : null;
   const videoSource =
-    env.VIDEO_ANALYSIS_ENABLED === "true" ? makeVideoAnalysisOutboxDispatchSource(runtime) : null;
+    videoRecovery === null ? null : makeVideoAnalysisOutboxDispatchSource(runtime);
   const store = makeMediaProcessingStore(runtime);
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     env.MEDIA_PROCESSING_WORKFLOW,
@@ -124,29 +160,42 @@ export function makeMediaMaintenance(
     runMediaMaintenance({
       dispatch: async () => {
         if (cleanup !== null) {
-          const result = await cleanup();
-          if (result.selected > 0)
-            console.log(JSON.stringify({ event: "video-reservation-cleanup", ...result }));
+          await isolateMediaMaintenanceAction("video reservation cleanup", async () => {
+            const result = await cleanup();
+            if (result.selected > 0)
+              console.log(JSON.stringify({ event: "video-reservation-cleanup", ...result }));
+          });
         }
         if (videoRecovery !== null) {
-          await recoverVideoWorkflowLaunches(videoRecovery);
-          await dispatchVideoPublicationWakeups({
-            ...videoRecovery,
-            wakeups: makeVideoPublicationWakeupStore(runtime),
-          });
+          await isolateMediaMaintenanceAction("video Workflow recovery", () =>
+            recoverVideoWorkflowLaunches(videoRecovery),
+          );
+          await isolateMediaMaintenanceAction("video publication wakeups", () =>
+            dispatchVideoPublicationWakeups({
+              ...videoRecovery,
+              wakeups: makeVideoPublicationWakeupStore(runtime),
+            }),
+          );
         }
         const [song, video, enrichment, sourceRecording] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
-            : dispatchEligibleVideoAnalysisOutbox(videoSource, queue),
+            : isolateMediaMaintenanceDispatch("video analysis dispatch", () =>
+                dispatchEligibleVideoAnalysisOutbox(videoSource, queue),
+              ),
           enrichmentSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
-            : dispatchVideoEnrichment(enrichmentSource, queue),
+            : isolateMediaMaintenanceDispatch("video enrichment dispatch", () =>
+                dispatchVideoEnrichment(enrichmentSource, queue),
+              ),
           env.SONG_SOURCE_RECORDING_ENABLED === "true"
-            ? dispatchSongSourceRecordings(runtime, {
-                send: (message) => queue.send(message as unknown as { readonly outbox_id: string }),
-              })
+            ? isolateMediaMaintenanceDispatch("song source-recording dispatch", () =>
+                dispatchSongSourceRecordings(runtime, {
+                  send: (message) =>
+                    queue.send(message as unknown as { readonly outbox_id: string }),
+                }),
+              )
             : Promise.resolve({ selected: 0, sent: 0, failed: 0 }),
         ]);
         return Object.freeze({

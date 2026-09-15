@@ -28,11 +28,56 @@ const HASH = /^[0-9a-f]{64}$/u;
 const TRANSACTION_HASH = /^0x[0-9a-f]{64}$/u;
 const metadataArtifacts = ["ip_metadata", "nft_metadata"] as const;
 
+class PinStateFailure extends Error {
+  constructor(readonly evidenceRef: string) {
+    super(evidenceRef);
+    this.name = "PinStateFailure";
+  }
+}
+
 export type DataRegistrationWorkflowPayload = Readonly<{
   outboxId: string;
   registrationOperationId: string;
   workflowRevision: bigint;
 }>;
+
+export type DataRegistrationWorkflowWirePayload = Readonly<{
+  outboxId: string;
+  registrationOperationId: string;
+  workflowRevision: string;
+}>;
+
+export const encodeDataRegistrationWorkflowPayload = (
+  payload: DataRegistrationWorkflowPayload,
+): DataRegistrationWorkflowWirePayload => ({
+  ...payload,
+  workflowRevision: payload.workflowRevision.toString(10),
+});
+
+export const decodeDataRegistrationWorkflowWirePayload = (
+  input: unknown,
+): DataRegistrationWorkflowPayload | null => {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const payload = input as Readonly<Record<string, unknown>>;
+  if (
+    Object.keys(payload).sort().join(",") !== "outboxId,registrationOperationId,workflowRevision" ||
+    typeof payload.outboxId !== "string" ||
+    typeof payload.registrationOperationId !== "string" ||
+    typeof payload.workflowRevision !== "string" ||
+    payload.workflowRevision.length > 19 ||
+    !/^[1-9][0-9]*$/u.test(payload.workflowRevision)
+  ) {
+    return null;
+  }
+  const decoded = {
+    outboxId: payload.outboxId,
+    registrationOperationId: payload.registrationOperationId,
+    workflowRevision: BigInt(payload.workflowRevision),
+  };
+  return decoded.workflowRevision <= 9_223_372_036_854_775_807n && validPayload(decoded)
+    ? decoded
+    : null;
+};
 
 export type DataRegistrationPreparedArtifact = Readonly<{
   artifact: DataRegistrationArtifact;
@@ -474,7 +519,7 @@ const recordPins = async (
       pin.canonicalSha256 !== result.canonicalSha256 ||
       pin.byteLength !== result.byteLength
     ) {
-      throw new Error("persisted pin identity mismatch");
+      throw new PinStateFailure("data-registration://persisted-pin-mismatch");
     }
   }
   const nextAttempt = (role: DataRegistrationPinVerification["role"], providerId: string) => {
@@ -485,7 +530,9 @@ const recordPins = async (
           .filter((pin) => pin.role === role && pin.providerId === providerId)
           .map((pin) => pin.attemptNumber),
       ) + 1;
-    if (attemptNumber > 10) throw new Error("pin attempt budget exhausted");
+    if (attemptNumber > 10) {
+      throw new PinStateFailure("data-registration://pin-attempt-budget-exhausted");
+    }
     return attemptNumber;
   };
   if (primary === undefined) {
@@ -628,14 +675,15 @@ export async function advanceDataRegistrationWorkflow(
       }
       try {
         await recordPins(dependencies, operation, prepared, pinned, artifactPins);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof PinStateFailure)) throw error;
         return failOperation(
           dependencies,
           operation,
           null,
-          "reconciliation_required",
+          "failed",
           "pin_verification_failed",
-          "data-registration://persisted-pin-mismatch",
+          error.evidenceRef,
         );
       }
       if (pinned.status === "primary_verified") {
@@ -684,7 +732,7 @@ export async function advanceDataRegistrationWorkflow(
       dependencies,
       operation,
       null,
-      "reconciliation_required",
+      "failed",
       "invalid_receipt",
       "data-registration://missing-current-attempt",
     );

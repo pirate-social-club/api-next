@@ -3,6 +3,11 @@ export const PROCESSING_WORKFLOW_STEP_OPTIONS = {
   timeout: "15 minutes",
 } as const;
 
+export const SONG_PIPELINE_WORKFLOW_STEP_OPTIONS = {
+  retries: { limit: 5, delay: "15 seconds", backoff: "exponential" },
+  timeout: "15 minutes",
+} as const;
+
 export interface CloudflareWorkflowStepDo<Options> {
   readonly do: <T>(name: string, options: Options, callback: () => Promise<T>) => Promise<T>;
 }

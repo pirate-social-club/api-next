@@ -64,7 +64,10 @@ export async function consumeMediaProcessingQueueMessage(
     });
     return { disposition: "ack" };
   }
-  if (existing.state === "exhausted" || existing.deliveryAttempts >= 3) {
+  if (
+    existing.state === "exhausted" ||
+    (existing.deliveryAttempts >= 3 && existing.state !== "running")
+  ) {
     dependencies.observe?.({
       event: "queue_dlq",
       outboxId: existing.outboxId,

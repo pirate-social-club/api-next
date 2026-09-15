@@ -5,9 +5,85 @@ import type {
 } from "../../../packages/application/src/media/processing-contracts.ts";
 import type { MediaProcessingQueueDependencies } from "../../../packages/application/src/media/processing-queue.ts";
 import type { MediaProcessingWorkflowDependencies } from "../../../packages/application/src/media/processing-workflow.ts";
+import { MediaProcessingInvariantError } from "../../../packages/application/src/media/processing-workflow.ts";
 import { type MediaProcessingWorkflowStep, makeMediaProcessingWorkflowRunner } from "./index.ts";
 
+class TestNonRetryableError extends Error {}
+
+const nonRetryableError = (message: string): Error => new TestNonRetryableError(message);
+
 describe("media workflow Effect boundary", () => {
+  test("resolves provider composition inside the durable step", async () => {
+    const compositionError = new Error("secret unavailable");
+    let insideStep = false;
+    let stepCalls = 0;
+    const runner = makeMediaProcessingWorkflowRunner(() => {
+      expect(insideStep).toBe(true);
+      throw compositionError;
+    }, nonRetryableError);
+    const step = {
+      do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => {
+        stepCalls += 1;
+        insideStep = true;
+        try {
+          return await callback();
+        } finally {
+          insideStep = false;
+        }
+      },
+      waitForEvent: async () => {
+        throw new Error("composition failure must not wait");
+      },
+      sleep: async () => undefined,
+    } as MediaProcessingWorkflowStep;
+
+    await expect(
+      runner(
+        {},
+        {
+          instanceId: "media-operation-1-r1",
+          payload: {
+            outboxId: "outbox-1",
+            submissionId: "submission-1",
+            operationId: "operation-1",
+            workflowRevision: 1,
+          },
+        },
+        step,
+      ),
+    ).rejects.toBe(compositionError);
+    expect(stepCalls).toBe(1);
+  });
+
+  test("marks named media invariants non-retryable at the durable step boundary", async () => {
+    const runner = makeMediaProcessingWorkflowRunner(() => {
+      throw new MediaProcessingInvariantError("invalid durable media lineage");
+    }, nonRetryableError);
+    const step = {
+      do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => callback(),
+      waitForEvent: async () => {
+        throw new Error("invariant failure must not wait");
+      },
+      sleep: async () => undefined,
+    } as MediaProcessingWorkflowStep;
+
+    await expect(
+      runner(
+        {},
+        {
+          instanceId: "media-operation-1-r1",
+          payload: {
+            outboxId: "outbox-1",
+            submissionId: "submission-1",
+            operationId: "operation-1",
+            workflowRevision: 1,
+          },
+        },
+        step,
+      ),
+    ).rejects.toEqual(new TestNonRetryableError("invalid durable media lineage"));
+  });
+
   test("owns the Promise runtime root inside durable step.do", async () => {
     const authority = {
       submissionId: "submission-1",
@@ -46,10 +122,13 @@ describe("media workflow Effect boundary", () => {
       },
     } satisfies MediaProcessingWorkflowDependencies;
     let callbackResult: unknown;
-    const runner = makeMediaProcessingWorkflowRunner(() => ({
-      queue: {} as MediaProcessingQueueDependencies,
-      workflow,
-    }));
+    const runner = makeMediaProcessingWorkflowRunner(
+      () => ({
+        queue: {} as MediaProcessingQueueDependencies,
+        workflow,
+      }),
+      nonRetryableError,
+    );
     const step = {
       do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => {
         callbackResult = callback();

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 import type {
   MediaTransformAudioSampleInput,
   MediaTransformProbeInput,
@@ -10,6 +13,19 @@ import {
   readMp3FrameWindow,
   readMp3Probe,
 } from "./media-mp3-sample.ts";
+
+const ffmpegRequired = process.env.SONG_VIDEO_FFMPEG_REQUIRED === "1";
+const ffmpegVersion = Bun.which("ffmpeg")
+  ? Bun.spawnSync(["ffmpeg", "-version"], { stdout: "pipe", stderr: "ignore" })
+  : null;
+const pinnedFfmpeg =
+  ffmpegVersion !== null &&
+  ffmpegVersion.exitCode === 0 &&
+  new TextDecoder().decode(ffmpegVersion.stdout).startsWith("ffmpeg version 6.1.1");
+if (ffmpegRequired && !pinnedFfmpeg) {
+  throw new Error("SONG_VIDEO_FFMPEG_REQUIRED=1 requires pinned FFmpeg 6.1.1 on PATH");
+}
+const realAudioTest = pinnedFfmpeg ? test : test.skip;
 
 const BITRATES = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
 const FRAME_DURATION_MS = (1_152 * 1_000) / 44_100;
@@ -224,6 +240,100 @@ describe("raw MP3 sample extraction", () => {
     await expect(
       readMp3Probe(chunked(truncated, 173), 60 * 60 * 1_000, new AbortController().signal),
     ).rejects.toThrow("inconsistent_media_facts");
+  });
+
+  realAudioTest("runs the production probe and sample stages on real encoded audio", async () => {
+    const directory = await mkdtemp(joinPath(tmpdir(), "pirate-media-provider-audio-"));
+    try {
+      const sourcePath = joinPath(directory, "sine-440hz.mp3");
+      const generated = Bun.spawn(
+        [
+          "ffmpeg",
+          "-v",
+          "error",
+          "-nostdin",
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          "sine=frequency=440:sample_rate=44100:duration=20",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "128k",
+          sourcePath,
+        ],
+        { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+      );
+      if ((await generated.exited) !== 0) {
+        throw new Error(
+          `real MP3 fixture generation failed: ${await new Response(generated.stderr).text()}`,
+        );
+      }
+      const source = new Uint8Array(await readFile(sourcePath));
+      const buckets = await sampleBuckets(source);
+      const canonicalAudioSha256 = Array.from(
+        new Uint8Array(await crypto.subtle.digest("SHA-256", source)),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
+      const transform = makeR2Mp3SampleMediaTransform({
+        providerTransform: providerTransform(),
+        immutableOriginals: buckets.originals,
+        derivedArtifacts: buckets.derived,
+        maximumSampleBytes: 1_000_000,
+      });
+      const attempt = {
+        version: "media-transform-attempt-v1" as const,
+        runtimeFence: { submittedAtMs: 1_000, runtimeDeadlineMs: 61_000 },
+      };
+      const binding = {
+        operationId: "real-audio-operation",
+        audioRevision: 1,
+        analysisRevision: 1,
+        canonicalAudioSha256,
+      };
+      const probed = await Effect.runPromise(
+        transform.probe({
+          version: "media-transform-probe-input-v1",
+          binding: { ...binding, requestId: "real-audio-probe" },
+          source: { objectKey: "immutable/operation/audio/1" },
+          attempt,
+        }),
+      );
+      expect(probed).toMatchObject({
+        status: "completed",
+        probe: {
+          container: "mp3",
+          mimeType: "audio/mpeg",
+          tracks: [{ kind: "audio", codec: "mp3", sampleRateHz: 44_100 }],
+        },
+      });
+      if (probed.status !== "completed") throw new Error("real MP3 probe did not complete");
+
+      const sampled = await Effect.runPromise(
+        transform.extractAudioSample({
+          version: "media-transform-audio-sample-input-v1",
+          binding: { ...binding, requestId: "real-audio-sample-primary" },
+          source: { objectKey: "immutable/operation/audio/1" },
+          sourceDurationMs: probed.probe.durationMs,
+          variant: "primary",
+          attempt,
+        }),
+      );
+      expect(sampled).toMatchObject({
+        status: "completed",
+        artifact: {
+          contentType: "audio/mpeg",
+          variant: "primary",
+          retainedObjectVerification: "required",
+        },
+      });
+      if (sampled.status !== "completed") throw new Error("real MP3 sample did not complete");
+      expect(sampled.artifact.durationMs).toBeGreaterThanOrEqual(12_000);
+      expect(buckets.writes).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test("selects a bounded primary CBR mono window across stream boundaries", async () => {

@@ -9,6 +9,7 @@ import {
   isPresentWorkflowStatus,
   isWorkflowInstanceMissingError,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
+  SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
 } from "./cloudflare-orchestration-primitives.ts";
 
 describe("Cloudflare orchestration primitives", () => {
@@ -33,6 +34,13 @@ describe("Cloudflare orchestration primitives", () => {
   test("keeps the shared processing step policy exact", () => {
     expect(PROCESSING_WORKFLOW_STEP_OPTIONS).toEqual({
       retries: { limit: 2, delay: "15 seconds", backoff: "exponential" },
+      timeout: "15 minutes",
+    });
+  });
+
+  test("gives song pipeline steps an outage-sized retry window", () => {
+    expect(SONG_PIPELINE_WORKFLOW_STEP_OPTIONS).toEqual({
+      retries: { limit: 5, delay: "15 seconds", backoff: "exponential" },
       timeout: "15 minutes",
     });
   });
