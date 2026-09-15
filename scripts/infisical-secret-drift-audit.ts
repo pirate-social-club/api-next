@@ -63,7 +63,6 @@ const SONG_PLAYBACK_SECRET_NAMES = [
 ] as const;
 
 const PRODUCTION_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES = [
-  ...SONG_PLAYBACK_SECRET_NAMES,
   "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
   "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
 ] as const;
@@ -98,6 +97,16 @@ const STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES = [
   ...SONG_PLAYBACK_SECRET_NAMES,
   "OPENAI_API_KEY",
 ] as const;
+// These names are retained at the shared staging path for bounded staging
+// diagnostics and reset support. They are not production runtime inputs.
+const STAGING_RUNTIME_SUPPORT_SECRET_NAMES = [
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
+  "CONTROL_PLANE_POSTGRES_SUPERUSER_URL",
+] as const;
+// The Stream token's operator copy is retained while the shared runtime copy
+// is used by the staging video path. Both copies remain staging-only.
+const STAGING_VIDEO_OPERATOR_SECRET_NAMES = ["VIDEO_STREAM_API_TOKEN"] as const;
 const STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES = [
   "MODERATION_E2E_OWNER_EMAIL",
   "MODERATION_E2E_OWNER_OTP",
@@ -156,6 +165,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES,
+      ...STAGING_RUNTIME_SUPPORT_SECRET_NAMES,
       "TELEGRAM_CREDENTIAL_KEYS_JSON",
     ],
   },
@@ -168,6 +178,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       "MEGAPOT_REFERRER_PRIVATE_KEY",
       ...STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
+      ...STAGING_VIDEO_OPERATOR_SECRET_NAMES,
     ],
   },
   {
