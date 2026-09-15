@@ -6,10 +6,7 @@ import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconc
 import type { KaraokeSurfaceReceipt } from "./staging-karaoke-release-operation.ts";
 import { STAGING_FENCED_QUEUES } from "./staging-persona-cloudflare-producers.ts";
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
-import {
-  loadStagingUpgradeArtifacts,
-  STAGING_UPGRADE_RELEASE,
-} from "./staging-persona-upgrade-plan.ts";
+import { STAGING_UPGRADE_RELEASE } from "./staging-persona-upgrade-plan.ts";
 import type { StagingResetReleaseLiveConfiguration } from "./staging-reset-release-live.ts";
 
 // The reset is mocked so the composition binding's failure receipt and port
@@ -56,11 +53,21 @@ const plan = {
   reviewedGrantDigest: "d".repeat(64),
   surfaceOrder: ["versions", "database", "ingress", "producers"],
 };
+const disposable = {
+  mode: "drop_schema_recreate",
+  roleName: "api-next-disposable-reset-fixture",
+  branchId: "syu03e00w3ux",
+  roleTtlMinutes: 30,
+  communityCreation: {
+    baseUrl: "https://web-next-staging.pirate.sc",
+    timeoutMs: 600_000,
+  },
+};
 
 const configuration = (overrides: { markerDirectory?: string } = {}) => ({
-  version: "staging-reset-release-live-v1",
+  version: "staging-disposable-release-live-v1",
   executionAuthorized: false,
-  approvedPlanDigest: reconciliationDigest(JSON.stringify(plan)),
+  approvedPlanDigest: reconciliationDigest(JSON.stringify({ plan, disposable })),
   plan,
   deploymentInputs: [
     {
@@ -87,11 +94,6 @@ const configuration = (overrides: { markerDirectory?: string } = {}) => ({
       schedules: STAGING_PRODUCER_WORKERS.map((worker) => ({ worker, crons: [] })),
     },
   },
-  acceptance: {
-    apiBaseUrl: "https://api.staging.example",
-    communityId: "community-1",
-    privyAccessToken: "privy-token",
-  },
   reset: { baselineDigest: "9".repeat(64), defaultsDigest: "8".repeat(64) },
   recovery: { captureId: "capture1", captureEvidenceDigest: "7".repeat(64) },
   markerDirectory: overrides.markerDirectory ?? "/tmp/staging-live-marker",
@@ -100,11 +102,14 @@ const configuration = (overrides: { markerDirectory?: string } = {}) => ({
     removal: { maxOwnLockRows: 1_000, maxClusterLockRows: 1_200, maxClosureObjects: 800 },
     replay: { maxLockRows: 1_000, maxClusterLockRows: 1_200, statementTimeoutMs: 120_000 },
   },
+  disposable,
 });
 
 test("the reviewed live configuration binds the plan, checkouts and versions", () => {
   const validated = validateStagingResetReleaseLiveConfiguration(configuration());
-  expect(validated.approvedPlanDigest).toBe(reconciliationDigest(JSON.stringify(plan)));
+  expect(validated.approvedPlanDigest).toBe(
+    reconciliationDigest(JSON.stringify({ plan, disposable })),
+  );
   expect(validated.deploymentInputs).toHaveLength(2);
   expect(validated.plan.surfaceOrder).toEqual(["versions", "database", "ingress", "producers"]);
 });
@@ -178,9 +183,21 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
   expect(() =>
     validateStagingResetReleaseLiveConfiguration({
       ...base,
+      disposable: { ...disposable, roleName: "api-next-disposable-reset-changed" },
+    }),
+  ).toThrow("staging_live_release_plan_changed");
+  expect(() =>
+    validateStagingResetReleaseLiveConfiguration({
+      ...base,
       plan: { ...plan, surfaceOrder: ["versions", "ingress", "database", "producers"] },
       approvedPlanDigest: reconciliationDigest(
-        JSON.stringify({ ...plan, surfaceOrder: ["versions", "ingress", "database", "producers"] }),
+        JSON.stringify({
+          plan: {
+            ...plan,
+            surfaceOrder: ["versions", "ingress", "database", "producers"],
+          },
+          disposable,
+        }),
       ),
     }),
   ).toThrow("staging_live_release_order_changed");
@@ -194,7 +211,7 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
     validateStagingResetReleaseLiveConfiguration({
       ...base,
       plan: changedQueues,
-      approvedPlanDigest: reconciliationDigest(JSON.stringify(changedQueues)),
+      approvedPlanDigest: reconciliationDigest(JSON.stringify({ plan: changedQueues, disposable })),
     }),
   ).toThrow("staging_live_release_queue_set_changed");
   const changedServing = { ...plan, servingWorkers: plan.servingWorkers.slice(0, 3) };
@@ -202,9 +219,40 @@ test("a changed plan digest, order, queue set or serving set refuses", () => {
     validateStagingResetReleaseLiveConfiguration({
       ...base,
       plan: changedServing,
-      approvedPlanDigest: reconciliationDigest(JSON.stringify(changedServing)),
+      approvedPlanDigest: reconciliationDigest(
+        JSON.stringify({ plan: changedServing, disposable }),
+      ),
     }),
   ).toThrow("staging_live_release_serving_set_changed");
+});
+
+test("the disposable release requires community creation and refuses the persona read", () => {
+  const base = configuration();
+  const withoutCommunityCreation = {
+    mode: disposable.mode,
+    roleName: disposable.roleName,
+    branchId: disposable.branchId,
+    roleTtlMinutes: disposable.roleTtlMinutes,
+  };
+  expect(() =>
+    validateStagingResetReleaseLiveConfiguration({
+      ...base,
+      disposable: withoutCommunityCreation,
+      approvedPlanDigest: reconciliationDigest(
+        JSON.stringify({ plan, disposable: withoutCommunityCreation }),
+      ),
+    }),
+  ).toThrow("staging_live_community_creation_required");
+  expect(() =>
+    validateStagingResetReleaseLiveConfiguration({
+      ...base,
+      acceptance: {
+        apiBaseUrl: "https://api.staging.example",
+        communityId: "community-1",
+        privyAccessToken: "privy-token",
+      },
+    }),
+  ).toThrow("staging_live_acceptance_ambiguous");
 });
 
 test("an unreviewed checkout, mismatched version pin or wrong grant digest refuses", () => {
@@ -281,18 +329,26 @@ test("checkout reachability is proven from immutable Git history in both reposit
 }, 120_000);
 
 test("the live applier requires the exact reconstructed prefix and refuses dry runs", async () => {
-  const applied = loadStagingUpgradeArtifacts()
-    .migrations.filter(({ version }) => Number(version.slice(0, 4)) >= 120)
-    .map(({ version }) => version);
   const seen: unknown[] = [];
   const applier = makeLiveStagingUpgradeApplier("postgres://live", async (input) => {
+    if (!input) throw new Error("missing migration input");
     seen.push(input);
+    const applied = input.migrations
+      ?.slice(input.expectedLedger?.length ?? 0)
+      .map(({ version }) => version);
     return { dryRun: false, result: { applied } } as never;
   });
   const receipt = await applier();
   expect(receipt.toVersion).toBe(STAGING_UPGRADE_RELEASE.terminalVersion);
   expect(receipt.applied).toHaveLength(STAGING_UPGRADE_RELEASE.upgradeCount);
+  expect(seen).toHaveLength(2);
   expect((seen[0] as { connectionString: string }).connectionString).toBe("postgres://live");
+  expect(
+    (seen[0] as { migrations: readonly { version: string }[] }).migrations.at(-1)?.version,
+  ).toBe("0153_hns_activation_policy.sql");
+  expect(
+    (seen[1] as { expectedLedger: readonly { version: string }[] }).expectedLedger.at(-1)?.version,
+  ).toBe("0153_hns_activation_policy.sql");
   const dry = makeLiveStagingUpgradeApplier(
     "postgres://live",
     async () =>
@@ -406,6 +462,7 @@ test("the composition binding writes a redacted recovery receipt on failure", as
           async producers() {},
         },
         verifyDeployedPair: async () => {},
+        communityCreationAcceptance: async () => {},
         upgrade: {
           async apply() {
             throw new Error("migration apply failed");

@@ -31,6 +31,97 @@ const key = (grant: ResetGrant) =>
     grant.grantOption,
   ]);
 
+/** One explicit `pg_default_acl` grant as a portable fact. Implicit owner
+ * rights are not ACL entries and are therefore not facts. The namespace is
+ * carried by name rather than OID so the digest survives the schema being
+ * dropped and recreated. */
+export type ResetDefaultAclGrant = Readonly<{
+  namespace: string | null;
+  role: string;
+  objectType: "table" | "sequence";
+  grantee: string;
+  privilege: string;
+  grantOption: boolean;
+}>;
+
+const defaultAclPrivileges = {
+  table: new Set(["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]),
+  sequence: new Set(["SELECT", "UPDATE", "USAGE"]),
+} as const;
+
+function assertDefaultAclFact(fact: ResetDefaultAclGrant): void {
+  if (
+    !defaultAclPrivileges[fact.objectType]?.has(fact.privilege) ||
+    !fact.role ||
+    !fact.grantee ||
+    (fact.namespace !== null && fact.namespace !== "api_next") ||
+    /\p{Cc}/u.test(fact.role + fact.grantee + fact.privilege)
+  )
+    throw new Error("reset_default_acl_fact_invalid");
+}
+
+/** Explicit default ACL grants for the reset schema and the global default
+ * set, keyed by role and namespace name. This is a reset-scoped digest, not a
+ * portable recovery fingerprint. */
+export async function readResetDefaultAcls(admin: Pick<Client, "query">) {
+  const result = await admin.query(`SELECT
+    CASE WHEN d.defaclnamespace=0 THEN NULL ELSE n.nspname END AS namespace,
+    r.rolname AS role,
+    d.defaclobjtype AS object_type,
+    CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE g.rolname END AS grantee,
+    a.privilege_type AS privilege,
+    a.is_grantable AS grant_option
+    FROM pg_catalog.pg_default_acl d
+    JOIN pg_catalog.pg_roles r ON r.oid=d.defaclrole
+    LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
+    CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) a
+    LEFT JOIN pg_catalog.pg_roles g ON g.oid=a.grantee
+    WHERE d.defaclnamespace=0 OR d.defaclnamespace='api_next'::regnamespace
+    ORDER BY namespace NULLS FIRST,role,object_type,grantee,privilege,grant_option`);
+  const facts: ResetDefaultAclGrant[] = result.rows.map((row) => {
+    if (row.object_type !== "r" && row.object_type !== "S")
+      throw new Error("reset_default_acl_unsupported");
+    return {
+      namespace: row.namespace,
+      role: row.role,
+      objectType: row.object_type === "r" ? "table" : "sequence",
+      grantee: row.grantee,
+      privilege: row.privilege,
+      grantOption: row.grant_option,
+    };
+  });
+  for (const fact of facts) assertDefaultAclFact(fact);
+  return Object.freeze({
+    facts: Object.freeze(facts),
+    sha256: createHash("sha256").update(JSON.stringify(facts)).digest("hex"),
+  });
+}
+
+/** Recreate the reset schema's default ACL grants from captured catalog facts.
+ * Global defaults survive a schema drop and are deliberately skipped; the
+ * caller still verifies them through the digest. Statements are rendered from
+ * validated facts with server-side identifier quoting, never supplied SQL. */
+export async function restoreResetDefaultAcls(
+  admin: Pick<Client, "query">,
+  facts: readonly ResetDefaultAclGrant[],
+) {
+  for (const fact of facts) {
+    if (fact.namespace !== "api_next") continue;
+    assertDefaultAclFact(fact);
+    const target = fact.objectType === "table" ? "TABLES" : "SEQUENCES";
+    const built = await admin.query(
+      `SELECT pg_catalog.format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA api_next GRANT ${fact.privilege} ON ${target} TO %s${fact.grantOption ? " WITH GRANT OPTION" : ""}',
+      $1::text, CASE WHEN $2::text='PUBLIC' THEN 'PUBLIC' ELSE pg_catalog.quote_ident($2::text) END)
+      AS statement`,
+      [fact.role, fact.grantee],
+    );
+    if (built.rows.length !== 1 || typeof built.rows[0].statement !== "string")
+      throw new Error("reset_default_acl_restore_unproven");
+    await admin.query(built.rows[0].statement);
+  }
+}
+
 /** Exact catalog-owned revocation. No CASCADE, supplied SQL or grantor switch. */
 export async function revokeResetCatalogGrant(admin: Pick<Client, "query">, grant: ResetGrant) {
   reconcileResetGrants({ before: [grant], replay: [], reviewed: [] });
@@ -68,13 +159,10 @@ export async function readResetGrantCatalog(admin: Pick<Client, "query">) {
   }));
   // Reuse the pure validator; even catalog facts must fit the supported vocabulary.
   reconcileResetGrants({ before: grants, replay: [], reviewed: [] });
-  const defaults = await admin.query(`SELECT defaclrole::text,defaclnamespace::text,
-    defaclobjtype,defaclacl::text FROM pg_catalog.pg_default_acl
-    WHERE defaclnamespace IN (0,'api_next'::regnamespace)
-    ORDER BY defaclrole,defaclnamespace,defaclobjtype`);
+  const defaults = await readResetDefaultAcls(admin);
   return {
     grants,
-    defaults_sha256: createHash("sha256").update(JSON.stringify(defaults.rows)).digest("hex"),
+    defaults_sha256: defaults.sha256,
   };
 }
 

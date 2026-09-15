@@ -48,6 +48,12 @@ export const STAGING_UPGRADE_ORDINALS = Object.freeze([
   179,
 ]);
 
+/** Ends the first bounded apply transaction before the later video and DATA
+ * migrations add another large set of relation locks. The exact ledger at
+ * this boundary is the only intermediate state the release accepts. */
+export const STAGING_UPGRADE_CHECKPOINT_VERSION = "0153_hns_activation_policy.sql";
+export const STAGING_UPGRADE_CHECKPOINT_COUNT = 34;
+
 export type StagingUpgradeReceipt = {
   readonly sourceSha: string;
   readonly manifestSha256: string;
@@ -63,6 +69,49 @@ export type StagingUpgradeArtifacts = {
   readonly baseline: string;
   readonly migrations: readonly PostgresMigration[];
 };
+
+/** Carries only progress established by a completed exact-ledger transaction.
+ * Callers retain the original cause while using this evidence for the durable
+ * release marker. */
+export class StagingUpgradeApplyFailed extends Error {
+  constructor(
+    readonly appliedMigrations: number,
+    readonly upgradeSourceSha: string,
+    readonly upgradeManifestSha256: string,
+    options: { readonly cause: unknown },
+  ) {
+    if (
+      ![0, STAGING_UPGRADE_CHECKPOINT_COUNT, STAGING_UPGRADE_RELEASE.upgradeCount].includes(
+        appliedMigrations,
+      ) ||
+      upgradeSourceSha !== STAGING_UPGRADE_RELEASE.sourceSha ||
+      upgradeManifestSha256 !== STAGING_UPGRADE_RELEASE.manifestSha256
+    )
+      throw new Error("staging_upgrade_failure_evidence_invalid");
+    super(
+      options.cause instanceof Error ? options.cause.message : "staging_upgrade_apply_failed",
+      options,
+    );
+    this.name = "StagingUpgradeApplyFailed";
+  }
+}
+
+export function stagingUpgradeFailureEvidence(error: unknown) {
+  if (!(error instanceof StagingUpgradeApplyFailed)) {
+    return {
+      appliedMigrations: 0,
+      upgradeSourceSha: null,
+      upgradeManifestSha256: null,
+      cause: error,
+    } as const;
+  }
+  return {
+    appliedMigrations: error.appliedMigrations,
+    upgradeSourceSha: error.upgradeSourceSha,
+    upgradeManifestSha256: error.upgradeManifestSha256,
+    cause: error.cause,
+  } as const;
+}
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
@@ -191,11 +240,11 @@ export function loadStagingUpgradeArtifacts(
   return { sourceSha, manifest, baseline, migrations };
 }
 
-/** The only accepted upgrade result. The runner applies pending migrations
- * atomically, so a ledger at 0119 yields the exact reviewed ordinal sequence
- * through 0179, including the intentional 0173–0175 allocation gap; anything
- * else means the target was not the verified reset state and the run must not
- * proceed to grants or traffic. */
+/** The only accepted upgrade result. The bounded runner starts at the exact
+ * 0119 ledger and yields the exact reviewed ordinal sequence through 0179,
+ * including the intentional 0173–0175 allocation gap; anything else means the
+ * target was not the verified reset state and the run must not proceed to
+ * grants or traffic. */
 export function assertStagingUpgradeReceipt(receipt: StagingUpgradeReceipt) {
   const ordinals = receipt.applied.map((version) => Number(version.slice(0, 4)));
   if (
@@ -244,25 +293,76 @@ export function stagingUpgradeBaseLedger(plan: {
   return plan.migrations.map(({ version, checksum }) => ({ version, checksum }));
 }
 
+/** Applies the reviewed upgrade in two exact-ledger transactions. Provider r18
+ * observed 1,216 non-fast-path locks when the complete span shared one
+ * transaction. Ending the first transaction at 0153 releases its DDL locks
+ * before the later video and DATA migrations run. If the second phase fails,
+ * the caller's release marker and fences retain the unresolved midpoint for
+ * governed restoration; it is never reported as a completed upgrade. */
+export async function applyStagingUpgradeInPhases(
+  connectionString: string,
+  run: typeof runPostgresMigrations = runPostgresMigrations,
+): Promise<StagingUpgradeReceipt> {
+  const upgrade = loadStagingUpgradeArtifacts();
+  const resetPlan = validateStagingResetArtifacts(loadStagingResetArtifacts());
+  const checkpoint = upgrade.migrations.findIndex(
+    ({ version }) => version === STAGING_UPGRADE_CHECKPOINT_VERSION,
+  );
+  if (checkpoint < STAGING_RESET_RELEASE.migrationCount)
+    throw new Error("staging_upgrade_checkpoint_missing");
+
+  const firstMigrations = upgrade.migrations.slice(0, checkpoint + 1);
+  const fail = (cause: unknown, appliedMigrations: number) =>
+    new StagingUpgradeApplyFailed(
+      appliedMigrations,
+      upgrade.sourceSha,
+      STAGING_UPGRADE_RELEASE.manifestSha256,
+      { cause },
+    );
+  let first: Awaited<ReturnType<typeof run>>;
+  try {
+    first = await run({
+      connectionString,
+      migrations: firstMigrations,
+      expectedLedger: stagingUpgradeBaseLedger(resetPlan),
+    });
+  } catch (error) {
+    throw fail(error, 0);
+  }
+  if (first.dryRun) throw fail(new Error("staging_upgrade_unexpected_dry_run"), 0);
+
+  const committedCheckpoint = firstMigrations.length - STAGING_RESET_RELEASE.migrationCount;
+  if (committedCheckpoint !== STAGING_UPGRADE_CHECKPOINT_COUNT)
+    throw new Error("staging_upgrade_checkpoint_count_changed");
+
+  let second: Awaited<ReturnType<typeof run>>;
+  try {
+    second = await run({
+      connectionString,
+      migrations: upgrade.migrations,
+      expectedLedger: firstMigrations.map(({ version, checksum }) => ({ version, checksum })),
+    });
+  } catch (error) {
+    throw fail(error, committedCheckpoint);
+  }
+  if (second.dryRun)
+    throw fail(new Error("staging_upgrade_unexpected_dry_run"), committedCheckpoint);
+  try {
+    return stagingUpgradeReceipt(upgrade, [...first.result.applied, ...second.result.applied]);
+  } catch (error) {
+    throw fail(error, STAGING_UPGRADE_RELEASE.upgradeCount);
+  }
+}
+
 /** The rehearsal applier. It acquires the isolated branch through the same
  * provider-verified operator boundary the reset uses, then applies the pinned
- * span with the exact `0119` reconstructed ledger required inside the runner's
- * transaction before its first mutation. There is deliberately no connection,
+ * span in bounded exact-ledger transactions, beginning with the reconstructed
+ * `0119` ledger. There is deliberately no connection,
  * URL, or target parameter: caller identifiers alone are not evidence, and an
  * unverified target has no path into this function. */
 export async function applyStagingUpgradeOnRehearsalBranch(): Promise<StagingUpgradeReceipt> {
-  const upgrade = loadStagingUpgradeArtifacts();
-  const resetPlan = validateStagingResetArtifacts(loadStagingResetArtifacts());
-  return withProviderRehearsalOperator(
-    async (_admin, _operator, _runtimeRole, connectionString) => {
-      const output = await runPostgresMigrations({
-        connectionString,
-        migrations: upgrade.migrations,
-        expectedLedger: stagingUpgradeBaseLedger(resetPlan),
-      });
-      if (output.dryRun) throw new Error("staging_upgrade_unexpected_dry_run");
-      return stagingUpgradeReceipt(upgrade, output.result.applied);
-    },
+  return withProviderRehearsalOperator(async (_admin, _operator, _runtimeRole, connectionString) =>
+    applyStagingUpgradeInPhases(connectionString),
   );
 }
 

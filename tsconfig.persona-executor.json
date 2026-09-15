@@ -42,5 +42,7 @@
     ,"scripts/staging-reset-release-live-runtime.pg.test.ts"
     ,"scripts/staging-reset-release-live-ingress.test.ts"
     ,"scripts/staging-reset-release-live-refence-fixture.ts"
+    ,"scripts/staging-persona-disposable-reset.ts"
+    ,"scripts/staging-persona-disposable-reset.pg.test.ts"
   ]
 }

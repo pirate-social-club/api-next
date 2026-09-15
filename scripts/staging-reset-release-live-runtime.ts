@@ -5,6 +5,11 @@ import { promisify } from "node:util";
 import type { Client } from "pg";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import { normalizePostgresConnectionString } from "./postgres-migrations.ts";
+import {
+  hasCommunityCreationCredentials,
+  makeCommunityCreationAcceptance,
+  writeCommunityCreationEvidence,
+} from "./staging-community-creation-acceptance.ts";
 import { makeKaraokeDatabaseRelease } from "./staging-karaoke-release-database.ts";
 import { makeKaraokeReleaseHttp } from "./staging-karaoke-release-http.ts";
 import { makeKaraokeIngressRelease } from "./staging-karaoke-release-ingress.ts";
@@ -16,6 +21,11 @@ import {
 import { compileApprovedStagingPrivileges } from "./staging-persona-approved-privileges.ts";
 import { collectStagingCloudflareProducers } from "./staging-persona-cloudflare-producers.ts";
 import { STAGING_PRODUCER_WORKERS } from "./staging-persona-deployment-collector.ts";
+import {
+  withPlanetScaleDatabaseCreate,
+  writeDisposableCapabilityRecovery,
+} from "./staging-persona-disposable-capability.ts";
+import { reconstructDisposableStaging } from "./staging-persona-disposable-reset.ts";
 import { readResetGrantCatalog } from "./staging-persona-grant-catalog.ts";
 import { collectStagingIngressFence } from "./staging-persona-ingress-collector.ts";
 import { allowlistedReason } from "./staging-persona-rehearsal-failure.ts";
@@ -41,6 +51,7 @@ import {
 } from "./staging-reset-release-ingress-refence.ts";
 import {
   assertLiveStagingCheckouts,
+  findSiblingRepository,
   formatLiveReleaseFailure,
   makeLiveStagingUpgradeApplier,
   runLiveStagingResetReleaseComposition,
@@ -330,6 +341,9 @@ export async function measureStagingLiveAdmission(input: {
    * only so disposable-PostgreSQL fixtures, which cannot rename their database,
    * can exercise this exact admission path. Live callers never pass it. */
   readonly expectedDatabase?: string;
+  readonly withDatabaseCreate?: Parameters<
+    typeof reconstructDisposableStaging
+  >[2]["withDatabaseCreate"];
 }) {
   const plan = validateStagingResetArtifacts(loadStagingResetArtifacts());
   const target = (
@@ -419,6 +433,9 @@ export async function measureStagingLiveAdmission(input: {
       assertLiveBaselineReference(input.configuration, sourceSha, digest);
     },
     assertFreshFence,
+    ...(input.withDatabaseCreate === undefined
+      ? {}
+      : { withDatabaseCreate: input.withDatabaseCreate }),
   } as const;
 }
 
@@ -544,6 +561,14 @@ export function makeSolidServingVerifier(input: {
   };
 }
 
+/** The acceptance factory's input without the sibling checkout. The default
+ * factory resolves the Solid checkout itself, so an injected factory cannot
+ * trigger a filesystem resolution the launch does not need. */
+type CommunityCreationAcceptanceInput = Omit<
+  Parameters<typeof makeCommunityCreationAcceptance>[0],
+  "solidRoot"
+>;
+
 /** The launch binding. It refuses before any mutation unless the configuration
  * is authorized, both reviewed checkouts are reachable from accepted main and
  * the Cloudflare token is present, then acquires the live target, measures the
@@ -559,6 +584,10 @@ export interface StagingLiveLaunchDependencies {
   readonly makeIngressRefence: typeof makeLiveIngressRefence;
   readonly makeVerifier: typeof makeSolidServingVerifier;
   readonly makeApplier: typeof makeLiveStagingUpgradeApplier;
+  readonly reset: typeof reconstructDisposableStaging;
+  readonly makeCommunityCreation: (
+    input: CommunityCreationAcceptanceInput,
+  ) => ReturnType<typeof makeCommunityCreationAcceptance>;
 }
 
 export async function runStagingResetReleaseLive(
@@ -579,9 +608,44 @@ export async function runStagingResetReleaseLive(
     JSON.parse(await Bun.file(configPath).text()) as unknown,
   );
   if (!configuration.executionAuthorized) throw new Error("staging_live_execution_unauthorized");
+  if (
+    configuration.version !== "staging-disposable-release-live-v1" ||
+    configuration.disposable === undefined
+  ) {
+    throw new Error("staging_disposable_release_required");
+  }
+  const disposable = configuration.disposable;
   const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
   const assertCheckouts = options.dependencies?.assertCheckouts ?? assertLiveStagingCheckouts;
   assertCheckouts(repositoryRoot);
+  // The product acceptance is constructed before any provider contact so a
+  // missing journey target or credential refuses while the window is still
+  // untouched. Credentials are checked before the sibling checkout is even
+  // resolved, so an incomplete secret injection fails for its own reason. The
+  // sibling Solid checkout belongs to the default factory; an injected factory
+  // never triggers that resolution. A failed or timed-out journey refuses the
+  // producer release.
+  const makeCommunityCreation =
+    options.dependencies?.makeCommunityCreation ??
+    ((input: CommunityCreationAcceptanceInput) =>
+      makeCommunityCreationAcceptance({
+        ...input,
+        solidRoot: findSiblingRepository(repositoryRoot, "pirate-web-solid"),
+      }));
+  const communityCreation = disposable.communityCreation;
+  if (communityCreation !== undefined && !hasCommunityCreationCredentials(env)) {
+    throw new Error("staging_community_creation_credentials_missing");
+  }
+  const communityCreationAcceptance =
+    communityCreation === undefined
+      ? undefined
+      : makeCommunityCreation({
+          baseUrl: communityCreation.baseUrl,
+          timeoutMs: communityCreation.timeoutMs,
+          env,
+          recordEvidence: (evidence) =>
+            writeCommunityCreationEvidence(configuration.markerDirectory, evidence),
+        });
   const apiToken = env.CLOUDFLARE_API_TOKEN;
   if (!apiToken) throw new Error("staging_live_cloudflare_token_missing");
   const measureAdmission = options.dependencies?.measureAdmission ?? measureStagingLiveAdmission;
@@ -590,6 +654,7 @@ export async function runStagingResetReleaseLive(
   const makeIngressRefence = options.dependencies?.makeIngressRefence ?? makeLiveIngressRefence;
   const makeVerifier = options.dependencies?.makeVerifier ?? makeSolidServingVerifier;
   const makeApplier = options.dependencies?.makeApplier ?? makeLiveStagingUpgradeApplier;
+  const reset = options.dependencies?.reset ?? reconstructDisposableStaging;
   const checkouts = STAGING_LIVE_RELEASE.checkouts;
   const solidInput = configuration.deploymentInputs.find(
     (input) => input.worker === checkouts.solid.worker,
@@ -633,7 +698,26 @@ export async function runStagingResetReleaseLive(
         operatorRole,
         runtimeRole,
         fences,
+        withDatabaseCreate: ({ database, ownerRole, execute }) => {
+          if (database !== "postgres" || ownerRole !== operatorRole) {
+            throw new Error("staging_disposable_target_changed");
+          }
+          return withPlanetScaleDatabaseCreate({
+            ownerRole,
+            roleName: disposable.roleName,
+            accessHost: new URL(connectionString).hostname,
+            branchId: disposable.branchId,
+            execute,
+            recordRecovery: (evidence) =>
+              writeDisposableCapabilityRecovery(configuration.markerDirectory, evidence),
+          });
+        },
       });
+      const databaseCreate = admission.withDatabaseCreate;
+      if (databaseCreate === undefined) {
+        throw new Error("staging_disposable_capability_unbound");
+      }
+      const disposableAdmission = { ...admission, withDatabaseCreate: databaseCreate };
       const surfaces = makeSurfaces(configuration, {
         accountId: CLOUDFLARE_ACCOUNT_ID,
         apiToken,
@@ -652,7 +736,8 @@ export async function runStagingResetReleaseLive(
         configuration,
         database: admin,
         artifacts: loadStagingResetArtifacts(),
-        admission,
+        admission: disposableAdmission,
+        reset,
         surfaces,
         refence,
         // The composition requires an object with `apply`. A bare function
@@ -666,6 +751,7 @@ export async function runStagingResetReleaseLive(
           versionId: solidInput.versionId,
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
         }),
+        ...(communityCreationAcceptance === undefined ? {} : { communityCreationAcceptance }),
         ...(options.fetch === undefined ? {} : { acceptanceFetch: options.fetch }),
         ...(options.now === undefined ? {} : { now: options.now }),
       });
