@@ -1,15 +1,15 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeKaraokeReconciliationFixture } from "./karaoke-reconciliation-fixture.ts";
+import { makeProcessLifetimeTestDirectory } from "./process-lifetime-directory.ts";
 
 /** Test-only signed producer and JWKS transport. Never live observation evidence. */
 export function makeKaraokeCollectorFixture(
   ids: readonly string[],
   digest: (bytes: string) => string,
 ) {
-  const directory = mkdtempSync(join(tmpdir(), "karaoke-collector-test-"));
+  const directory = makeProcessLifetimeTestDirectory("karaoke-collector-test-");
   const evidence = makeKaraokeReconciliationFixture(ids, digest);
   const signing = generateKeyPairSync("ed25519");
   const access = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -114,8 +114,7 @@ writeFileSync(join(process.argv.at(-1), "manifest.signed.json"),JSON.stringify({
       },
     },
     now: () => evidence.now,
-    dispose() {
-      rmSync(directory, { recursive: true, force: true });
-    },
+    /** Removal is deferred to process exit so in-flight work is never deleted. */
+    dispose() {},
   };
 }

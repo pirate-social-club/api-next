@@ -8,6 +8,7 @@ import { assertReleaseMarkerAbsent, createReleaseMarker } from "./staging-person
 import {
   assertStagingUpgradeReceipt,
   type StagingUpgradeReceipt,
+  stagingUpgradeFailureEvidence,
 } from "./staging-persona-upgrade-plan.ts";
 import {
   executeStagingResetRelease,
@@ -39,10 +40,10 @@ export class StagingResetRunUnresolved extends Error {
 }
 
 /** The upgrade is not a release surface with a confirmable provider effect to
- * reconcile. The ordinary runner commits pending migrations in one
- * transaction, so a failure leaves either the verified 0119 state or a span
- * without a trusted receipt, and either way the run is unresolved with every
- * fence untouched. This error exists so an upgrade failure is never reported
+ * reconcile. The bounded runner can commit the reviewed 0153 checkpoint before
+ * a later failure, so the durable marker records that exact progress and the
+ * run remains unresolved with every fence untouched. This error exists so an
+ * upgrade failure is never reported
  * as a failed database surface; the original cause travels with it. */
 export class StagingUpgradeFailedRestoreRequired extends Error {
   constructor(
@@ -138,16 +139,17 @@ export async function reconstructAndReleaseStaging<Admission extends ResetArgume
     try {
       receipt = await input.upgrade.apply();
     } catch (error) {
+      const failure = stagingUpgradeFailureEvidence(error);
       upgradeState = "failed";
-      upgradeFailure = { stage: "apply", cause: error };
+      upgradeFailure = { stage: "apply", cause: failure.cause };
       await marker
         .advance("failed", {
-          appliedMigrations: 0,
-          upgradeSourceSha: null,
-          upgradeManifestSha256: null,
+          appliedMigrations: failure.appliedMigrations,
+          upgradeSourceSha: failure.upgradeSourceSha,
+          upgradeManifestSha256: failure.upgradeManifestSha256,
         })
         .catch(() => undefined);
-      throw error;
+      throw failure.cause;
     }
     try {
       assertStagingUpgradeReceipt(receipt);

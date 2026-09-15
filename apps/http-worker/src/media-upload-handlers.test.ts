@@ -24,6 +24,33 @@ const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
 });
 
 describe("media upload handlers", () => {
+  test("forwards the incoming request lifetime to media commands", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const none = () => null;
+    const handlers = makeMediaUploadHandlers({
+      preflightSongVideo: none,
+      reserve: (input) => {
+        receivedSignal = input.signal;
+        return null;
+      },
+      create: none,
+      bindTerms: none,
+      bindLyrics: none,
+      finalize: none,
+      renewParts: none,
+      get: none,
+      bindReference: none,
+      retry: none,
+      retryPoster: none,
+      cancel: none,
+      moderate: none,
+    });
+
+    await handlers.CreateMediaUploadReservation(request({ signal: controller.signal }));
+    expect(receivedSignal).toBe(controller.signal);
+  });
+
   test("delegates every contract route with the authenticated actor and route identity", async () => {
     const observed: Array<Readonly<{ route: string; input: unknown }>> = [];
     const call = (route: string) => (input: unknown) => {

@@ -65,6 +65,8 @@ export const VIDEO_PUBLICATION_ENDPOINTS = {
   moderate: "/moderation/media-post-submissions/:submissionId/actions",
 } as const;
 
+type MediaRequestLifetime = Readonly<{ readonly signal?: AbortSignal }>;
+
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const encoder = new TextEncoder();
 const sha256Pattern = /^[0-9a-f]{64}$/u;
@@ -470,7 +472,7 @@ export type VideoPublicationServices = Readonly<{
   songInterval?: SongVideoIntervalServices;
   multipart: VideoMultipartUploadGateway;
   sealer: MediaUploadSealer;
-  personaServices: Pick<MediaSubmissionServices, "personaStore">;
+  personaServices: Pick<MediaSubmissionServices, "personaStore" | "runEffect">;
   nowIso: () => string;
   randomUuid?: () => string;
 }>;
@@ -718,12 +720,12 @@ function uuid(services: Pick<VideoPublicationServices, "randomUuid">): string {
 }
 
 export async function reserveVideoUpload(
-  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoUploadReservationV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(ReserveVideoUploadV1, input.body);
-  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices, input.signal);
   const requestHash = await mediaRequestHash({ community_id: input.communityId }, body);
   const prior = replayReservation(
     await services.store.replayReservation({
@@ -864,14 +866,14 @@ async function songReservationPlan(
 }
 
 export async function renewVideoUploadParts(
-  input: Readonly<{ reservationId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ reservationId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoUploadReservationV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(RenewVideoUploadPartsV1, input.body);
   if (body.reservation_id !== input.reservationId)
     throw new BadRequest({ message: "Reservation mismatch" });
-  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices, input.signal);
   const reservation = await services.store.getReservationForAccount({
     reservationId: input.reservationId,
     actorAccountId: input.actor.userId,
@@ -963,12 +965,17 @@ export async function renewVideoUploadParts(
 }
 
 export async function createVideoSubmission(
-  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(CreateVideoSubmissionV1, input.body);
-  const persona = await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  const persona = await requireMediaPersona(
+    input.actor,
+    body.persona_id,
+    services.personaServices,
+    input.signal,
+  );
   const reservation = await services.store.getReservationForAccount({
     reservationId: body.video_reservation_id,
     actorAccountId: input.actor.userId,
@@ -1050,12 +1057,12 @@ function retainedEvidence(identity: MediaSealObjectIdentity | undefined, fallbac
 }
 
 export async function finalizeVideoSubmission(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(FinalizeVideoUploadV1, input.body);
-  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices, input.signal);
   const record = await services.store.getSubmissionForAccount({
     submissionId: input.submissionId,
     actorAccountId: input.actor.userId,
@@ -1214,7 +1221,7 @@ export async function finalizeVideoSubmission(
 }
 
 export async function getVideoSubmission(
-  input: Readonly<{ submissionId: string; actor: M2Actor }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
@@ -1223,7 +1230,12 @@ export async function getVideoSubmission(
     actorAccountId: input.actor.userId,
   });
   if (record === null) throw new NotFound({ message: "Video submission not found" });
-  await requireMediaPersona(input.actor, record.state.authorPersonaId, services.personaServices);
+  await requireMediaPersona(
+    input.actor,
+    record.state.authorPersonaId,
+    services.personaServices,
+    input.signal,
+  );
   return projectVideoSubmission(record);
 }
 
@@ -1424,12 +1436,12 @@ export async function attachSongVideoMasterAndPublish(
 }
 
 export async function retryVideoPoster(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(RetryVideoPosterV1, input.body);
-  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices, input.signal);
   const record = await services.store.getSubmissionForAccount({
     submissionId: input.submissionId,
     actorAccountId: input.actor.userId,
@@ -1479,12 +1491,12 @@ export async function retryVideoPoster(
 }
 
 export async function retryVideoSubmission(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(RetryOrCancelSongSubmissionV1, input.body);
-  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices, input.signal);
   const record = await services.store.getSubmissionForAccount({
     submissionId: input.submissionId,
     actorAccountId: input.actor.userId,
@@ -1546,12 +1558,12 @@ export async function retryVideoSubmission(
 }
 
 export async function cancelVideoSubmission(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(RetryOrCancelSongSubmissionV1, input.body);
-  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices, input.signal);
   const record = await services.store.getSubmissionForAccount({
     submissionId: input.submissionId,
     actorAccountId: input.actor.userId,

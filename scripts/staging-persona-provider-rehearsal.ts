@@ -41,6 +41,7 @@ import {
   applyStagingUpgradeOnRehearsalBranch,
   STAGING_UPGRADE_RELEASE,
   type StagingUpgradeReceipt,
+  stagingUpgradeFailureEvidence,
 } from "./staging-persona-upgrade-plan.ts";
 
 // Bound after creation from one place; see staging-persona-rehearsal-target.ts.
@@ -314,14 +315,15 @@ export async function rehearseProviderReset(execute: boolean, diagnostic = false
           grantReconciliation = await reconcileRehearsalGrants(admin, runtime);
           await fresh();
         } catch (error) {
+          const failedUpgrade = stagingUpgradeFailureEvidence(error);
           await releaseMarker
             .advance("failed", {
-              appliedMigrations: upgrade?.applied.length ?? 0,
-              upgradeSourceSha: upgrade?.sourceSha ?? null,
-              upgradeManifestSha256: upgrade?.manifestSha256 ?? null,
+              appliedMigrations: upgrade?.applied.length ?? failedUpgrade.appliedMigrations,
+              upgradeSourceSha: upgrade?.sourceSha ?? failedUpgrade.upgradeSourceSha,
+              upgradeManifestSha256: upgrade?.manifestSha256 ?? failedUpgrade.upgradeManifestSha256,
             })
             .catch(() => undefined);
-          throw error;
+          throw failedUpgrade.cause;
         }
         await releaseMarker.completeAfterReconciliation();
         const postUpgradeData = await fingerprintRehearsalData(admin);
