@@ -8,7 +8,11 @@ import {
   projectIdentityAccount,
 } from "./identity-account.ts";
 import { getMyProfile } from "./profile.ts";
-import { authenticateSession, authorizeSession } from "./session-authentication.ts";
+import {
+  authenticateSession,
+  authorizeSession,
+  SessionAuthenticationUnavailable,
+} from "./session-authentication.ts";
 import { makeSessionIdentityStore } from "./session-exchange.ts";
 
 const accountDocument: IdentityAccountDocument = {
@@ -157,5 +161,27 @@ describe("identity account application boundary", () => {
       authenticateSession({ authorization: "bearer valid-token" }, { verifier }),
     );
     expect(failureOf(rejected)).toBeInstanceOf(AuthError);
+  });
+
+  test("preserves verifier availability failures without granting a session", async () => {
+    const unavailable = await Effect.runPromiseExit(
+      authenticateSession(
+        { authorization: "Bearer valid-token" },
+        {
+          verifier: {
+            verify: () => Effect.fail({ code: "control_plane_unavailable" }),
+          },
+        },
+      ),
+    );
+    expect(failureOf(unavailable)).toBeInstanceOf(SessionAuthenticationUnavailable);
+
+    const invalid = await Effect.runPromiseExit(
+      authenticateSession(
+        { authorization: "Bearer invalid-token" },
+        { verifier: { verify: () => Effect.fail({ code: "invalid_token" }) } },
+      ),
+    );
+    expect(failureOf(invalid)).toBeInstanceOf(AuthError);
   });
 });
