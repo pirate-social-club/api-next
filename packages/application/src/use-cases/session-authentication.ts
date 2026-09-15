@@ -1,5 +1,9 @@
 import { AuthError } from "@pirate/contracts";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
+
+export class SessionAuthenticationUnavailable extends Data.TaggedError(
+  "SessionAuthenticationUnavailable",
+)<{ readonly cause: unknown }> {}
 
 export type AuthenticateSessionInput = Readonly<{
   /** Machine callers use an explicit bearer credential. */
@@ -49,13 +53,22 @@ const bearerToken = (authorization: string | undefined): string | null => {
 export const authenticateSession = Effect.fn("authenticateSession")(function* (
   input: AuthenticateSessionInput,
   services: SessionAuthenticationServices,
-): Effect.fn.Return<AuthenticatedSession, AuthError> {
+): Effect.fn.Return<AuthenticatedSession, AuthError | SessionAuthenticationUnavailable> {
   const token = input.sessionCookie ?? bearerToken(input.authorization);
   if (token === null) return yield* new AuthError({ message: "Authentication failed" });
 
   const verified = yield* services.verifier
     .verify({ token, requiredClassification: "user" })
-    .pipe(Effect.mapError(() => new AuthError({ message: "Authentication failed" })));
+    .pipe(
+      Effect.mapError((error) =>
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "control_plane_unavailable"
+          ? new SessionAuthenticationUnavailable({ cause: error })
+          : new AuthError({ message: "Authentication failed", cause: error }),
+      ),
+    );
   if (verified.classification !== "user") {
     return yield* new AuthError({ message: "Authentication failed" });
   }

@@ -29,6 +29,7 @@ export type SessionTokenFailureCode =
   | "token_not_yet_valid"
   | "insufficient_scope"
   | "classification_mismatch"
+  | "control_plane_unavailable"
   | "control_plane_record_missing"
   | "canonical_alias_invalid";
 
@@ -83,7 +84,7 @@ function identityFailureCode(error: unknown): SessionTokenFailureCode {
       ? "control_plane_record_missing"
       : "canonical_alias_invalid";
   }
-  return "control_plane_record_missing";
+  return "control_plane_unavailable";
 }
 
 export function makeRs256SessionTokenMinter(crypto: SessionCrypto): SessionTokenMinter {

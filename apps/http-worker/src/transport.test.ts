@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { makeUnverifiedIdentityAccount } from "@pirate/application/use-cases/identity-registration";
 import type { IdentityRegistrationHandlerServices } from "@pirate/application/use-cases/identity-registration-handler";
+import { SessionAuthenticationUnavailable } from "@pirate/application/use-cases/session-authentication";
 import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
 import {
   Auth,
@@ -1121,6 +1122,26 @@ describe("contracts-generated HTTP worker", () => {
     });
     expect(authorizationResponse.status).toBe(500);
     expect(await authorizationResponse.json()).toMatchObject({ error: { code: "internal_error" } });
+  });
+
+  it("returns a retryable server error when session authentication is unavailable", async () => {
+    const worker = createHttpWorker({
+      handlers: { CastPostVote: () => vote },
+      authenticate: () => {
+        throw new SessionAuthenticationUnavailable({ cause: new Error("database unavailable") });
+      },
+      authorize: () => undefined,
+    });
+    const response = await worker.request("http://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: JSON.stringify({ idempotency_key: "auth-unavailable-vote", value: 1 }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: { code: "internal_error", message: "Internal server error", retryable: true },
+    });
   });
 
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
