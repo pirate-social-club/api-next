@@ -671,6 +671,9 @@ const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "UpdateSongOwnerPolicy",
 ]);
 const PRIVATE_NO_STORE_PATH = /^(?:\/auth\/register|\/personas(?:\/|$))/u;
+// Endpoints that mint the browser session cookie share one same-origin policy
+// regardless of their declared public auth kind.
+const SESSION_ISSUANCE_ENDPOINTS = new Set(["SessionExchange", "RegisterIdentity"]);
 
 const json = (
   context: HttpContext,
@@ -916,20 +919,23 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             throw new AuthError({ message: "Authentication failed" });
           }
 
-          // Cookie credentials are ambient and therefore need a same-origin
-          // proof on every unsafe protected request. Explicit machine bearer
-          // requests remain a separate authentication contract.
-          if (
+          // Browser session issuance and clearing are always same-origin, and
+          // ambient cookie credentials need the double-submit CSRF proof on
+          // every unsafe protected request. Explicit machine bearer requests
+          // remain a separate authentication contract.
+          const unsafeSessionBoundary =
             UNSAFE_METHODS.has(context.req.method) &&
-            (binding.name === "SessionExchange" || binding.name === "SessionLogout")
-          ) {
+            (SESSION_ISSUANCE_ENDPOINTS.has(binding.name) || binding.name === "SessionLogout");
+          if (unsafeSessionBoundary) {
             enforceExactOrigin(context, options.config);
           }
 
           if (
             hasBrowserCredential &&
             UNSAFE_METHODS.has(context.req.method) &&
-            (!isPublic(binding.endpoint) || binding.name === "SessionLogout")
+            (!isPublic(binding.endpoint) ||
+              binding.name === "SessionLogout" ||
+              SESSION_ISSUANCE_ENDPOINTS.has(binding.name))
           ) {
             enforceCookieCsrf(context, options.config, cookies);
           }

@@ -104,7 +104,7 @@ describe("HTTP production composition", () => {
 
     const registration = await worker.request("https://worker.test/auth/register", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
       body: JSON.stringify({ privy_access_token: "not-reached" }),
     });
     expect(registration.status).toBe(400);
