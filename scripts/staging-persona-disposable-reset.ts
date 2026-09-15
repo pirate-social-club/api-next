@@ -25,10 +25,25 @@ import { readResetSchemaShape } from "./staging-persona-schema-shape.ts";
 
 const identifier = /^[a-z_][a-z0-9_]{0,62}$/u;
 const emptyDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+/** Relations the bounded drop removes per fenced transaction. Exported so the
+ * PostgreSQL regression can prove the committed groups stay at this cap. */
+export const DISPOSABLE_DROP_RELATION_BATCH = 10;
+const DROP_LOCK_BUDGET = 1_000;
 
 function quote(value: string): string {
   if (!identifier.test(value)) throw new Error("reset_disposable_identifier_invalid");
   return `"${value}"`;
+}
+
+/** Own locks the current transaction holds. Read inside the transaction, before
+ * commit, so the count is the committed peak this group would pin. */
+async function ownLockCount(admin: Pick<Client, "query">): Promise<number> {
+  const count = (
+    await admin.query(
+      "SELECT count(*)::int AS count FROM pg_catalog.pg_locks WHERE pid=pg_backend_pid()",
+    )
+  ).rows[0]?.count;
+  return typeof count === "number" ? count : Number.MAX_SAFE_INTEGER;
 }
 
 export type DisposableResetAdmission = Readonly<{
@@ -228,8 +243,53 @@ export async function reconstructDisposableStaging(
     schemaOid = await admission.withDatabaseCreate({
       database: admission.database,
       ownerRole: admission.role,
-      execute: () =>
-        transaction(async () => {
+      execute: async () => {
+        // A single `DROP SCHEMA api_next CASCADE` over the reviewed 0109 shape
+        // does not fit the staging-shaped lock table: measured SQLSTATE 53200
+        // (out of shared memory) at max_locks_per_transaction=64 with
+        // max_connections=25, while creating and replaying the same schema in
+        // one transaction succeeds. Drop relations in capped groups, each in
+        // its own fenced transaction under the reviewed own-lock ceiling, then
+        // drop the reduced schema in one transaction. Each committed group is
+        // recorded on the marker, and a failed group rolls back cleanly with
+        // the capture restore as the only recovery path.
+        for (;;) {
+          const dropped = await transaction(async () => {
+            const group = (
+              await admin.query(
+                `SELECT pg_catalog.format(
+                  'DROP %s api_next.%I CASCADE',
+                  CASE relkind
+                    WHEN 'r' THEN 'TABLE'
+                    WHEN 'p' THEN 'TABLE'
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'MATERIALIZED VIEW'
+                    WHEN 'f' THEN 'FOREIGN TABLE'
+                    WHEN 'c' THEN 'TYPE'
+                  END,
+                  relname
+                ) AS statement
+                FROM pg_catalog.pg_class
+                WHERE relnamespace='api_next'::regnamespace
+                AND relkind IN ('r','p','v','m','f','c')
+                ORDER BY CASE relkind WHEN 'v' THEN 0 WHEN 'm' THEN 0
+                  WHEN 'r' THEN 1 WHEN 'p' THEN 1 WHEN 'f' THEN 2 WHEN 'c' THEN 3 END,
+                  relname
+                LIMIT ${DISPOSABLE_DROP_RELATION_BATCH}`,
+              )
+            ).rows as { statement: string }[];
+            for (const { statement } of group) await admin.query(statement);
+            if (group.length > 0 && (await ownLockCount(admin)) > DROP_LOCK_BUDGET) {
+              throw new Error("reset_drop_lock_budget_exceeded");
+            }
+            return group.length;
+          });
+          if (dropped === 0) break;
+          batches += 1;
+          await marker.advance("removing", batches);
+          admission.onAdmissionStage?.("dropping");
+        }
+        const next = await transaction(async () => {
           await admin.query("DROP SCHEMA api_next CASCADE");
           await admin.query(`CREATE SCHEMA api_next AUTHORIZATION ${quote(admission.role)}`);
           // Default ACLs are namespace-scoped and do not survive the drop. They
@@ -237,14 +297,19 @@ export async function reconstructDisposableStaging(
           // the reviewed runtime grants without the reset restoring access the
           // held database fence must keep denied.
           await restoreResetDefaultAcls(admin, original.defaults);
-          const next = (
+          const replacement = (
             await admin.query("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='api_next'")
           ).rows[0]?.oid;
-          if (!Number.isSafeInteger(next) || next === admission.schemaOid) {
+          if (!Number.isSafeInteger(replacement) || replacement === admission.schemaOid) {
             throw new Error("reset_disposable_schema_replacement_unproven");
           }
-          return next as number;
-        }),
+          if ((await ownLockCount(admin)) > DROP_LOCK_BUDGET) {
+            throw new Error("reset_drop_lock_budget_exceeded");
+          }
+          return replacement as number;
+        });
+        return next;
+      },
     });
     if (
       (await snapshotOutsideResetCatalog(admin, { replaceableSchemaIdentity: true })).sha256 !==

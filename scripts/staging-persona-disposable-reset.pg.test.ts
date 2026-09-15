@@ -8,6 +8,7 @@ import { Client } from "pg";
 import { applyPostgresMigrationsInTransaction } from "../packages/platform-cf/src/postgres-migrations.ts";
 import { compileApprovedStagingPrivileges } from "./staging-persona-approved-privileges.ts";
 import {
+  DISPOSABLE_DROP_RELATION_BATCH,
   type DisposableResetAdmission,
   reconstructDisposableStaging,
 } from "./staging-persona-disposable-reset.ts";
@@ -23,6 +24,7 @@ import {
 import { loadStagingUpgradeArtifacts } from "./staging-persona-upgrade-plan.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES18_DISPOSABLE_RESET_TEST_URL;
+const stagingShaped = process.env.CONTROL_PLANE_POSTGRES18_STAGING_SHAPED === "1";
 const suite = connectionString ? describe : describe.skip;
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -130,10 +132,74 @@ async function withFixture(use: (fixture: Fixture) => Promise<void>) {
 }
 
 suite("disposable staging schema reset", () => {
+  test.skipIf(!stagingShaped)("runs against staging-shaped server lock settings", async () => {
+    const client = new Client({ connectionString: connectionString as string });
+    await client.connect();
+    try {
+      expect(
+        (
+          await client.query(`SELECT current_setting('max_locks_per_transaction') AS locks,
+            current_setting('max_connections') AS connections,
+            current_setting('max_prepared_transactions') AS prepared`)
+        ).rows[0],
+      ).toEqual({ locks: "64", connections: "25", prepared: "0" });
+    } finally {
+      await client.end();
+    }
+  });
+
   test("replaces drifted 0109 with exact empty 0119 and retires database CREATE", async () => {
     await withFixture(async ({ owner, databaseRoot, artifacts, admission }) => {
-      const result = await reconstructDisposableStaging(owner, artifacts, admission);
-      expect(result.batches).toBe(2);
+      const relations = (
+        await owner.query(
+          `SELECT count(*)::int AS count FROM pg_catalog.pg_class
+           WHERE relnamespace='api_next'::regnamespace AND relkind IN ('r','p','v','m','f','c')`,
+        )
+      ).rows[0]?.count as number;
+      // Observe the committed drop transactions through the admitted client so
+      // the bounded groups are pinned independently of the server size.
+      let inDrop = false;
+      const dropTransactions: string[][] = [];
+      let currentDrops: string[] = [];
+      const observed = {
+        query: async (text: string, values?: readonly unknown[]) => {
+          const trimmed = text.trim();
+          if (trimmed.startsWith("BEGIN")) currentDrops = [];
+          else if (trimmed.startsWith("COMMIT")) {
+            if (inDrop) dropTransactions.push(currentDrops);
+            currentDrops = [];
+          } else if (trimmed.startsWith("ROLLBACK")) currentDrops = [];
+          else if (inDrop && /^DROP /u.test(trimmed)) currentDrops.push(trimmed);
+          return owner.query(text, values as never);
+        },
+      };
+      const observedAdmission: DisposableResetAdmission = {
+        ...admission,
+        async withDatabaseCreate(input) {
+          inDrop = true;
+          try {
+            return await admission.withDatabaseCreate(input);
+          } finally {
+            inDrop = false;
+          }
+        },
+      };
+      const result = await reconstructDisposableStaging(
+        observed as never,
+        artifacts,
+        observedAdmission,
+      );
+      expect(result.batches).toBe(Math.ceil(relations / DISPOSABLE_DROP_RELATION_BATCH) + 2);
+      const dropping = dropTransactions.filter((statements) => statements.length > 0);
+      expect(dropping.length).toBeGreaterThan(1);
+      expect(Math.max(...dropping.map((statements) => statements.length))).toBeLessThanOrEqual(
+        DISPOSABLE_DROP_RELATION_BATCH,
+      );
+      expect(
+        dropping.some((statements) =>
+          statements.some((statement) => statement.startsWith("DROP SCHEMA")),
+        ),
+      ).toBeTrue();
       expect(result.evidence.ledgerCount).toBe(119);
       expect(
         (
@@ -221,6 +287,12 @@ suite("disposable staging schema reset", () => {
 
   test("retains the marker and refuses retry after a replay failure", async () => {
     await withFixture(async ({ owner, markerDirectory, artifacts, admission }) => {
+      const relations = (
+        await owner.query(
+          `SELECT count(*)::int AS count FROM pg_catalog.pg_class
+           WHERE relnamespace='api_next'::regnamespace AND relkind IN ('r','p','v','m','f','c')`,
+        )
+      ).rows[0]?.count as number;
       const failing = {
         query: async (text: string, values?: readonly unknown[]) => {
           if (text.includes("Community-persona binding authority"))
@@ -237,7 +309,11 @@ suite("disposable staging schema reset", () => {
         await readFile(join(markerDirectory, markerFiles[0] as string), "utf8"),
       ) as { phase: string; completedBatches: number };
       expect(marker.phase).toBe("failed");
-      expect(marker.completedBatches).toBe(1);
+      // Every committed drop group plus the schema replacement, so the marker
+      // records the real midpoint the restore operates on.
+      expect(marker.completedBatches).toBe(
+        Math.ceil(relations / DISPOSABLE_DROP_RELATION_BATCH) + 1,
+      );
       expect(
         (await owner.query("SELECT to_regclass('api_next.schema_migrations') AS value")).rows[0]
           .value,
