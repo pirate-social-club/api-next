@@ -1,6 +1,6 @@
 import type { AuthPolicy, EndpointDefinition } from "@pirate/contracts";
 
-export const SUPPORTED_SHARED_SECRET_POLICIES = ["hns-edge-alert", "hns-edge-status"] as const;
+const SUPPORTED_SHARED_SECRET_POLICIES = ["hns-edge-alert", "hns-edge-status"] as const;
 
 type SupportedAuthPolicy =
   | { readonly kind: "public" }
