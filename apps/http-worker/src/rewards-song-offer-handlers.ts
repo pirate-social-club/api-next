@@ -62,6 +62,82 @@ export type SongRewardOfferHandlers = Readonly<{
   ListMyRewardCredits: EndpointHandler;
 }>;
 
+const rewardUnavailable = (): never => {
+  throw new ProviderUnavailable({ message: "Reward services are unavailable" });
+};
+
+/**
+ * Keep reward routes mounted when their provider is disabled or unavailable.
+ * Authentication and authorization still run in the transport before these
+ * handlers, so protected routes cannot turn this capability response into an
+ * authentication bypass.
+ */
+export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandlers {
+  return {
+    OpenSongRewardOffer: rewardUnavailable,
+    GetRewardQualificationPolicies: rewardUnavailable,
+    ListAdmittedRewardAssets: rewardUnavailable,
+    AddAssetBonusLeg: rewardUnavailable,
+    AddMegapotPoolLeg: rewardUnavailable,
+    ObserveAssetBonusFunding: rewardUnavailable,
+    GetAssetBonusFunding: rewardUnavailable,
+    ObserveMegapotPoolFunding: rewardUnavailable,
+    GetMegapotPoolFunding: rewardUnavailable,
+    GetSongMegapotPool: rewardUnavailable,
+    ListSongAssetBonuses: rewardUnavailable,
+    GetMegapotPoolStanding: rewardUnavailable,
+    ListMyRewardCredits: rewardUnavailable,
+  };
+}
+
+/**
+ * Load enabled reward composition on demand. A failed provider or database
+ * read is not retained in module state, allowing a later request to recover
+ * after the attestation becomes available without rebuilding the Worker.
+ */
+export function makeLazySongRewardOfferHandlers(
+  load: () => Promise<SongRewardOfferHandlers>,
+): SongRewardOfferHandlers {
+  let cached: Promise<SongRewardOfferHandlers> | undefined;
+  const resolve = async (): Promise<SongRewardOfferHandlers> => {
+    if (cached === undefined) {
+      const pending = Promise.resolve().then(load);
+      const guarded = pending.catch((error) => {
+        if (cached === guarded) cached = undefined;
+        throw error;
+      });
+      cached = guarded;
+    }
+    const active = cached;
+    if (active === undefined)
+      throw new ProviderUnavailable({ message: "Reward services are unavailable" });
+    try {
+      return await active;
+    } catch {
+      throw new ProviderUnavailable({ message: "Reward services are unavailable" });
+    }
+  };
+  const handler =
+    (key: keyof SongRewardOfferHandlers): EndpointHandler =>
+    async (request) =>
+      (await resolve())[key](request);
+  return {
+    OpenSongRewardOffer: handler("OpenSongRewardOffer"),
+    GetRewardQualificationPolicies: handler("GetRewardQualificationPolicies"),
+    ListAdmittedRewardAssets: handler("ListAdmittedRewardAssets"),
+    AddAssetBonusLeg: handler("AddAssetBonusLeg"),
+    AddMegapotPoolLeg: handler("AddMegapotPoolLeg"),
+    ObserveAssetBonusFunding: handler("ObserveAssetBonusFunding"),
+    GetAssetBonusFunding: handler("GetAssetBonusFunding"),
+    ObserveMegapotPoolFunding: handler("ObserveMegapotPoolFunding"),
+    GetMegapotPoolFunding: handler("GetMegapotPoolFunding"),
+    GetSongMegapotPool: handler("GetSongMegapotPool"),
+    ListSongAssetBonuses: handler("ListSongAssetBonuses"),
+    GetMegapotPoolStanding: handler("GetMegapotPoolStanding"),
+    ListMyRewardCredits: handler("ListMyRewardCredits"),
+  };
+}
+
 function user(principal: Principal | null): {
   readonly accountId: string;
   readonly wallet: string | null;

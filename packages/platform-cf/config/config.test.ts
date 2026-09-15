@@ -269,7 +269,7 @@ describe("config system (000 §9)", () => {
     ).toThrow("invalid Megapot reward runtime posture");
   });
 
-  test("deployable Worker overlays keep Base Sepolia out of production", async () => {
+  test("API staging and production keep Base Sepolia rewards disabled", async () => {
     const paths = [
       "../../../apps/http-worker/wrangler.jsonc",
       "../../../apps/jobs-worker/wrangler.jsonc",
@@ -284,7 +284,8 @@ describe("config system (000 §9)", () => {
         >;
       };
 
-      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
+      const expectedStagingRewards = path.includes("http-worker") ? "false" : "true";
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe(expectedStagingRewards);
       expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
       expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");

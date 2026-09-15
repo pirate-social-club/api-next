@@ -314,6 +314,33 @@ describe("HTTP production composition", () => {
         MEGAPOT_REWARDS_ENABLED: "true",
       }),
     ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+
+    await expect(
+      createProductionHttpWorker({
+        ...complete,
+        MEGAPOT_REWARDS_ENABLED: "true",
+        MEGAPOT_V2_RPC_URL: "http://rpc.test",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
+  test("keeps the Worker alive and contains a reward database transport failure", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      API_NEXT_ENV: "staging",
+      CONTROL_PLANE: { connectionString: "postgres://127.0.0.1:1/reward-test" },
+      MEGAPOT_REWARDS_ENABLED: "true",
+      MEGAPOT_V2_RPC_URL: "https://base-sepolia-rpc.test",
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    const response = await worker.request(
+      "https://worker.test/communities/community-1/posts/post-1/rewards/megapot-pool",
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      error: { code: "provider_unavailable", retryable: true },
+    });
   });
 
   test("keeps Very OAuth disabled by default and fails closed when enabled incompletely", async () => {

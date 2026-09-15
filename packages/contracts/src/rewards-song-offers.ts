@@ -403,7 +403,7 @@ export const OpenSongRewardOffer = endpoint({
   },
   response: Schema.Struct({ offer: SongRewardOfferV1, replayed: Schema.Boolean }),
   successStatus: [200, 201],
-  errors: CommonErrors,
+  errors: [...CommonErrors, ProviderUnavailable],
 });
 
 export const AddMegapotPoolLeg = endpoint({
@@ -493,7 +493,7 @@ export const GetMegapotPoolFunding = endpoint({
   auth: Auth.user(),
   request: { path: FundingPath },
   response: Schema.Struct({ funding: MegapotFundingV1 }),
-  errors: [AuthError, BadRequest, NotFound, InternalError],
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
 
 export const ObserveAssetBonusFunding = endpoint({
@@ -521,7 +521,7 @@ export const GetAssetBonusFunding = endpoint({
   auth: Auth.user(),
   request: { path: FundingPath },
   response: Schema.Struct({ funding: AssetBonusFundingV1 }),
-  errors: [AuthError, BadRequest, NotFound, InternalError],
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
 
 export const GetSongMegapotPool = endpoint({
@@ -530,7 +530,7 @@ export const GetSongMegapotPool = endpoint({
   auth: Auth.user({ optionalUser: true }),
   request: { path: CommunityPostPath },
   response: Schema.Struct({ pool: Schema.NullOr(SongMegapotPoolProjectionV1) }),
-  errors: [BadRequest, InternalError],
+  errors: [BadRequest, InternalError, ProviderUnavailable],
 });
 
 export const ListSongAssetBonuses = endpoint({
@@ -542,7 +542,7 @@ export const ListSongAssetBonuses = endpoint({
     object: Schema.Literal("song_asset_bonus_list"),
     items: Schema.Array(SongAssetBonusProjectionV1),
   }),
-  errors: [BadRequest, InternalError],
+  errors: [BadRequest, InternalError, ProviderUnavailable],
 });
 
 export const GetMegapotPoolStanding = endpoint({
@@ -551,7 +551,7 @@ export const GetMegapotPoolStanding = endpoint({
   auth: Auth.userOrAdmin(),
   request: { path: LegPath },
   response: Schema.Struct({ standing: MegapotPoolStandingV1 }),
-  errors: [AuthError, BadRequest, NotFound, InternalError],
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
 
 export const ListMyRewardCredits = endpoint({
@@ -569,7 +569,7 @@ export const ListMyRewardCredits = endpoint({
     items: Schema.Array(RewardCreditV1),
     next_cursor: Schema.NullOr(Identifier),
   }),
-  errors: [AuthError, BadRequest, NotFound, InternalError],
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
 
 /** Current server policy preview. Creation freezes and returns the actual policies. */

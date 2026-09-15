@@ -9,6 +9,7 @@
 import type { ExecutionContext, ScheduledController } from "@cloudflare/workers-types";
 import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
+import { makeRetryingPromiseCache } from "./production-app-cache.ts";
 
 // The Worker module exports only its default handler and runtime entrypoint classes.
 export { HnsForwarderReplayStoreDO } from "@pirate/platform-cf/hns-forwarder-replay-store-do";
@@ -21,13 +22,14 @@ export {
 export { VideoPlaybackRateLimiterDO } from "@pirate/platform-cf/video-playback-rate-limiter-do";
 export { StudyGenerationWorkflow } from "./study-generation-entrypoint.ts";
 
-let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefined;
+const productionApp = makeRetryingPromiseCache(createProductionHttpWorker);
 
 /**
  * Cloudflare supplies bindings only to fetch, so true pre-serve validation is
  * unavailable to this module. Configuration and composition are therefore
- * validated lazily on the first request and cached for the isolate; missing
- * configuration fails that health-check request before any route is served.
+ * validated lazily on the first request and successful composition is cached
+ * for the isolate; rejected composition attempts are discarded so a later
+ * request can retry while mandatory configuration still fails closed.
  */
 const app = {
   async scheduled(
@@ -35,8 +37,7 @@ const app = {
     bindings: HttpWorkerBindings,
     _ctx: ExecutionContext,
   ) {
-    cachedProductionApp ??= createProductionHttpWorker(bindings);
-    const worker = await cachedProductionApp;
+    const worker = await productionApp(bindings);
     await worker.continuePublicationChecks();
   },
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {
@@ -55,8 +56,7 @@ const app = {
         }
         return bindings.KARAOKE_ATTEMPT.getByName(sessionId).fetch(request);
       }
-      cachedProductionApp ??= createProductionHttpWorker(bindings);
-      const worker = await cachedProductionApp;
+      const worker = await productionApp(bindings);
       return worker.fetch(request, bindings, ctx);
     });
   },
