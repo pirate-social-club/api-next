@@ -18,7 +18,7 @@ import {
   toErrorBody,
   UploadObjectMissing,
 } from "@pirate/contracts";
-import { Effect, Schema } from "effect";
+import { type Effect, Schema } from "effect";
 import type {
   BoundReference,
   MediaSubmissionState,
@@ -364,10 +364,13 @@ export type MediaSubmissionServices = Readonly<{
   readonly store: MediaUploadStore;
   readonly personaStore: Pick<PersonaStoreService, "findOwned">;
   readonly presigner: MediaIngressUploadPresigner["Service"];
+  readonly runEffect: <A, E>(effect: Effect.Effect<A, E>, signal?: AbortSignal) => Promise<A>;
   readonly sealer: MediaUploadSealer;
   readonly nowIso: () => string;
   readonly referenceResolver?: MediaReferenceResolver;
 }>;
+
+type MediaRequestLifetime = Readonly<{ readonly signal?: AbortSignal }>;
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const encoder = new TextEncoder();
@@ -396,12 +399,14 @@ export function requireMediaHumanActor(actor: M2Actor): void {
 export async function requireMediaPersona(
   actor: M2Actor,
   personaId: string,
-  services: Pick<MediaSubmissionServices, "personaStore">,
+  services: Pick<MediaSubmissionServices, "personaStore" | "runEffect">,
+  signal?: AbortSignal,
 ): Promise<PersonaRecord> {
   let persona: PersonaRecord | null;
   try {
-    persona = await Effect.runPromise(
+    persona = await services.runEffect(
       services.personaStore.findOwned({ accountId: actor.userId, personaId }),
+      signal,
     );
   } catch {
     throw new InternalError({ message: "Persona lookup failed" });
@@ -738,12 +743,12 @@ function outbox(
 }
 
 export async function reserveMediaUpload(
-  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<Schema.Schema.Type<typeof SongAudioReservationV1>> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(ReserveSongAudioV1, input.body);
-  await requireMediaPersona(input.actor, body.persona_id, services);
+  await requireMediaPersona(input.actor, body.persona_id, services, input.signal);
   if (body.expected_content_type !== "audio/mpeg") {
     throw new BadRequest({ message: "Public-song v1 accepts MP3 audio only" });
   }
@@ -771,13 +776,14 @@ export async function reserveMediaUpload(
   const reservationId = `media-reservation-${crypto.randomUUID()}`;
   let upload: MediaIngressUploadPresignResult;
   try {
-    upload = await Effect.runPromise(
+    upload = await services.runEffect(
       services.presigner.presign(
         mediaIngressUploadPresignRequest({
           serverOwnedObjectKey: mediaIngressObjectKey(reservationId),
           contentType: body.expected_content_type,
         }),
       ),
+      input.signal,
     );
   } catch {
     throw new InternalError({ message: "Media upload reservation is unavailable" });
@@ -823,12 +829,12 @@ export async function reserveMediaUpload(
 }
 
 export async function createMediaSubmission(
-  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(CreateSongSubmissionV1, input.body);
-  const persona = await requireMediaPersona(input.actor, body.persona_id, services);
+  const persona = await requireMediaPersona(input.actor, body.persona_id, services, input.signal);
   const digest = await mediaRequestHash({ community_id: input.communityId }, body);
   const submissionId = `media-submission-${crypto.randomUUID()}`;
   const operationId = `media-operation-${crypto.randomUUID()}`;
@@ -881,7 +887,7 @@ export async function createMediaSubmission(
 }
 
 export async function getMediaSubmission(
-  input: Readonly<{ submissionId: string; actor: M2Actor }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
@@ -895,7 +901,7 @@ export async function getMediaSubmission(
     throw mapMediaStoreError(error);
   }
   if (context === null) throw new NotFound({ message: "Media submission not found" });
-  const persona = await requireMediaPersona(input.actor, context.personaId, services);
+  const persona = await requireMediaPersona(input.actor, context.personaId, services, input.signal);
   return projectMediaSubmission(context.view, persona);
 }
 
@@ -1363,7 +1369,7 @@ export async function finalizeMediaSubmission(
 }
 
 async function mutationContext<S extends Schema.ConstraintDecoder<unknown>>(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   schema: S,
   endpointTemplate: string,
   services: MediaSubmissionServices,
@@ -1381,7 +1387,7 @@ async function mutationContext<S extends Schema.ConstraintDecoder<unknown>>(
     persona_id: string;
     idempotency_key: string;
   };
-  const persona = await requireMediaPersona(input.actor, body.persona_id, services);
+  const persona = await requireMediaPersona(input.actor, body.persona_id, services, input.signal);
   const view = await loadOwnedView(input.submissionId, input.actor, body.persona_id, services);
   const digest = await mediaRequestHash({ submission_id: input.submissionId }, body);
   const replay = await replayFirst(
@@ -1408,7 +1414,7 @@ async function commitSnapshot(
 }
 
 export async function bindMediaTerms(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   const context = await mutationContext(
@@ -1481,7 +1487,7 @@ export async function bindMediaTerms(
 }
 
 export async function bindMediaLyrics(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   const context = await mutationContext(
@@ -1547,7 +1553,7 @@ export async function bindMediaLyrics(
 }
 
 export async function bindMediaReference(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   const context = await mutationContext(
@@ -1620,7 +1626,7 @@ export async function bindMediaReference(
 }
 
 async function retryOrCancel(
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
   action: "retry" | "cancel",
 ): Promise<MediaPostSubmissionV1> {
@@ -1664,12 +1670,12 @@ async function retryOrCancel(
 }
 
 export const retryMediaSubmission = (
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> => retryOrCancel(input, services, "retry");
 
 export const cancelMediaSubmission = (
-  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> => retryOrCancel(input, services, "cancel");
 

@@ -580,6 +580,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
               expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
             }),
         },
+        runEffect: (effect, signal) =>
+          Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
         sealer: {
           inspect: async () => {
             if (reservationId === null) throw new Error("missing HTTP reservation identity");
