@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { CommunityCreationStore } from "@pirate/application";
 import { Effect, Exit } from "effect";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
@@ -660,6 +660,95 @@ suite("Postgres 17 community creation repository", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("runtime role creates and replays without revision update privilege", async () => {
+    await withSchema(async (connection, admin) => {
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query({
+        text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
+        values: [actor.userId],
+      });
+      const personaId = await firstPersonaId(admin, actor.userId);
+      const schemaResult = await admin.query<{ current_schema: string }>(
+        "SELECT current_schema() AS current_schema",
+      );
+      const schema = schemaResult.rows[0]?.current_schema;
+      if (schema === undefined) throw new Error("expected a test schema");
+      const role = `community_creation_runtime_${crypto.randomUUID().replaceAll("-", "")}`;
+      const password = crypto.randomUUID();
+      const quotedRole = quoteIdentifier(role);
+      const runtimeConnection = new URL(connection);
+      runtimeConnection.username = role;
+      runtimeConnection.password = password;
+      await admin.query(`CREATE ROLE ${quotedRole} LOGIN PASSWORD '${password}'`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${quotedRole}`);
+        await admin.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoteIdentifier(schema)} TO ${quotedRole}`,
+        );
+        await admin.query(
+          `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${quoteIdentifier(schema)} TO ${quotedRole}`,
+        );
+        await admin.query(
+          `REVOKE UPDATE ON ${quoteIdentifier(schema)}.community_creation_intent_revisions FROM ${quotedRole}`,
+        );
+        const privilege = await admin.query<{ allowed: boolean }>(
+          "SELECT has_table_privilege($1, $2, 'UPDATE') AS allowed",
+          [role, `${schema}.community_creation_intent_revisions`],
+        );
+        expect(privilege.rows).toEqual([{ allowed: false }]);
+
+        const store = storeFor(runtimeConnection.toString(), 86_400, "runtime-replay");
+        const body = {
+          idempotency_key: "runtime-replay-key",
+          draft: {
+            persona: { kind: "existing" as const, persona_id: personaId },
+            name: "Runtime replay",
+            description: null,
+            policy: humanPolicy,
+          },
+        };
+        const first = await Effect.runPromise(
+          store.create({ actor, body, requestHash: "a".repeat(64) }),
+        );
+        const replay = await Effect.runPromise(
+          store.create({ actor, body, requestHash: "a".repeat(64) }),
+        );
+        expect(first.outcome).toBe("fresh");
+        expect(replay).toEqual({ document: first.document, outcome: "replayed" });
+
+        const counts = await admin.query(`SELECT
+          (SELECT COUNT(*)::integer FROM community_creation_intents) AS intents,
+          (SELECT COUNT(*)::integer FROM community_creation_intent_revisions) AS revisions`);
+        expect(counts.rows).toEqual([{ intents: 1, revisions: 1 }]);
+
+        const runtime = new Client({ connectionString: runtimeConnection.toString() });
+        await runtime.connect();
+        try {
+          const identity = await runtime.query(
+            "SELECT session_user::text AS session_user, current_user::text AS current_user",
+          );
+          expect(identity.rows).toEqual([{ session_user: role, current_user: role }]);
+          await runtime.query("BEGIN");
+          await runtime.query("SAVEPOINT runtime_revision_update");
+          await expect(
+            runtime.query(
+              "UPDATE community_creation_intent_revisions SET status = status WHERE intent_id = $1 AND revision = 1",
+              [first.document.intent_id],
+            ),
+          ).rejects.toMatchObject({ code: "42501" });
+          await runtime.query("ROLLBACK TO SAVEPOINT runtime_revision_update");
+          await runtime.query("ROLLBACK");
+        } finally {
+          await runtime.end();
+        }
+      } finally {
+        await admin.query(`DROP OWNED BY ${quotedRole}`);
+        await admin.query(`DROP ROLE ${quotedRole}`);
+      }
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   test("makes unsupported gates durable and expires active intents on read", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
@@ -1063,7 +1152,7 @@ suite("Postgres 17 community creation repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString !== undefined && completedTestCount === 8) {
+  if (connectionString !== undefined && completedTestCount === 9) {
     await Bun.write(sentinelPath, sentinelContents);
   }
 });
