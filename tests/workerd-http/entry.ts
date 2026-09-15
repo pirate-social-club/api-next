@@ -39,7 +39,7 @@ import {
   type VerificationCompletionStore,
   type VerificationProviderPlanInput,
 } from "@pirate/application/verification";
-import { AuthError } from "@pirate/contracts";
+import { AuthError, endpoints } from "@pirate/contracts";
 import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
@@ -47,6 +47,7 @@ import {
 } from "@pirate/platform-cf";
 import { makePlatformNamespaceOwnershipProviderRegistry } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import { Effect } from "effect";
+import { assertSupportedAuthPolicies } from "../../apps/http-worker/src/auth-policy";
 import { makeNamespaceOwnershipHandlers } from "../../apps/http-worker/src/namespace-ownership-handlers.ts";
 import {
   createHttpWorker,
@@ -850,5 +851,7 @@ const app = createHttpWorker({
     );
   },
 });
+
+assertSupportedAuthPolicies(endpoints);
 
 export default app;

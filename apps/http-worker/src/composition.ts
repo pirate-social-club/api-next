@@ -47,6 +47,8 @@ import {
   AuthError,
   BadRequest,
   Conflict,
+  type EndpointDefinition,
+  endpoints,
   InternalError,
   NotFound,
   ProviderUnavailable,
@@ -208,6 +210,7 @@ import {
   type TelegramBindings,
 } from "../../../packages/platform-cf/src/telegram-runtime.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
+import { assertSupportedAuthPolicies, supportedAuthPolicy } from "./auth-policy.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommentThreadHandler } from "./comment-thread-handler.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
@@ -694,6 +697,7 @@ export async function createProductionHttpWorker(
   bindings: HttpWorkerBindings,
   dependencies: HttpWorkerCompositionDependencies = {},
 ) {
+  assertSupportedAuthPolicies(endpoints);
   const config = loadWorkerConfig(bindings);
   const zkPassportBearerSecret = Redacted.value(config.ZKPASSPORT_VERIFIER_SHARED_SECRET);
   const zkPassportSigningSecret = Redacted.value(
@@ -1446,18 +1450,13 @@ export async function createProductionHttpWorker(
     endpoint,
     credentials,
   }: {
-    readonly endpoint: {
-      readonly auth: { readonly policy: { readonly kind: string; readonly name?: string } };
-    };
+    readonly endpoint: EndpointDefinition;
     readonly credentials: { readonly authorization?: string; readonly sessionCookie?: string };
   }) => {
-    if (endpoint.auth.policy.kind === "sharedSecret") {
-      const policyName = endpoint.auth.policy.name;
-      const acceptedPolicy = policyName === "hns-edge-alert" || policyName === "hns-edge-status";
-      if (
-        !acceptedPolicy ||
-        !(await hnsEdgeAlertBearerMatches(credentials.authorization, hnsEdgeAlertToken))
-      ) {
+    const policy = supportedAuthPolicy(endpoint.auth.policy);
+    if (policy.kind === "sharedSecret") {
+      const policyName = policy.name;
+      if (!(await hnsEdgeAlertBearerMatches(credentials.authorization, hnsEdgeAlertToken))) {
         throw new AuthError({ message: "Authentication failed" });
       }
       return {
@@ -1533,10 +1532,10 @@ export async function createProductionHttpWorker(
     authorize: ({ endpoint, input }) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          if (endpoint.auth.policy.kind === "sharedSecret") {
-            const policyName = endpoint.auth.policy.name;
+          const policy = supportedAuthPolicy(endpoint.auth.policy);
+          if (policy.kind === "sharedSecret") {
+            const policyName = policy.name;
             if (
-              (policyName === "hns-edge-alert" || policyName === "hns-edge-status") &&
               input.principal?.kind === "device" &&
               input.principal.subject === policyName &&
               input.principal.scopes?.includes(`${policyName}:deliver`) === true
