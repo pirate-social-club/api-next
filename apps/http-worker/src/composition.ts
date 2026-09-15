@@ -448,6 +448,8 @@ export function makeProductionMediaSubmissionServices(
     store: makeMediaUploadStore(controlPlane),
     referenceResolver: makeMediaReferenceResolver(controlPlane),
     personaStore,
+    runEffect: <A, E>(effect: Effect.Effect<A, E>, signal?: AbortSignal) =>
+      Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
     presigner: makeR2MediaIngressPresigner({
       accountId,
       bucket,
@@ -882,7 +884,10 @@ export async function createProductionHttpWorker(
         secretAccessKey,
       }),
       sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
-      personaServices: { personaStore },
+      personaServices: {
+        personaStore,
+        runEffect: mediaServices.runEffect,
+      },
       nowIso: () => new Date().toISOString(),
       ...(bindings.VIDEO_SONG_REFERENCE_ENABLED === "true"
         ? {

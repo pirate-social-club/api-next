@@ -1,5 +1,5 @@
 import { AuthError } from "@pirate/contracts";
-import type { EndpointHandler, Principal } from "./transport.ts";
+import type { DecodedRequest, EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
 
 type MediaHandlerActor = Readonly<{
@@ -8,34 +8,39 @@ type MediaHandlerActor = Readonly<{
   readonly scopes?: readonly string[];
 }>;
 
+type MediaRequestLifetime = Readonly<{ readonly signal?: AbortSignal }>;
+
 type MediaHandlerCommand = Readonly<{
   readonly submissionId: string;
   readonly actor: MediaHandlerActor;
   readonly body: unknown;
-}>;
+}> &
+  MediaRequestLifetime;
 
 type MediaReservationCommand = Readonly<{
   readonly reservationId: string;
   readonly actor: MediaHandlerActor;
   readonly body: unknown;
-}>;
+}> &
+  MediaRequestLifetime;
+
+type MediaCommunityCommand = Readonly<{
+  readonly communityId: string;
+  readonly actor: MediaHandlerActor;
+  readonly body: unknown;
+}> &
+  MediaRequestLifetime;
 
 export type MediaUploadHandlerServices = Readonly<{
-  readonly preflightSongVideo: (
-    input: Readonly<{ communityId: string; actor: MediaHandlerActor; body: unknown }>,
-  ) => unknown | Promise<unknown>;
-  readonly reserve: (
-    input: Readonly<{ communityId: string; actor: MediaHandlerActor; body: unknown }>,
-  ) => unknown | Promise<unknown>;
-  readonly create: (
-    input: Readonly<{ communityId: string; actor: MediaHandlerActor; body: unknown }>,
-  ) => unknown | Promise<unknown>;
+  readonly preflightSongVideo: (input: MediaCommunityCommand) => unknown | Promise<unknown>;
+  readonly reserve: (input: MediaCommunityCommand) => unknown | Promise<unknown>;
+  readonly create: (input: MediaCommunityCommand) => unknown | Promise<unknown>;
   readonly bindTerms: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly bindLyrics: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly finalize: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly renewParts: (input: MediaReservationCommand) => unknown | Promise<unknown>;
   readonly get: (
-    input: Readonly<{ submissionId: string; actor: MediaHandlerActor }>,
+    input: Readonly<{ submissionId: string; actor: MediaHandlerActor }> & MediaRequestLifetime,
   ) => unknown | Promise<unknown>;
   readonly bindReference: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly retry: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
@@ -71,6 +76,9 @@ function actor(principal: Principal | null): MediaHandlerActor {
   };
 }
 
+const requestLifetime = (request: DecodedRequest): MediaRequestLifetime =>
+  request.signal === undefined ? {} : { signal: request.signal };
+
 export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): MediaUploadHandlers {
   return {
     PreflightSongVideoInterval: (request) => {
@@ -79,6 +87,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         communityId: path.communityId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     CreateMediaUploadReservation: async (request) => {
@@ -88,6 +97,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
           communityId: path.communityId,
           actor: actor(request.principal),
           body: request.body,
+          ...requestLifetime(request),
         }),
         201,
       );
@@ -99,6 +109,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
           communityId: path.communityId,
           actor: actor(request.principal),
           body: request.body,
+          ...requestLifetime(request),
         }),
         201,
       );
@@ -109,6 +120,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     BindMediaPostSubmissionLyrics: (request) => {
@@ -117,6 +129,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     FinalizeMediaPostSubmission: (request) => {
@@ -125,6 +138,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     RenewVideoUploadParts: (request) => {
@@ -133,11 +147,16 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         reservationId: path.reservationId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     GetMediaPostSubmission: (request) => {
       const path = request.params as { readonly submissionId: string };
-      return services.get({ submissionId: path.submissionId, actor: actor(request.principal) });
+      return services.get({
+        submissionId: path.submissionId,
+        actor: actor(request.principal),
+        ...requestLifetime(request),
+      });
     },
     BindMediaPostSubmissionReference: (request) => {
       const path = request.params as { readonly submissionId: string };
@@ -145,6 +164,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     RetryMediaPostSubmission: (request) => {
@@ -153,6 +173,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     RetryVideoPostSubmissionPoster: (request) => {
@@ -161,6 +182,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     CancelMediaPostSubmission: (request) => {
@@ -169,6 +191,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
     ModerateMediaPostSubmission: (request) => {
@@ -177,6 +200,7 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,
+        ...requestLifetime(request),
       });
     },
   };

@@ -661,7 +661,11 @@ async function compose(admin: Client, schema: string, directory: string) {
     songInterval,
     multipart: objects.multipart,
     sealer: objects.sealer,
-    personaServices: { personaStore: makeControlPlanePersonaStore(layer) },
+    personaServices: {
+      personaStore: makeControlPlanePersonaStore(layer),
+      runEffect: (effect, signal) =>
+        Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
+    },
     nowIso: () => new Date().toISOString(),
   };
   const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);

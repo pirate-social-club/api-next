@@ -1,10 +1,8 @@
 import { expect } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import { KARAOKE_RESET_OBJECT_IDS } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
 import { makeKaraokeCollectorFixture } from "../packages/testing/src/karaoke-collector-fixture.ts";
+import { makeProcessLifetimeTestDirectory } from "../packages/testing/src/process-lifetime-directory.ts";
 import {
   appendKaraokeMaintenanceEvent,
   type KaraokeJournalTrust,
@@ -25,8 +23,8 @@ export function disposeMilestoneFixtures() {
 }
 export function makeKaraokeMilestoneFixture() {
   const f = makeKaraokeCollectorFixture(KARAOKE_RESET_OBJECT_IDS, reconciliationDigest);
-  const directory = mkdtempSync(join(tmpdir(), "karaoke-milestone-test-"));
-  disposals.push(f.dispose, () => rmSync(directory, { recursive: true, force: true }));
+  const directory = makeProcessLifetimeTestDirectory("karaoke-milestone-test-");
+  disposals.push(f.dispose);
   const oldDisposition = f.evidence.artifacts.get(f.trust.residualDispositionId);
   if (!oldDisposition) throw new Error("missing fixture");
   const residual = JSON.stringify({
