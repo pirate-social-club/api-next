@@ -258,9 +258,9 @@
         "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
         "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
-    "SONG_PLAYBACK_ENABLED": "false",
-    "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
-    "SONG_PLAYBACK_R2_BUCKET": "",
+        "SONG_PLAYBACK_ENABLED": "true",
+        "SONG_PLAYBACK_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-staging",
     // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
@@ -360,7 +360,10 @@
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
           "ELEVENLABS_API_KEY",
-          "OPENAI_API_KEY"
+          "OPENAI_API_KEY",
+          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+          "SONG_PLAYBACK_SOURCE_HMAC_BASE64"
         ]
       }
     },
