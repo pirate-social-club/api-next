@@ -284,8 +284,7 @@ describe("config system (000 §9)", () => {
         >;
       };
 
-      const expectedStagingRewards = path.includes("http-worker") ? "false" : "true";
-      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe(expectedStagingRewards);
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
       expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");
