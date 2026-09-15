@@ -408,8 +408,7 @@ function replayByKey(
               WHERE revision.actor_id = $1
                 AND revision.operation_kind = $2
                 AND revision.idempotency_key = $3
-                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
-              FOR UPDATE OF revision`,
+                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')`,
       values: [input.actorId, input.operation, input.idempotencyKey],
       readonly: false,
     });
