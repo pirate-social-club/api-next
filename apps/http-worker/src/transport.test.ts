@@ -240,6 +240,7 @@ describe("contracts-generated HTTP worker", () => {
       headers: {
         "content-type": "application/json",
         "CF-Connecting-IP": "203.0.113.8",
+        origin: "https://solid.test",
       },
       body: JSON.stringify({
         privy_access_token: "privy-proof",
@@ -256,7 +257,7 @@ describe("contracts-generated HTTP worker", () => {
 
     const missingIp = await app.request("http://worker.test/auth/register", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
       body: JSON.stringify({
         privy_access_token: "privy-proof",
         minimum_age_attestation: {
@@ -268,6 +269,63 @@ describe("contracts-generated HTTP worker", () => {
     });
     expect(missingIp.status).toBe(400);
     expect(missingIp.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("requires exact Origin and the existing session's CSRF proof for registration", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      identityRegistration: registrationServices,
+    });
+    const body = JSON.stringify({
+      privy_access_token: "privy-proof",
+      minimum_age_attestation: {
+        version: "minimum-age-attestation-v1",
+        minimum_age: 16,
+        affirmed: true,
+      },
+    });
+    const register = (headers: Record<string, string>) =>
+      app.request("https://worker.test/auth/register", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "CF-Connecting-IP": "203.0.113.8",
+          ...headers,
+        },
+        body,
+      });
+
+    expect((await register({})).status).toBe(401);
+    expect((await register({ origin: "https://evil.test" })).status).toBe(401);
+    expect(
+      (
+        await register({
+          origin: "https://solid.test",
+          cookie: "__Host-pirate_session=existing-session",
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await register({
+          origin: "https://solid.test",
+          cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+          "x-csrf-token": "wrong-value",
+        })
+      ).status,
+    ).toBe(401);
+
+    const accepted = await register({
+      origin: "https://solid.test",
+      cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+      "x-csrf-token": "csrf-value",
+    });
+    expect(accepted.status).toBe(201);
+    expect(accepted.headers.get("set-cookie")).toContain("__Host-pirate_session=");
+
+    const fresh = await register({ origin: "https://solid.test" });
+    expect(fresh.status).toBe(201);
+    expect(fresh.headers.get("set-cookie")).toContain("__Host-pirate_session=");
   });
 
   it("marks authenticated persona state and its failures private and no-store", async () => {
@@ -321,6 +379,49 @@ describe("contracts-generated HTTP worker", () => {
         })
       ).status,
     ).toBe(401);
+  });
+
+  it("requires the existing session's CSRF proof for browser session exchange", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      sessionExchange: sessionServices,
+    });
+    const body = JSON.stringify({
+      proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+    });
+    const exchange = (headers: Record<string, string>) =>
+      app.request("https://worker.test/auth/session/exchange", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://solid.test",
+          ...headers,
+        },
+        body,
+      });
+
+    expect(
+      (
+        await exchange({
+          cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await exchange({
+          cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+          "x-csrf-token": "wrong-value",
+        })
+      ).status,
+    ).toBe(401);
+
+    const accepted = await exchange({
+      cookie: "__Host-pirate_session=existing-session; __Host-pirate_csrf=csrf-value",
+      "x-csrf-token": "csrf-value",
+    });
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("set-cookie")).toContain("__Host-pirate_session=");
   });
 
   it("requires exact Origin and double-submit CSRF for cookie-authenticated writes", async () => {
@@ -468,6 +569,23 @@ describe("contracts-generated HTTP worker", () => {
 
   it("clears the host-only session and CSRF cookies exactly on logout", async () => {
     const app = createHttpWorker({ config: { corsOrigin: "https://solid.test" } });
+    const missingCsrf = await app.request("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: "__Host-pirate_session=token; __Host-pirate_csrf=csrf",
+        origin: "https://solid.test",
+      },
+    });
+    expect(missingCsrf.status).toBe(401);
+    const mismatchedCsrf = await app.request("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: "__Host-pirate_session=token; __Host-pirate_csrf=csrf",
+        origin: "https://solid.test",
+        "x-csrf-token": "wrong-csrf",
+      },
+    });
+    expect(mismatchedCsrf.status).toBe(401);
     const wrongOrigin = await app.request("https://worker.test/auth/session/logout", {
       method: "POST",
       headers: {

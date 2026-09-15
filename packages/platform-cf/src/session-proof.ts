@@ -10,6 +10,12 @@ export const SESSION_PROOF_MAX_JWKS_BYTES = 64 * 1024;
 export const SESSION_PROOF_MAX_USER_BYTES = 64 * 1024;
 export const SESSION_PROOF_FETCH_TIMEOUT_MS = 5_000;
 export const SESSION_PROOF_CACHE_TTL_MS = 5 * 60 * 1_000;
+/**
+ * Minimum spacing between JWKS fetch attempts for one verifier instance. It
+ * bounds attacker-driven refreshes from unknown key IDs and failure retries
+ * while keeping a bounded recovery path for legitimate key rotation.
+ */
+export const SESSION_PROOF_JWKS_REFRESH_COOLDOWN_MS = 30_000;
 
 const RSA_VERIFY_ALGORITHM = {
   name: "RSASSA-PKCS1-v1_5",
@@ -117,6 +123,7 @@ export interface SessionProofAdapterOptions {
   readonly nowMs?: () => number;
   readonly fetchTimeoutMs?: number;
   readonly cacheTtlMs?: number;
+  readonly jwksRefreshCooldownMs?: number;
 }
 
 type VerifiedProviderToken = {
@@ -127,6 +134,13 @@ type VerifiedProviderToken = {
 type CachedJwks = {
   readonly keys: readonly ValidJwk[];
   readonly expiresAt: number;
+};
+
+type JwksRefresh = {
+  readonly controller: AbortController;
+  readonly promise: Promise<readonly ValidJwk[]>;
+  waiters: number;
+  settled: boolean;
 };
 
 function object(value: unknown): JsonObject {
@@ -155,6 +169,113 @@ function positiveBound(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid bound");
   return value;
+}
+
+function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/**
+ * Reads a provider response body without buffering past the advertised byte
+ * bound. The reader is cancelled on overflow and its lock is released on every
+ * path; callers decode only after the byte limit is enforced. Content-Length is
+ * deliberately ignored because the header can be missing or incorrect.
+ */
+async function readBoundedResponseBytes(
+  response: Response,
+  limit: number,
+  signal: AbortSignal,
+): Promise<Uint8Array | undefined> {
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let cancellation: Promise<void> | undefined;
+  const cancelOnAbort = (): void => {
+    cancellation ??= reader.cancel(abortReason(signal)).catch(() => undefined);
+  };
+  if (signal.aborted) cancelOnAbort();
+  else signal.addEventListener("abort", cancelOnAbort, { once: true });
+  try {
+    for (;;) {
+      const { done, value } = await awaitWithAbort(reader.read(), signal);
+      if (done) return concatBytes(chunks, total);
+      total += value.byteLength;
+      if (total > limit) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The overflow disposition is already fixed; a cancel failure must
+          // not change it.
+        }
+        return undefined;
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (signal.aborted) {
+      cancelOnAbort();
+      await cancellation;
+    }
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", cancelOnAbort);
+    reader.releaseLock();
+  }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Aborted", "AbortError");
+}
+
+function awaitWithAbort<A>(promise: Promise<A>, signal: AbortSignal): Promise<A> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<A>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+type ProviderDeadline = {
+  readonly signal: AbortSignal;
+  readonly finish: () => void;
+};
+
+function providerDeadline(parent: AbortSignal, timeoutMs: number): ProviderDeadline {
+  const controller = new AbortController();
+  const onParentAbort = (): void => controller.abort(abortReason(parent));
+  if (parent.aborted) onParentAbort();
+  else parent.addEventListener("abort", onParentAbort, { once: true });
+  const timeout = setTimeout(
+    () => controller.abort(new DOMException("Provider request timed out", "TimeoutError")),
+    timeoutMs,
+  );
+  return {
+    signal: controller.signal,
+    finish: () => {
+      clearTimeout(timeout);
+      parent.removeEventListener("abort", onParentAbort);
+    },
+  };
 }
 
 function configuredUrl(value: string): string {
@@ -360,7 +481,8 @@ function directPrivySubject(claims: JsonObject): string {
 
 /**
  * Build Privy and generic JWT proof adapters. JWKS documents are cached only
- * after complete validation; an unknown kid gets one bounded refresh.
+ * after complete validation; refresh attempts are shared across concurrent
+ * callers and bounded by a cooldown per verifier instance.
  */
 export function makeJwksSessionProofVerifier(
   options: SessionProofAdapterOptions,
@@ -369,7 +491,13 @@ export function makeJwksSessionProofVerifier(
   const nowMs = options.nowMs ?? Date.now;
   const fetchTimeoutMs = positiveBound(options.fetchTimeoutMs, SESSION_PROOF_FETCH_TIMEOUT_MS);
   const cacheTtlMs = positiveBound(options.cacheTtlMs, SESSION_PROOF_CACHE_TTL_MS);
+  const jwksRefreshCooldownMs = positiveBound(
+    options.jwksRefreshCooldownMs,
+    SESSION_PROOF_JWKS_REFRESH_COOLDOWN_MS,
+  );
   const cache = new Map<string, CachedJwks>();
+  const jwksRefreshInFlight = new Map<string, JwksRefresh>();
+  const jwksLastAttemptAt = new Map<string, number>();
   const providers = {
     privy: {
       ...options.privy,
@@ -387,25 +515,79 @@ export function makeJwksSessionProofVerifier(
           appSecret: configuredString(options.privyApi.appSecret),
         };
 
-  const getJwks = async (url: string, forceRefresh = false): Promise<readonly ValidJwk[]> => {
+  const getJwks = async (
+    url: string,
+    signal: AbortSignal,
+    forceRefresh = false,
+  ): Promise<readonly ValidJwk[]> => {
     const cached = cache.get(url);
     if (!forceRefresh && cached !== undefined && cached.expiresAt > nowMs()) return cached.keys;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+
+    let refresh = jwksRefreshInFlight.get(url);
+    if (refresh === undefined) {
+      const lastAttemptAt = jwksLastAttemptAt.get(url);
+      if (lastAttemptAt !== undefined && nowMs() - lastAttemptAt < jwksRefreshCooldownMs) {
+        // Refresh is cooling down: serve the last good document only while it is
+        // unexpired, and fail closed once the TTL has passed so repeated refresh
+        // failures cannot keep expired keys usable. Forced refreshes are
+        // deliberately not distinguished so unknown key IDs, expiry, and failure
+        // retries share one bound.
+        if (cached !== undefined && cached.expiresAt > nowMs()) return cached.keys;
+        throw new Error("JWKS request failed");
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(new DOMException("JWKS request timed out", "TimeoutError")),
+        fetchTimeoutMs,
+      );
+      let owned!: JwksRefresh;
+      const promise = (async (): Promise<readonly ValidJwk[]> => {
+        try {
+          const response = await fetcher(url, {
+            method: "GET",
+            headers: { accept: "application/json" },
+            signal: controller.signal,
+          });
+          if (!response.ok) throw new Error("JWKS request failed");
+          const bytes = await readBoundedResponseBytes(
+            response,
+            SESSION_PROOF_MAX_JWKS_BYTES,
+            controller.signal,
+          );
+          if (bytes === undefined) throw new Error("JWKS response too large");
+          const keys = validateJwks(JSON.parse(new TextDecoder().decode(bytes)));
+          cache.set(url, { keys, expiresAt: nowMs() + cacheTtlMs });
+          return keys;
+        } finally {
+          clearTimeout(timeout);
+          owned.settled = true;
+          if (jwksRefreshInFlight.get(url) === owned) jwksRefreshInFlight.delete(url);
+        }
+      })();
+      refresh = { controller, promise, waiters: 0, settled: false };
+      owned = refresh;
+      jwksRefreshInFlight.set(url, refresh);
+      jwksLastAttemptAt.set(url, nowMs());
+      void promise.catch(() => undefined);
+    }
+
+    refresh.waiters += 1;
+    let released = false;
+    const releaseWaiter = (): void => {
+      if (released) return;
+      released = true;
+      refresh.waiters -= 1;
+      if (refresh.waiters === 0 && !refresh.settled) {
+        if (jwksRefreshInFlight.get(url) === refresh) jwksRefreshInFlight.delete(url);
+        refresh.controller.abort(new DOMException("JWKS refresh has no waiters", "AbortError"));
+      }
+    };
+    signal.addEventListener("abort", releaseWaiter, { once: true });
     try {
-      const response = await fetcher(url, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error("JWKS request failed");
-      const body = await response.text();
-      if (body.length > SESSION_PROOF_MAX_JWKS_BYTES) throw new Error("JWKS response too large");
-      const keys = validateJwks(JSON.parse(body));
-      cache.set(url, { keys, expiresAt: nowMs() + cacheTtlMs });
-      return keys;
+      return await awaitWithAbort(refresh.promise, signal);
     } finally {
-      clearTimeout(timeout);
+      signal.removeEventListener("abort", releaseWaiter);
+      releaseWaiter();
     }
   };
 
@@ -414,10 +596,12 @@ export function makeJwksSessionProofVerifier(
    * unavailable document as walletless; persona-wallet attestation fails
    * closed. Neither caller receives provider response detail.
    */
-  const lookupPrivyUser = async (sourceUserId: string): Promise<unknown | undefined> => {
+  const lookupPrivyUser = async (
+    sourceUserId: string,
+    parentSignal: AbortSignal,
+  ): Promise<unknown | undefined> => {
     if (privyApi === undefined) return undefined;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+    const deadline = providerDeadline(parentSignal, fetchTimeoutMs);
     try {
       const response = await fetcher(privyUserLookupUrl(privyApi.apiUrl, sourceUserId), {
         method: "GET",
@@ -426,31 +610,38 @@ export function makeJwksSessionProofVerifier(
           authorization: `Basic ${btoa(`${privyApi.appId}:${privyApi.appSecret}`)}`,
           "privy-app-id": privyApi.appId,
         },
-        signal: controller.signal,
+        signal: deadline.signal,
       });
       if (!response.ok) return undefined;
-      const body = await response.text();
-      if (body.length > SESSION_PROOF_MAX_USER_BYTES) return undefined;
-      const document = object(JSON.parse(body));
+      const bytes = await readBoundedResponseBytes(
+        response,
+        SESSION_PROOF_MAX_USER_BYTES,
+        deadline.signal,
+      );
+      if (bytes === undefined) return undefined;
+      const document = object(JSON.parse(new TextDecoder().decode(bytes)));
       if (document.id !== sourceUserId) return undefined;
       return document;
     } catch {
+      if (parentSignal.aborted) throw abortReason(parentSignal);
       return undefined;
     } finally {
-      clearTimeout(timeout);
+      deadline.finish();
     }
   };
 
   const lookupLinkedEthereumWallets = async (
     sourceUserId: string,
+    signal: AbortSignal,
   ): Promise<readonly string[] | undefined> => {
-    const document = await lookupPrivyUser(sourceUserId);
+    const document = await lookupPrivyUser(sourceUserId, signal);
     return document === undefined ? undefined : collectLinkedEthereumWallets(document);
   };
 
   const verifyProviderToken = async (
     token: string,
     provider: SessionProofProviderConfig,
+    signal: AbortSignal,
   ): Promise<VerifiedProviderToken> => {
     if (
       typeof token !== "string" ||
@@ -473,10 +664,10 @@ export function makeJwksSessionProofVerifier(
       throw new Error("invalid header");
     }
 
-    let keys = await getJwks(provider.jwksUrl);
+    let keys = await getJwks(provider.jwksUrl, signal);
     let jwk = keys.find((key) => key.kid === header.kid);
     if (jwk === undefined) {
-      keys = await getJwks(provider.jwksUrl, true);
+      keys = await getJwks(provider.jwksUrl, signal, true);
       jwk = keys.find((key) => key.kid === header.kid);
     }
     if (jwk === undefined) throw new Error("unknown key");
@@ -526,32 +717,63 @@ export function makeJwksSessionProofVerifier(
     };
   };
 
-  const run = <A>(operation: () => Promise<A>): Effect.Effect<A, SessionProofRejected> =>
-    Effect.tryPromise({
-      try: operation,
-      catch: (error) => {
-        console.warn("session_proof_rejected", safeSessionProofFailureReason(error));
-        return new SessionProofRejected();
-      },
+  const interruptiblePromise = <A, E>(
+    operation: (signal: AbortSignal) => Promise<A>,
+    mapError: (error: unknown) => E,
+  ): Effect.Effect<A, E> =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const controller = new AbortController();
+        let settle!: () => void;
+        return {
+          controller,
+          started: false,
+          settled: new Promise<void>((resolve) => {
+            settle = resolve;
+          }),
+          settle,
+        };
+      }),
+      (lifetime) =>
+        Effect.tryPromise({
+          try: (effectSignal) => {
+            lifetime.started = true;
+            return operation(AbortSignal.any([effectSignal, lifetime.controller.signal])).finally(
+              lifetime.settle,
+            );
+          },
+          catch: mapError,
+        }),
+      (lifetime) =>
+        Effect.gen(function* () {
+          lifetime.controller.abort(new DOMException("Effect interrupted", "AbortError"));
+          if (lifetime.started) yield* Effect.promise(() => lifetime.settled);
+        }),
+    );
+
+  const run = <A>(
+    operation: (signal: AbortSignal) => Promise<A>,
+  ): Effect.Effect<A, SessionProofRejected> =>
+    interruptiblePromise(operation, (error) => {
+      console.warn("session_proof_rejected", safeSessionProofFailureReason(error));
+      return new SessionProofRejected();
     });
 
   const runPersonaWalletProof = <A>(
-    operation: () => Promise<A>,
+    operation: (signal: AbortSignal) => Promise<A>,
   ): Effect.Effect<A, PersonaWalletProofRejected> =>
-    Effect.tryPromise({
-      try: operation,
-      catch: (error) =>
-        error instanceof PersonaWalletProofRejected
-          ? error
-          : new PersonaWalletProofRejected({ reason: "invalid" }),
-    });
+    interruptiblePromise(operation, (error) =>
+      error instanceof PersonaWalletProofRejected
+        ? error
+        : new PersonaWalletProofRejected({ reason: "invalid" }),
+    );
 
   return {
     verifyPrivy: ({ accessToken, identityToken, walletAddress }) =>
-      run(async () => {
-        const access = await verifyProviderToken(accessToken, providers.privy);
+      run(async (signal) => {
+        const access = await verifyProviderToken(accessToken, providers.privy, signal);
         if (identityToken !== null) {
-          const identity = await verifyProviderToken(identityToken, providers.privy);
+          const identity = await verifyProviderToken(identityToken, providers.privy, signal);
           if (identity.sourceUserId !== access.sourceUserId) throw new Error("identity mismatch");
         }
         const snakeClaim = access.claims.wallet_address;
@@ -573,7 +795,7 @@ export function makeJwksSessionProofVerifier(
         }
         let resolvedWallet = claimedWallet;
         if (resolvedWallet === null && privyApi !== undefined) {
-          const linkedWallets = await lookupLinkedEthereumWallets(access.sourceUserId);
+          const linkedWallets = await lookupLinkedEthereumWallets(access.sourceUserId, signal);
           if (linkedWallets !== undefined) {
             if (requestedWallet !== null && linkedWallets.includes(requestedWallet)) {
               resolvedWallet = requestedWallet;
@@ -596,18 +818,18 @@ export function makeJwksSessionProofVerifier(
         };
       }),
     verifyPrivyEmbeddedEvmWallet: ({ accessToken, identityToken, hdWalletIndex }) =>
-      runPersonaWalletProof(async () => {
+      runPersonaWalletProof(async (signal) => {
         if (!Number.isSafeInteger(hdWalletIndex) || hdWalletIndex < 0) {
           throw new PersonaWalletProofRejected({ reason: "invalid" });
         }
-        const access = await verifyProviderToken(accessToken, providers.privy);
+        const access = await verifyProviderToken(accessToken, providers.privy, signal);
         if (identityToken !== null) {
-          const identity = await verifyProviderToken(identityToken, providers.privy);
+          const identity = await verifyProviderToken(identityToken, providers.privy, signal);
           if (identity.sourceUserId !== access.sourceUserId) {
             throw new PersonaWalletProofRejected({ reason: "invalid" });
           }
         }
-        const document = await lookupPrivyUser(access.sourceUserId);
+        const document = await lookupPrivyUser(access.sourceUserId, signal);
         if (document === undefined) {
           throw new PersonaWalletProofRejected({ reason: "unavailable" });
         }
