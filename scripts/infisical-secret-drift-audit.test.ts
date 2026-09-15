@@ -311,7 +311,6 @@ describe("Infisical secret drift audit", () => {
   test("admits optional video secrets only at the staging runtime path", () => {
     const names = [
       "VIDEO_WORKFLOW_READ_TOKEN",
-      "VIDEO_STREAM_API_TOKEN",
       "VIDEO_STREAM_SIGNING_JWK_BASE64",
       "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
     ];
@@ -335,6 +334,80 @@ describe("Infisical secret drift audit", () => {
             : [...names]
                 .sort()
                 .map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
+  test("admits the retained Stream copies only at exact staging paths", () => {
+    const name = "VIDEO_STREAM_API_TOKEN";
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: [name] } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name: observed }) => kind === "unexpected-secret" && observed === name,
+          ),
+        ).toEqual(
+          environment === "staging" &&
+            (path === "/services/api-next" || path === "/services/api-next/operator")
+            ? []
+            : [{ environment, path, kind: "unexpected-secret", name }],
+        );
+      }
+    }
+  });
+
+  test("admits staging runtime support names only at the shared staging path", () => {
+    const names = [
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_API_TOKEN",
+      "CONTROL_PLANE_POSTGRES_SUPERUSER_URL",
+    ];
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: names } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name }) =>
+              kind === "unexpected-secret" && name !== undefined && names.includes(name),
+          ),
+        ).toEqual(
+          environment === "staging" && path === "/services/api-next"
+            ? []
+            : names.sort().map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
+  test("admits song playback secrets only at the staging runtime path", () => {
+    const names = [
+      "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+      "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+      "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
+    ];
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: names } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name }) =>
+              kind === "unexpected-secret" && name !== undefined && names.includes(name),
+          ),
+        ).toEqual(
+          environment === "staging" && path === "/services/api-next"
+            ? []
+            : names.sort().map((name) => ({ environment, path, kind: "unexpected-secret", name })),
         );
       }
     }

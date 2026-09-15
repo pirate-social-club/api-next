@@ -402,6 +402,22 @@ the classifier likewise follow their owning roles. Any future assignment must
 update the destination Worker's Wrangler declaration in the same reviewed
 tranche.
 
+### Staging runtime-support and playback inventory boundary — 2026-09-15
+
+The names-only staging inventory retains `CLOUDFLARE_ACCOUNT_ID`,
+`CLOUDFLARE_API_TOKEN`, and `CONTROL_PLANE_POSTGRES_SUPERUSER_URL` only at
+`/services/api-next` for bounded staging diagnostics and reset support. The
+retained `VIDEO_STREAM_API_TOKEN` operator copy is allowed only at
+`/services/api-next/operator`; its shared runtime copy remains at
+`/services/api-next`. These are exact environment/path contracts, not
+production permissions, deployment authority, or permission to read, copy, or
+synchronize values.
+
+The `SONG_PLAYBACK_R2_ACCESS_KEY_ID`, `SONG_PLAYBACK_R2_SECRET_ACCESS_KEY`,
+and `SONG_PLAYBACK_SOURCE_HMAC_BASE64` names are allowed only at staging
+`/services/api-next`. They are not admitted in development, production, or the
+staging operator path while song playback remains a staging-only slice.
+
 ### Production-hosted Aeneid signer boundary — 2026-08-29
 
 `DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY` is allowed only in Infisical
