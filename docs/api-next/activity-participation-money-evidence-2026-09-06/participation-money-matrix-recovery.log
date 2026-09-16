@@ -1,0 +1,63 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-qualification-repository.pg.test.ts:
+540 |         result = new this._Promise((resolve, reject) => {
+541 |           query.callback = (err, res) => (err ? reject(err) : resolve(res))
+542 |         }).catch((err) => {
+543 |           // replace the stack trace that leads to `TCP.onStreamRead` with one that leads back to the
+544 |           // application that created the query
+545 |           Error.captureStackTrace(err)
+                      ^
+error: duplicate key value violates unique constraint "evidence_receipts_provider_evidence_uidx"
+     length: 421,
+   severity: "ERROR",
+     detail: "Key (provider_id, environment, evidence_hash)=(very.web, test, 1111111111111111111111111111111111111111111111111111111111111111) already exists.",
+       hint: undefined,
+   position: undefined,
+ internalPosition: undefined,
+ internalQuery: undefined,
+      where: undefined,
+     schema: "api_next_reuse_packages_platform_cf_src_e209cad49cfa_506827",
+      table: "evidence_receipts",
+   dataType: undefined,
+ constraint: "evidence_receipts_provider_evidence_uidx",
+       file: "nbtinsert.c",
+    routine: "_bt_check_unique",
+       code: "23505"
+
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/pg@8.16.3+635858982ab829dd/node_modules/pg/lib/client.js:545:17
+      at processTicksAndRejections (native:7:39)
+(fail) Postgres 17 activity qualification repository > independent megapot admission ignores membership and refuses absent or revoked proof [3204.29ms]
+540 |         result = new this._Promise((resolve, reject) => {
+541 |           query.callback = (err, res) => (err ? reject(err) : resolve(res))
+542 |         }).catch((err) => {
+543 |           // replace the stack trace that leads to `TCP.onStreamRead` with one that leads back to the
+544 |           // application that created the query
+545 |           Error.captureStackTrace(err)
+                      ^
+error: duplicate key value violates unique constraint "evidence_receipts_provider_evidence_uidx"
+     length: 421,
+   severity: "ERROR",
+     detail: "Key (provider_id, environment, evidence_hash)=(very.web, test, 1111111111111111111111111111111111111111111111111111111111111111) already exists.",
+       hint: undefined,
+   position: undefined,
+ internalPosition: undefined,
+ internalQuery: undefined,
+      where: undefined,
+     schema: "api_next_reuse_packages_platform_cf_src_e209cad49cfa_506827",
+      table: "evidence_receipts",
+   dataType: undefined,
+ constraint: "evidence_receipts_provider_evidence_uidx",
+       file: "nbtinsert.c",
+    routine: "_bt_check_unique",
+       code: "23505"
+
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/pg@8.16.3+635858982ab829dd/node_modules/pg/lib/client.js:545:17
+      at processTicksAndRejections (native:7:39)
+(fail) Postgres 17 activity qualification repository > independent asset admission ignores membership and refuses absent or revoked proof [1875.68ms]
+
+ 0 pass
+ 8 filtered out
+ 2 fail
+ 46 expect() calls
+Ran 2 tests across 1 file. [5.30s]

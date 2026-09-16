@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.82.0",
+  "sourceBranch": "feat/activity-participation-authority",
+  "wireContract": "Additive PrepareActivityPersona operation (POST /communities/:communityId/activity-personas/prepare) returning ActivityPersonaPreparationV1, and the ActivityPresentationV1 move to the persona contract, so activity entry can select, bind or mint the account's exact-community persona without a membership requirement. No existing operation, response or error shape changes; posting, role, reward and monetary authority are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.82.0.tgz",
+    "sha256": "45f05d4ebba64d59c6858bfb5e06395d904227d8593ff7d309dcc6720a5e3284"
+  },
+  "validation": {
+    "status": "local full validation passed",
+    "notes": "Cut from the allocated activity-participation integration tip after the workspace owner assigned migration 0188 and client 0.82.0, amending the earlier C3-before-C4 numbering order. The openapi and client digests in the packaged provenance are 8838a126d3900d8d5227d26f6aa6903d3237f62f55425482e4bedd3c69b61e39 and c8bac074c4c0d2f3cab53f823fbc48a4e814ae969ffd8e4f5c6ded0b9968c28b. The immutable ledger and artifact verify, the PostgreSQL baseline and migration checksum are regenerated for the 0188 rename, and the complete check passes at this tip. The HNS capability lane must take the next free migration ordinal and client version at its own integration. Trusted pull-request checks, staging and live acceptance remain separate gates. Nothing is published, merged, deployed or enabled."
+  }
+}

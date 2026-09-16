@@ -5,6 +5,7 @@ import {
   listMyPersonas,
   type PersonaServices,
   type PersonaWalletServices,
+  prepareActivityPersona,
   preparePersonaEvmWallet,
   retirePersona,
 } from "@pirate/application/use-cases/personas";
@@ -17,6 +18,7 @@ export type PersonaHandlers = Readonly<{
   readonly ListMyPersonas: EndpointHandler;
   readonly ListMyPendingPersonaWallets: EndpointHandler;
   readonly CreatePersona: EndpointHandler;
+  readonly PrepareActivityPersona: EndpointHandler;
   readonly PreparePersonaEvmWallet: EndpointHandler;
   readonly ConfirmPersonaEvmWallet: EndpointHandler;
   readonly RetirePersona: EndpointHandler;
@@ -60,6 +62,17 @@ export function makePersonaHandlers(services: PersonaHandlerServices): PersonaHa
       );
       return withEndpointResult(result, 201);
     },
+    PrepareActivityPersona: async (request) =>
+      await Effect.runPromise(
+        prepareActivityPersona(
+          {
+            accountId: accountId(request.principal),
+            communityId: (request.params as { readonly communityId: string }).communityId,
+            body: request.body as Parameters<typeof prepareActivityPersona>[0]["body"],
+          },
+          services.personas,
+        ),
+      ),
     PreparePersonaEvmWallet: async (request) =>
       await Effect.runPromise(
         preparePersonaEvmWallet(

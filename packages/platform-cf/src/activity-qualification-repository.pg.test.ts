@@ -165,6 +165,7 @@ async function seedParticipant(
   admin: Client,
   identity: Readonly<{ readonly communityId: string; readonly postId: string }>,
   suffix: string,
+  member = true,
 ): Promise<{
   readonly accountId: string;
   readonly communityId: string;
@@ -184,13 +185,21 @@ async function seedParticipant(
   );
   const personaId = firstPersona.rows[0]?.persona_id;
   if (personaId === undefined) throw new Error("first persona was not provisioned");
-  await insertActiveCommunityMembershipFixture(admin, {
-    communityId: identity.communityId,
-    membershipId: `membership-${suffix}`,
-    userId: accountId,
-    joinedAt: "2026-08-03T00:00:00.000Z",
-  });
-  await bindPersonaToCommunity(admin, { ...identity, accountId, personaId });
+  if (member)
+    await insertActiveCommunityMembershipFixture(admin, {
+      communityId: identity.communityId,
+      membershipId: `membership-${suffix}`,
+      userId: accountId,
+      joinedAt: "2026-08-03T00:00:00.000Z",
+    });
+  if (member) await bindPersonaToCommunity(admin, { ...identity, accountId, personaId });
+  else
+    await admin.query(
+      `INSERT INTO persona_community_bindings
+    (persona_id,account_id,community_id,binding_source)
+    VALUES ($1,$2,$3,'activity_participation')`,
+      [personaId, accountId, identity.communityId],
+    );
   return { ...identity, accountId, personaId };
 }
 
@@ -199,9 +208,11 @@ async function seedVeryRewardEvidence(
   accountId: string,
   suffix: string,
   digestByte = "1",
+  recovery?: Readonly<{ subjectId: string; previousBindingEventId: string }>,
 ): Promise<void> {
   const proofSessionId = `proof-${suffix}`;
-  const subjectId = `subject-${suffix}`;
+  const subjectId = recovery?.subjectId ?? `subject-${suffix}`;
+  const bindingEpoch = recovery === undefined ? 1 : 2;
   const bindingEventId = `binding-event-${suffix}`;
   const receiptId = `receipt-${suffix}`;
   const bindingId = `binding-${suffix}`;
@@ -214,7 +225,7 @@ async function seedVeryRewardEvidence(
              requested_requirements, requested_claim_ids, subject_binding_intent,
              started_at, expires_at, upstream_session_ref
            ) VALUES ($1,$2,$3,$4,$5,'dynamic',$6,$7,$8,$9,'issuer_rp_scope',$10,
-             NULL,'dynamic',$11,'test','pending',$12::jsonb,$13::jsonb,'establish',
+             NULL,'dynamic',$11,'test','pending',$12::jsonb,$13::jsonb,$15,
              clock_timestamp(),clock_timestamp() + interval '5 minutes',$14)`,
     values: [
       proofSessionId,
@@ -231,23 +242,35 @@ async function seedVeryRewardEvidence(
       JSON.stringify([{ claim_id: "credential.subject_unique" }, { claim_id: "human.personhood" }]),
       JSON.stringify(["credential.subject_unique", "human.personhood"]),
       `upstream-${suffix}`,
+      recovery === undefined ? "establish" : "recover",
     ],
   });
   await admin.query("BEGIN");
   try {
-    await admin.query({
-      text: `INSERT INTO subject_keys (
+    if (recovery === undefined) {
+      await admin.query({
+        text: `INSERT INTO subject_keys (
                subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
                issuer_rp_action_scope, subject_digest
              ) VALUES ($1,$2,$3,'issuer_rp_scope',$4,NULL,$5)`,
-      values: [subjectId, VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE, hash(digestByte)],
-    });
+        values: [subjectId, VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE, hash(digestByte)],
+      });
+    }
     await admin.query({
       text: `INSERT INTO subject_key_binding_events (
                binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
-               binding_kind, idempotency_key, bound_at
-             ) VALUES ($1,$2,1,$3,$4,'initial',$5,clock_timestamp())`,
-      values: [bindingEventId, subjectId, accountId, proofSessionId, `bind-${suffix}`],
+               binding_kind, idempotency_key, bound_at, previous_binding_event_id
+             ) VALUES ($1,$2,$6,$3,$4,$7,$5,clock_timestamp(),$8)`,
+      values: [
+        bindingEventId,
+        subjectId,
+        accountId,
+        proofSessionId,
+        `bind-${suffix}`,
+        bindingEpoch,
+        recovery === undefined ? "initial" : "recovery",
+        recovery?.previousBindingEventId ?? null,
+      ],
     });
     await admin.query({
       text: `INSERT INTO evidence_receipts (
@@ -259,7 +282,7 @@ async function seedVeryRewardEvidence(
                provider_configuration_version
              ) VALUES ($1,$2,$3,$4,$5,$6,'issuer_rp_scope',$7,NULL,$8,'test',
                'very.web.server-verified.v1',$9,'{}'::jsonb,clock_timestamp(),
-               clock_timestamp() + interval '1 day','proof_session',$10,$11,1,
+               clock_timestamp() + interval '1 day','proof_session',$10,$11,$14,
                'dynamic',$12,$13)`,
       values: [
         receiptId,
@@ -275,14 +298,15 @@ async function seedVeryRewardEvidence(
         bindingEventId,
         VERY_WEB_CONFIGURATION_REFERENCE,
         VERY_WEB_CONFIGURATION_VERSION,
+        bindingEpoch,
       ],
     });
     await admin.query({
       text: `INSERT INTO assertion_bindings (
                binding_group_id, user_id, binding_mode, subject_key_id,
                subject_binding_event_id, subject_binding_epoch
-             ) VALUES ($1,$2,'same_subject',$3,$4,1)`,
-      values: [bindingId, accountId, subjectId, bindingEventId],
+             ) VALUES ($1,$2,'same_subject',$3,$4,$5)`,
+      values: [bindingId, accountId, subjectId, bindingEventId, bindingEpoch],
     });
     await admin.query({
       text: `INSERT INTO assertions (
@@ -1269,6 +1293,451 @@ suite("Postgres 17 activity qualification repository", () => {
         offerId,
       ]);
       expect(consumptions.rows).toEqual([{ campaign_id: offerId, user_id: identity.accountId }]);
+    });
+  });
+
+  for (const reward of ["megapot", "asset"] as const) {
+    test(`independent ${reward} admission ignores membership and refuses absent or revoked proof`, async () => {
+      await withSchema(async ({ admin, scopedConnection }) => {
+        const owner = await seedAccountSong(admin, `money-${reward}`);
+        const { legId } =
+          reward === "megapot"
+            ? await seedOpenMegapotPool(admin, owner, `money-${reward}`)
+            : await seedOpenAssetBonus(admin, owner, `money-${reward}`, {
+                fundedAtomic: 1000,
+                maxClaims: 10,
+              });
+        const source = sourceFor(owner);
+        const service = makeActivityQualificationService(
+          makeControlPlaneActivityQualificationStore(
+            makeDirectPostgresControlPlaneLayer(scopedConnection),
+          ),
+        );
+        const scenarios = [
+          {
+            key: "verified-nonmember",
+            member: false,
+            proof: "accepted",
+            digest: "1",
+            reason: null,
+          },
+          {
+            key: "unverified-member",
+            member: true,
+            proof: "missing",
+            digest: "2",
+            reason: "verification_missing",
+          },
+          {
+            key: "unverified-nonmember",
+            member: false,
+            proof: "missing",
+            digest: "3",
+            reason: "verification_missing",
+          },
+          {
+            key: "stale-nonmember",
+            member: false,
+            proof: "stale",
+            digest: "4",
+            reason: "verification_stale",
+          },
+          {
+            key: "revoked-member",
+            member: true,
+            proof: "revoked",
+            digest: "5",
+            reason: "verification_stale",
+          },
+          {
+            key: "recovered-nonmember",
+            member: false,
+            proof: "recovered",
+            digest: "7",
+            reason: "subject_already_consumed",
+          },
+        ] as const;
+        for (const scenario of scenarios) {
+          const suffix = `${reward}-${scenario.key}`;
+          const actor = await seedParticipant(admin, owner, suffix);
+          if (scenario.proof !== "missing") {
+            await seedVeryRewardEvidence(
+              admin,
+              actor.accountId,
+              suffix,
+              scenario.digest,
+              scenario.proof === "recovered"
+                ? {
+                    subjectId: `subject-${reward}-verified-nonmember`,
+                    previousBindingEventId: `binding-event-${reward}-verified-nonmember`,
+                  }
+                : undefined,
+            );
+            if (scenario.proof === "stale" || scenario.proof === "revoked") {
+              await admin.query(
+                `INSERT INTO assertion_revalidation_events (
+                   assertion_revalidation_event_id,assertion_id,user_id,evidence_receipt_id,
+                   outcome,reason,observed_at
+                 ) SELECT 'revalidation-' || assertion_id,assertion_id,user_id,
+                          evidence_receipt_id,$2,'reward admission fixture',clock_timestamp()
+                     FROM assertions WHERE user_id=$1`,
+                [actor.accountId, scenario.proof],
+              );
+            }
+          }
+          const session = await Effect.runPromise(
+            provideServices(
+              [`session-${suffix}`, `item-${suffix}`],
+              source,
+              "2026-08-25T15:00:00.000Z",
+            )(
+              service.startStudySession({
+                accountId: actor.accountId,
+                personaId: actor.personaId,
+                communityId: owner.communityId,
+                postId: owner.postId,
+                idempotencyKey: `start-${suffix}`,
+                requestedTimezone: "UTC",
+              }),
+            ),
+          );
+          // Isolate reward admission from the known membership-bound completion
+          // defect: complete exact answer evidence while still a member, then
+          // leave before inserting qualification. No trigger is disabled.
+          await admin.query(
+            `INSERT INTO study_session_answers (
+               answer_id,session_id,session_item_id,attempt_number,idempotency_key,
+               request_hash,answer,outcome,first_pass,answered_at
+             ) VALUES ($1,$2,$3,1,$1,$4,'{"kind":"text_response","text":"Sail away"}',
+               'correct',true,'2026-08-25T15:01:00.000Z')`,
+            [`answer-${suffix}`, session.session_id, session.items[0]?.session_item_id, hash("a")],
+          );
+          await admin.query(
+            `UPDATE study_session_items SET answer_count=1,first_pass_outcome='correct'
+             WHERE session_id=$1`,
+            [session.session_id],
+          );
+          await admin.query(
+            `UPDATE study_sessions SET status='completed',answered_exercise_count=1,
+               first_pass_correct=1,score_bps=10000,streak_day='2026-08-25',
+               completed_at='2026-08-25T15:01:00.000Z' WHERE session_id=$1`,
+            [session.session_id],
+          );
+          if (!scenario.member) {
+            await admin.query(
+              `UPDATE community_memberships SET status='left',updated_at=clock_timestamp()
+               WHERE community_id=$1 AND user_id=$2`,
+              [owner.communityId, actor.accountId],
+            );
+          }
+          await admin.query(
+            `INSERT INTO activity_qualifications (
+               qualification_id,account_id,persona_id,community_id,post_id,audio_revision,
+               activity_key,study_session_id,score_bps,qualification_policy_version_id,
+               qualified_at,streak_day,evidence_summary,created_at
+             ) SELECT $2,account_id,persona_id,community_id,post_id,audio_revision,'study',
+                      session_id,score_bps,qualification_policy_version_id,completed_at,
+                      streak_day,jsonb_build_object('kind','study_session_first_pass_v2',
+                        'qualifying_exercise_count',qualifying_exercise_count,
+                        'first_pass_correct',first_pass_correct,'required_correct',required_correct),
+                      completed_at FROM study_sessions WHERE session_id=$1`,
+            [session.session_id, `qualification-${suffix}`],
+          );
+          const decision = await admin.query(
+            `SELECT outcome,reason FROM reward_eligibility_decisions
+             WHERE leg_id=$1 AND account_id=$2`,
+            [legId, actor.accountId],
+          );
+          expect(decision.rows).toEqual([
+            {
+              outcome: scenario.reason === null ? "eligible" : "ineligible",
+              reason: scenario.reason,
+            },
+          ]);
+          const awardCount = async () =>
+            (
+              await admin.query<{ count: number }>(
+                reward === "megapot"
+                  ? "SELECT count(*)::integer AS count FROM megapot_pool_shares WHERE pool_leg_id=$1 AND account_id=$2"
+                  : "SELECT count(*)::integer AS count FROM song_reward_bundle_claim_legs WHERE leg_id=$1 AND account_id=$2 AND state='credited'",
+                [legId, actor.accountId],
+              )
+            ).rows[0]?.count;
+          expect(await awardCount()).toBe(scenario.reason === null ? 1 : 0);
+          expect(
+            (
+              await admin.query(`SELECT status FROM study_sessions WHERE session_id=$1`, [
+                session.session_id,
+              ])
+            ).rows,
+          ).toEqual([{ status: "completed" }]);
+          if (scenario.key === "unverified-nonmember") {
+            await seedVeryRewardEvidence(admin, actor.accountId, `${suffix}-later`, "6");
+            // A later proof and reading qualification evidence cannot replay admission.
+            await admin.query(
+              `SELECT account_id,score_bps FROM activity_qualifications
+               WHERE community_id=$1 ORDER BY score_bps DESC`,
+              [owner.communityId],
+            );
+            expect(await awardCount()).toBe(0);
+            expect(
+              (
+                await admin.query(
+                  `SELECT outcome,reason FROM reward_eligibility_decisions
+               WHERE leg_id=$1 AND account_id=$2`,
+                  [legId, actor.accountId],
+                )
+              ).rows,
+            ).toEqual(decision.rows);
+          }
+          if (scenario.key === "verified-nonmember") {
+            const duplicate = await seedParticipant(admin, owner, `${suffix}-duplicate-subject`);
+            // The provider-scoped fingerprint cannot acquire a second subject
+            // identity for another account. The helper transaction rolls back.
+            await expect(
+              seedVeryRewardEvidence(
+                admin,
+                duplicate.accountId,
+                `${suffix}-duplicate`,
+                scenario.digest,
+              ),
+            ).rejects.toMatchObject({ code: "23505" });
+            expect(
+              (
+                await admin.query(
+                  `SELECT count(*)::integer AS count FROM active_subject_key_bindings WHERE user_id=$1`,
+                  [duplicate.accountId],
+                )
+              ).rows,
+            ).toEqual([{ count: 0 }]);
+          }
+          if (scenario.reason !== null && reward === "megapot") {
+            const eligibility = await admin.query<{ eligibility_decision_id: string }>(
+              `SELECT eligibility_decision_id FROM reward_eligibility_decisions
+               WHERE leg_id=$1 AND account_id=$2`,
+              [legId, actor.accountId],
+            );
+            // A qualifying standing is not permission to insert a beneficiary.
+            await expect(
+              admin.query(
+                `INSERT INTO megapot_pool_shares (pool_leg_id,drawing_id,account_id,persona_id,
+                 qualification_id,eligibility_decision_id,qualified_at)
+               VALUES ($1,100,$2,$3,$4,$5,'2026-08-25T15:01:00.000Z')`,
+                [
+                  legId,
+                  actor.accountId,
+                  actor.personaId,
+                  `qualification-${suffix}`,
+                  eligibility.rows[0]?.eligibility_decision_id,
+                ],
+              ),
+            ).rejects.toMatchObject({ code: "P0001" });
+            expect(await awardCount()).toBe(0);
+          }
+        }
+      });
+    });
+  }
+
+  test("never-joined unverified account completes Study and appears in standings without monetary or posting effects", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const owner = await seedAccountSong(admin, "never-joined-owner");
+      const actor = await seedParticipant(admin, owner, "never-joined", false);
+      const { legId } = await seedOpenMegapotPool(admin, owner, "never-joined");
+      const source = sourceFor(owner);
+      const service = makeActivityQualificationService(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ),
+      );
+      const start = () =>
+        Effect.runPromise(
+          provideServices(
+            ["never-joined-session", "never-joined-item"],
+            source,
+            "2026-08-25T15:00:00.000Z",
+          )(
+            service.startStudySession({
+              accountId: actor.accountId,
+              personaId: actor.personaId,
+              communityId: owner.communityId,
+              postId: owner.postId,
+              idempotencyKey: "never-joined-start",
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+      const session = await start();
+      expect(await start()).toEqual(session);
+      const answer = await Effect.runPromise(
+        provideServices(
+          ["never-joined-answer", "never-joined-qualification"],
+          source,
+          "2026-08-25T15:01:00.000Z",
+        )(
+          service.submitStudyAnswer({
+            accountId: actor.accountId,
+            communityId: owner.communityId,
+            answer: { kind: "text_response", text: "Sail away" },
+            attemptNumber: 1,
+            idempotencyKey: "never-joined-answer",
+            sessionId: session.session_id,
+            sessionItemId: session.items[0]?.session_item_id ?? "missing",
+          }),
+        ),
+      );
+      expect(answer.session.status).toBe("completed");
+      expect(answer.session.qualification).not.toBeNull();
+      const leaderboard = await Effect.runPromise(
+        provideServices(
+          [],
+          source,
+          "2026-08-25T15:02:00.000Z",
+        )(
+          service.getSongLeaderboard({
+            accountId: actor.accountId,
+            communityId: owner.communityId,
+            postId: owner.postId,
+          }),
+        ),
+      );
+      expect(leaderboard.entries).toHaveLength(1);
+      expect(leaderboard.entries[0]?.persona.persona_id).toBe(actor.personaId);
+      expect(
+        (
+          await admin.query(
+            `SELECT
+        (SELECT count(*)::integer FROM community_memberships WHERE user_id=$1) AS memberships,
+        (SELECT count(*)::integer FROM community_follows WHERE user_id=$1) AS follows,
+        (SELECT count(*)::integer FROM posts WHERE author_user_id=$1) AS posts,
+        (SELECT count(*)::integer FROM megapot_pool_shares WHERE account_id=$1) AS shares,
+        (SELECT count(*)::integer FROM reward_ledger_credits WHERE account_id=$1) AS credits`,
+            [actor.accountId],
+          )
+        ).rows,
+      ).toEqual([{ memberships: 0, follows: 0, posts: 0, shares: 0, credits: 0 }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT outcome,reason FROM reward_eligibility_decisions
+        WHERE leg_id=$1 AND account_id=$2`,
+            [legId, actor.accountId],
+          )
+        ).rows,
+      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
+      // The same command key cannot replay protected song content after rating changes.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [
+          owner.postId,
+        ]);
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await expect(start()).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "not-found",
+      });
+    });
+  });
+
+  test("ratified participation keeps completion after membership loss and admits money only from independent evidence", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const identity = await seedAccountSong(admin, "participation-money");
+      const missing = await seedParticipant(admin, identity, "participation-missing");
+      await seedVeryRewardEvidence(admin, identity.accountId, "participation-money");
+      const { legId } = await seedOpenMegapotPool(admin, identity, "participation-money");
+      const source = sourceFor(identity);
+      const service = makeActivityQualificationService(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ),
+      );
+      for (const [actor, suffix] of [
+        [identity, "verified"],
+        [missing, "unverified"],
+      ] as const) {
+        const session = await Effect.runPromise(
+          provideServices(
+            [`session-${suffix}`, `item-${suffix}`],
+            source,
+            "2026-08-25T15:00:00.000Z",
+          )(
+            service.startStudySession({
+              accountId: actor.accountId,
+              personaId: actor.personaId,
+              communityId: identity.communityId,
+              postId: identity.postId,
+              idempotencyKey: `start-${suffix}`,
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+        await admin.query(
+          `UPDATE community_memberships SET status='left',updated_at=clock_timestamp()
+          WHERE community_id=$1 AND user_id=$2`,
+          [identity.communityId, actor.accountId],
+        );
+        const result = await Effect.runPromise(
+          provideServices(
+            [`answer-${suffix}`, `qualification-${suffix}`],
+            source,
+            "2026-08-25T15:01:00.000Z",
+          )(
+            service.submitStudyAnswer({
+              accountId: actor.accountId,
+              communityId: identity.communityId,
+              answer: { kind: "text_response", text: "Sail away" },
+              attemptNumber: 1,
+              idempotencyKey: `answer-${suffix}`,
+              sessionId: session.session_id,
+              sessionItemId: session.items[0]?.session_item_id ?? "missing",
+            }),
+          ),
+        );
+        expect(result.session.status).toBe("completed");
+        expect(result.session.qualification).not.toBeNull();
+      }
+      const decisions = await admin.query(
+        `SELECT account_id,outcome,reason
+        FROM reward_eligibility_decisions WHERE leg_id=$1 ORDER BY account_id`,
+        [legId],
+      );
+      expect(decisions.rows).toEqual(
+        [
+          { account_id: missing.accountId, outcome: "ineligible", reason: "verification_missing" },
+          { account_id: identity.accountId, outcome: "eligible", reason: null },
+        ].sort((left, right) => left.account_id.localeCompare(right.account_id)),
+      );
+      const shares = await admin.query(
+        "SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1",
+        [legId],
+      );
+      expect(shares.rows).toEqual([{ account_id: identity.accountId }]);
+      const qualifications = await admin.query(
+        `SELECT count(*)::integer AS count
+        FROM activity_qualifications WHERE community_id=$1`,
+        [identity.communityId],
+      );
+      expect(qualifications.rows).toEqual([{ count: 2 }]);
+      // Later verification is not an instruction to replay a past qualification.
+      await seedVeryRewardEvidence(admin, missing.accountId, "participation-later", "2");
+      expect(
+        (
+          await admin.query("SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1", [
+            legId,
+          ])
+        ).rows,
+      ).toEqual([{ account_id: identity.accountId }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT outcome,reason FROM reward_eligibility_decisions
+        WHERE leg_id=$1 AND account_id=$2`,
+            [legId, missing.accountId],
+          )
+        ).rows,
+      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
     });
   });
 

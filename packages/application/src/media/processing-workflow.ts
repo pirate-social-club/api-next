@@ -24,6 +24,7 @@ import {
   type MediaProcessingAttemptResult,
   type MediaProcessingAttemptStage,
   type MediaProcessingAuthority,
+  type MediaProcessingCommit,
   type MediaProcessingDecision,
   type MediaProcessingEventType,
   type MediaProcessingObservation,
@@ -118,6 +119,31 @@ const deferredAttemptFromCause = (cause: Cause.Cause<unknown>): DeferredAttempt 
   const error = Cause.findErrorOption(cause);
   return error._tag === "Some" && error.value instanceof DeferredAttempt ? error.value : undefined;
 };
+
+/**
+ * A publication store error is a control-plane statement failure, not a
+ * provider outage. Recording it as an attempt failure keeps the bounded retry
+ * budget and terminal escalation in charge instead of leaving the claim to
+ * expire and be reclaimed indefinitely. The attempt failure code is the
+ * existing `publication_failed` classification, and the deferred reason makes
+ * the next pass reload authority so a commit that actually landed replays
+ * through the revision fence without duplicating post, DATA or outbox rows.
+ */
+const commitPublicationWithContainment = (
+  authority: MediaProcessingAuthority,
+  lease: MediaProcessingAttemptLease,
+  dependencies: MediaProcessingWorkflowDependencies,
+): WorkflowEffect<MediaProcessingCommit> =>
+  storeWrite(() => dependencies.store.commitPublication(authority)).pipe(
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause) || deferredAttemptFromCause(cause) !== undefined) {
+        return Effect.failCause(cause);
+      }
+      return failAttempt(authority, lease, dependencies, "publication_failed").pipe(
+        Effect.andThen(Effect.fail(new DeferredAttempt("provider_progress"))),
+      );
+    }),
+  );
 
 const catchStageFailure = <A>(
   effect: WorkflowEffect<A>,
@@ -236,13 +262,10 @@ function failAttempt(
   authority: MediaProcessingAuthority,
   lease: MediaProcessingAttemptLease,
   dependencies: MediaProcessingWorkflowDependencies,
+  failure: "provider_unavailable" | "publication_failed" = "provider_unavailable",
 ): WorkflowEffect<void> {
   return Effect.gen(function* () {
-    if (
-      !(yield* storeWrite(() =>
-        dependencies.store.failAttempt(lease, "provider_unavailable", true),
-      ))
-    ) {
+    if (!(yield* storeWrite(() => dependencies.store.failAttempt(lease, failure, true)))) {
       return yield* Effect.fail(new DeferredAttempt("stale_fence"));
     }
     dependencies.options.observe?.(observation(authority, "attempt_failed", lease.stage));
@@ -1093,7 +1116,7 @@ function publish(
       dependencies,
     );
     if (started.kind === "replay") return { outcome: "published" } as const;
-    const committed = yield* storeWrite(() => dependencies.store.commitPublication(current));
+    const committed = yield* commitPublicationWithContainment(current, started.lease, dependencies);
     if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
     const after = yield* authoritativeReload(current, dependencies);
     if (after.status !== "published" || after.postId === null) {

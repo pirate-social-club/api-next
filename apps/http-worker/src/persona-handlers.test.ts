@@ -47,6 +47,19 @@ function services(observed: unknown[]): PersonaHandlerServices {
       observed.push({ find: input });
       return Effect.succeed(persona);
     },
+    prepareActivityPersona: (
+      input: Parameters<PersonaHandlerServices["personas"]["store"]["prepareActivityPersona"]>[0],
+    ) => {
+      observed.push({ prepare: input });
+      return Effect.succeed({
+        personaId: input.personaId,
+        personaStatus: "active" as const,
+        activityPresentation: {
+          personaId: input.personaId,
+          updatedAt: "2026-08-24T12:03:00.000Z",
+        },
+      });
+    },
     create: (input: Parameters<PersonaHandlerServices["personas"]["store"]["create"]>[0]) => {
       observed.push({ create: input });
       return Effect.succeed({
@@ -194,6 +207,38 @@ describe("persona HTTP handlers", () => {
         idempotencyKey: "persona-handler-retire",
       },
     });
+  });
+
+  test("prepares an activity persona for the authenticated account and community path", async () => {
+    const observed: unknown[] = [];
+    const handlers = makePersonaHandlers(services(observed));
+    const response = await handlers.PrepareActivityPersona(
+      request({
+        params: { communityId: "community_handler" },
+        body: {
+          idempotency_key: "persona-handler-prepare",
+          choice: { kind: "existing", persona_id: persona.persona_id },
+        },
+      }),
+    );
+    expect(response).toMatchObject({
+      object: "activity_persona_preparation",
+      community_id: "community_handler",
+      persona_id: persona.persona_id,
+      persona_status: "active",
+    });
+    expect(observed).toContainEqual({
+      prepare: expect.objectContaining({
+        accountId: "account_handler",
+        communityId: "community_handler",
+        idempotencyKey: "persona-handler-prepare",
+      }),
+    });
+    await expect(
+      handlers.PrepareActivityPersona(
+        request({ params: { communityId: "community_handler" }, principal: null }),
+      ),
+    ).rejects.toMatchObject({ _tag: "AuthError" });
   });
 
   test("rejects non-human principals before invoking a persona service", async () => {

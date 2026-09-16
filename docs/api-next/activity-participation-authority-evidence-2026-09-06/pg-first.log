@@ -1,0 +1,31 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-participation-authority.pg.test.ts:
+107 |               expiresAt: "2026-09-06T12:30:00.000Z",
+108 |             })
+109 |             .pipe(Effect.result, Effect.provide(runtime)),
+110 |         ),
+111 |       );
+112 |       expect(karaoke).toMatchObject({
+                            ^
+error: expect(received).toMatchObject(expected)
+
+  {
+-   "_tag": "Failure",
+-   "failure": {
+-     "_tag": "KaraokeCommandRejected",
+-     "reason": "invalid-input",
+-   },
++   "failure": [KaraokeCommandRejected],
+  }
+
+- Expected  - 5
++ Received  + 1
+
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/activity-participation-authority.pg.test.ts:112:23)
+(fail) Activity participation authority implementation baseline > owned exact-community identity survives leaving but practice start and presentation reject it [1816.31ms]
+
+ 0 pass
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [2.81s]

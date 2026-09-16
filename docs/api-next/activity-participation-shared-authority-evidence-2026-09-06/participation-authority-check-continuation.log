@@ -1,0 +1,12 @@
+$ tsc --noEmit -p tsconfig.binding-contract.json
+$ bun scripts/community-creator-activation-invariant.ts
+community-creator-activation-invariant: ok
+$ node scripts/check-deps.mjs
+lint:deps — dependency matrix clean (1180 files walked)
+$ bun scripts/check-http-worker-import-boundary.mjs
+http-worker import boundary clean
+$ bun scripts/check-postgres-migration-worktree.ts
+Postgres migration worktree is consistent (128 migrations).
+$ bun scripts/check-contract-fresh.ts
+$ bun scripts/verify-api-client-package.ts
+api-client package verification passed (/tmp/pirate-api-client-usvwte/pack/pirate-api-client-0.65.0.tgz)

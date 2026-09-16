@@ -298,6 +298,23 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION active_activity_persona(expected_account_id text, expected_persona_id text, expected_community_id text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- A common lock order fences status changes until the activity transaction
+  -- commits. Read-only callers hold these locks only for their read transaction.
+  PERFORM 1 FROM users WHERE user_id=expected_account_id AND status='active' FOR SHARE;
+  IF NOT FOUND THEN RETURN false; END IF;
+  PERFORM 1 FROM communities WHERE community_id=expected_community_id AND status='active' FOR SHARE;
+  IF NOT FOUND THEN RETURN false; END IF;
+  PERFORM 1 FROM personas WHERE persona_id=expected_persona_id
+    AND account_id=expected_account_id AND status='active' FOR SHARE;
+  IF NOT FOUND THEN RETURN false; END IF;
+  RETURN active_owned_community_persona(expected_account_id,expected_persona_id,expected_community_id);
+END;
+$$;
+
 CREATE FUNCTION active_community_effect(expected_community_id text, expected_user_id text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -1606,6 +1623,21 @@ BEGIN
   RETURN QUERY SELECT 'provisioning'::TEXT, session.root_import_session_id, session.revision + 1;
 END;
 $_$;
+
+CREATE FUNCTION can_account_access_activity_song(expected_account_id text, expected_community_id text, expected_post_id text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE song_rating text;
+BEGIN
+  -- All currently composed Study/Karaoke sources support public songs only.
+  -- This correction does not expose membership-only or unpublished resources.
+  SELECT content_rating INTO song_rating FROM posts
+    WHERE community_id=expected_community_id AND post_id=expected_post_id
+      AND post_type='song' AND status='published' AND visibility='public' FOR SHARE;
+  IF NOT FOUND THEN RETURN false; END IF;
+  RETURN can_account_view_content_rating_v1(expected_account_id,song_rating);
+END;
+$$;
 
 CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, target_rating text) RETURNS boolean
     LANGUAGE sql STABLE
@@ -8649,8 +8681,7 @@ BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'Karaoke sessions cannot be deleted';
   END IF;
-  IF NOT active_owned_persona(NEW.account_id, NEW.persona_id)
-     OR NOT active_community_effect(NEW.community_id, NEW.account_id)
+  IF NOT active_activity_persona(NEW.account_id, NEW.persona_id, NEW.community_id)
      OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.timezone)
      OR NOT EXISTS (
        SELECT 1 FROM account_streak_clocks
@@ -8658,11 +8689,7 @@ BEGIN
      ) THEN
     RAISE EXCEPTION 'Karaoke session account, persona, community, or timezone is ineligible';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM posts
-     WHERE community_id = NEW.community_id AND post_id = NEW.post_id
-       AND post_type = 'song' AND status = 'published' AND visibility = 'public'
-  ) THEN
+  IF NOT can_account_access_activity_song(NEW.account_id, NEW.community_id, NEW.post_id) THEN
     RAISE EXCEPTION 'Karaoke sessions require a public published song';
   END IF;
   IF TG_OP = 'UPDATE' THEN
@@ -10766,6 +10793,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_persona_activity_preparation_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona activity preparation actions are append-only';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_persona_activity_presentation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11994,8 +12032,7 @@ BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'Study sessions cannot be deleted';
   END IF;
-  IF NOT active_owned_persona(NEW.account_id, NEW.persona_id)
-     OR NOT active_community_effect(NEW.community_id, NEW.account_id)
+  IF NOT active_activity_persona(NEW.account_id, NEW.persona_id, NEW.community_id)
      OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.timezone)
      OR NOT EXISTS (
        SELECT 1 FROM account_streak_clocks
@@ -12003,11 +12040,7 @@ BEGIN
      ) THEN
     RAISE EXCEPTION 'Study session account, persona, community, or timezone is ineligible';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM posts
-     WHERE community_id = NEW.community_id AND post_id = NEW.post_id
-       AND post_type = 'song' AND status = 'published' AND visibility = 'public'
-  ) THEN
+  IF NOT can_account_access_activity_song(NEW.account_id, NEW.community_id, NEW.post_id) THEN
     RAISE EXCEPTION 'Study sessions require a public published song';
   END IF;
   IF TG_OP = 'UPDATE' THEN
@@ -12117,6 +12150,18 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION guard_study_v2_activity_authority() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT active_activity_persona(NEW.account_id,NEW.persona_id,NEW.community_id)
+     OR NOT can_account_access_activity_song(NEW.account_id,NEW.community_id,NEW.post_id) THEN
+    RAISE EXCEPTION 'Study v2 activity authority is ineligible';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION guard_text_content_submission_response_snapshot() RETURNS trigger
@@ -30479,6 +30524,17 @@ CREATE TABLE operator_managed_route_operations (
     CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE persona_activity_preparation_actions (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_activity_preparation_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT persona_activity_preparation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE persona_activity_presentation_actions (
     account_id text NOT NULL,
     community_id text NOT NULL,
@@ -30509,7 +30565,7 @@ CREATE TABLE persona_community_bindings (
     binding_source text NOT NULL,
     bound_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT persona_community_bindings_bound_at_not_future CHECK ((bound_at <= clock_timestamp())),
-    CONSTRAINT persona_community_bindings_source_check CHECK ((binding_source = ANY (ARRAY['first_membership'::text, 'community_creation'::text, 'persona_creation'::text, 'migration_single_evidence'::text, 'explicit_migration_resolution'::text])))
+    CONSTRAINT persona_community_bindings_source_check CHECK ((binding_source = ANY (ARRAY['first_membership'::text, 'community_creation'::text, 'persona_creation'::text, 'activity_participation'::text, 'migration_single_evidence'::text, 'explicit_migration_resolution'::text])))
 );
 
 CREATE TABLE persona_create_actions (
@@ -34316,6 +34372,9 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY persona_activity_preparation_actions
+    ADD CONSTRAINT persona_activity_preparation_actions_pkey PRIMARY KEY (account_id, community_id, idempotency_key);
+
 ALTER TABLE ONLY persona_activity_presentation_actions
     ADD CONSTRAINT persona_activity_presentation_actions_pkey PRIMARY KEY (account_id, community_id, endpoint_template, idempotency_key);
 
@@ -36241,6 +36300,8 @@ CREATE TRIGGER operator_managed_route_activations_change_guard BEFORE DELETE OR 
 
 CREATE TRIGGER operator_managed_route_operations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_operations FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_route_operation_change();
 
+CREATE TRIGGER persona_activity_preparation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_preparation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_preparation_action();
+
 CREATE TRIGGER persona_activity_presentation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_presentation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation_action();
 
 CREATE TRIGGER persona_activity_presentations_active_persona BEFORE INSERT OR UPDATE OF account_id, persona_id ON persona_activity_presentations FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
@@ -36408,6 +36469,8 @@ CREATE TRIGGER study_session_items_change_guard BEFORE INSERT OR DELETE OR UPDAT
 CREATE TRIGGER study_session_items_v2_immutable BEFORE DELETE OR UPDATE ON study_session_items_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER study_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_sessions FOR EACH ROW EXECUTE FUNCTION guard_study_session();
+
+CREATE TRIGGER study_sessions_v2_activity_authority BEFORE INSERT OR UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION guard_study_v2_activity_authority();
 
 CREATE TRIGGER study_translation_generation_items_immutable BEFORE DELETE OR UPDATE ON study_translation_generation_items FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
@@ -38431,9 +38494,6 @@ ALTER TABLE ONLY persona_activity_presentation_actions
 
 ALTER TABLE ONLY persona_activity_presentations
     ADD CONSTRAINT persona_activity_presentations_community_binding_fkey FOREIGN KEY (community_id, account_id, persona_id) REFERENCES persona_community_bindings(community_id, account_id, persona_id);
-
-ALTER TABLE ONLY persona_activity_presentations
-    ADD CONSTRAINT persona_activity_presentations_community_id_account_id_fkey FOREIGN KEY (community_id, account_id) REFERENCES community_memberships(community_id, user_id);
 
 ALTER TABLE ONLY persona_community_bindings
     ADD CONSTRAINT persona_community_bindings_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);

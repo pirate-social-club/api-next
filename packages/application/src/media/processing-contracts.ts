@@ -351,7 +351,11 @@ export interface MediaProcessingStore {
   ) => Promise<boolean>;
   readonly failAttempt: (
     lease: MediaProcessingAttemptLease,
-    failure: "provider_unavailable" | "provider_timeout" | "provider_invalid",
+    failure:
+      | "provider_unavailable"
+      | "provider_timeout"
+      | "provider_invalid"
+      | "publication_failed",
     retryable: boolean,
   ) => Promise<boolean>;
   readonly commitAnalysis: (

@@ -1087,6 +1087,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(currentMigrations.map((entry) => entry.version)).toContain(
         "0127_video_delivery_ingest.sql",
       );
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0188_activity_participation_authority.sql",
+      );
       expect(currentMigrations.map((entry) => entry.version)).not.toContain(
         "0125_video_delivery_ingest.sql",
       );
@@ -1491,6 +1494,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "operator_managed_root_registry_versions",
         "operator_managed_route_activations",
         "operator_managed_route_operations",
+        "persona_activity_preparation_actions",
         "persona_activity_presentation_actions",
         "persona_activity_presentations",
         "persona_community_bindings",
@@ -1777,6 +1781,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "namespace_ownership_evidence_snapshot_append_only",
         "nationality_ceremony_attempt_append_only",
         "observations_append_only",
+        "persona_activity_preparation_actions_append_only",
         "persona_activity_presentation_actions_append_only",
         "persona_create_actions_append_only",
         "platform_referral_revenue_append_only",

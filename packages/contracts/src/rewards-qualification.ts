@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
 import { AuthError, BadRequest, Conflict, InternalError, NotFound, RateLimited } from "./errors.ts";
-import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
+import { ActivityPresentationV1, PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
 
 const BoundedIdentifier = Schema.NonEmptyString.check(
   Schema.isMaxLength(128),
@@ -453,13 +453,8 @@ export const AccountStreakClockV1 = Schema.Struct({
 });
 export type AccountStreakClockV1 = Schema.Schema.Type<typeof AccountStreakClockV1>;
 
-export const ActivityPresentationV1 = Schema.Struct({
-  object: Schema.Literal("activity_presentation"),
-  community_id: BoundedIdentifier,
-  persona_id: PersonaIdV1,
-  updated_at: CanonicalInstant,
-});
-export type ActivityPresentationV1 = Schema.Schema.Type<typeof ActivityPresentationV1>;
+// ActivityPresentationV1 is owned by the persona contract (personas.ts) so
+// persona preparation can return it without a module cycle.
 
 export const ActivityStreakLeaderboardEntryV1 = Schema.Struct({
   rank: PositiveInteger,

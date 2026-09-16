@@ -6,10 +6,12 @@ import {
   listMyPersonas,
   type PersonaRecord,
   PersonaStoreConflict,
+  PersonaStoreRateLimited,
   type PersonaStoreService,
   PersonaUnavailable,
   PersonaWalletProofRejected,
   type PersonaWalletStoreService,
+  prepareActivityPersona,
   preparePersonaEvmWallet,
   requireActiveOwnedPersona,
   retirePersona,
@@ -45,6 +47,12 @@ const storeWith = (overrides: Partial<PersonaStoreService> = {}): PersonaStoreSe
         ? activePersona
         : null,
     ),
+  prepareActivityPersona: ({ personaId }) =>
+    Effect.succeed({
+      personaId,
+      personaStatus: "active",
+      activityPresentation: { personaId, updatedAt: "2026-08-23T20:00:00.000Z" },
+    }),
   create: ({ personaId }) =>
     Effect.succeed({
       persona_id: personaId,
@@ -434,5 +442,153 @@ describe("account-owned persona use cases", () => {
     );
     expect(capturedKey).toBe("persona-retire-1");
     expect(result.status).toBe("retired");
+  });
+
+  test("prepares an activity persona from the authenticated account without choosing a default", async () => {
+    let captured: unknown;
+    const result = await Effect.runPromise(
+      prepareActivityPersona(
+        {
+          accountId: "account_owner",
+          communityId: "community_pokemon",
+          body: {
+            idempotency_key: "persona-prepare-1",
+            choice: { kind: "existing", persona_id: activePersona.persona_id },
+          },
+        },
+        {
+          store: storeWith({
+            prepareActivityPersona: (input) => {
+              captured = input;
+              return Effect.succeed({
+                personaId: input.personaId,
+                personaStatus: "active",
+                activityPresentation: {
+                  personaId: input.personaId,
+                  updatedAt: "2026-08-23T20:00:00.000Z",
+                },
+              });
+            },
+          }),
+          nextPersonaId: () => Effect.succeed("persona_unused"),
+          nowIso: () => Effect.succeed("2026-08-23T20:00:00.000Z"),
+        },
+      ),
+    );
+    expect(captured).toMatchObject({
+      accountId: "account_owner",
+      communityId: "community_pokemon",
+      idempotencyKey: "persona-prepare-1",
+      personaId: activePersona.persona_id,
+      choice: { kind: "existing", persona_id: activePersona.persona_id },
+      requestHash: expect.stringMatching(/^[0-9a-f]{64}$/u) as unknown as string,
+    });
+    expect(result).toEqual({
+      object: "activity_persona_preparation",
+      community_id: "community_pokemon",
+      persona_id: activePersona.persona_id,
+      persona_status: "active",
+      activity_presentation: {
+        object: "activity_presentation",
+        community_id: "community_pokemon",
+        persona_id: activePersona.persona_id,
+        updated_at: "2026-08-23T20:00:00.000Z",
+      },
+    });
+  });
+
+  test("generates the persona id only for a create-new preparation and maps store outcomes", async () => {
+    let generated = 0;
+    const createNew = await Effect.runPromise(
+      prepareActivityPersona(
+        {
+          accountId: "account_owner",
+          communityId: "community_pokemon",
+          body: { idempotency_key: "persona-prepare-2", choice: { kind: "create_new" } },
+        },
+        {
+          store: storeWith({
+            prepareActivityPersona: (input) =>
+              Effect.succeed({
+                personaId: input.personaId,
+                personaStatus: "pending_wallet",
+                activityPresentation: null,
+              }),
+          }),
+          nextPersonaId: () => {
+            generated += 1;
+            return Effect.succeed("persona_generated");
+          },
+          nowIso: () => Effect.succeed("2026-08-23T20:00:00.000Z"),
+        },
+      ),
+    );
+    expect(generated).toBe(1);
+    expect(createNew).toMatchObject({
+      persona_id: "persona_generated",
+      persona_status: "pending_wallet",
+      activity_presentation: null,
+    });
+    const services = {
+      nextPersonaId: () => Effect.succeed("persona_generated"),
+      nowIso: () => Effect.succeed("2026-08-23T20:00:00.000Z"),
+    };
+    await expect(
+      Effect.runPromise(
+        prepareActivityPersona(
+          {
+            accountId: "account_owner",
+            communityId: "community_pokemon",
+            body: {
+              idempotency_key: "persona-prepare-3",
+              choice: { kind: "existing", persona_id: activePersona.persona_id },
+            },
+          },
+          { ...services, store: storeWith({ prepareActivityPersona: () => Effect.succeed(null) }) },
+        ),
+      ),
+    ).rejects.toMatchObject({ _tag: "NotFound" });
+    await expect(
+      Effect.runPromise(
+        prepareActivityPersona(
+          {
+            accountId: "account_owner",
+            communityId: "community_pokemon",
+            body: {
+              idempotency_key: "persona-prepare-4",
+              choice: { kind: "existing", persona_id: activePersona.persona_id },
+            },
+          },
+          {
+            ...services,
+            store: storeWith({
+              prepareActivityPersona: () =>
+                Effect.fail(new PersonaStoreConflict({ reason: "binding-conflict" })),
+            }),
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ _tag: "Conflict" });
+    await expect(
+      Effect.runPromise(
+        prepareActivityPersona(
+          {
+            accountId: "account_owner",
+            communityId: "community_pokemon",
+            body: {
+              idempotency_key: "persona-prepare-5",
+              choice: { kind: "existing", persona_id: activePersona.persona_id },
+            },
+          },
+          {
+            ...services,
+            store: storeWith({
+              prepareActivityPersona: () =>
+                Effect.fail(new PersonaStoreRateLimited({ retryAfterSeconds: 30 })),
+            }),
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ _tag: "RateLimited", retry_after_seconds: 30 });
   });
 });

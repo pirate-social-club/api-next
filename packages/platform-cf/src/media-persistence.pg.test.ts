@@ -565,6 +565,137 @@ async function expectHostileLyricsProjectionLeakRejected(
 }
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
+  test("publishes an allowed instrumental once when the runtime role gains only the missing INSERT grants", async () => {
+    const role = `runtime_publication_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const rolePassword = randomUUID().replaceAll("-", "");
+    const quotedRole = quoteIdentifier(role);
+    let roleCreated = false;
+    try {
+      await withCurrentSchema(async (admin, connection) => {
+        await createThroughDecision(connection);
+        const schemaRow = await admin.query<{ schema: string }>(
+          "SELECT current_schema() AS schema",
+        );
+        const schema = schemaRow.rows[0]?.schema;
+        if (schema === undefined) throw new Error("missing regression schema");
+        const quoted = quoteIdentifier(schema);
+        const roleSql = await admin.query<{ sql: string }>(
+          "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT', $1::text, $2::text) AS sql",
+          [role, rolePassword],
+        );
+        const createRoleSql = roleSql.rows[0]?.sql;
+        if (createRoleSql === undefined) throw new Error("missing role creation statement");
+        await admin.query(createRoleSql);
+        roleCreated = true;
+        // Mirror the ratified shared-runtime model: schema USAGE, product
+        // table DML and sequence SELECT/UPDATE/USAGE. Staging's live grants
+        // make the two song-owner tables SELECT-only, so reproduce that exact
+        // drift instead of a broader denial.
+        await admin.query(`GRANT USAGE ON SCHEMA ${quoted} TO ${quotedRole}`);
+        await admin.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoted} TO ${quotedRole}`,
+        );
+        await admin.query(
+          `GRANT SELECT, UPDATE, USAGE ON ALL SEQUENCES IN SCHEMA ${quoted} TO ${quotedRole}`,
+        );
+        await admin.query(
+          `REVOKE INSERT, UPDATE, DELETE ON ${quoted}.song_owner_policies FROM ${quotedRole}`,
+        );
+        await admin.query(
+          `REVOKE INSERT, UPDATE, DELETE ON ${quoted}.song_owner_policy_revisions FROM ${quotedRole}`,
+        );
+        const privilege = await admin.query<{ sel: boolean; ins: boolean }>(
+          "SELECT has_table_privilege($1::text, format('%I.%I', $2::text, $3::text), 'SELECT') AS sel, has_table_privilege($1::text, format('%I.%I', $2::text, $3::text), 'INSERT') AS ins",
+          [role, schema, "song_owner_policies"],
+        );
+        expect(privilege.rows[0]).toMatchObject({ sel: true, ins: false });
+
+        const runtimeUrl = new URL(connection);
+        runtimeUrl.username = role;
+        runtimeUrl.password = rolePassword;
+        const processing = makeMediaProcessingStore(
+          makeDirectPostgresControlPlaneLayer(runtimeUrl.toString()),
+          { dataRegistrationChainId: 1315n },
+        );
+        const authority = await processing.loadAuthority(submission, operation);
+        if (authority === null) throw new Error("missing regression authority");
+
+        const failure = await processing.commitPublication(authority).then(
+          () => null,
+          (error: unknown) =>
+            error as {
+              readonly _tag?: unknown;
+              readonly label?: unknown;
+              readonly sqlState?: unknown;
+            },
+        );
+        expect(failure?._tag).toBe("ControlPlaneStatementFailed");
+        expect(failure?.label).toBe("media-publish.projection");
+        expect(failure?.sqlState).toBe("42501");
+        const blocked = await admin.query<{
+          status: string;
+          phase: string | null;
+          post_id: string | null;
+        }>("SELECT status,phase,post_id FROM media_post_submissions WHERE submission_id=$1", [
+          submission,
+        ]);
+        expect(blocked.rows[0]).toMatchObject({
+          status: "processing",
+          phase: "publish",
+          post_id: null,
+        });
+
+        // Only the two demonstrated INSERT grants, never broader DML.
+        await admin.query(`GRANT INSERT ON ${quoted}.song_owner_policies TO ${quotedRole}`);
+        await admin.query(`GRANT INSERT ON ${quoted}.song_owner_policy_revisions TO ${quotedRole}`);
+        expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
+        expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
+        const posts = await admin.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM posts WHERE post_id=$1",
+          [`media-post-${operation}`],
+        );
+        expect(posts.rows[0]?.count).toBe(1);
+        const policies = await admin.query<{ heads: number; revisions: number }>(
+          `SELECT (SELECT count(*)::int FROM song_owner_policies WHERE post_id=$1) AS heads,
+                  (SELECT count(*)::int FROM song_owner_policy_revisions WHERE post_id=$1) AS revisions`,
+          [`media-post-${operation}`],
+        );
+        expect(policies.rows[0]).toMatchObject({ heads: 1, revisions: 1 });
+        const operations = await admin.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM data_registration_operations WHERE submission_id=$1",
+          [submission],
+        );
+        expect(operations.rows[0]?.count).toBe(1);
+        const outbox = await admin.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM data_registration_outbox WHERE registration_operation_id IN (SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)",
+          [submission],
+        );
+        expect(outbox.rows[0]?.count).toBe(1);
+        const published = await admin.query<{ status: string; post_id: string | null }>(
+          "SELECT status,post_id FROM media_post_submissions WHERE submission_id=$1",
+          [submission],
+        );
+        expect(published.rows[0]).toMatchObject({
+          status: "published",
+          post_id: `media-post-${operation}`,
+        });
+      });
+    } finally {
+      // The role is unique to this test, so dropping its privileges cannot
+      // touch another suite's role; the schema survives for reuse.
+      if (roleCreated) {
+        const cleanup = new Client({ connectionString });
+        await cleanup.connect();
+        try {
+          await cleanup.query(`DROP OWNED BY ${quotedRole} CASCADE`).catch(() => undefined);
+          await cleanup.query(`DROP ROLE IF EXISTS ${quotedRole}`).catch(() => undefined);
+        } finally {
+          await cleanup.end().catch(() => undefined);
+        }
+      }
+    }
+  }, 120_000);
+
   test("launches the Workflow created by an authenticated HTTP song submission", async () => {
     await withCurrentSchema(async (_admin, connection) => {
       const runtime = makeDirectPostgresControlPlaneLayer(connection);

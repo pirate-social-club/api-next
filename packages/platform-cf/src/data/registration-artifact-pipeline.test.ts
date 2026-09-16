@@ -562,6 +562,87 @@ describe("DATA registration artifact pipeline", () => {
     expect(calls).toEqual(["filebase", "gateway"]);
   });
 
+  test("retains closed pin failure classes and the HTTP status in definitive failure evidence", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
+      immutableOriginals: fakeBucket,
+      pinning: {
+        pin: () =>
+          Effect.succeed({
+            status: "permanent",
+            outcome: "permanent",
+            reason: "unauthorized",
+            http_status: 403,
+          }),
+      },
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    const audio = (await pipeline.prepare(operation))[0];
+    if (audio === undefined) throw new Error("audio fixture missing");
+    const result = await pipeline.pinAndVerify(operation, audio);
+    expect(result).toEqual({
+      status: "failed",
+      evidenceRef: `data-registration://pin-failed/${audio.artifact.artifactId}?class=permanent&reason=unauthorized&http_status=403`,
+    });
+  });
+
+  test("retains a reason-only class when no HTTP status is available", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
+      immutableOriginals: fakeBucket,
+      pinning: {
+        pin: () =>
+          Effect.succeed({
+            status: "integrity_mismatch",
+            outcome: "integrity_mismatch",
+            reason: "sha256",
+          }),
+      },
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    const audio = (await pipeline.prepare(operation))[0];
+    if (audio === undefined) throw new Error("audio fixture missing");
+    expect(await pipeline.pinAndVerify(operation, audio)).toEqual({
+      status: "failed",
+      evidenceRef: `data-registration://pin-failed/${audio.artifact.artifactId}?class=integrity_mismatch&reason=sha256`,
+    });
+  });
+
+  test("keeps retryable pin classes deferred without failure evidence", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
+      immutableOriginals: fakeBucket,
+      pinning: {
+        pin: () =>
+          Effect.succeed({
+            status: "retryable",
+            outcome: "retryable",
+            reason: "throttled",
+            http_status: 429,
+          }),
+      },
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    const audio = (await pipeline.prepare(operation))[0];
+    if (audio === undefined) throw new Error("audio fixture missing");
+    expect(await pipeline.pinAndVerify(operation, audio)).toEqual({ status: "retryable" });
+  });
+
   test("retains a durable primary pin when gateway verification is retryable", async () => {
     let providerPinCalls = 0;
     let gatewayCalls = 0;

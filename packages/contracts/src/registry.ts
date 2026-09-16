@@ -67,6 +67,7 @@ import {
   CreatePersona,
   ListMyPendingPersonaWallets,
   ListMyPersonas,
+  PrepareActivityPersona,
   PreparePersonaEvmWallet,
   RetirePersona,
 } from "./personas.ts";
@@ -188,6 +189,7 @@ export const registry = {
   StartStudySessionV2,
   GetStudySessionV2,
   SubmitStudyAnswerV2,
+  PrepareActivityPersona,
   OpenSongRewardOffer,
   AddMegapotPoolLeg,
   ObserveMegapotPoolFunding,

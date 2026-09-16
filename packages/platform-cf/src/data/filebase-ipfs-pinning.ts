@@ -19,7 +19,6 @@ import { Effect, Predicate } from "effect";
 
 export const FILEBASE_IPFS_RPC_ORIGIN = "https://rpc.filebase.io" as const;
 export const FILEBASE_IPFS_ADD_PATH = "/api/v0/add" as const;
-export const FILEBASE_IPFS_PIN_ADD_PATH = "/api/v0/pin/add" as const;
 export const FILEBASE_IPFS_PIN_LS_PATH = "/api/v0/pin/ls" as const;
 export const FILEBASE_IPFS_CAT_PATH = "/api/v0/cat" as const;
 export const FILEBASE_IPFS_ADD_QUERY = "?cid-version=1&wrap-with-directory=false" as const;
@@ -43,7 +42,6 @@ export type FilebaseIpfsTransportRequest = Readonly<{
   readonly url: string;
   readonly path:
     | typeof FILEBASE_IPFS_ADD_PATH
-    | typeof FILEBASE_IPFS_PIN_ADD_PATH
     | typeof FILEBASE_IPFS_PIN_LS_PATH
     | typeof FILEBASE_IPFS_CAT_PATH;
   readonly headers: Readonly<Record<string, string>>;
@@ -760,28 +758,6 @@ function validPinName(value: unknown): value is string {
   );
 }
 
-function parsePinAddResponse(value: Record<string, unknown>, cid: string): void {
-  if (!hasOnlyKeys(value, ["Pins"], ["Bytes", "Progress"])) {
-    throw new ResponseBodyError("malformed");
-  }
-  if (
-    !Array.isArray(value.Pins) ||
-    value.Pins.length === 0 ||
-    !value.Pins.every((pin) => typeof pin === "string" && isValidFilebaseCid(pin)) ||
-    !value.Pins.includes(cid)
-  ) {
-    throw new ResponseBodyError("malformed");
-  }
-  if (
-    (Object.hasOwn(value, "Bytes") &&
-      !boundedUnsignedInteger(value.Bytes, FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES)) ||
-    (Object.hasOwn(value, "Progress") &&
-      !boundedUnsignedInteger(value.Progress, FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES))
-  ) {
-    throw new ResponseBodyError("malformed");
-  }
-}
-
 function parsePinLsResponse(value: Record<string, unknown>, cid: string): boolean {
   if (
     !hasOnlyKeys(value, ["Keys"]) ||
@@ -817,20 +793,31 @@ function parsePinLsResponse(value: Record<string, unknown>, cid: string): boolea
   return Predicate.isObject(matchingEntry) && matchingEntry.Type === "recursive";
 }
 
+function validHttpStatus(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 100 && value <= 599;
+}
+
 function resultForHttpStatus(
   status: number,
   path: FilebaseIpfsTransportRequest["path"],
 ): IpfsPinningResult {
+  const sanitized = validHttpStatus(status) ? { http_status: status } : {};
   if (status === 404)
     return path === FILEBASE_IPFS_CAT_PATH
-      ? { status: "not_found", outcome: "not_found" }
-      : { status: "retryable", outcome: "retryable", reason: "pin_not_converged" };
+      ? { status: "not_found", outcome: "not_found", ...sanitized }
+      : { status: "retryable", outcome: "retryable", reason: "pin_not_converged", ...sanitized };
   if (status === 401 || status === 403)
-    return { status: "permanent", outcome: "permanent", reason: "unauthorized" };
-  if (status === 429) return { status: "retryable", outcome: "retryable", reason: "throttled" };
+    return { status: "permanent", outcome: "permanent", reason: "unauthorized", ...sanitized };
+  if (status === 429)
+    return { status: "retryable", outcome: "retryable", reason: "throttled", ...sanitized };
   if (status >= 500)
-    return { status: "retryable", outcome: "retryable", reason: "provider_unavailable" };
-  return { status: "permanent", outcome: "permanent", reason: "provider_rejected" };
+    return {
+      status: "retryable",
+      outcome: "retryable",
+      reason: "provider_unavailable",
+      ...sanitized,
+    };
+  return { status: "permanent", outcome: "permanent", reason: "provider_rejected", ...sanitized };
 }
 
 async function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -856,7 +843,6 @@ function statusPath(
   status: number,
 ): IpfsPinningResult | null {
   if (status >= 200 && status < 300) return null;
-  if (path === FILEBASE_IPFS_PIN_ADD_PATH && status === 409) return null;
   return resultForHttpStatus(status, path);
 }
 
@@ -991,23 +977,10 @@ export function makeFilebaseIpfsPinningAdapter(
             }
             throw error;
           }
-          const pinAdd = await call(
-            FILEBASE_IPFS_PIN_ADD_PATH,
-            emptyBody(),
-            `?arg=${encodeURIComponent(cid)}`,
-          );
-          const pinAddStatus = statusPath(FILEBASE_IPFS_PIN_ADD_PATH, pinAdd.status);
-          if (pinAddStatus !== null) {
-            await cancelResponse(pinAdd, "http_status");
-            return pinAddStatus;
-          }
-          if (pinAdd.status !== 409) {
-            const pinAddBody = await parseJsonResponse(pinAdd, ["application/json"]);
-            parsePinAddResponse(pinAddBody, cid);
-          } else {
-            await cancelResponse(pinAdd, "duplicate_pin");
-          }
-
+          // Filebase documents /api/v0/add as "Add (and pin) a file", so a
+          // successful own upload is already pinned and needs no import-style
+          // pin/add call. Recursive pin state is still confirmed through
+          // pin/ls below, and the stored bytes are still verified by /cat.
           let recursive = false;
           let lastPinLsRetryable:
             | Extract<IpfsPinningResult, { readonly status: "retryable" }>

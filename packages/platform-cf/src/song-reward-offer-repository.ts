@@ -536,7 +536,20 @@ export function makeControlPlaneSongRewardOfferRepository() {
             return { offer: yield* readOffer(transaction, input.offerId), replayed: false };
           }),
         );
-      }).pipe(mapped),
+      }).pipe(
+        // The one-nonterminal-offer-per-post index is a durable-state conflict,
+        // not an internal failure. Surface it as the declared typed rejection so
+        // callers can rediscover the existing offer instead of seeing a 500.
+        Effect.mapError((error) =>
+          error._tag === "ControlPlaneStatementFailed" &&
+          error.sqlState === "23505" &&
+          (error.constraint === "song_reward_offers_one_nonterminal_per_post_uidx" ||
+            error.label === "song-reward-offer.open.create")
+            ? rejected("offer-conflict")
+            : error,
+        ),
+        mapped,
+      ),
 
     addMegapotPoolLeg: (input: Parameters<SongRewardOfferStore["addMegapotPoolLeg"]>[0]) =>
       Effect.gen(function* () {

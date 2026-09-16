@@ -247,6 +247,7 @@ const personaStore: PersonaStoreService = {
     Effect.succeed(
       accountId === account.user.user_id && personaId === workerdPersonaId ? workerdPersona : null,
     ),
+  prepareActivityPersona: () => Effect.die("unused Workerd persona fixture operation"),
   create: () => Effect.die("unused Workerd persona fixture operation"),
 };
 

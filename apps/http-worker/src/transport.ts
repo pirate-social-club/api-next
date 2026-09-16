@@ -666,6 +666,7 @@ const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "ListMyPersonas",
   "ListMyPendingPersonaWallets",
   "CreatePersona",
+  "PrepareActivityPersona",
   "PreparePersonaEvmWallet",
   "ConfirmPersonaEvmWallet",
   "RetirePersona",

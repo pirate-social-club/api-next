@@ -1,7 +1,7 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import type { IpfsGatewayVerifier } from "@pirate/application/data/ipfs-live-verification";
 import { pinAndVerifyIpfsArtifact } from "@pirate/application/data/ipfs-live-verification";
-import type { IpfsPinningService } from "@pirate/application/data/ipfs-pinning";
+import type { IpfsPinningResult, IpfsPinningService } from "@pirate/application/data/ipfs-pinning";
 import {
   type DataLicensePreset,
   type DataRegistrationArtifact,
@@ -836,6 +836,24 @@ export function makeDataRegistrationArtifactPipeline(
     ];
   };
 
+  /**
+   * A definitive pin failure retains only closed classifications and a
+   * validated HTTP status. Provider response bodies, headers, tokens and
+   * credential-bearing URLs are never copied into persisted evidence.
+   */
+  const pinFailureEvidence = (
+    artifactId: string,
+    pin: Exclude<IpfsPinningResult, { readonly status: "pinned" }>,
+  ): string => {
+    const query = new URLSearchParams();
+    query.set("class", pin.status);
+    if ("reason" in pin && typeof pin.reason === "string") query.set("reason", pin.reason);
+    if ("http_status" in pin && typeof pin.http_status === "number") {
+      query.set("http_status", String(pin.http_status));
+    }
+    return `data-registration://pin-failed/${artifactId}?${query.toString()}`;
+  };
+
   const pinAndVerifyEffect = Effect.fn("DataRegistrationArtifactPipeline.pinAndVerify")(function* (
     prepared: DataRegistrationPreparedArtifact,
   ): Effect.fn.Return<DataRegistrationPinResult, unknown> {
@@ -928,7 +946,7 @@ export function makeDataRegistrationArtifactPipeline(
       ? { status: "retryable" }
       : {
           status: "failed",
-          evidenceRef: `data-registration://pin-failed/${prepared.artifact.artifactId}`,
+          evidenceRef: pinFailureEvidence(prepared.artifact.artifactId, result.pin),
         };
   });
   return {

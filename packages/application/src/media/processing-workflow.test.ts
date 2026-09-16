@@ -207,10 +207,18 @@ class FakeStore implements MediaProcessingStore {
     return true;
   };
 
-  failAttempt = async (lease: MediaProcessingAttemptLease) => {
+  readonly failureCodes: (
+    | "provider_unavailable"
+    | "provider_timeout"
+    | "provider_invalid"
+    | "publication_failed"
+  )[] = [];
+
+  failAttempt: MediaProcessingStore["failAttempt"] = async (lease, failure) => {
     const prior = this.attempts.get(lease.attemptId);
     if (prior?.lease.claimFence !== lease.claimFence) return false;
     this.events.push(`fail:${lease.stage}`);
+    this.failureCodes.push(failure);
     this.attempts.set(lease.attemptId, { lease, failed: true });
     return true;
   };
@@ -1200,6 +1208,104 @@ describe("media processing workflow", () => {
     ).toEqual({ outcome: "inert" });
     expect(store.publications).toBe(1);
     expect(store.alignmentLaunches).toBe(1);
+  });
+
+  test("contains a persistent publication store failure as one bounded attempt failure", async () => {
+    const store = new FakeStore();
+    const provider = providers([], { explicitness: "uncertain" });
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "manual_review" });
+    store.current = { ...store.current, status: "processing", phase: "publish" };
+    const outbox = store.outboxes.get("outbox-1");
+    if (outbox === undefined) throw new TypeError("publication outbox fixture is missing");
+    store.outboxes.set("outbox-1", { ...outbox, eventType: "publication" });
+
+    const commitPublication = store.commitPublication;
+    let statementFails = true;
+    store.commitPublication = async (expected) => {
+      if (statementFails) throw new Error("control plane statement failed: insufficient privilege");
+      return commitPublication(expected);
+    };
+
+    expect(
+      await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.failureCodes).toEqual(["publication_failed"]);
+    expect(store.events.filter((event) => event.startsWith("fail:"))).toHaveLength(1);
+    expect(store.publications).toBe(0);
+
+    statementFails = false;
+    expect(
+      await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
+    ).toEqual({ outcome: "published" });
+    expect(store.publications).toBe(1);
+    expect(store.alignmentLaunches).toBe(1);
+    expect(
+      await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
+    ).toEqual({ outcome: "inert" });
+    expect(store.publications).toBe(1);
+    expect(store.failureCodes).toEqual(["publication_failed"]);
+  });
+
+  test("an ambiguous publication commit is contained without a second publication", async () => {
+    const store = new FakeStore();
+    const provider = providers([], { explicitness: "uncertain" });
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "manual_review" });
+    store.current = { ...store.current, status: "processing", phase: "publish" };
+    const outbox = store.outboxes.get("outbox-1");
+    if (outbox === undefined) throw new TypeError("publication outbox fixture is missing");
+    store.outboxes.set("outbox-1", { ...outbox, eventType: "publication" });
+
+    const commitPublication = store.commitPublication;
+    let loseResponse = true;
+    store.commitPublication = async (expected) => {
+      const result = await commitPublication(expected);
+      if (loseResponse) {
+        loseResponse = false;
+        throw new Error("publication response lost");
+      }
+      return result;
+    };
+    // The retry keeps the original durable payload even though the successful
+    // commit advanced the submission's workflow revision. The advanced
+    // revision is authoritative, so the late publication step is inert and
+    // the durable effect counts never grow past one.
+    const publicationPayload = workflowPayload(store);
+
+    expect(
+      await runWorkflow(publicationPayload, "publication", dependencies(store, provider)),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.failureCodes).toEqual(["publication_failed"]);
+    expect(store.publications).toBe(1);
+    expect(store.alignmentLaunches).toBe(1);
+
+    expect(
+      await runWorkflow(publicationPayload, "publication", dependencies(store, provider)),
+    ).toEqual({ outcome: "inert" });
+    expect(store.publications).toBe(1);
+    expect(store.alignmentLaunches).toBe(1);
+  });
+
+  test("a stale publication fence defers without recording a failure", async () => {
+    const store = new FakeStore();
+    const provider = providers([], { explicitness: "uncertain" });
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "manual_review" });
+    store.current = { ...store.current, status: "processing", phase: "publish" };
+    const outbox = store.outboxes.get("outbox-1");
+    if (outbox === undefined) throw new TypeError("publication outbox fixture is missing");
+    store.outboxes.set("outbox-1", { ...outbox, eventType: "publication" });
+
+    store.commitPublication = async () => "stale";
+    expect(
+      await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.failureCodes).toEqual([]);
+    expect(store.publications).toBe(0);
   });
 
   test("resumes from a committed decision after its response is lost", async () => {
