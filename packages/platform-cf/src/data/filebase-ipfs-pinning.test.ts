@@ -6,7 +6,6 @@ import {
   FILEBASE_IPFS_ADD_QUERY,
   FILEBASE_IPFS_CAT_PATH,
   FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX,
-  FILEBASE_IPFS_PIN_ADD_PATH,
   FILEBASE_IPFS_PIN_LS_PATH,
   type FilebaseIpfsTransport,
   type FilebaseIpfsTransportRequest,
@@ -122,7 +121,6 @@ function transportFor(
     readonly catContentType?: string;
     readonly catBytes?: Uint8Array;
     readonly catOnCancel?: () => void;
-    readonly duplicate?: boolean;
     readonly addSize?: string;
     readonly statuses?: Partial<Record<FilebaseIpfsTransportRequest["path"], number>>;
     readonly onRequest?: (request: FilebaseIpfsTransportRequest) => void;
@@ -169,9 +167,6 @@ function transportFor(
         options.contentType ?? "application/json",
       );
     }
-    if (request.path === FILEBASE_IPFS_PIN_ADD_PATH) {
-      return options.duplicate ? json({}, 409) : json({ Pins: [CID] });
-    }
     if (request.path === FILEBASE_IPFS_PIN_LS_PATH) {
       lsCalls += 1;
       return json(
@@ -217,7 +212,7 @@ describe("Filebase IPFS pinning adapter", () => {
     expect(calls).toBe(0);
   });
 
-  test("streams one multipart source and verifies pin convergence plus raw cat digest", async () => {
+  test("streams one multipart source, confirms the recursive pin, and verifies the raw cat digest", async () => {
     const fake = transportFor();
     const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
     expect(result).toEqual({
@@ -230,16 +225,18 @@ describe("Filebase IPFS pinning adapter", () => {
     });
     expect(fake.requests.map((request) => request.url)).toEqual([
       `https://rpc.filebase.io${FILEBASE_IPFS_ADD_PATH}${FILEBASE_IPFS_ADD_QUERY}`,
-      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_ADD_PATH}?arg=${encodeURIComponent(CID)}`,
       `https://rpc.filebase.io${FILEBASE_IPFS_PIN_LS_PATH}?arg=${encodeURIComponent(CID)}&stream=false&names=false`,
       `https://rpc.filebase.io${FILEBASE_IPFS_CAT_PATH}?arg=${encodeURIComponent(CID)}`,
     ]);
     expect(fake.requests[1]?.body.byte_length).toBe(0);
     expect(fake.requests[1]?.body.content_type).not.toBe("application/json");
-    expect(fake.requests[3]?.body.byte_length).toBe(0);
-    expect(fake.requests[3]?.body.content_type).toBe("application/octet-stream");
+    expect(fake.requests[2]?.body.byte_length).toBe(0);
+    expect(fake.requests[2]?.body.content_type).toBe("application/octet-stream");
     expect(fake.requests.every((request) => request.redirect === "error")).toBe(true);
     expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    // Filebase add already pins the upload; an import-style pin/add call is
+    // never issued for an own upload.
+    expect(fake.requests.every((request) => !request.url.includes("/pin/add"))).toBe(true);
   });
 
   test("accepts Filebase text/plain cat responses only after exact digest verification", async () => {
@@ -291,13 +288,33 @@ describe("Filebase IPFS pinning adapter", () => {
     expect(calls).toBe(0);
   });
 
-  test("requires recursive pin state after a duplicate or delayed pin", async () => {
+  test("requires recursive pin state across bounded convergence attempts", async () => {
     const fake = transportFor({ converge: false });
     const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
     expect(result.status).toBe("pinned");
     expect(
       fake.requests.filter((request) => request.path === FILEBASE_IPFS_PIN_LS_PATH),
     ).toHaveLength(3);
+  });
+
+  test("defers a missing pin after the bounded convergence attempts", async () => {
+    let lsCalls = 0;
+    const result = await Effect.runPromise(
+      adapter(async (request) => {
+        if (request.path === FILEBASE_IPFS_ADD_PATH) return transportFor().transport(request);
+        if (request.path === FILEBASE_IPFS_PIN_LS_PATH) {
+          lsCalls += 1;
+          return json(hostileFixtures.responses.pin_ls_empty);
+        }
+        return transportFor().transport(request);
+      }).pin(input()),
+    );
+    expect(result).toEqual({
+      status: "retryable",
+      outcome: "retryable",
+      reason: "pin_not_converged",
+    });
+    expect(lsCalls).toBe(3);
   });
 
   test("waits between non-converged pin-list attempts", async () => {
@@ -337,35 +354,15 @@ describe("Filebase IPFS pinning adapter", () => {
     });
   });
 
-  test("treats a duplicate pin as success only after canonical recursive pin/ls", async () => {
-    const fake = transportFor({ duplicate: true });
+  test("does not treat an already-pinned CID as a reason to import it again", async () => {
+    const fake = transportFor();
     const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
     expect(result.status).toBe("pinned");
-    expect(fake.requests.some((request) => request.path === FILEBASE_IPFS_PIN_LS_PATH)).toBe(true);
-  });
-
-  test("accepts bounded documented /pin/add evidence and rejects unbounded evidence", async () => {
-    const base = transportFor();
-    const accepted = await Effect.runPromise(
-      adapter(async (request) => {
-        const response = await base.transport(request);
-        return request.path === FILEBASE_IPFS_PIN_ADD_PATH
-          ? json({ Bytes: "4", Pins: [CID], Progress: "1" })
-          : response;
-      }).pin(input()),
-    );
-    expect(accepted.status).toBe("pinned");
-
-    const rejectedBase = transportFor();
-    const rejected = await Effect.runPromise(
-      adapter(async (request) => {
-        const response = await rejectedBase.transport(request);
-        return request.path === FILEBASE_IPFS_PIN_ADD_PATH
-          ? json({ Bytes: "999999999999999999999999999", Pins: [CID] })
-          : response;
-      }).pin(input()),
-    );
-    expect(rejected).toMatchObject({ status: "malformed", reason: "malformed_response" });
+    expect(fake.requests.map((request) => request.path)).toEqual([
+      FILEBASE_IPFS_ADD_PATH,
+      FILEBASE_IPFS_PIN_LS_PATH,
+      FILEBASE_IPFS_CAT_PATH,
+    ]);
   });
 
   test("rejects invalid CID structures and wrong response content type", async () => {
@@ -379,33 +376,63 @@ describe("Filebase IPFS pinning adapter", () => {
     expect(result).toMatchObject({ status: "malformed" });
   });
 
-  test("maps throttled, unauthorized, unavailable, and not-found statuses", async () => {
+  test("maps throttled, unauthorized, unavailable, and not-found statuses with sanitized status evidence", async () => {
     const throttled = await Effect.runPromise(
       adapter(transportFor({ statuses: { [FILEBASE_IPFS_ADD_PATH]: 429 } }).transport).pin(input()),
     );
-    expect(throttled).toMatchObject({ status: "retryable", reason: "throttled" });
+    expect(throttled).toEqual({
+      status: "retryable",
+      outcome: "retryable",
+      reason: "throttled",
+      http_status: 429,
+    });
 
     const unauthorized = await Effect.runPromise(
       adapter(transportFor({ statuses: { [FILEBASE_IPFS_ADD_PATH]: 401 } }).transport).pin(input()),
     );
-    expect(unauthorized).toMatchObject({ status: "permanent", reason: "unauthorized" });
+    expect(unauthorized).toEqual({
+      status: "permanent",
+      outcome: "permanent",
+      reason: "unauthorized",
+      http_status: 401,
+    });
+
+    const forbidden = await Effect.runPromise(
+      adapter(transportFor({ statuses: { [FILEBASE_IPFS_ADD_PATH]: 403 } }).transport).pin(input()),
+    );
+    expect(forbidden).toEqual({
+      status: "permanent",
+      outcome: "permanent",
+      reason: "unauthorized",
+      http_status: 403,
+    });
 
     const unavailable = await Effect.runPromise(
       adapter(transportFor({ statuses: { [FILEBASE_IPFS_PIN_LS_PATH]: 503 } }).transport).pin(
         input(),
       ),
     );
-    expect(unavailable).toMatchObject({ status: "retryable", reason: "provider_unavailable" });
+    expect(unavailable).toEqual({
+      status: "retryable",
+      outcome: "retryable",
+      reason: "provider_unavailable",
+      http_status: 503,
+    });
 
     const notFound = await Effect.runPromise(
       adapter(transportFor({ statuses: { [FILEBASE_IPFS_CAT_PATH]: 404 } }).transport).pin(input()),
     );
-    expect(notFound).toEqual({ status: "not_found", outcome: "not_found" });
+    expect(notFound).toEqual({ status: "not_found", outcome: "not_found", http_status: 404 });
 
     const rejected = await Effect.runPromise(
       adapter(transportFor({ statuses: { [FILEBASE_IPFS_ADD_PATH]: 400 } }).transport).pin(input()),
     );
-    expect(rejected).toMatchObject({ status: "permanent", reason: "provider_rejected" });
+    expect(rejected).toEqual({
+      status: "permanent",
+      outcome: "permanent",
+      reason: "provider_rejected",
+      http_status: 400,
+    });
 
     const transportFailure = await Effect.runPromise(
       adapter(async () => {
@@ -418,6 +445,9 @@ describe("Filebase IPFS pinning adapter", () => {
       reason: "transport",
     });
     expect(JSON.stringify(transportFailure)).not.toContain(TOKEN);
+    expect(
+      JSON.stringify([throttled, unauthorized, forbidden, unavailable, notFound]),
+    ).not.toContain(TOKEN);
   });
 
   test("returns integrity mismatch without treating a CID as a raw SHA-256", async () => {

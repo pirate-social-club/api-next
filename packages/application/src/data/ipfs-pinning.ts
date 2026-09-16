@@ -85,11 +85,15 @@ export type IpfsPinningResult =
       readonly status: "retryable";
       readonly outcome: "retryable";
       readonly reason: "transport" | "provider_unavailable" | "throttled" | "pin_not_converged";
+      /** Validated provider HTTP status when the outcome came from a response. */
+      readonly http_status?: number;
     }>
   | Readonly<{
       readonly status: "permanent";
       readonly outcome: "permanent";
       readonly reason: "unauthorized" | "provider_rejected" | "unsupported" | "configuration";
+      /** Validated provider HTTP status when the outcome came from a response. */
+      readonly http_status?: number;
     }>
   | Readonly<{
       readonly status: "malformed";
@@ -108,6 +112,8 @@ export type IpfsPinningResult =
   | Readonly<{
       readonly status: "not_found";
       readonly outcome: "not_found";
+      /** Validated provider HTTP status when the outcome came from a response. */
+      readonly http_status?: number;
     }>;
 
 export interface IpfsPinningAdapter {
