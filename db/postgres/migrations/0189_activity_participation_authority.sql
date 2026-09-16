@@ -181,3 +181,43 @@ CREATE TRIGGER study_sessions_v2_activity_authority
 -- participation before joining. Role presentation keeps its membership FK.
 ALTER TABLE persona_activity_presentations
   DROP CONSTRAINT persona_activity_presentations_community_id_account_id_fkey;
+
+-- Explicit activity preparation is idempotent on the exact request body. The
+-- action row is written in the same transaction as the selected or minted
+-- persona, the one-time activity_participation binding and the
+-- presentation-if-absent write.
+CREATE FUNCTION guard_persona_activity_preparation_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona activity preparation actions are append-only';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TABLE persona_activity_preparation_actions (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_activity_preparation_actions_idempotency_key_check CHECK (
+      (btrim(idempotency_key) <> ''::text)
+      AND (idempotency_key = btrim(idempotency_key))
+      AND (octet_length(idempotency_key) <= 128)
+    ),
+    CONSTRAINT persona_activity_preparation_actions_request_hash_check CHECK (
+      request_hash ~ '^[0-9a-f]{64}$'::text
+    )
+);
+
+ALTER TABLE ONLY persona_activity_preparation_actions
+  ADD CONSTRAINT persona_activity_preparation_actions_pkey
+  PRIMARY KEY (account_id, community_id, idempotency_key);
+
+CREATE TRIGGER persona_activity_preparation_actions_append_only
+  BEFORE DELETE OR UPDATE ON persona_activity_preparation_actions
+  FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_preparation_action();

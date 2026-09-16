@@ -188,6 +188,6 @@
     "0185_current_content_rating_floors.sql": "eaa771de80de0a0c631b24a4970cf0c41571eae4212fe6660467c7c205f856bd",
     "0186_retained_content_rating_reconciliation.sql": "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab",
     "0187_text_rating_raise_counts.sql": "4eb58bd66f3f4d5f453e6033dc6f2e38eaba27dd18658e6cac6c6525487f49c8",
-    "0189_activity_participation_authority.sql": "b724626362dd6e887766b818b3d4441e8d5ff69b4b920cbaf4dbffc854c7b770"
+    "0189_activity_participation_authority.sql": "d2bbd73d34cb2d487aa2f7e6e2fc26f7628785615919317a17b2dc4d3332cbed"
   }
 }

@@ -10793,6 +10793,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_persona_activity_preparation_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona activity preparation actions are append-only';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_persona_activity_presentation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -30513,6 +30524,17 @@ CREATE TABLE operator_managed_route_operations (
     CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE persona_activity_preparation_actions (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_activity_preparation_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT persona_activity_preparation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE persona_activity_presentation_actions (
     account_id text NOT NULL,
     community_id text NOT NULL,
@@ -34350,6 +34372,9 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY persona_activity_preparation_actions
+    ADD CONSTRAINT persona_activity_preparation_actions_pkey PRIMARY KEY (account_id, community_id, idempotency_key);
+
 ALTER TABLE ONLY persona_activity_presentation_actions
     ADD CONSTRAINT persona_activity_presentation_actions_pkey PRIMARY KEY (account_id, community_id, endpoint_template, idempotency_key);
 
@@ -36274,6 +36299,8 @@ CREATE TRIGGER operator_managed_root_registry_versions_change_guard BEFORE DELET
 CREATE TRIGGER operator_managed_route_activations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_activations FOR EACH ROW EXECUTE FUNCTION guard_operator_managed_route_activation_change();
 
 CREATE TRIGGER operator_managed_route_operations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_operations FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_route_operation_change();
+
+CREATE TRIGGER persona_activity_preparation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_preparation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_preparation_action();
 
 CREATE TRIGGER persona_activity_presentation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_presentation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation_action();
 

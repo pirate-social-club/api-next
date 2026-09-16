@@ -3,6 +3,7 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  type PersonaActivityPreparation,
   PersonaStoreConflict,
   PersonaStoreRateLimited,
   type PersonaStoreService,
@@ -171,6 +172,55 @@ const mapStorageConflict = (
       : error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505"
         ? new PersonaStoreConflict({ reason: "identifier-collision" })
         : error;
+
+const textValue = (value: unknown): string => {
+  if (typeof value !== "string" || !validId(value)) throw new Error("invalid persona identifier");
+  return value;
+};
+
+/**
+ * Reads the current presentation and persona state for an idempotent
+ * preparation replay. A persona that is no longer owned or has been retired
+ * returns `null`, so a stale replay cannot re-establish an unavailable
+ * identity. The presentation is the account's current explicit choice for the
+ * community, which preparation never overrides.
+ */
+const readActivityPreparation = (
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{ accountId: string; communityId: string; personaId: string }>,
+): Effect.Effect<PersonaActivityPreparation | null, ControlPlaneError> =>
+  Effect.gen(function* () {
+    const persona = yield* transaction.execute<PersonaRow>({
+      label: "personas.activity-preparation.replay-persona",
+      text: "SELECT persona_id, status FROM personas WHERE account_id=$1 AND persona_id=$2",
+      values: [input.accountId, input.personaId],
+      readonly: true,
+    });
+    const personaRow = persona.rows[0];
+    if (persona.rows.length !== 1 || personaRow === undefined) return null;
+    const status = personaRow.status;
+    if (status !== "active" && status !== "pending_wallet") return null;
+    const presentation = yield* transaction.execute<PersonaRow>({
+      label: "personas.activity-preparation.replay-presentation",
+      text: `SELECT persona_id, updated_at FROM persona_activity_presentations
+              WHERE community_id=$1 AND account_id=$2`,
+      values: [input.communityId, input.accountId],
+      readonly: true,
+    });
+    if (presentation.rows.length > 1) return yield* Effect.die("duplicate activity presentation");
+    const presentationRow = presentation.rows[0];
+    return {
+      personaId: input.personaId,
+      personaStatus: status,
+      activityPresentation:
+        presentationRow === undefined
+          ? null
+          : {
+              personaId: textValue(presentationRow.persona_id),
+              updatedAt: iso(presentationRow.updated_at),
+            },
+    };
+  });
 
 export function makeControlPlanePersonaRepository() {
   return {
@@ -384,6 +434,297 @@ export function makeControlPlanePersonaRepository() {
                 hd_wallet_index: hdWalletIndex,
                 status: "pending" as const,
                 assignment: null,
+              };
+            }),
+          )
+          .pipe(Effect.mapError(mapStorageConflict));
+      }),
+
+    prepareActivityPersona: (input: Parameters<PersonaStoreService["prepareActivityPersona"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db
+          .withTransaction((transaction) =>
+            Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "personas.activity-preparation.lock",
+                text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 15100005))",
+                values: [
+                  JSON.stringify([input.accountId, input.communityId, input.idempotencyKey]),
+                ],
+                readonly: false,
+              });
+              const replay = yield* transaction.execute<PersonaRow>({
+                label: "personas.activity-preparation.replay",
+                text: `SELECT request_hash, result_persona_id
+                         FROM persona_activity_preparation_actions
+                        WHERE account_id=$1 AND community_id=$2 AND idempotency_key=$3`,
+                values: [input.accountId, input.communityId, input.idempotencyKey],
+                readonly: false,
+              });
+              if (replay.rows.length > 1) {
+                return yield* Effect.die("duplicate activity preparation replay");
+              }
+              if (replay.rows.length === 1) {
+                const replayRow = replay.rows[0] as PersonaRow;
+                if (replayRow.request_hash !== input.requestHash) {
+                  return yield* new PersonaStoreConflict({ reason: "idempotency-mismatch" });
+                }
+                const resultPersonaId = replayRow.result_persona_id;
+                if (typeof resultPersonaId !== "string" || !validId(resultPersonaId)) {
+                  return yield* Effect.die("invalid activity preparation replay");
+                }
+                return yield* readActivityPreparation(transaction, {
+                  accountId: input.accountId,
+                  communityId: input.communityId,
+                  personaId: resultPersonaId,
+                });
+              }
+
+              const target = yield* transaction.execute<{
+                readonly account_status: unknown;
+                readonly community_status: unknown;
+              }>({
+                label: "personas.activity-preparation.target",
+                text: `SELECT account.status AS account_status,
+                              community.status AS community_status
+                         FROM users AS account
+                         LEFT JOIN communities AS community
+                           ON community.community_id=$2
+                        WHERE account.user_id=$1`,
+                values: [input.accountId, input.communityId],
+                readonly: true,
+              });
+              const targetRow = target.rows[0];
+              if (
+                target.rows.length !== 1 ||
+                targetRow === undefined ||
+                targetRow.account_status !== "active" ||
+                targetRow.community_status !== "active"
+              ) {
+                return null;
+              }
+
+              if (input.choice.kind === "create_new") {
+                // Minting reuses the ratified additional-persona lifecycle and
+                // serializes HD-index allocation with persona creation and the
+                // terminal join mint. Preparation itself adds no membership,
+                // follow, role, verification or wallet for an existing persona.
+                yield* transaction.execute({
+                  label: "personas.activity-preparation.mint-lock",
+                  text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
+                  values: [JSON.stringify([input.accountId, "evm"])],
+                  readonly: false,
+                });
+                const capacity = yield* transaction.execute<{
+                  readonly slot_count: string;
+                  readonly recent_count: string;
+                  readonly retry_after_seconds: string | null;
+                }>({
+                  label: "personas.activity-preparation.mint-capacity",
+                  text: `SELECT count(*)::text AS slot_count,
+                                count(*) FILTER (
+                                  WHERE NOT persona.is_first_persona
+                                    AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                                )::text AS recent_count,
+                                CASE WHEN count(*) FILTER (
+                                  WHERE NOT persona.is_first_persona
+                                    AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                                ) >= 3 THEN ceil(extract(epoch FROM (
+                                  min(assignment.created_at) FILTER (
+                                    WHERE NOT persona.is_first_persona
+                                      AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                                  ) + interval '86400 seconds' - clock_timestamp()
+                                )))::bigint::text ELSE NULL END AS retry_after_seconds
+                           FROM persona_wallet_assignments AS assignment
+                           JOIN personas AS persona USING (persona_id)
+                          WHERE assignment.account_id=$1
+                            AND assignment.chain_account_kind='evm'`,
+                  values: [input.accountId],
+                  readonly: false,
+                });
+                const capacityRow = capacity.rows[0];
+                if (numberValue(capacityRow?.slot_count) >= 10) {
+                  return yield* new PersonaStoreConflict({ reason: "slot-limit" });
+                }
+                if (numberValue(capacityRow?.recent_count) >= 3) {
+                  const retryAfterSeconds = Math.max(
+                    1,
+                    numberValue(capacityRow?.retry_after_seconds),
+                  );
+                  return yield* new PersonaStoreRateLimited({ retryAfterSeconds });
+                }
+                const next = yield* transaction.execute<{ hd_wallet_index: string }>({
+                  label: "personas.activity-preparation.mint-allocate-index",
+                  text: `SELECT (COALESCE(max(hd_wallet_index), -1) + 1)::text AS hd_wallet_index
+                           FROM persona_wallet_assignments
+                          WHERE account_id=$1 AND chain_account_kind='evm'`,
+                  values: [input.accountId],
+                  readonly: false,
+                });
+                const hdWalletIndex = numberValue(next.rows[0]?.hd_wallet_index);
+                yield* transaction.execute({
+                  label: "personas.activity-preparation.mint-persona",
+                  text: `INSERT INTO personas (
+                           persona_id, account_id, status, is_first_persona,
+                           created_at, retired_at
+                         ) VALUES ($1, $2, 'pending_wallet', false, $3::timestamptz, NULL)`,
+                  values: [input.personaId, input.accountId, input.createdAt],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "personas.activity-preparation.mint-pending-profile",
+                  text: `INSERT INTO persona_pending_profiles (
+                           persona_id, display_name, avatar_ref, cover_ref, bio,
+                           preferred_locale, created_at
+                         ) VALUES ($1, NULL, NULL, NULL, NULL, NULL, clock_timestamp())`,
+                  values: [input.personaId],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "personas.activity-preparation.mint-wallet-reservation",
+                  text: `INSERT INTO persona_wallet_assignments (
+                           assignment_id, persona_id, account_id, chain_account_kind,
+                           privy_wallet_id, hd_wallet_index, address, status,
+                           reservation_idempotency_key, assigned_at, tombstoned_at,
+                           created_at, updated_at
+                         ) VALUES ($1, $2, $3, 'evm', NULL, $4, NULL, 'pending', $5,
+                                   NULL, NULL, clock_timestamp(), clock_timestamp())`,
+                  values: [
+                    `persona_wallet_${globalThis.crypto.randomUUID().replaceAll("-", "")}`,
+                    input.personaId,
+                    input.accountId,
+                    hdWalletIndex,
+                    input.idempotencyKey,
+                  ],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "personas.activity-preparation.mint-binding",
+                  text: `INSERT INTO persona_community_bindings (
+                           persona_id, account_id, community_id, binding_source
+                         ) VALUES ($1, $2, $3, 'activity_participation')`,
+                  values: [input.personaId, input.accountId, input.communityId],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "personas.activity-preparation.action",
+                  text: `INSERT INTO persona_activity_preparation_actions (
+                           account_id, community_id, idempotency_key, request_hash,
+                           result_persona_id, created_at
+                         ) VALUES ($1, $2, $3, $4, $5, clock_timestamp())`,
+                  values: [
+                    input.accountId,
+                    input.communityId,
+                    input.idempotencyKey,
+                    input.requestHash,
+                    input.personaId,
+                  ],
+                  readonly: false,
+                });
+                return {
+                  personaId: input.personaId,
+                  personaStatus: "pending_wallet" as const,
+                  activityPresentation: null,
+                };
+              }
+
+              const locked = yield* transaction.execute<PersonaRow>({
+                label: "personas.activity-preparation.lock-persona",
+                text: `SELECT persona_id, status
+                         FROM personas
+                        WHERE account_id=$1 AND persona_id=$2
+                        FOR UPDATE`,
+                values: [input.accountId, input.personaId],
+                readonly: false,
+              });
+              const lockedRow = locked.rows[0];
+              if (
+                locked.rows.length !== 1 ||
+                lockedRow === undefined ||
+                lockedRow.status !== "active"
+              ) {
+                return null;
+              }
+              const binding = yield* transaction.execute<PersonaRow>({
+                label: "personas.activity-preparation.read-binding",
+                text: "SELECT community_id FROM persona_community_bindings WHERE persona_id=$1",
+                values: [input.personaId],
+                readonly: true,
+              });
+              if (binding.rows.length > 1) {
+                return yield* Effect.die("duplicate persona binding");
+              }
+              const boundCommunity = binding.rows[0]?.community_id ?? null;
+              if (boundCommunity !== null && boundCommunity !== input.communityId) {
+                return yield* new PersonaStoreConflict({ reason: "binding-conflict" });
+              }
+              if (boundCommunity === null) {
+                // The persona-row lock serializes the one-time bind: a
+                // concurrent preparation for another community cannot also win.
+                yield* transaction
+                  .execute({
+                    label: "personas.activity-preparation.bind-persona",
+                    text: `INSERT INTO persona_community_bindings (
+                             persona_id, account_id, community_id, binding_source
+                           ) VALUES ($1, $2, $3, 'activity_participation')`,
+                    values: [input.personaId, input.accountId, input.communityId],
+                    readonly: false,
+                  })
+                  .pipe(
+                    Effect.catchIf(
+                      (error: ControlPlaneError) =>
+                        error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505",
+                      () => new PersonaStoreConflict({ reason: "binding-conflict" }),
+                    ),
+                  );
+              }
+              yield* transaction.execute({
+                label: "personas.activity-preparation.presentation-ensure",
+                text: `INSERT INTO persona_activity_presentations (
+                         community_id, account_id, persona_id, created_at, updated_at
+                       ) VALUES ($1, $2, $3, clock_timestamp(), clock_timestamp())
+                       ON CONFLICT (community_id, account_id) DO NOTHING`,
+                values: [input.communityId, input.accountId, input.personaId],
+                readonly: false,
+              });
+              const presentation = yield* transaction.execute<PersonaRow>({
+                label: "personas.activity-preparation.presentation-read",
+                text: `SELECT persona_id, updated_at
+                         FROM persona_activity_presentations
+                        WHERE community_id=$1 AND account_id=$2`,
+                values: [input.communityId, input.accountId],
+                readonly: true,
+              });
+              if (presentation.rows.length > 1) {
+                return yield* Effect.die("duplicate activity presentation");
+              }
+              yield* transaction.execute({
+                label: "personas.activity-preparation.action",
+                text: `INSERT INTO persona_activity_preparation_actions (
+                         account_id, community_id, idempotency_key, request_hash,
+                         result_persona_id, created_at
+                       ) VALUES ($1, $2, $3, $4, $5, clock_timestamp())`,
+                values: [
+                  input.accountId,
+                  input.communityId,
+                  input.idempotencyKey,
+                  input.requestHash,
+                  input.personaId,
+                ],
+                readonly: false,
+              });
+              const presentationRow = presentation.rows[0];
+              return {
+                personaId: input.personaId,
+                personaStatus: "active" as const,
+                activityPresentation:
+                  presentationRow === undefined
+                    ? null
+                    : {
+                        personaId: textValue(presentationRow.persona_id),
+                        updatedAt: iso(presentationRow.updated_at),
+                      },
               };
             }),
           )
@@ -870,6 +1211,7 @@ export function makeControlPlanePersonaStore(
     listPendingWallets: (accountId) => bind(runtime, repository.listPendingWallets(accountId)),
     listByAccount: (accountId) => bind(runtime, repository.listByAccount(accountId)),
     findOwned: (input) => bind(runtime, repository.findOwned(input)),
+    prepareActivityPersona: (input) => bind(runtime, repository.prepareActivityPersona(input)),
     create: (input) => bind(runtime, repository.create(input)),
   };
 }

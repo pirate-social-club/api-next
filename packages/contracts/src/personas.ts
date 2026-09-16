@@ -128,11 +128,55 @@ export const PersonaCommunityBindingV1 = Schema.Struct({
     "first_membership",
     "community_creation",
     "persona_creation",
+    "activity_participation",
     "migration_single_evidence",
     "explicit_migration_resolution",
   ]),
 });
 export type PersonaCommunityBindingV1 = Schema.Schema.Type<typeof PersonaCommunityBindingV1>;
+
+export const PersonaCommunityBindingSourceV1 = PersonaCommunityBindingV1.fields.binding_source;
+export type PersonaCommunityBindingSourceV1 = Schema.Schema.Type<
+  typeof PersonaCommunityBindingSourceV1
+>;
+
+const CanonicalInstantV1 = Schema.String.check(
+  Schema.makeFilter((value) => {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+      ? undefined
+      : "Expected a canonical ISO instant";
+  }),
+);
+
+/**
+ * The account's current explicitly selected activity persona for one
+ * community. It is not the same fact as membership: preparation never joins,
+ * follows, assigns a role or allocates a wallet.
+ */
+export const ActivityPresentationV1 = Schema.Struct({
+  object: Schema.Literal("activity_presentation"),
+  community_id: boundedIdentifier("community identifier"),
+  persona_id: PersonaIdV1,
+  updated_at: CanonicalInstantV1,
+});
+export type ActivityPresentationV1 = Schema.Schema.Type<typeof ActivityPresentationV1>;
+
+/**
+ * Result of explicit activity preparation (spec 014 section 11.2). An active
+ * persona can enter activities immediately; a `pending_wallet` persona follows
+ * the ordinary additional-persona activation before any activity command
+ * accepts it. `activity_presentation` is null until an active persona is
+ * prepared, because presentation requires an active owned persona.
+ */
+export const ActivityPersonaPreparationV1 = Schema.Struct({
+  object: Schema.Literal("activity_persona_preparation"),
+  community_id: boundedIdentifier("community identifier"),
+  persona_id: PersonaIdV1,
+  persona_status: Schema.Literals(["active", "pending_wallet"]),
+  activity_presentation: Schema.NullOr(ActivityPresentationV1),
+});
+export type ActivityPersonaPreparationV1 = Schema.Schema.Type<typeof ActivityPersonaPreparationV1>;
 
 export const PrivatePersonaV1 = Schema.Struct({
   persona_id: PersonaIdV1,
@@ -230,6 +274,35 @@ export const CreatePersona = endpoint({
   response: PersonaEvmWalletPreparationV1,
   successStatus: 201,
   errors: [AuthError, BadRequest, Conflict, InternalError, RateLimited],
+});
+
+const ActivityCommunityPathV1 = Schema.Struct({
+  communityId: boundedIdentifier("community identifier"),
+});
+
+/**
+ * Explicit activity preparation before any join (spec 014 section 11.2). It
+ * resolves one of three server-validated choices — select the active owned
+ * persona already bound to the community, bind an owned unbound persona once,
+ * or mint a new persona born bound with `activity_participation` as its
+ * source. It records no membership, follow, role, wallet for an existing
+ * persona or verification claim, and preserves an existing explicit activity
+ * presentation.
+ */
+export const PrepareActivityPersona = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/activity-personas/prepare",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: ActivityCommunityPathV1,
+    body: Schema.Struct({
+      idempotency_key: boundedIdentifier("idempotency key"),
+      choice: PersonaCommunityChoiceV1,
+    }),
+  },
+  response: ActivityPersonaPreparationV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, Conflict, InternalError, NotFound, RateLimited],
 });
 
 /** Retrieve the append-only provider HD index reserved by persona creation. */

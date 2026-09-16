@@ -318,6 +318,7 @@ TRUNCATE TABLE
   "operator_managed_root_registry_versions",
   "operator_managed_route_activations",
   "operator_managed_route_operations",
+  "persona_activity_preparation_actions",
   "persona_activity_presentation_actions",
   "persona_activity_presentations",
   "persona_community_bindings",
