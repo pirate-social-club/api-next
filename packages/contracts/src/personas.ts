@@ -166,8 +166,9 @@ export type ActivityPresentationV1 = Schema.Schema.Type<typeof ActivityPresentat
  * Result of explicit activity preparation (spec 014 section 11.2). An active
  * persona can enter activities immediately; a `pending_wallet` persona follows
  * the ordinary additional-persona activation before any activity command
- * accepts it. `activity_presentation` is null until an active persona is
- * prepared, because presentation requires an active owned persona.
+ * accepts it. `activity_presentation` is the account's current explicit
+ * presentation for the community, the same fact on the first execution and on
+ * an exact replay; minting a pending persona never establishes one.
  */
 export const ActivityPersonaPreparationV1 = Schema.Struct({
   object: Schema.Literal("activity_persona_preparation"),

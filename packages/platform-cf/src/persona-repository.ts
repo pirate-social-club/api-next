@@ -622,10 +622,32 @@ export function makeControlPlanePersonaRepository() {
                   ],
                   readonly: false,
                 });
+                // Minting never establishes a presentation for the pending
+                // persona, but the account may already hold an explicit
+                // presentation for this community. Read the current state so
+                // the first response matches an exact replay.
+                const presentation = yield* transaction.execute<PersonaRow>({
+                  label: "personas.activity-preparation.mint-presentation-read",
+                  text: `SELECT persona_id, updated_at
+                          FROM persona_activity_presentations
+                         WHERE community_id=$1 AND account_id=$2`,
+                  values: [input.communityId, input.accountId],
+                  readonly: true,
+                });
+                if (presentation.rows.length > 1) {
+                  return yield* Effect.die("duplicate activity presentation");
+                }
+                const presentationRow = presentation.rows[0];
                 return {
                   personaId: input.personaId,
                   personaStatus: "pending_wallet" as const,
-                  activityPresentation: null,
+                  activityPresentation:
+                    presentationRow === undefined
+                      ? null
+                      : {
+                          personaId: textValue(presentationRow.persona_id),
+                          updatedAt: iso(presentationRow.updated_at),
+                        },
                 };
               }
 

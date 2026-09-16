@@ -318,10 +318,11 @@ suite("Activity persona preparation", () => {
         choice: { kind: "create_new" },
       });
       expect(minted.persona_id).toMatch(/^persona_/u);
-      expect(minted).toMatchObject({
-        persona_status: "pending_wallet",
-        activity_presentation: null,
-      });
+      expect(minted.persona_status).toBe("pending_wallet");
+      // Minting never establishes a presentation, but the account's existing
+      // explicit one is still the current fact and must appear identically on
+      // an exact replay.
+      expect(minted.activity_presentation?.persona_id).toBe("presentation-persona");
       // Exact replay returns the same prepared identity and never mints twice.
       const mintedReplay = await prepare(services, {
         accountId: "participant",
@@ -329,8 +330,7 @@ suite("Activity persona preparation", () => {
         idempotencyKey: "prepare-minted",
         choice: { kind: "create_new" },
       });
-      expect(mintedReplay.persona_id).toBe(minted.persona_id);
-      expect(mintedReplay.persona_status).toBe("pending_wallet");
+      expect(mintedReplay).toEqual(minted);
       expect(
         (
           await admin.query(
@@ -370,6 +370,115 @@ suite("Activity persona preparation", () => {
           )
         ).rows,
       ).toEqual([{ personas: 5, memberships: 0, follows: 0, posts: 0, data_operations: 0 }]);
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+  }, 60_000);
+
+  test("concurrent preparation serializes one-time binding and exact mint replay", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const schema = `api_next_preparation_race_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const scoped = connectionForSchema(connectionString, schema);
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    try {
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("INSERT INTO users (user_id) VALUES ('racer')");
+        await admin.query(
+          `INSERT INTO communities (
+             community_id, display_name, status, created_by_user_id, created_at, updated_at
+           ) VALUES ('race-community-a','Race A','active','racer',clock_timestamp(),clock_timestamp()),
+             ('race-community-b','Race B','active','racer',clock_timestamp(),clock_timestamp()),
+             ('race-community-c','Race C','active','racer',clock_timestamp(),clock_timestamp())`,
+        );
+        await admin.query(
+          `INSERT INTO personas (
+             persona_id, account_id, status, is_first_persona, created_at, retired_at
+           ) VALUES ('race-persona','racer','active',false,clock_timestamp(),NULL)`,
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+
+      const services = personaServices(makeDirectPostgresControlPlaneLayer(scoped));
+      const raced = await Promise.allSettled([
+        prepare(services, {
+          accountId: "racer",
+          communityId: "race-community-a",
+          idempotencyKey: "race-bind-a",
+          choice: { kind: "existing", persona_id: "race-persona" },
+        }),
+        prepare(services, {
+          accountId: "racer",
+          communityId: "race-community-b",
+          idempotencyKey: "race-bind-b",
+          choice: { kind: "existing", persona_id: "race-persona" },
+        }),
+      ]);
+      const fulfilled = raced.filter((result) => result.status === "fulfilled");
+      const rejected = raced.find((result) => result.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toBeDefined();
+      if (rejected?.status !== "rejected") throw new Error("expected one losing racer");
+      expect(rejected.reason).toMatchObject({ _tag: "Conflict" });
+      // The persona-row lock admits exactly one one-time binding and one
+      // presentation; the loser is rejected before writing anything.
+      const binding = (
+        await admin.query(
+          `SELECT community_id, binding_source FROM persona_community_bindings
+            WHERE persona_id='race-persona'`,
+        )
+      ).rows;
+      expect(binding).toHaveLength(1);
+      expect(binding[0]?.binding_source).toBe("activity_participation");
+      const presentations = (
+        await admin.query(
+          `SELECT community_id, persona_id FROM persona_activity_presentations
+            WHERE account_id='racer'`,
+        )
+      ).rows;
+      expect(presentations).toEqual([
+        { community_id: binding[0]?.community_id, persona_id: "race-persona" },
+      ]);
+
+      // Two identical create-new commands under one idempotency key mint once
+      // and both return the same pending identity in one clean community.
+      const [mintA, mintB] = await Promise.all([
+        prepare(services, {
+          accountId: "racer",
+          communityId: "race-community-c",
+          idempotencyKey: "race-mint",
+          choice: { kind: "create_new" },
+        }),
+        prepare(services, {
+          accountId: "racer",
+          communityId: "race-community-c",
+          idempotencyKey: "race-mint",
+          choice: { kind: "create_new" },
+        }),
+      ]);
+      expect(mintA).toMatchObject({
+        persona_status: "pending_wallet",
+        activity_presentation: null,
+      });
+      expect(mintB).toEqual(mintA);
+      expect(
+        (
+          await admin.query(
+            `SELECT
+               (SELECT count(*)::integer FROM persona_activity_preparation_actions
+                 WHERE idempotency_key='race-mint') AS actions,
+               (SELECT count(*)::integer FROM persona_community_bindings
+                 WHERE persona_id=$1 AND binding_source='activity_participation') AS bindings`,
+            [mintA.persona_id],
+          )
+        ).rows,
+      ).toEqual([{ actions: 1, bindings: 1 }]);
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
