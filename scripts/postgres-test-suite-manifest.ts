@@ -32,6 +32,7 @@ export const reusablePostgresTestSuites = [
 
 export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/activity-participation-authority.pg.test.ts",
+  "packages/platform-cf/src/activity-participation-preparation.pg.test.ts",
   "packages/platform-cf/src/account-age-verification.pg.test.ts",
   "packages/platform-cf/src/comment-thread-repository.pg.test.ts",
   "apps/http-worker/src/hns-community-publication.pg.test.ts",

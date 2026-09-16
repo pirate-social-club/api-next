@@ -296,6 +296,94 @@ suite("Karaoke persona boundary", () => {
           ])
         ).rows,
       ).toEqual([{ status: "completed" }]);
+
+      // A never-joined account with an explicit activity binding runs the
+      // same private practice, completion and replay. Its binding source is
+      // the explicit preparation source, and no membership, follow, Post or
+      // DATA operation appears.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("INSERT INTO users (user_id) VALUES ('karaoke-never-joined')");
+        await admin.query(
+          `INSERT INTO personas (
+             persona_id, account_id, status, is_first_persona, created_at, retired_at
+           ) VALUES ('karaoke-never-persona','karaoke-never-joined','active',false,
+             clock_timestamp(),NULL)`,
+        );
+        await admin.query(
+          `INSERT INTO persona_community_bindings (
+             persona_id, account_id, community_id, binding_source
+           ) VALUES ('karaoke-never-persona','karaoke-never-joined','karaoke-community',
+             'activity_participation')`,
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const neverAuthority = await Effect.runPromise(
+        Effect.scoped(
+          repository
+            .reserveSession({
+              ...base,
+              accountId: "karaoke-never-joined",
+              artifactId: "karaoke-artifact-never",
+              attemptId: "karaoke-attempt-never",
+              idempotencyKey: "karaoke-never-key",
+              personaId: "karaoke-never-persona",
+              sessionId: "karaoke-session-never",
+            })
+            .pipe(Effect.provide(runtime)),
+        ),
+      );
+      expect(neverAuthority.personaId).toBe("karaoke-never-persona");
+      const neverSummary = {
+        ...aggregateKaraokeSession({ lineScores: [] }),
+        lineCount: neverAuthority.lines.length,
+      };
+      const neverFinish = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .finalizeAttempt({
+                authority: neverAuthority,
+                completedAt: new Date(Date.parse(neverAuthority.createdAt) + 60_000).toISOString(),
+                completionReason: "completed",
+                qualificationId: "karaoke-never-qualification",
+                diagnostics: buildKaraokeScoringDiagnostics(neverAuthority, neverSummary),
+                summary: neverSummary,
+                transportFacts: {
+                  schema_version: 1,
+                  reconnect_count: 0,
+                  pause_count: 0,
+                  seek_count: 0,
+                  epoch_count: 1,
+                  dropped_frame_count: 0,
+                  late_frame_count: 0,
+                  mic_sample_rate: 16000,
+                  provider_commit_latency_p50_ms: null,
+                  provider_commit_latency_p95_ms: null,
+                },
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      const neverCompleted = await neverFinish();
+      expect(await neverFinish()).toEqual(neverCompleted);
+      expect(
+        (
+          await admin.query(
+            `SELECT
+               (SELECT count(*)::integer FROM community_memberships
+                 WHERE user_id='karaoke-never-joined') AS memberships,
+               (SELECT count(*)::integer FROM community_follows
+                 WHERE user_id='karaoke-never-joined') AS follows,
+               (SELECT count(*)::integer FROM posts
+                 WHERE author_user_id='karaoke-never-joined') AS posts,
+               (SELECT count(*)::integer FROM data_registration_operations
+                 WHERE actor_user_id='karaoke-never-joined') AS data_operations`,
+          )
+        ).rows,
+      ).toEqual([{ memberships: 0, follows: 0, posts: 0, data_operations: 0 }]);
+
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
@@ -319,12 +407,13 @@ suite("Karaoke persona boundary", () => {
       expect(sessions.rows.map((row) => row.persona_id)).toEqual([
         "karaoke-persona-bound",
         "karaoke-persona-bound",
+        "karaoke-never-persona",
       ]);
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
-  });
+  }, 60_000);
 
   test("presents the community activity persona and only community-issued handles on the leaderboard", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
