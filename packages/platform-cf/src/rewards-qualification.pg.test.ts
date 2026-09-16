@@ -82,6 +82,14 @@ async function seedAccountSong(
     userId: accountId,
     joinedAt: "2026-08-03T00:00:00.000Z",
   });
+  // Activity authority is the exact-community persona binding, not membership.
+  // The community creator's first persona is bound the way production binds it.
+  await admin.query(
+    `INSERT INTO persona_community_bindings (
+       persona_id, account_id, community_id, binding_source
+     ) VALUES ($1, $2, $3, 'community_creation')`,
+    [personaId, accountId, communityId],
+  );
   await admin.query(
     `INSERT INTO posts (
        community_id, post_id, author_user_id, author_persona_id, post_type,
@@ -90,6 +98,8 @@ async function seedAccountSong(
        clock_timestamp() - interval '10 days', clock_timestamp() - interval '10 days')`,
     [communityId, postId, accountId, personaId, `Song ${suffix}`],
   );
+  // Activity resource access rechecks the song's rating, so it is general.
+  await admin.query(`UPDATE posts SET content_rating='general' WHERE post_id=$1`, [postId]);
   await admin.query(
     `INSERT INTO account_streak_clocks (
        account_id, timezone, timezone_updated_at, next_change_allowed_at

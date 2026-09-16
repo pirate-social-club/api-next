@@ -99,6 +99,11 @@ suite("Study translation generation", () => {
              ) VALUES ('study-community', 'study-post', 'song', 'published', 'public',
                clock_timestamp(), clock_timestamp())`,
         );
+        // Activity authority now rechecks the song's rating access, so the
+        // fixture song carries the ordinary general rating.
+        await admin.query(
+          "UPDATE posts SET content_rating='general' WHERE post_id='study-post'",
+        );
         await admin.query(
           `INSERT INTO media_post_submissions (
                submission_id, community_id, actor_user_id, operation_id, idempotency_key,
@@ -468,18 +473,14 @@ suite("Study translation generation", () => {
         `UPDATE community_memberships SET status='left'
           WHERE community_id='study-community' AND user_id='study-account'`,
       );
-      await expect(start(baseStart)).rejects.toMatchObject({ reason: "not-found" });
+      // Membership loss no longer invalidates an already-bound persona's
+      // activity authority; the exact-community binding is the admission fact.
+      // A second session is not started here because the first start already
+      // scheduled the four exercises as not-yet-due reviews.
+      expect(await start(baseStart)).toEqual(session);
       await expect(start({ ...baseStart, requestHash: "d".repeat(64) })).rejects.toMatchObject({
         reason: "idempotency-conflict",
       });
-      await expect(
-        start({
-          ...baseStart,
-          idempotencyKey: "study-session-inactive-membership",
-          requestHash: "e".repeat(64),
-          sessionId: "study-session-inactive-membership",
-        }),
-      ).rejects.toMatchObject({ reason: "not-found" });
       await expect(
         start({
           ...baseStart,
