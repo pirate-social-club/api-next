@@ -101,9 +101,7 @@ suite("Study translation generation", () => {
         );
         // Activity authority now rechecks the song's rating access, so the
         // fixture song carries the ordinary general rating.
-        await admin.query(
-          "UPDATE posts SET content_rating='general' WHERE post_id='study-post'",
-        );
+        await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='study-post'");
         await admin.query(
           `INSERT INTO media_post_submissions (
                submission_id, community_id, actor_user_id, operation_id, idempotency_key,

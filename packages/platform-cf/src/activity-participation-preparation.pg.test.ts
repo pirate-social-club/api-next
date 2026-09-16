@@ -542,9 +542,7 @@ suite("Activity persona preparation", () => {
       // The runtime role is cluster-global. Create it only when absent and
       // remove it again so this file cannot break suites that assert the
       // deployment role template has not been applied yet.
-      const existingRole = await admin.query(
-        "SELECT 1 FROM pg_roles WHERE rolname='api_next_app'",
-      );
+      const existingRole = await admin.query("SELECT 1 FROM pg_roles WHERE rolname='api_next_app'");
       createdRuntimeRole = existingRole.rows.length === 0;
       await admin.query(`DO $$
         BEGIN
