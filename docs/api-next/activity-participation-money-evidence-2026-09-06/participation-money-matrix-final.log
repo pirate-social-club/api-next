@@ -1,0 +1,13 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-qualification-repository.pg.test.ts:
+(pass) Postgres 17 activity qualification repository > projects Study qualification into one Very-gated Megapot share per account [3280.12ms]
+(pass) Postgres 17 activity qualification repository > independent megapot admission ignores membership and refuses absent or revoked proof [1968.17ms]
+(pass) Postgres 17 activity qualification repository > independent asset admission ignores membership and refuses absent or revoked proof [1244.47ms]
+(pass) Postgres 17 activity qualification repository > credits every available asset-bonus leg once per verified account [1397.60ms]
+
+ 4 pass
+ 6 filtered out
+ 0 fail
+ 82 expect() calls
+Ran 4 tests across 1 file. [8.10s]

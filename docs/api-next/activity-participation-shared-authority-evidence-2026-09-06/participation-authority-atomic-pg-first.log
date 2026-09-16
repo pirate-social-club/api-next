@@ -1,0 +1,102 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-participation-authority.pg.test.ts:
+60 |         active_activity_persona('participant','participant-persona','practice-community') AS activity,
+61 |         can_account_access_activity_song('participant','practice-community','practice-song') AS resource,
+62 |         active_activity_persona('participant','foreign-persona','practice-community') AS foreign_persona,
+63 |         active_activity_persona('participant','unbound-persona','practice-community') AS unbound_persona,
+64 |         active_activity_persona('participant','participant-persona','other-community') AS wrong_community`);
+65 |       expect((await authority()).rows).toEqual([
+                                            ^
+error: expect(received).toEqual(expected)
+
+  [
+    {
+      "activity": true,
+      "bound": true,
+      "foreign_persona": false,
+      "owned": true,
+      "posting": true,
+-     "resource": true,
++     "resource": false,
+      "unbound_persona": false,
+      "wrong_community": false,
+    },
+  ]
+
+- Expected  - 1
++ Received  + 1
+
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/activity-participation-authority.pg.test.ts:65:40)
+(fail) Activity participation authority implementation baseline > owned exact-community identity survives leaving and presentation is ungated [2067.22ms]
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+22 |
+23 | type Row = Readonly<Record<string, unknown>>;
+24 |
+25 | const failed = (reason: KaraokeStoreFailed["reason"]) => new KaraokeStoreFailed({ reason });
+26 | const rejected = (reason: KaraokeCommandRejected["reason"]) =>
+27 |   new KaraokeCommandRejected({ reason });
+           ^
+Error:
+ reason: "invalid-input",
+   _tag: "KaraokeCommandRejected",
+
+      at rejected (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:27:7)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:261:29
+      at ~effect/Effect/successCont (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:927:26)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15
+      at onExit (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1010:5)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1021:7
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:434:23)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15
+(fail) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [1996.10ms]
+(pass) Karaoke persona boundary > presents the community activity persona and only community-issued handles on the leaderboard [1890.72ms]
+
+packages/platform-cf/src/activity-qualification-repository.pg.test.ts:
+(pass) Postgres 17 activity qualification repository > derives Study items only from the exact public accepted lyrics revision [3201.03ms]
+(pass) Postgres 17 activity qualification repository > freezes Study evidence, replays commands, and emits one account day [2614.92ms]
+(pass) Postgres 17 activity qualification repository > uses competition rank and keeps every tie at the requested boundary [812.29ms]
+(pass) Postgres 17 activity qualification repository > projects Study qualification into one Very-gated Megapot share per account [2076.34ms]
+(pass) Postgres 17 activity qualification repository > independent megapot admission ignores membership and refuses absent or revoked proof [1456.68ms]
+(pass) Postgres 17 activity qualification repository > independent asset admission ignores membership and refuses absent or revoked proof [1450.02ms]
+(pass) Postgres 17 activity qualification repository > ratified participation keeps completion after membership loss and admits money only from independent evidence [1147.54ms]
+(pass) Postgres 17 activity qualification repository > credits every available asset-bonus leg once per verified account [1578.05ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent asset claims at the funded inventory boundary [1215.32ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent finalization and keeps timezone updates prospective [1246.27ms]
+
+packages/platform-cf/src/study-v2-foundation.pg.test.ts:
+540 |         result = new this._Promise((resolve, reject) => {
+541 |           query.callback = (err, res) => (err ? reject(err) : resolve(res))
+542 |         }).catch((err) => {
+543 |           // replace the stack trace that leads to `TCP.onStreamRead` with one that leads back to the
+544 |           // application that created the query
+545 |           Error.captureStackTrace(err)
+                      ^
+error: current transaction is aborted, commands ignored until end of transaction block
+     length: 144,
+   severity: "ERROR",
+     detail: undefined,
+       hint: undefined,
+   position: undefined,
+ internalPosition: undefined,
+ internalQuery: undefined,
+      where: undefined,
+     schema: undefined,
+      table: undefined,
+   dataType: undefined,
+ constraint: undefined,
+       file: "postgres.c",
+    routine: "exec_simple_query",
+       code: "25P02"
+
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/pg@8.16.3+635858982ab829dd/node_modules/pg/lib/client.js:545:17
+      at processTicksAndRejections (native:7:39)
+(fail) Study v2 Postgres foundation > keeps versions immutable and review identity stable across regeneration [1181.89ms]
+
+ 11 pass
+ 3 fail
+ 131 expect() calls
+Ran 14 tests across 4 files. [24.34s]

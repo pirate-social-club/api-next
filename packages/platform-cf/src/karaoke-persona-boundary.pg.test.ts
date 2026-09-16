@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { aggregateKaraokeSession, buildKaraokeScoringDiagnostics } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -155,6 +156,7 @@ suite("Karaoke persona boundary", () => {
            ) VALUES ('karaoke-community','karaoke-post','karaoke-author','karaoke-author-persona',
              'song','published','public','Karaoke song',clock_timestamp(),clock_timestamp())`,
         );
+        await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='karaoke-post'");
         await admin.query(
           `INSERT INTO media_post_submissions (
              submission_id, community_id, actor_user_id, operation_id, idempotency_key,
@@ -198,6 +200,7 @@ suite("Karaoke persona boundary", () => {
                 ...base,
                 ...overrides,
                 attemptId: `karaoke-attempt-${idempotencyKey}`,
+                artifactId: `karaoke-artifact-${idempotencyKey}`,
                 idempotencyKey,
                 sessionId: `karaoke-session-${idempotencyKey}`,
               })
@@ -227,15 +230,190 @@ suite("Karaoke persona boundary", () => {
           reserve(overrides, `karaoke-reject-${label.replace(/\s+/gu, "-")}`),
         ).rejects.toMatchObject({ _tag: "KaraokeCommandRejected", reason: "invalid-input" });
       }
+      // Posting membership loss preserves replay and new private practice.
+      await admin.query(
+        "UPDATE community_memberships SET status='left', updated_at=clock_timestamp() WHERE membership_id='karaoke-membership'",
+      );
+      const retainedIdentity = await admin.query(
+        "SELECT active_owned_community_persona('karaoke-account','karaoke-persona-bound','karaoke-community') AS bound",
+      );
+      expect(retainedIdentity.rows).toEqual([{ bound: true }]);
+      expect(await reserve()).toEqual(authority);
+      expect(await reserve({}, "karaoke-after-leaving")).toMatchObject({
+        personaId: "karaoke-persona-bound",
+        postId: "karaoke-post",
+      });
+      const summary = {
+        ...aggregateKaraokeSession({ lineScores: [] }),
+        lineCount: authority.lines.length,
+      };
+      const finish = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .finalizeAttempt({
+                authority,
+                completedAt: new Date(Date.parse(authority.createdAt) + 60_000).toISOString(),
+                completionReason: "completed",
+                qualificationId: "karaoke-no-match-qualification",
+                diagnostics: buildKaraokeScoringDiagnostics(authority, summary),
+                summary,
+                transportFacts: {
+                  schema_version: 1,
+                  reconnect_count: 0,
+                  pause_count: 0,
+                  seek_count: 0,
+                  epoch_count: 1,
+                  dropped_frame_count: 0,
+                  late_frame_count: 0,
+                  mic_sample_rate: 16000,
+                  provider_commit_latency_p50_ms: null,
+                  provider_commit_latency_p95_ms: null,
+                },
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      const completed = await finish();
+      expect(await finish()).toEqual(completed);
+      const readAttempt = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .getAttempt({
+                accountId: authority.accountId,
+                communityId: authority.communityId,
+                attemptId: authority.attemptId,
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      expect(await readAttempt()).toEqual(completed);
+      expect(
+        (
+          await admin.query("SELECT status FROM karaoke_sessions WHERE session_id=$1", [
+            authority.sessionId,
+          ])
+        ).rows,
+      ).toEqual([{ status: "completed" }]);
+
+      // A never-joined account with an explicit activity binding runs the
+      // same private practice, completion and replay. Its binding source is
+      // the explicit preparation source, and no membership, follow, Post or
+      // DATA operation appears.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("INSERT INTO users (user_id) VALUES ('karaoke-never-joined')");
+        await admin.query(
+          `INSERT INTO personas (
+             persona_id, account_id, status, is_first_persona, created_at, retired_at
+           ) VALUES ('karaoke-never-persona','karaoke-never-joined','active',false,
+             clock_timestamp(),NULL)`,
+        );
+        await admin.query(
+          `INSERT INTO persona_community_bindings (
+             persona_id, account_id, community_id, binding_source
+           ) VALUES ('karaoke-never-persona','karaoke-never-joined','karaoke-community',
+             'activity_participation')`,
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const neverAuthority = await Effect.runPromise(
+        Effect.scoped(
+          repository
+            .reserveSession({
+              ...base,
+              accountId: "karaoke-never-joined",
+              artifactId: "karaoke-artifact-never",
+              attemptId: "karaoke-attempt-never",
+              idempotencyKey: "karaoke-never-key",
+              personaId: "karaoke-never-persona",
+              sessionId: "karaoke-session-never",
+            })
+            .pipe(Effect.provide(runtime)),
+        ),
+      );
+      expect(neverAuthority.personaId).toBe("karaoke-never-persona");
+      const neverSummary = {
+        ...aggregateKaraokeSession({ lineScores: [] }),
+        lineCount: neverAuthority.lines.length,
+      };
+      const neverFinish = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .finalizeAttempt({
+                authority: neverAuthority,
+                completedAt: new Date(Date.parse(neverAuthority.createdAt) + 60_000).toISOString(),
+                completionReason: "completed",
+                qualificationId: "karaoke-never-qualification",
+                diagnostics: buildKaraokeScoringDiagnostics(neverAuthority, neverSummary),
+                summary: neverSummary,
+                transportFacts: {
+                  schema_version: 1,
+                  reconnect_count: 0,
+                  pause_count: 0,
+                  seek_count: 0,
+                  epoch_count: 1,
+                  dropped_frame_count: 0,
+                  late_frame_count: 0,
+                  mic_sample_rate: 16000,
+                  provider_commit_latency_p50_ms: null,
+                  provider_commit_latency_p95_ms: null,
+                },
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      const neverCompleted = await neverFinish();
+      expect(await neverFinish()).toEqual(neverCompleted);
+      expect(
+        (
+          await admin.query(
+            `SELECT
+               (SELECT count(*)::integer FROM community_memberships
+                 WHERE user_id='karaoke-never-joined') AS memberships,
+               (SELECT count(*)::integer FROM community_follows
+                 WHERE user_id='karaoke-never-joined') AS follows,
+               (SELECT count(*)::integer FROM posts
+                 WHERE author_user_id='karaoke-never-joined') AS posts,
+               (SELECT count(*)::integer FROM data_registration_operations
+                 WHERE actor_user_id='karaoke-never-joined') AS data_operations`,
+          )
+        ).rows,
+      ).toEqual([{ memberships: 0, follows: 0, posts: 0, data_operations: 0 }]);
+
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE posts SET content_rating='adult_18' WHERE post_id='karaoke-post'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await expect(reserve()).rejects.toMatchObject({
+        _tag: "KaraokeCommandRejected",
+        reason: "invalid-input",
+      });
+      expect(await readAttempt()).toBeNull();
+      await expect(finish()).rejects.toMatchObject({
+        _tag: "KaraokeCommandRejected",
+        reason: "invalid-input",
+      });
       const sessions = await admin.query(
         "SELECT persona_id FROM karaoke_sessions ORDER BY created_at, session_id",
       );
-      expect(sessions.rows.map((row) => row.persona_id)).toEqual(["karaoke-persona-bound"]);
+      expect(sessions.rows.map((row) => row.persona_id)).toEqual([
+        "karaoke-persona-bound",
+        "karaoke-persona-bound",
+        "karaoke-never-persona",
+      ]);
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
-  });
+  }, 60_000);
 
   test("presents the community activity persona and only community-issued handles on the leaderboard", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");

@@ -1,10 +1,12 @@
 import {
+  type ActivityPersonaPreparationV1,
   AuthError,
   type ConfirmPersonaEvmWallet,
   Conflict,
   type CreatePersona,
   InternalError,
   NotFound,
+  type PersonaCommunityChoiceV1,
   type PersonaEvmWalletAssignmentV1,
   type PersonaEvmWalletPreparationV1,
   type PersonaRetirementV1,
@@ -14,6 +16,7 @@ import {
   type RetirePersona,
 } from "@pirate/contracts";
 import { Data, Effect, type Schema } from "effect";
+import { canonicalBodyHash } from "./content/common.ts";
 
 export type PersonaCreateBody = Schema.Schema.Type<
   NonNullable<(typeof CreatePersona.request)["body"]>
@@ -41,12 +44,29 @@ export type PersonaCreateIntent = Readonly<{
   communityId: string;
 }>;
 
+export type PersonaActivityPreparationBody = Readonly<{
+  idempotency_key: string;
+  choice: Schema.Schema.Type<typeof PersonaCommunityChoiceV1>;
+}>;
+
+/**
+ * Store-level result of explicit activity preparation. `null` collapses an
+ * unavailable account, community or persona so HTTP callers cannot use the
+ * endpoint as an ownership or existence oracle.
+ */
+export type PersonaActivityPreparation = Readonly<{
+  personaId: string;
+  personaStatus: "active" | "pending_wallet";
+  activityPresentation: Readonly<{ personaId: string; updatedAt: string }> | null;
+}>;
+
 export class PersonaStoreConflict extends Data.TaggedError("PersonaStoreConflict")<{
   readonly reason:
     | "idempotency-mismatch"
     | "identifier-collision"
     | "slot-limit"
-    | "membership-required";
+    | "membership-required"
+    | "binding-conflict";
 }> {}
 
 export class PersonaStoreRateLimited extends Data.TaggedError("PersonaStoreRateLimited")<{
@@ -62,6 +82,26 @@ export interface PersonaStoreService {
     readonly accountId: string;
     readonly personaId: string;
   }) => Effect.Effect<PersonaRecord | null, unknown>;
+  /**
+   * Spec 014 section 11.2 explicit activity preparation: select or bind an
+   * owned persona, or mint a new persona born bound with the
+   * `activity_participation` source. Never joins, follows, assigns a role or
+   * verification, and never touches an existing persona's wallets. Returns
+   * `null` for an unavailable target instead of leaking existence.
+   */
+  readonly prepareActivityPersona: (input: {
+    readonly accountId: string;
+    readonly communityId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly choice: PersonaActivityPreparationBody["choice"];
+    /** Generated id used only when the choice mints a new persona. */
+    readonly personaId: string;
+    readonly createdAt: string;
+  }) => Effect.Effect<
+    PersonaActivityPreparation | null,
+    PersonaStoreConflict | PersonaStoreRateLimited | unknown
+  >;
   /** The store owns exact replay and must return the first committed result. */
   readonly create: (input: {
     readonly accountId: string;
@@ -210,6 +250,94 @@ export const listMyPendingPersonaWallets = Effect.fn("listMyPendingPersonaWallet
     .listPendingWallets(input.accountId)
     .pipe(Effect.mapError(() => new InternalError({ message: "Pending profile lookup failed" })));
   return { wallets };
+});
+
+/**
+ * Explicit activity preparation before any join (spec 014 section 11.2). The
+ * command is account-scoped, idempotent on the exact request body, and returns
+ * the prepared persona's current status plus the community's current explicit
+ * activity presentation. It never chooses a global default: an activity
+ * command still names the persona explicitly.
+ */
+export const prepareActivityPersona = Effect.fn("prepareActivityPersona")(function* (
+  input: Readonly<{
+    accountId: string;
+    communityId: string;
+    body: PersonaActivityPreparationBody;
+  }>,
+  services: Pick<PersonaServices, "store" | "nextPersonaId" | "nowIso">,
+): Effect.fn.Return<
+  ActivityPersonaPreparationV1,
+  AuthError | Conflict | InternalError | NotFound | RateLimited
+> {
+  if (!usableId(input.accountId) || !usableId(input.communityId)) {
+    return yield* new AuthError({ message: "Authentication failed" });
+  }
+  const requestHash = yield* canonicalBodyHash({
+    community_id: input.communityId,
+    idempotency_key: input.body.idempotency_key,
+    choice: input.body.choice,
+  }).pipe(Effect.mapError(() => new InternalError({ message: "Activity preparation failed" })));
+  const personaId =
+    input.body.choice.kind === "existing"
+      ? input.body.choice.persona_id
+      : yield* services
+          .nextPersonaId()
+          .pipe(
+            Effect.mapError(() => new InternalError({ message: "Activity preparation failed" })),
+          );
+  const createdAt = yield* services
+    .nowIso()
+    .pipe(Effect.mapError(() => new InternalError({ message: "Activity preparation failed" })));
+  if (!usableId(personaId) || !Number.isFinite(Date.parse(createdAt))) {
+    return yield* new InternalError({ message: "Activity preparation failed" });
+  }
+
+  const prepared = yield* services.store
+    .prepareActivityPersona({
+      accountId: input.accountId,
+      communityId: input.communityId,
+      idempotencyKey: input.body.idempotency_key,
+      requestHash,
+      choice: input.body.choice,
+      personaId,
+      createdAt,
+    })
+    .pipe(
+      Effect.mapError((error) =>
+        error instanceof PersonaStoreRateLimited
+          ? new RateLimited({
+              message: "Activity preparation rate limit exceeded",
+              retry_after_seconds: error.retryAfterSeconds,
+            })
+          : error instanceof PersonaStoreConflict
+            ? new Conflict({
+                message:
+                  error.reason === "binding-conflict"
+                    ? "Persona is bound to another community"
+                    : "Activity preparation conflicts with an existing request",
+              })
+            : new InternalError({ message: "Activity preparation failed" }),
+      ),
+    );
+  if (prepared === null) {
+    return yield* new NotFound({ message: "Persona or community is unavailable" });
+  }
+  return {
+    object: "activity_persona_preparation",
+    community_id: input.communityId,
+    persona_id: prepared.personaId,
+    persona_status: prepared.personaStatus,
+    activity_presentation:
+      prepared.activityPresentation === null
+        ? null
+        : {
+            object: "activity_presentation",
+            community_id: input.communityId,
+            persona_id: prepared.activityPresentation.personaId,
+            updated_at: prepared.activityPresentation.updatedAt,
+          },
+  };
 });
 
 export const createPersona = Effect.fn("createPersona")(function* (

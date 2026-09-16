@@ -42,6 +42,12 @@ suite("Study v2 Postgres foundation", () => {
           `INSERT INTO personas (persona_id, account_id, status, created_at)
            VALUES ('persona-1', 'account-1', 'active', clock_timestamp())`,
         );
+        await admin.query(`INSERT INTO communities (
+          community_id,display_name,status,created_by_user_id,created_at,updated_at
+        ) VALUES ('community-1','Study','active','account-1',clock_timestamp(),clock_timestamp())`);
+        await admin.query(`INSERT INTO persona_community_bindings
+          (persona_id,account_id,community_id,binding_source)
+          VALUES ('persona-1','account-1','community-1','activity_participation')`);
         await admin.query(
           `INSERT INTO posts (
              community_id, post_id, post_type, status, visibility, created_at, updated_at
@@ -50,6 +56,7 @@ suite("Study v2 Postgres foundation", () => {
              clock_timestamp(), clock_timestamp()
            )`,
         );
+        await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='post-1'");
         await admin.query(
           `INSERT INTO localization_lyric_line_versions (
              community_id, post_id, lyric_line_id, line_version,
@@ -453,6 +460,7 @@ suite("Study v2 Postgres foundation", () => {
         ),
       ).rejects.toThrow();
     } finally {
+      await admin.query("ROLLBACK");
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }

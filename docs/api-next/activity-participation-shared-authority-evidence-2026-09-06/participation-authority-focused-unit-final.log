@@ -1,0 +1,28 @@
+bun test v1.4.0 (34cbb9a40)
+
+scripts/postgres-migrations.test.ts:
+(pass) Postgres migration runner > loads the exact ordered, checksum-verified migration plan [117.77ms]
+(pass) Postgres migration runner > dry-run does not require an administrative URL or open a connection [9.43ms]
+(pass) Postgres migration runner > keeps the Study review-key wire and storage bounds equal [10.72ms]
+(pass) Postgres migration runner > normalizes psql's system sslrootcert value for node pg [0.09ms]
+(pass) Postgres migration runner > fails closed when a migration checksum is tampered [19.04ms]
+
+packages/platform-cf/src/karaoke-finalization-retry.test.ts:
+(pass) Karaoke finalization retry policy > uses capped exponential backoff [0.07ms]
+(pass) Karaoke finalization retry policy > exhausts only when central recovery is activated [0.07ms]
+
+packages/platform-cf/src/karaoke-finalization-recovery.test.ts:
+(pass) Karaoke finalization central re-drive > continues after one RPC failure and reports only aggregate counts [3.28ms]
+(pass) Karaoke finalization central re-drive > fails closed on a non-missing result before scanning candidates [0.58ms]
+(pass) Karaoke finalization central re-drive > fails closed on a rearmed result before scanning candidates [0.21ms]
+(pass) Karaoke finalization central re-drive > fails closed on a RPC failure before scanning candidates [0.20ms]
+
+packages/platform-cf/src/karaoke-repository.test.ts:
+(pass) Karaoke session timezone authority > rejects a requested timezone that conflicts with the pinned account clock [6.38ms]
+(pass) Karaoke session timezone authority > pins UTC when the account has no clock and the request omits a timezone [0.70ms]
+(pass) Karaoke session timezone authority > replays an immutable session before consulting a prospectively changed clock [0.38ms]
+
+ 14 pass
+ 0 fail
+ 33 expect() calls
+Ran 14 tests across 4 files. [486.00ms]

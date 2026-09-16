@@ -158,7 +158,9 @@ const readStudySessionIn = (
     const sessionResult = yield* transaction.execute<Row>({
       label: "activity-qualification.study-session.read",
       text: `${STUDY_SESSION_SELECT}
-              WHERE account_id=$1 AND community_id=$2 AND session_id=$3${lock ? " FOR UPDATE" : ""}`,
+              WHERE account_id=$1 AND community_id=$2 AND session_id=$3
+                AND active_activity_persona(account_id,persona_id,community_id)
+                AND can_account_access_activity_song(account_id,community_id,post_id)${lock ? " FOR UPDATE" : ""}`,
       values: [input.accountId, input.communityId, input.sessionId],
       readonly: !lock,
     });
@@ -485,7 +487,7 @@ export function makeControlPlaneActivityQualificationRepository() {
               communityId: input.communityId,
               sessionId: text(replayRow, "session_id"),
             });
-            if (session === null) return yield* Effect.fail(storage("invalid-row"));
+            if (session === null) return yield* Effect.fail(rejected("not-found"));
             return { kind: "replayed", session } as const;
           }
 
@@ -493,12 +495,13 @@ export function makeControlPlaneActivityQualificationRepository() {
             label: "activity-qualification.study-start.authority",
             text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
                           active_owned_community_persona($1,$2,$3) AS binding_eligible,
-                          active_community_effect($3,$1) AS community_eligible,
+                          active_activity_persona($1,$2,$3) AS community_eligible,
+                          can_account_access_activity_song($1,$3,$4) AS resource_eligible,
                           clock.timezone
                      FROM users AS account
                      LEFT JOIN account_streak_clocks AS clock ON clock.account_id=account.user_id
                     WHERE account.user_id=$1 AND account.status='active'`,
-            values: [input.accountId, input.personaId, input.communityId],
+            values: [input.accountId, input.personaId, input.communityId, input.postId],
             readonly: true,
           });
           const authorityRow = authority.rows[0];
@@ -508,7 +511,8 @@ export function makeControlPlaneActivityQualificationRepository() {
           if (
             authorityRow.persona_eligible !== true ||
             authorityRow.binding_eligible !== true ||
-            authorityRow.community_eligible !== true
+            authorityRow.community_eligible !== true ||
+            authorityRow.resource_eligible !== true
           ) {
             return yield* Effect.fail(rejected("persona-ineligible"));
           }
@@ -567,7 +571,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                   communityId: input.communityId,
                   sessionId: text(row, "session_id"),
                 });
-                if (session === null) return yield* Effect.fail(storage("invalid-row"));
+                if (session === null) return yield* Effect.fail(rejected("not-found"));
                 return session;
               }
 
@@ -575,8 +579,9 @@ export function makeControlPlaneActivityQualificationRepository() {
                 label: "activity-qualification.study-start.authority-locked",
                 text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
                               active_owned_community_persona($1,$2,$3) AS binding_eligible,
-                              active_community_effect($3,$1) AS community_eligible`,
-                values: [input.accountId, input.personaId, input.communityId],
+                              active_activity_persona($1,$2,$3) AS community_eligible,
+                              can_account_access_activity_song($1,$3,$4) AS resource_eligible`,
+                values: [input.accountId, input.personaId, input.communityId, input.postId],
                 readonly: false,
               });
               const startAuthorityRow = startAuthority.rows[0];
@@ -585,7 +590,8 @@ export function makeControlPlaneActivityQualificationRepository() {
                 startAuthorityRow === undefined ||
                 startAuthorityRow.persona_eligible !== true ||
                 startAuthorityRow.binding_eligible !== true ||
-                startAuthorityRow.community_eligible !== true
+                startAuthorityRow.community_eligible !== true ||
+                startAuthorityRow.resource_eligible !== true
               ) {
                 return yield* Effect.fail(rejected("persona-ineligible"));
               }
@@ -686,7 +692,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                 communityId: input.communityId,
                 sessionId: input.sessionId,
               });
-              if (session === null) return yield* Effect.fail(storage("invalid-row"));
+              if (session === null) return yield* Effect.fail(rejected("not-found"));
               return session;
             }),
           );
@@ -733,7 +739,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                   communityId: input.communityId,
                   sessionId: input.sessionId,
                 });
-                if (session === null) return yield* Effect.fail(storage("invalid-row"));
+                if (session === null) return yield* Effect.fail(rejected("not-found"));
                 return {
                   object: "study_answer_result",
                   session_item_id: text(row, "session_item_id"),
@@ -1101,6 +1107,24 @@ export function makeControlPlaneActivityQualificationRepository() {
                 [input.accountId, input.communityId, input.idempotencyKey],
                 "activity-qualification.presentation.lock",
               );
+              const eligible = yield* transaction.execute<Row>({
+                label: "activity-qualification.presentation.authority",
+                text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
+                              active_owned_community_persona($1,$2,$3) AS binding_eligible,
+                              active_activity_persona($1,$2,$3) AS community_eligible`,
+                values: [input.accountId, input.personaId, input.communityId],
+                readonly: false,
+              });
+              const row = eligible.rows[0];
+              if (
+                eligible.rows.length !== 1 ||
+                row === undefined ||
+                row.persona_eligible !== true ||
+                row.binding_eligible !== true ||
+                row.community_eligible !== true
+              ) {
+                return yield* Effect.fail(rejected("persona-ineligible"));
+              }
               const replay = yield* transaction.execute<Row>({
                 label: "activity-qualification.presentation.replay",
                 text: `SELECT request_hash, result_persona_id, result_updated_at
@@ -1123,24 +1147,6 @@ export function makeControlPlaneActivityQualificationRepository() {
                   persona_id: text(row, "result_persona_id"),
                   updated_at: iso(row.result_updated_at),
                 } as const;
-              }
-              const eligible = yield* transaction.execute<Row>({
-                label: "activity-qualification.presentation.authority",
-                text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
-                              active_owned_community_persona($1,$2,$3) AS binding_eligible,
-                              active_community_effect($3,$1) AS community_eligible`,
-                values: [input.accountId, input.personaId, input.communityId],
-                readonly: false,
-              });
-              const row = eligible.rows[0];
-              if (
-                eligible.rows.length !== 1 ||
-                row === undefined ||
-                row.persona_eligible !== true ||
-                row.binding_eligible !== true ||
-                row.community_eligible !== true
-              ) {
-                return yield* Effect.fail(rejected("persona-ineligible"));
               }
               yield* transaction.execute({
                 label: "activity-qualification.presentation.upsert",

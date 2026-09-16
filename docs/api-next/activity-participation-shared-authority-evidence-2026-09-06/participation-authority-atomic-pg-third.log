@@ -1,0 +1,50 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-participation-authority.pg.test.ts:
+(pass) Activity participation authority implementation baseline > owned exact-community identity survives leaving and presentation is ungated [2717.62ms]
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+20 | import { buildKaraokePayloadLines } from "./karaoke-readiness-repository.ts";
+21 | import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
+22 |
+23 | type Row = Readonly<Record<string, unknown>>;
+24 |
+25 | const failed = (reason: KaraokeStoreFailed["reason"]) => new KaraokeStoreFailed({ reason });
+                                                              ^
+Error:
+ reason: "constraint",
+   _tag: "KaraokeStoreFailed",
+
+      at failed (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:25:58)
+      at ~effect/Utils/internal (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Utils.js:85:16)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:720:53)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+      at onExit (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1010:5)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1021:7)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:434:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+(fail) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [3797.81ms]
+(pass) Karaoke persona boundary > presents the community activity persona and only community-issued handles on the leaderboard [1867.53ms]
+
+packages/platform-cf/src/activity-qualification-repository.pg.test.ts:
+(pass) Postgres 17 activity qualification repository > derives Study items only from the exact public accepted lyrics revision [3588.81ms]
+(pass) Postgres 17 activity qualification repository > freezes Study evidence, replays commands, and emits one account day [2686.56ms]
+(pass) Postgres 17 activity qualification repository > uses competition rank and keeps every tie at the requested boundary [812.23ms]
+(pass) Postgres 17 activity qualification repository > projects Study qualification into one Very-gated Megapot share per account [1557.41ms]
+(pass) Postgres 17 activity qualification repository > independent megapot admission ignores membership and refuses absent or revoked proof [1461.21ms]
+(pass) Postgres 17 activity qualification repository > independent asset admission ignores membership and refuses absent or revoked proof [1427.57ms]
+(pass) Postgres 17 activity qualification repository > never-joined unverified account completes Study and appears in standings without monetary or posting effects [1112.08ms]
+(pass) Postgres 17 activity qualification repository > ratified participation keeps completion after membership loss and admits money only from independent evidence [1054.54ms]
+(pass) Postgres 17 activity qualification repository > credits every available asset-bonus leg once per verified account [1501.84ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent asset claims at the funded inventory boundary [1159.43ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent finalization and keeps timezone updates prospective [1900.44ms]
+
+packages/platform-cf/src/study-v2-foundation.pg.test.ts:
+(pass) Study v2 Postgres foundation > keeps versions immutable and review identity stable across regeneration [1946.68ms]
+
+ 14 pass
+ 1 fail
+ 186 expect() calls
+Ran 15 tests across 4 files. [29.04s]

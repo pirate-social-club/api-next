@@ -76,6 +76,7 @@ const sourceResponse = (label: string): Result => {
           persona_id: "persona-1",
           binding_eligible: true,
           community_eligible: true,
+          resource_eligible: true,
         },
       ],
       rowCount: 1,

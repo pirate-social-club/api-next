@@ -1,0 +1,68 @@
+bun test v1.4.0 (34cbb9a40)
+
+scripts/postgres-migrations.test.ts:
+(pass) Postgres migration runner > loads the exact ordered, checksum-verified migration plan [115.52ms]
+(pass) Postgres migration runner > dry-run does not require an administrative URL or open a connection [8.77ms]
+(pass) Postgres migration runner > keeps the Study review-key wire and storage bounds equal [8.71ms]
+(pass) Postgres migration runner > normalizes psql's system sslrootcert value for node pg [0.13ms]
+(pass) Postgres migration runner > fails closed when a migration checksum is tampered [19.61ms]
+
+packages/platform-cf/src/karaoke-finalization-retry.test.ts:
+(pass) Karaoke finalization retry policy > uses capped exponential backoff [0.05ms]
+(pass) Karaoke finalization retry policy > exhausts only when central recovery is activated [0.09ms]
+
+packages/platform-cf/src/karaoke-finalization-recovery.test.ts:
+(pass) Karaoke finalization central re-drive > continues after one RPC failure and reports only aggregate counts [3.89ms]
+(pass) Karaoke finalization central re-drive > fails closed on a non-missing result before scanning candidates [0.64ms]
+(pass) Karaoke finalization central re-drive > fails closed on a rearmed result before scanning candidates [0.22ms]
+(pass) Karaoke finalization central re-drive > fails closed on a RPC failure before scanning candidates [0.21ms]
+
+packages/platform-cf/src/karaoke-repository.test.ts:
+(pass) Karaoke session timezone authority > rejects a requested timezone that conflicts with the pinned account clock [5.23ms]
+22 |
+23 | type Row = Readonly<Record<string, unknown>>;
+24 |
+25 | const failed = (reason: KaraokeStoreFailed["reason"]) => new KaraokeStoreFailed({ reason });
+26 | const rejected = (reason: KaraokeCommandRejected["reason"]) =>
+27 |   new KaraokeCommandRejected({ reason });
+       ^
+Error:
+ reason: "invalid-input",
+   _tag: "KaraokeCommandRejected",
+
+      at rejected (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:27:3)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:261:29)
+      at ~effect/Effect/successCont (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:927:26)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2256:9)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2308:19)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2319:31)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.test.ts:136:36)
+(fail) Karaoke session timezone authority > pins UTC when the account has no clock and the request omits a timezone [2.49ms]
+22 |
+23 | type Row = Readonly<Record<string, unknown>>;
+24 |
+25 | const failed = (reason: KaraokeStoreFailed["reason"]) => new KaraokeStoreFailed({ reason });
+26 | const rejected = (reason: KaraokeCommandRejected["reason"]) =>
+27 |   new KaraokeCommandRejected({ reason });
+       ^
+Error:
+ reason: "invalid-input",
+   _tag: "KaraokeCommandRejected",
+
+      at rejected (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:27:3)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:261:29)
+      at ~effect/Effect/successCont (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:927:26)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2256:9)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2308:19)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2319:31)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.test.ts:171:36)
+(fail) Karaoke session timezone authority > replays an immutable session before consulting a prospectively changed clock [0.63ms]
+
+ 12 pass
+ 2 fail
+ 28 expect() calls
+Ran 14 tests across 4 files. [468.00ms]

@@ -1,0 +1,84 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-participation-authority.pg.test.ts:
+118 |       if (!Result.isFailure(study))
+119 |         throw new Error("Expected missing Study source to remain unavailable");
+120 |       expect(study.failure._tag).toBe("StudyV2CommandRejected");
+121 |       if (study.failure._tag !== "StudyV2CommandRejected")
+122 |         throw new Error("Unexpected storage failure");
+123 |       expect(study.failure.reason).toBe("not-found");
+                                         ^
+error: expect(received).toBe(expected)
+
+Expected: "not-found"
+Received: "insufficient-exercises"
+
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/activity-participation-authority.pg.test.ts:123:36)
+(fail) Activity participation authority implementation baseline > owned exact-community identity survives leaving and presentation is ungated [1922.03ms]
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+20 | import { buildKaraokePayloadLines } from "./karaoke-readiness-repository.ts";
+21 | import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
+22 |
+23 | type Row = Readonly<Record<string, unknown>>;
+24 |
+25 | const failed = (reason: KaraokeStoreFailed["reason"]) => new KaraokeStoreFailed({ reason });
+                                                                  ^
+Error:
+ reason: "constraint",
+   _tag: "KaraokeStoreFailed",
+
+      at failed (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:25:62)
+      at ~effect/Utils/internal (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Utils.js:85:16)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:720:53
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15
+      at onExit (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1010:5)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1021:7
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:434:23)
+      at /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15
+(fail) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [3792.81ms]
+(pass) Karaoke persona boundary > presents the community activity persona and only community-issued handles on the leaderboard [1741.10ms]
+
+packages/platform-cf/src/activity-qualification-repository.pg.test.ts:
+(pass) Postgres 17 activity qualification repository > derives Study items only from the exact public accepted lyrics revision [3348.71ms]
+(pass) Postgres 17 activity qualification repository > freezes Study evidence, replays commands, and emits one account day [2585.46ms]
+(pass) Postgres 17 activity qualification repository > uses competition rank and keeps every tie at the requested boundary [777.85ms]
+(pass) Postgres 17 activity qualification repository > projects Study qualification into one Very-gated Megapot share per account [1656.64ms]
+(pass) Postgres 17 activity qualification repository > independent megapot admission ignores membership and refuses absent or revoked proof [1336.95ms]
+(pass) Postgres 17 activity qualification repository > independent asset admission ignores membership and refuses absent or revoked proof [1429.17ms]
+25 |
+26 | type Row = Readonly<Record<string, unknown>>;
+27 |
+28 | const storage = (
+29 |   reason: ConstructorParameters<typeof ActivityQualificationStorageFailed>[0]["reason"],
+30 | ): ActivityQualificationStorageFailed => new ActivityQualificationStorageFailed({ reason });
+                                              ^
+Error:
+ reason: "constraint",
+   _tag: "ActivityQualificationStorageFailed",
+
+      at storage (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/activity-qualification-repository.ts:30:42)
+      at ~effect/Utils/internal (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Utils.js:85:16)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:720:53)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+      at onExit (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1010:5)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1021:7)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:434:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+(fail) Postgres 17 activity qualification repository > never-joined unverified account completes Study and appears in standings without monetary or posting effects [956.37ms]
+(pass) Postgres 17 activity qualification repository > ratified participation keeps completion after membership loss and admits money only from independent evidence [1404.84ms]
+(pass) Postgres 17 activity qualification repository > credits every available asset-bonus leg once per verified account [1588.13ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent asset claims at the funded inventory boundary [1480.61ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent finalization and keeps timezone updates prospective [1997.07ms]
+
+packages/platform-cf/src/study-v2-foundation.pg.test.ts:
+(pass) Study v2 Postgres foundation > keeps versions immutable and review identity stable across regeneration [1856.86ms]
+
+ 12 pass
+ 3 fail
+ 166 expect() calls
+Ran 15 tests across 4 files. [28.66s]
