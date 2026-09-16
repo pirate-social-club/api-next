@@ -490,6 +490,7 @@ suite("Activity persona preparation", () => {
     const schema = `api_next_preparation_journey_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const scoped = connectionForSchema(connectionString, schema);
     const restricted = connectionForSchemaAndRole(connectionString, schema, "api_next_app");
+    let createdRuntimeRole = false;
     const admin = new Client({ connectionString });
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
@@ -538,6 +539,13 @@ suite("Activity persona preparation", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
+      // The runtime role is cluster-global. Create it only when absent and
+      // remove it again so this file cannot break suites that assert the
+      // deployment role template has not been applied yet.
+      const existingRole = await admin.query(
+        "SELECT 1 FROM pg_roles WHERE rolname='api_next_app'",
+      );
+      createdRuntimeRole = existingRole.rows.length === 0;
       await admin.query(`DO $$
         BEGIN
           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='api_next_app') THEN
@@ -744,6 +752,12 @@ suite("Activity persona preparation", () => {
       }
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
+      if (createdRuntimeRole) {
+        // Remove every grant this run made before dropping the cluster-global
+        // role, including grants made outside this test's schema.
+        await admin.query("DROP OWNED BY api_next_app");
+        await admin.query("DROP ROLE IF EXISTS api_next_app");
+      }
       await admin.end();
     }
   }, 90_000);
