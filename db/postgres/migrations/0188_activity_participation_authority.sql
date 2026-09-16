@@ -1,8 +1,10 @@
--- Provisional ordinal for api-activity-participation-authority after origin/main
--- 3d3d8f20133ef13a3164c3e2f7c19e4d16664a05 was verified through
--- 0187_text_rating_raise_counts.sql. The HNS capability lane holds provisional
--- 0188; this file is renamed from its original 0128 and must be rechecked
--- against fetched origin before integration.
+-- Allocated ordinal for api-activity-participation-authority. Fetched
+-- origin/main 3d3d8f20133ef13a3164c3e2f7c19e4d16664a05 was verified through
+-- 0187_text_rating_raise_counts.sql when the workspace owner assigned this
+-- migration 0188, amending the earlier C3-before-C4 numbering order. The HNS
+-- capability lane's unpublished 0188 proposal is superseded and must be
+-- renumbered at its own integration. This file was renamed from its original
+-- 0128 through the provisional 0189 proposal to its allocated ordinal.
 -- Activity authority is independent of posting membership. Money projectors,
 -- role authority, historical evidence and frozen reset-runner pins are unchanged.
 
