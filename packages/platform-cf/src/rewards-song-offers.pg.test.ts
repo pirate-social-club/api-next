@@ -627,6 +627,36 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       expect(opened).toMatchObject({ replayed: false, offer: { audioRevision: 3 } });
       expect(openReplay).toEqual({ ...opened, replayed: true });
+      // The one-nonterminal-per-post index is a typed durable-state conflict,
+      // not an untyped storage failure.
+      await expect(
+        Effect.runPromise(
+          store.openOffer({
+            ...openInput,
+            actionId: "reward-action-open-duplicate",
+            offerId: "reward-offer-duplicate",
+            idempotencyKey: "open-command-2",
+            requestHash: hash("b"),
+            rewardPolicy: {
+              ...openInput.rewardPolicy,
+              offer_id: "reward-offer-duplicate",
+              uniqueness: {
+                kind: "single_authority",
+                authority_id: "reward-offer-duplicate",
+              },
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "SongRewardOfferRejected", reason: "offer-conflict" });
+      expect(
+        (
+          await admin.query(
+            `SELECT count(*)::integer AS offers FROM song_reward_offers
+              WHERE community_id=$1 AND post_id=$2`,
+            [identity.communityId, identity.postId],
+          )
+        ).rows,
+      ).toEqual([{ offers: 1 }]);
 
       const policies = await Effect.runPromise(store.qualificationPolicies());
       expect(policies.map((entry) => entry.activity).sort()).toEqual(["karaoke", "study"]);
