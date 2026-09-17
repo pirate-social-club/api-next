@@ -296,10 +296,11 @@ function renderReport(
 
 function policyPath(argv: readonly string[]): string {
   const index = argv.indexOf("--policy");
-  if (index === -1 || argv[index + 1] === undefined) {
+  const value = index === -1 ? undefined : argv[index + 1];
+  if (value === undefined) {
     throw new Error("dependency audit requires --policy <path>");
   }
-  return argv[index + 1];
+  return value;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {

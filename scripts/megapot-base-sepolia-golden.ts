@@ -282,7 +282,9 @@ async function requestJson<S extends Schema.ConstraintDecoder<unknown>>(
       ? {}
       : {
           body:
-            request.rawBody === true ? (request.body as BodyInit) : JSON.stringify(request.body),
+            request.rawBody === true
+              ? (request.body as Bun.BodyInit)
+              : JSON.stringify(request.body),
         }),
   });
   if (!response.ok) {
