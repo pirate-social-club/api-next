@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "packages",
+    "apps",
+    "scripts/api-client-provenance.ts",
+    "scripts/bootstrap-megapot-base-sepolia.ts",
+    "scripts/check-contract-fresh.ts",
+    "scripts/check-openapi-breaking.ts",
+    "scripts/check-postgres-baseline-fresh.ts",
+    "scripts/check-postgres-migration-worktree.ts",
+    "scripts/check-scripts-typecheck-coverage.test.ts",
+    "scripts/check-scripts-typecheck-coverage.ts",
+    "scripts/dependency-audit.ts",
+    "scripts/deploy-worker-with-provenance.ts",
+    "scripts/evaluate-study-translation-corpus.ts",
+    "scripts/generate-contracts.ts",
+    "scripts/generate-postgres-baseline.ts",
+    "scripts/m3-staging-preflight.ts",
+    "scripts/megapot-base-sepolia-golden.ts",
+    "scripts/megapot-base-sepolia-preflight.ts",
+    "scripts/postgres-baseline-normalization.ts",
+    "scripts/postgres-foundation-table-catalog.ts",
+    "scripts/postgres-test-suite-manifest.ts",
+    "scripts/reconcile-content-ratings.ts",
+    "scripts/review-study-translation-corpus-dual-ai.ts",
+    "scripts/run-postgres-tests.ts",
+    "scripts/secret-boundary-check.ts",
+    "scripts/seed-gates-v2-age18.ts",
+    "scripts/verify-api-client-package.ts",
+    "scripts/verify-postgres-test-sentinels.ts"
+  ]
+}
