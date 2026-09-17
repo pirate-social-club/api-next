@@ -506,6 +506,23 @@ The acceptance runner must consume the entries through `infisical run`, must not
 print or persist their values, and must keep resulting session material in
 short-lived local files outside Git.
 
+### M1 fresh-identity operator credentials — 2026-09-17
+
+`MODERATION_E2E_M1_EMAIL` and `MODERATION_E2E_M1_OTP` are added to the names
+allowed only in Infisical environment `staging` at
+`/services/api-next/operator`. They hold one Privy dashboard test identity with
+a fixed OTP that has never completed Pirate staging registration, for the
+single authorized fresh-user M1 acceptance; initial values are `PENDING`
+sentinels until the operator provisions them. They are operator tooling
+inputs, are not Worker bindings, and must never be synchronized to Cloudflare
+or copied to development or production. The M1 runner consumes them through
+`infisical run`, must not print or persist their values, and must keep
+resulting session material in short-lived local files outside Git. The
+identity must not be signed in to the Pirate staging app and must not be
+exercised through `scripts/moderation-staging-session-discovery.ts` before the
+authorized acceptance run, because that script registers an unregistered
+identity by posting `auth/register` after a 401 session exchange.
+
 ### R2 seal-probe retirement — 2026-08-26
 
 The disposable proof Worker, bucket, and operator credential pair were torn
