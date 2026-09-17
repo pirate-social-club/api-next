@@ -15,7 +15,7 @@ import {
   type FilebaseIpfsTransport,
   makeFilebaseIpfsPinningAdapter,
 } from "@pirate/platform-cf/data/filebase-ipfs-pinning";
-import { makeIpfsIoGatewayVerifier } from "@pirate/platform-cf/data/ipfs-live-gateway";
+import { makeFilebaseGatewayVerifier } from "@pirate/platform-cf/data/ipfs-live-gateway";
 import {
   DATA_REGISTRATION_AENEID_SELECTORS,
   DATA_REGISTRATION_AENEID_TARGETS,
@@ -214,7 +214,7 @@ export function makeDataRegistrationComposition(
         pin_convergence_delay_ms: 5_000,
       },
     }),
-    gateway: makeIpfsIoGatewayVerifier(),
+    gateway: makeFilebaseGatewayVerifier(),
     publicOrigin: required(env.DATA_REGISTRATION_PUBLIC_ORIGIN, "DATA_REGISTRATION_PUBLIC_ORIGIN"),
   });
   const signerPrivateKey =

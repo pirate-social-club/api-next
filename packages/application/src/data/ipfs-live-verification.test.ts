@@ -27,7 +27,7 @@ const pinning: IpfsPinningService = {
 };
 
 describe("live IPFS verification composition", () => {
-  test("converges only when the independent evidence matches the retained pin", async () => {
+  test("converges only when the Filebase gateway evidence matches the retained pin", async () => {
     const gateway: IpfsGatewayVerifier = {
       verify: () =>
         Effect.succeed({
@@ -35,7 +35,7 @@ describe("live IPFS verification composition", () => {
           cid: CID,
           byte_length: 4,
           sha256: SHA256,
-          provider_id: "ipfs.io",
+          provider_id: "filebase-gateway",
         }),
     };
     expect(await Effect.runPromise(pinAndVerifyIpfsArtifact(pinning, gateway, input))).toEqual({
@@ -59,7 +59,7 @@ describe("live IPFS verification composition", () => {
           cid: `${CID}x`,
           byte_length: 4,
           sha256: SHA256,
-          provider_id: "ipfs.io",
+          provider_id: "filebase-gateway",
         }),
     };
     expect(await Effect.runPromise(pinAndVerifyIpfsArtifact(pinning, gateway, input))).toEqual({
@@ -73,6 +73,31 @@ describe("live IPFS verification composition", () => {
         recursive: true,
       },
       gateway: { status: "rejected", reason: "cid" },
+    });
+  });
+
+  test("rejects a verified result from a provider other than the Filebase gateway", async () => {
+    const gateway: IpfsGatewayVerifier = {
+      verify: () =>
+        Effect.succeed({
+          status: "verified",
+          cid: CID,
+          byte_length: 4,
+          sha256: SHA256,
+          provider_id: "ipfs.io" as never,
+        }),
+    };
+    expect(await Effect.runPromise(pinAndVerifyIpfsArtifact(pinning, gateway, input))).toEqual({
+      status: "gateway_failed",
+      pin: {
+        status: "pinned",
+        outcome: "pinned",
+        cid: CID,
+        byte_length: 4,
+        sha256: SHA256,
+        recursive: true,
+      },
+      gateway: { status: "rejected", reason: "provider" },
     });
   });
 });

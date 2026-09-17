@@ -494,7 +494,7 @@ describe("DATA registration artifact pipeline", () => {
             cid: input.cid,
             byte_length: input.expected_byte_length,
             sha256: input.expected_sha256,
-            provider_id: "ipfs.io",
+            provider_id: "filebase-gateway",
           }),
       },
       publicOrigin: "https://staging.pirate.sc",
@@ -540,7 +540,7 @@ describe("DATA registration artifact pipeline", () => {
             cid: input.cid,
             byte_length: input.expected_byte_length,
             sha256: input.expected_sha256,
-            provider_id: "ipfs.io",
+            provider_id: "filebase-gateway",
           });
         },
       },
@@ -556,7 +556,7 @@ describe("DATA registration artifact pipeline", () => {
       byteLength: 3n,
       canonicalSha256: authority.canonicalAudioSha256,
       primaryEvidenceRef: `data-registration://filebase/${audio.artifact.artifactId}`,
-      gatewayEvidenceRef: `data-registration://ipfs.io/${audio.artifact.artifactId}`,
+      gatewayEvidenceRef: `data-registration://filebase-gateway/${audio.artifact.artifactId}`,
       verifiedAt: "2026-08-27T00:00:00.000Z",
     });
     expect(calls).toEqual(["filebase", "gateway"]);
@@ -677,12 +677,90 @@ describe("DATA registration artifact pipeline", () => {
       byteLength: 3n,
       canonicalSha256: "a".repeat(64),
       primaryEvidenceRef: "evidence://audio",
-      gatewayEvidenceRef: `data-registration://ipfs.io/${audio.artifact.artifactId}`,
+      gatewayEvidenceRef: `data-registration://filebase-gateway/${audio.artifact.artifactId}?class=retryable&reason=not_found`,
       verifiedAt: "2026-08-27T00:00:00.000Z",
       gatewayRetryable: true,
     });
     expect(providerPinCalls).toBe(0);
     expect(gatewayCalls).toBe(1);
+  });
+
+  test("records sanitized gateway status evidence on the fresh verification path", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
+      immutableOriginals: fakeBucket,
+      pinning: {
+        pin: () =>
+          Effect.succeed({
+            status: "pinned",
+            outcome: "pinned",
+            cid: "bafyfresh",
+            byte_length: 3,
+            sha256: authority.canonicalAudioSha256,
+            recursive: true,
+          }),
+      },
+      gateway: {
+        verify: () =>
+          Effect.succeed({
+            status: "retryable" as const,
+            reason: "unavailable" as const,
+            http_status: 429,
+          }),
+      },
+      publicOrigin: "https://staging.pirate.sc",
+      now: () => Date.parse("2026-08-27T00:00:00.000Z"),
+    });
+    const audio = (await pipeline.prepare(operation))[0];
+    if (audio === undefined) throw new Error("audio fixture missing");
+    expect(await pipeline.pinAndVerify(operation, audio)).toMatchObject({
+      status: "primary_verified",
+      gatewayRetryable: true,
+      gatewayEvidenceRef: `data-registration://filebase-gateway/${audio.artifact.artifactId}?class=retryable&reason=unavailable&http_status=429`,
+    });
+  });
+
+  test("records permanent gateway authorization failures with their status", async () => {
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: {
+        resolveMetadata: memoryMetadata(),
+        read: async () => authority,
+        listPins: async () => [],
+      },
+      immutableOriginals: fakeBucket,
+      pinning: {
+        pin: () =>
+          Effect.succeed({
+            status: "pinned",
+            outcome: "pinned",
+            cid: "bafyfresh",
+            byte_length: 3,
+            sha256: authority.canonicalAudioSha256,
+            recursive: true,
+          }),
+      },
+      gateway: {
+        verify: () =>
+          Effect.succeed({
+            status: "rejected" as const,
+            reason: "unauthorized" as const,
+            http_status: 403,
+          }),
+      },
+      publicOrigin: "https://staging.pirate.sc",
+      now: () => Date.parse("2026-08-27T00:00:00.000Z"),
+    });
+    const audio = (await pipeline.prepare(operation))[0];
+    if (audio === undefined) throw new Error("audio fixture missing");
+    expect(await pipeline.pinAndVerify(operation, audio)).toMatchObject({
+      status: "primary_verified",
+      gatewayRetryable: false,
+      gatewayEvidenceRef: `data-registration://filebase-gateway/${audio.artifact.artifactId}?class=rejected&reason=unauthorized&http_status=403`,
+    });
   });
 
   test("maps ordinary provider cancellation to retryable without invoking the gateway", async () => {
