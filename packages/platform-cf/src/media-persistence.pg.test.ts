@@ -6432,3 +6432,94 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 afterAll(async () => {
   if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });
+
+test("lyrics bound before publication produce one DATA operation and post-registration corrections are rejected", async () => {
+  await withCurrentSchema(async (admin, connection) => {
+    const ready: TrustedSongAnalysis = {
+      ...analysis,
+      lyricsAnalysis: {
+        status: "ready",
+        lyricsRevision: 1,
+        explicitness: "not_explicit",
+        primaryLanguageBcp47: "en",
+        secondaryLanguageBcp47: null,
+        evidenceRef: "fixture-lyrics",
+        policyRevision: "fixture-v1",
+        adapterRevision: "fixture-v1",
+      },
+      lyricsSafety: "allow",
+    };
+    await createThroughDecision(
+      connection,
+      { ...decision, creationRevision: 3, lyricsRevision: 1 },
+      ready,
+      false,
+      "accepted fixture lyrics",
+    );
+    const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+      dataRegistrationChainId: 1315n,
+    });
+    const authority = await processing.loadAuthority(submission, operation);
+    if (authority === null) throw new Error("missing regression authority");
+    expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
+
+    const dataCounts = async () => {
+      const result = await admin.query<{ operations: number; outbox: number; signing: number }>(
+        `SELECT (SELECT count(*)::int FROM data_registration_operations WHERE submission_id=$1) AS operations,
+                (SELECT count(*)::int FROM data_registration_outbox WHERE registration_operation_id IN (SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS outbox,
+                (SELECT count(*)::int FROM data_registration_signing_attempts WHERE registration_operation_id IN (SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS signing`,
+        [submission],
+      );
+      return result.rows[0];
+    };
+    expect(await dataCounts()).toMatchObject({ operations: 1, outbox: 1, signing: 0 });
+
+    const state = await admin.query<{
+      creation_revision: string;
+      audio_revision: string;
+      workflow_revision: string;
+    }>(
+      "SELECT creation_revision,audio_revision,workflow_revision FROM media_post_submissions WHERE submission_id=$1",
+      [submission],
+    );
+    const creationRevision = Number(state.rows[0]?.creation_revision);
+    const audioRevision = Number(state.rows[0]?.audio_revision);
+    const workflowRevision = Number(state.rows[0]?.workflow_revision);
+    const corrected = {
+      ...command(
+        connection,
+        "/media-post-submissions/:submissionId/lyrics",
+        "lyrics-correction-after-registration",
+      ),
+      expectedCreationRevision: creationRevision,
+      expectedAudioRevision: audioRevision,
+      lyrics: "Corrected fixture lyrics after DATA registration",
+      outbox: {
+        outboxEventId: "media_pg_lyrics_correction_outbox",
+        effectIdentity: "media_pg_lyrics_correction_effect",
+        payload: {
+          kind: "decision_wakeup" as const,
+          submission_id: submission,
+          operation_id: operation,
+          creation_revision: creationRevision + 1,
+          lyrics_revision: 2,
+          trigger: "lyrics" as const,
+          workflow_revision: workflowRevision,
+          workflow_instance_id: `media-${operation}-r${workflowRevision}`,
+        },
+      },
+    };
+    const rejection = await run(connection, (store) => store.bindLyrics(corrected)).then(
+      () => null,
+      (error: unknown) => error as { readonly _tag?: unknown; readonly reason?: unknown },
+    );
+    expect(rejection?._tag).toBe("MediaSubmissionRepositoryError");
+    expect(rejection?.reason).toBe("transition-rejected");
+    expect(await dataCounts()).toMatchObject({ operations: 1, outbox: 1, signing: 0 });
+    const revisions = await admin.query<{ lyrics_revision: string; provenance: string }>(
+      "SELECT lyrics_revision,provenance FROM media_song_lyrics_revisions WHERE submission_id=$1 ORDER BY lyrics_revision",
+      [submission],
+    );
+    expect(revisions.rows).toEqual([{ lyrics_revision: "1", provenance: "pasted" }]);
+  });
+}, 120_000);
