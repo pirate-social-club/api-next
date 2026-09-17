@@ -110,6 +110,27 @@ describe("scripts typecheck coverage", () => {
       expect([...reached].sort()).toEqual(["a", "b", "c", "check"]);
     });
 
+    test("does not treat echoed, quoted or commented bun run text as execution", () => {
+      const scriptsOnly: ReadonlyMap<string, readonly string[]> = new Map([
+        ["tsconfig.scripts.json", ["check:scripts"]],
+      ]);
+      const echoed = {
+        check: "echo bun run check:scripts",
+        "check:scripts": "tsc --noEmit -p tsconfig.scripts.json",
+      };
+      expect(unwiredPrograms(scriptsOnly, echoed)).toEqual(["tsconfig.scripts.json"]);
+      const quoted = {
+        check: 'echo "bun run check:scripts"',
+        "check:scripts": "tsc --noEmit -p tsconfig.scripts.json",
+      };
+      expect(unwiredPrograms(scriptsOnly, quoted)).toEqual(["tsconfig.scripts.json"]);
+      const commented = {
+        check: "# bun run check:scripts",
+        "check:scripts": "tsc --noEmit -p tsconfig.scripts.json",
+      };
+      expect(unwiredPrograms(scriptsOnly, commented)).toEqual(["tsconfig.scripts.json"]);
+    });
+
     test("the real check chain executes every credited program", () => {
       expect(unwiredPrograms(programTypechecks, packageJson.scripts)).toEqual([]);
     });
@@ -135,6 +156,20 @@ describe("scripts typecheck coverage", () => {
     test("rejects listing-only invocations", () => {
       const scripts = { check: "tsc --noEmit --listFilesOnly -p tsconfig.scripts.json" };
       expect(unwiredPrograms(scriptsProgram, scripts)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("rejects semantic-check suppression options", () => {
+      const scripts = { check: "tsc --noEmit --noCheck -p tsconfig.scripts.json" };
+      expect(unwiredPrograms(scriptsProgram, scripts)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("rejects extra or duplicate options", () => {
+      const extra = { check: "tsc --noEmit -p tsconfig.scripts.json --pretty false" };
+      expect(unwiredPrograms(scriptsProgram, extra)).toEqual(["tsconfig.scripts.json"]);
+      const duplicate = {
+        check: "tsc --noEmit -p tsconfig.scripts.json -p tsconfig.scripts.json",
+      };
+      expect(unwiredPrograms(scriptsProgram, duplicate)).toEqual(["tsconfig.scripts.json"]);
     });
 
     test("rejects quoted or echoed command text", () => {

@@ -38,7 +38,6 @@ const deferredEntryPoints: ReadonlyMap<string, string> = new Map([
 // discovered, because this gate does not interpret shell or interpolate
 // variables.
 const entryPointPattern = /scripts\/[A-Za-z0-9._/-]+\.ts/g;
-const scriptReferencePattern = /\bbun run ([A-Za-z0-9:_-]+)/g;
 
 export function entryPointsFromTexts(texts: readonly string[]): readonly string[] {
   const references = new Set<string>();
@@ -50,9 +49,51 @@ export function entryPointsFromTexts(texts: readonly string[]): readonly string[
     .sort((left, right) => left.localeCompare(right));
 }
 
-// Bounded reachability over package-script names: the only edges are literal
-// `bun run <script>` references in command strings. This is a wiring check,
-// not a shell interpreter.
+// Supported command syntax is a chain of `&&`-separated segments that are
+// read plainly. Quoting, substitution, redirection, pipelines, semicolons and
+// other separators are unsupported and fail closed: a command this matcher
+// cannot read word for word credits and reaches nothing. This is a wiring
+// assertion, not a shell interpreter.
+const unsupportedCommandSyntax = /[;|`\n<>()$\\'"]/;
+
+function commandSegments(command: string): readonly string[] | undefined {
+  if (unsupportedCommandSyntax.test(command)) return undefined;
+  return command.split("&&");
+}
+
+// The repository's supported semantic typecheck is exactly
+// `tsc --noEmit -p CONFIG` or `tsc --noEmit --project CONFIG`. Exact token
+// matching rejects extra and duplicate options, so `--noCheck`, listing-only
+// invocations and prefix-named configurations credit nothing.
+function segmentTypechecksConfig(segment: string, config: string): boolean {
+  const tokens = segment.trim().split(/\s+/);
+  if (tokens.length !== 4) return false;
+  const [executable, noEmit, flag, argument] = tokens;
+  if (executable !== "tsc" || noEmit !== "--noEmit") return false;
+  if (flag !== "-p" && flag !== "--project") return false;
+  return argument === config;
+}
+
+export function commandTypechecksConfig(command: string, config: string): boolean {
+  const segments = commandSegments(command);
+  if (segments === undefined) return false;
+  return segments.some((segment) => segmentTypechecksConfig(segment, config));
+}
+
+// A reachability edge is an executed `bun run SCRIPT` segment consisting of
+// exactly those three tokens, so echoed, quoted or commented text and wrapped
+// invocations never count as execution.
+function segmentBunRunTarget(segment: string): string | undefined {
+  const tokens = segment.trim().split(/\s+/);
+  if (tokens.length !== 3) return undefined;
+  const [executable, subcommand, target] = tokens;
+  if (executable !== "bun" || subcommand !== "run") return undefined;
+  return target;
+}
+
+// Bounded reachability over package-script names: the only edges are direct
+// `bun run <script>` segments. This is a wiring check, not a shell
+// interpreter.
 export function reachableScripts(
   scripts: Readonly<Record<string, string>>,
   roots: readonly string[],
@@ -65,38 +106,14 @@ export function reachableScripts(
     const command = scripts[name];
     if (command === undefined) continue;
     reached.add(name);
-    for (const match of command.matchAll(scriptReferencePattern)) {
-      const target = match[1];
+    const segments = commandSegments(command);
+    if (segments === undefined) continue;
+    for (const segment of segments) {
+      const target = segmentBunRunTarget(segment);
       if (target !== undefined && !reached.has(target)) pending.push(target);
     }
   }
   return reached;
-}
-
-// Supported command syntax is a chain of `&&`-separated segments that start
-// with a direct `tsc` executable and spell `--noEmit` plus an exact `-p` or
-// `--project` configuration argument. Everything else fails closed: quoted or
-// echoed text, listing-only invocations, substituted or redirected commands,
-// pipelines and other separators credit nothing, because this matcher reads
-// commands plainly rather than interpreting shell.
-const unsupportedCommandSyntax = /[;|`\n<>()$\\'"]/;
-
-function segmentTypechecksConfig(segment: string, config: string): boolean {
-  const tokens = segment.trim().split(/\s+/);
-  if (tokens[0] !== "tsc") return false;
-  if (!tokens.includes("--noEmit")) return false;
-  if (tokens.includes("--listFilesOnly")) return false;
-  for (let index = 1; index < tokens.length - 1; index += 1) {
-    const flag = tokens[index];
-    if (flag !== "-p" && flag !== "--project") continue;
-    if (tokens[index + 1] === config) return true;
-  }
-  return false;
-}
-
-export function commandTypechecksConfig(command: string, config: string): boolean {
-  if (unsupportedCommandSyntax.test(command)) return false;
-  return command.split("&&").some((segment) => segmentTypechecksConfig(segment, config));
 }
 
 export function unwiredPrograms(
