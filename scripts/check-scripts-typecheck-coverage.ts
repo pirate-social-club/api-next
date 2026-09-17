@@ -73,6 +73,32 @@ export function reachableScripts(
   return reached;
 }
 
+// Supported command syntax is a chain of `&&`-separated segments that start
+// with a direct `tsc` executable and spell `--noEmit` plus an exact `-p` or
+// `--project` configuration argument. Everything else fails closed: quoted or
+// echoed text, listing-only invocations, substituted or redirected commands,
+// pipelines and other separators credit nothing, because this matcher reads
+// commands plainly rather than interpreting shell.
+const unsupportedCommandSyntax = /[;|`\n<>()$\\'"]/;
+
+function segmentTypechecksConfig(segment: string, config: string): boolean {
+  const tokens = segment.trim().split(/\s+/);
+  if (tokens[0] !== "tsc") return false;
+  if (!tokens.includes("--noEmit")) return false;
+  if (tokens.includes("--listFilesOnly")) return false;
+  for (let index = 1; index < tokens.length - 1; index += 1) {
+    const flag = tokens[index];
+    if (flag !== "-p" && flag !== "--project") continue;
+    if (tokens[index + 1] === config) return true;
+  }
+  return false;
+}
+
+export function commandTypechecksConfig(command: string, config: string): boolean {
+  if (unsupportedCommandSyntax.test(command)) return false;
+  return command.split("&&").some((segment) => segmentTypechecksConfig(segment, config));
+}
+
 export function unwiredPrograms(
   programs: ReadonlyMap<string, readonly string[]>,
   scripts: Readonly<Record<string, string>>,
@@ -84,7 +110,7 @@ export function unwiredPrograms(
       if (!reached.has(name)) return false;
       const command = scripts[name];
       if (command === undefined) return false;
-      return command.includes("tsc --noEmit") && command.includes(`-p ${config}`);
+      return commandTypechecksConfig(command, config);
     });
     if (!wired) unwired.push(config);
   }

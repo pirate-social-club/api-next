@@ -115,6 +115,43 @@ describe("scripts typecheck coverage", () => {
     });
   });
 
+  describe("semantic typecheck matching", () => {
+    const scriptsProgram: ReadonlyMap<string, readonly string[]> = new Map([
+      ["tsconfig.scripts.json", ["check"]],
+    ]);
+
+    test("does not combine --noEmit with a listing-only project invocation", () => {
+      const scripts = {
+        check: "tsc --noEmit -p tsconfig.json && tsc --listFilesOnly -p tsconfig.scripts.json",
+      };
+      expect(unwiredPrograms(scriptsProgram, scripts)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("does not accept a configuration argument by prefix", () => {
+      const scripts = { check: "tsc --noEmit -p tsconfig.scripts.json.backup" };
+      expect(unwiredPrograms(scriptsProgram, scripts)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("rejects listing-only invocations", () => {
+      const scripts = { check: "tsc --noEmit --listFilesOnly -p tsconfig.scripts.json" };
+      expect(unwiredPrograms(scriptsProgram, scripts)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("rejects quoted or echoed command text", () => {
+      const quoted = { check: 'echo "tsc --noEmit -p tsconfig.scripts.json"' };
+      expect(unwiredPrograms(scriptsProgram, quoted)).toEqual(["tsconfig.scripts.json"]);
+      const echoed = { check: "echo tsc --noEmit -p tsconfig.scripts.json" };
+      expect(unwiredPrograms(scriptsProgram, echoed)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("accepts the exact invocation and the --project spelling", () => {
+      const short = { check: "tsc --noEmit -p tsconfig.scripts.json" };
+      expect(unwiredPrograms(scriptsProgram, short)).toEqual([]);
+      const long = { check: "tsc --noEmit --project tsconfig.scripts.json" };
+      expect(unwiredPrograms(scriptsProgram, long)).toEqual([]);
+    });
+  });
+
   test("runs the scripts program and the coverage regression through check", () => {
     expect(packageJson.scripts["check:scripts"]).toBe(
       "tsc --noEmit -p tsconfig.scripts.json && bun scripts/check-scripts-typecheck-coverage.ts",
