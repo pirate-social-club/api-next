@@ -131,6 +131,17 @@ describe("scripts typecheck coverage", () => {
       expect(unwiredPrograms(scriptsOnly, commented)).toEqual(["tsconfig.scripts.json"]);
     });
 
+    test("rejects a shell comment before an otherwise valid bun run edge", () => {
+      const scriptsOnly: ReadonlyMap<string, readonly string[]> = new Map([
+        ["tsconfig.scripts.json", ["check:scripts"]],
+      ]);
+      const scripts = {
+        check: "# note && bun run check:scripts",
+        "check:scripts": "tsc --noEmit -p tsconfig.scripts.json",
+      };
+      expect(unwiredPrograms(scriptsOnly, scripts)).toEqual(["tsconfig.scripts.json"]);
+    });
+
     test("the real check chain executes every credited program", () => {
       expect(unwiredPrograms(programTypechecks, packageJson.scripts)).toEqual([]);
     });
@@ -177,6 +188,11 @@ describe("scripts typecheck coverage", () => {
       expect(unwiredPrograms(scriptsProgram, quoted)).toEqual(["tsconfig.scripts.json"]);
       const echoed = { check: "echo tsc --noEmit -p tsconfig.scripts.json" };
       expect(unwiredPrograms(scriptsProgram, echoed)).toEqual(["tsconfig.scripts.json"]);
+    });
+
+    test("rejects a shell comment before an otherwise valid typecheck", () => {
+      const scripts = { check: "# note && tsc --noEmit -p tsconfig.scripts.json" };
+      expect(unwiredPrograms(scriptsProgram, scripts)).toEqual(["tsconfig.scripts.json"]);
     });
 
     test("accepts the exact invocation and the --project spelling", () => {

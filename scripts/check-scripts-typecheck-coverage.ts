@@ -50,11 +50,13 @@ export function entryPointsFromTexts(texts: readonly string[]): readonly string[
 }
 
 // Supported command syntax is a chain of `&&`-separated segments that are
-// read plainly. Quoting, substitution, redirection, pipelines, semicolons and
-// other separators are unsupported and fail closed: a command this matcher
-// cannot read word for word credits and reaches nothing. This is a wiring
-// assertion, not a shell interpreter.
-const unsupportedCommandSyntax = /[;|`\n<>()$\\'"]/;
+// read plainly. Quoting, substitution, redirection, pipelines, semicolons,
+// shell comments and other separators are unsupported and fail closed: a
+// command this matcher cannot read word for word credits and reaches nothing.
+// A `#` is rejected outright before any split, because a comment can swallow
+// an `&&` and the invocation after it. This is a wiring assertion, not a
+// shell interpreter.
+const unsupportedCommandSyntax = /[#;|`\n<>()$\\'"]/;
 
 function commandSegments(command: string): readonly string[] | undefined {
   if (unsupportedCommandSyntax.test(command)) return undefined;
