@@ -613,6 +613,63 @@ describe("Infisical secret drift audit", () => {
       ),
     ).toBe(false);
   });
+
+  test("admits the M1 operator credentials only at the staging operator path", () => {
+    const staging = emptySnapshot("staging");
+    const accepted = auditInfisicalSnapshots([
+      {
+        ...staging,
+        secrets: {
+          ...staging.secrets,
+          "/services/api-next/operator": ["MODERATION_E2E_M1_EMAIL", "MODERATION_E2E_M1_OTP"],
+        },
+      },
+    ]);
+    expect(accepted.violations.filter(({ name }) => name?.startsWith("MODERATION_E2E_M1"))).toEqual(
+      [],
+    );
+
+    const misplaced = auditInfisicalSnapshots([
+      {
+        ...staging,
+        secrets: {
+          ...staging.secrets,
+          "/services/api-next": ["MODERATION_E2E_M1_EMAIL", "MODERATION_E2E_M1_OTP"],
+        },
+      },
+      {
+        ...emptySnapshot("dev"),
+        folders: [...emptySnapshot("dev").folders, "/services/api-next/operator"],
+        secrets: {
+          ...emptySnapshot("dev").secrets,
+          "/services/api-next/operator": ["MODERATION_E2E_M1_EMAIL", "MODERATION_E2E_M1_OTP"],
+        },
+      },
+      {
+        ...emptySnapshot("prod"),
+        secrets: {
+          ...emptySnapshot("prod").secrets,
+          "/services/api-next/operator": ["MODERATION_E2E_M1_EMAIL", "MODERATION_E2E_M1_OTP"],
+        },
+      },
+    ]);
+    expect(
+      [
+        ...new Set(
+          misplaced.violations
+            .filter(
+              ({ kind, name }) =>
+                kind === "unexpected-secret" && name?.startsWith("MODERATION_E2E_M1"),
+            )
+            .map(({ environment, path }) => `${environment}:${path}`),
+        ),
+      ].sort(),
+    ).toEqual([
+      "dev:/services/api-next/operator",
+      "prod:/services/api-next/operator",
+      "staging:/services/api-next",
+    ]);
+  });
 });
 
 describe("Megapot inventory activation policy", () => {
