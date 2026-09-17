@@ -209,7 +209,7 @@ function harness(
     getOperation: async () => currentOperation,
     pinsReady: async () =>
       ARTIFACTS.every(({ artifact: value }) =>
-        ["primary", "independent_gateway"].every((role) =>
+        ["primary", "filebase_gateway"].every((role) =>
           [...pins.values()].some(
             (pin) => pin.artifactId === value.artifactId && pin.role === role,
           ),
@@ -310,7 +310,7 @@ function harness(
             byteLength: prepared.artifact.byteLength,
             canonicalSha256: prepared.artifact.canonicalSha256,
             primaryEvidenceRef: "evidence://filebase/canonical_audio",
-            gatewayEvidenceRef: "evidence://ipfs.io/canonical_audio/not-found",
+            gatewayEvidenceRef: "evidence://filebase-gateway/canonical_audio/not-found",
             verifiedAt: "2026-08-27T00:00:00.000Z",
             gatewayRetryable: true,
           };
@@ -321,7 +321,7 @@ function harness(
           byteLength: prepared.artifact.byteLength,
           canonicalSha256: prepared.artifact.canonicalSha256,
           primaryEvidenceRef: `evidence://filebase/${prepared.artifact.artifactKind}`,
-          gatewayEvidenceRef: `evidence://ipfs.io/${prepared.artifact.artifactKind}`,
+          gatewayEvidenceRef: `evidence://filebase-gateway/${prepared.artifact.artifactKind}`,
           verifiedAt: "2026-08-27T00:00:00.000Z",
         };
       },
@@ -428,7 +428,7 @@ describe("DATA registration Workflow interpreter", () => {
     expect(outcome).toEqual({ outcome: "registered" });
     expect(state.operation().state).toBe("registered");
     expect(state.calls.indexOf("sign")).toBeGreaterThan(
-      state.calls.lastIndexOf("pin:independent_gateway:nft_metadata"),
+      state.calls.lastIndexOf("pin:filebase_gateway:nft_metadata"),
     );
     expect(state.calls).toContain("broadcast");
     expect(state.calls).toContain("confirm");
@@ -458,7 +458,7 @@ describe("DATA registration Workflow interpreter", () => {
     expect(state.pins()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "primary", outcome: "verified" }),
-        expect.objectContaining({ role: "independent_gateway", outcome: "failed" }),
+        expect.objectContaining({ role: "filebase_gateway", outcome: "failed" }),
       ]),
     );
   });
@@ -484,18 +484,18 @@ describe("DATA registration Workflow interpreter", () => {
     });
     for (let attemptNumber = 1; attemptNumber <= 10; attemptNumber += 1) {
       await state.dependencies.store.recordPinVerification({
-        pinVerificationId: `${canonical.artifact.artifactId}:gateway:ipfs.io:${attemptNumber}`,
+        pinVerificationId: `${canonical.artifact.artifactId}:gateway:filebase-gateway:${attemptNumber}`,
         registrationOperationId: OPERATION_ID,
         artifactId: canonical.artifact.artifactId,
         artifactKind: canonical.artifact.artifactKind,
-        role: "independent_gateway",
-        providerId: "ipfs.io",
+        role: "filebase_gateway",
+        providerId: "filebase-gateway",
         attemptNumber,
         outcome: "failed",
         cid: null,
         canonicalSha256: null,
         byteLength: null,
-        evidenceRef: `evidence://ipfs.io/canonical_audio/${attemptNumber}`,
+        evidenceRef: `evidence://filebase-gateway/canonical_audio/${attemptNumber}`,
         verifiedAt: null,
       });
     }
@@ -507,13 +507,118 @@ describe("DATA registration Workflow interpreter", () => {
     expect(state.operation()).toMatchObject({
       state: "failed",
       failureCode: "pin_verification_failed",
-      failureEvidenceRef: "data-registration://pin-attempt-budget-exhausted",
+      failureEvidenceRef:
+        "data-registration://pin-attempt-budget-exhausted?role=filebase_gateway&provider=filebase-gateway&attempts=10&budget=10&last=evidence%3A%2F%2Ffilebase-gateway%2Fcanonical_audio%2F10",
     });
-    expect(state.calls).toEqual([
-      "artifact:canonical_audio",
-      "provider-pin:canonical_audio",
-      "fail:failed",
-    ]);
+    // The budget is checked before the provider call: no transport call is
+    // issued on the exhausting cycle.
+    expect(state.calls).toEqual(["artifact:canonical_audio", "fail:failed"]);
+    expect(state.calls).not.toContain("provider-pin:canonical_audio");
+  });
+
+  test("allows the final budgeted gateway attempt before exhaustion", async () => {
+    const state = harness("confirmed", true, true);
+    const canonical = ARTIFACTS[0];
+    if (canonical === undefined) throw new Error("canonical fixture missing");
+    await state.dependencies.store.recordPinVerification({
+      pinVerificationId: `${canonical.artifact.artifactId}:pin:filebase:1`,
+      registrationOperationId: OPERATION_ID,
+      artifactId: canonical.artifact.artifactId,
+      artifactKind: canonical.artifact.artifactKind,
+      role: "primary",
+      providerId: "filebase",
+      attemptNumber: 1,
+      outcome: "verified",
+      cid: "bafycanonicalaudio",
+      canonicalSha256: canonical.artifact.canonicalSha256,
+      byteLength: canonical.artifact.byteLength,
+      evidenceRef: "evidence://filebase/canonical_audio",
+      verifiedAt: "2026-08-27T00:00:00.000Z",
+    });
+    for (let attemptNumber = 1; attemptNumber <= 9; attemptNumber += 1) {
+      await state.dependencies.store.recordPinVerification({
+        pinVerificationId: `${canonical.artifact.artifactId}:gateway:filebase-gateway:${attemptNumber}`,
+        registrationOperationId: OPERATION_ID,
+        artifactId: canonical.artifact.artifactId,
+        artifactKind: canonical.artifact.artifactKind,
+        role: "filebase_gateway",
+        providerId: "filebase-gateway",
+        attemptNumber,
+        outcome: "failed",
+        cid: null,
+        canonicalSha256: null,
+        byteLength: null,
+        evidenceRef: `evidence://filebase-gateway/canonical_audio/${attemptNumber}`,
+        verifiedAt: null,
+      });
+    }
+    state.calls.length = 0;
+
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    expect(state.calls.filter((call) => call === "provider-pin:canonical_audio")).toHaveLength(1);
+    expect(
+      state
+        .pins()
+        .filter((pin) => pin.role === "filebase_gateway")
+        .map((pin) => pin.attemptNumber),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  test("repeats an unrecorded gateway attempt after interruption and re-entry", async () => {
+    const state = harness("confirmed", true, true);
+    const canonical = ARTIFACTS[0];
+    if (canonical === undefined) throw new Error("canonical fixture missing");
+    await state.dependencies.store.recordPinVerification({
+      pinVerificationId: `${canonical.artifact.artifactId}:pin:filebase:1`,
+      registrationOperationId: OPERATION_ID,
+      artifactId: canonical.artifact.artifactId,
+      artifactKind: canonical.artifact.artifactKind,
+      role: "primary",
+      providerId: "filebase",
+      attemptNumber: 1,
+      outcome: "verified",
+      cid: "bafycanonicalaudio",
+      canonicalSha256: canonical.artifact.canonicalSha256,
+      byteLength: canonical.artifact.byteLength,
+      evidenceRef: "evidence://filebase/canonical_audio",
+      verifiedAt: "2026-08-27T00:00:00.000Z",
+    });
+    let interruptGatewayRecord = true;
+    const dependencies: DataRegistrationWorkflowDependencies = {
+      ...state.dependencies,
+      store: {
+        ...state.dependencies.store,
+        recordPinVerification: async (value: DataRegistrationPinVerification) => {
+          if (value.role === "filebase_gateway" && interruptGatewayRecord) {
+            throw new Error("interrupted after the provider call");
+          }
+          return state.dependencies.store.recordPinVerification(value);
+        },
+      },
+    };
+    state.calls.length = 0;
+
+    await expect(advanceDataRegistrationWorkflow(payload, dependencies)).rejects.toThrow(
+      "interrupted after the provider call",
+    );
+    expect(state.calls.filter((call) => call === "provider-pin:canonical_audio")).toHaveLength(1);
+    expect(state.pins().filter((pin) => pin.role === "filebase_gateway")).toHaveLength(0);
+
+    interruptGatewayRecord = false;
+    expect(await advanceDataRegistrationWorkflow(payload, dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    // The counter is persisted after the call, so a call that was not recorded
+    // is repeated on re-entry; the budget is not a durable hard request cap.
+    expect(state.calls.filter((call) => call === "provider-pin:canonical_audio")).toHaveLength(2);
+    expect(
+      state
+        .pins()
+        .filter((pin) => pin.role === "filebase_gateway")
+        .map((pin) => pin.attemptNumber),
+    ).toEqual([1]);
   });
 
   test("lets a pin persistence outage retry instead of relabeling it", async () => {
@@ -592,18 +697,18 @@ describe("DATA registration Workflow interpreter", () => {
       verifiedAt: "2026-08-27T00:00:00.000Z",
     });
     await state.dependencies.store.recordPinVerification({
-      pinVerificationId: `${canonical.artifact.artifactId}:gateway:ipfs.io:1`,
+      pinVerificationId: `${canonical.artifact.artifactId}:gateway:filebase-gateway:1`,
       registrationOperationId: OPERATION_ID,
       artifactId: canonical.artifact.artifactId,
       artifactKind: canonical.artifact.artifactKind,
-      role: "independent_gateway",
-      providerId: "ipfs.io",
+      role: "filebase_gateway",
+      providerId: "filebase-gateway",
       attemptNumber: 1,
       outcome: "failed",
       cid: null,
       canonicalSha256: null,
       byteLength: null,
-      evidenceRef: "evidence://ipfs.io/canonical_audio/unavailable",
+      evidenceRef: "evidence://filebase-gateway/canonical_audio/unavailable",
       verifiedAt: null,
     });
     state.calls.length = 0;
@@ -612,14 +717,14 @@ describe("DATA registration Workflow interpreter", () => {
       outcome: "progress",
     });
     expect(state.calls.filter((call) => call === "pin:primary:canonical_audio")).toHaveLength(0);
-    expect(state.calls).toContain("pin:independent_gateway:canonical_audio");
+    expect(state.calls).toContain("pin:filebase_gateway:canonical_audio");
     expect(
       state
         .pins()
         .find(
           (pin) =>
             pin.artifactId === canonical.artifact.artifactId &&
-            pin.role === "independent_gateway" &&
+            pin.role === "filebase_gateway" &&
             pin.outcome === "verified",
         )?.attemptNumber,
     ).toBe(2);

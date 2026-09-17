@@ -3,6 +3,11 @@ import type { IpfsPinningInput, IpfsPinningResult, IpfsPinningService } from "./
 
 export const IPFS_GATEWAY_VERIFICATION_VERSION = "ipfs-gateway-verification-v1" as const;
 
+/** The single retrieval provider for registration: the Filebase dedicated
+ * gateway. This is integrity verification within one provider, not independent
+ * replication, and it must never be persisted as an independent provider. */
+export const FILEBASE_GATEWAY_PROVIDER_ID = "filebase-gateway" as const;
+
 export type IpfsGatewayVerificationInput = Readonly<{
   version: typeof IPFS_GATEWAY_VERIFICATION_VERSION;
   request_id: string;
@@ -18,15 +23,25 @@ export type IpfsGatewayVerificationResult =
       cid: string;
       byte_length: number;
       sha256: string;
-      provider_id: "ipfs.io";
+      provider_id: typeof FILEBASE_GATEWAY_PROVIDER_ID;
     }>
   | Readonly<{
       status: "retryable";
       reason: "timeout" | "cancelled" | "transport" | "unavailable" | "not_found";
+      http_status?: number;
     }>
   | Readonly<{
       status: "rejected";
-      reason: "invalid_input" | "redirect" | "oversized" | "cid" | "length" | "sha256";
+      reason:
+        | "invalid_input"
+        | "redirect"
+        | "unauthorized"
+        | "provider"
+        | "oversized"
+        | "cid"
+        | "length"
+        | "sha256";
+      http_status?: number;
     }>;
 
 export interface IpfsGatewayVerifier {
@@ -67,7 +82,7 @@ export const pinAndVerifyIpfsArtifact = (
       verification.cid !== pin.cid ||
       verification.byte_length !== pin.byte_length ||
       verification.sha256 !== pin.sha256 ||
-      verification.provider_id !== "ipfs.io"
+      verification.provider_id !== FILEBASE_GATEWAY_PROVIDER_ID
     ) {
       return {
         status: "gateway_failed",
@@ -79,7 +94,9 @@ export const pinAndVerifyIpfsArtifact = (
               ? "cid"
               : verification.byte_length !== pin.byte_length
                 ? "length"
-                : "sha256",
+                : verification.sha256 !== pin.sha256
+                  ? "sha256"
+                  : "provider",
         },
       } as const;
     }

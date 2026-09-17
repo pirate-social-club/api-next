@@ -1637,11 +1637,10 @@ export function makeDataRegistrationStore(
                          JOIN data_registration_pin_verifications gateway
                            ON gateway.registration_operation_id=primary_pin.registration_operation_id
                           AND gateway.artifact_id=primary_pin.artifact_id
-                          AND gateway.role='independent_gateway' AND gateway.outcome='verified'
+                          AND gateway.role IN ('independent_gateway','filebase_gateway') AND gateway.provider_id IN ('filebase-gateway','ipfs.io') AND gateway.outcome='verified'
                           AND gateway.cid=primary_pin.cid
                           AND gateway.canonical_sha256=primary_pin.canonical_sha256
                           AND gateway.byte_length=primary_pin.byte_length
-                          AND gateway.provider_id<>primary_pin.provider_id
                          WHERE artifact.registration_operation_id=$1
                            AND artifact.artifact_kind='ip_metadata'
                            AND 'ipfs://'||primary_pin.cid=$2
@@ -1657,11 +1656,10 @@ export function makeDataRegistrationStore(
                          JOIN data_registration_pin_verifications gateway
                            ON gateway.registration_operation_id=primary_pin.registration_operation_id
                           AND gateway.artifact_id=primary_pin.artifact_id
-                          AND gateway.role='independent_gateway' AND gateway.outcome='verified'
+                          AND gateway.role IN ('independent_gateway','filebase_gateway') AND gateway.provider_id IN ('filebase-gateway','ipfs.io') AND gateway.outcome='verified'
                           AND gateway.cid=primary_pin.cid
                           AND gateway.canonical_sha256=primary_pin.canonical_sha256
                           AND gateway.byte_length=primary_pin.byte_length
-                          AND gateway.provider_id<>primary_pin.provider_id
                          WHERE artifact.registration_operation_id=$1
                            AND artifact.artifact_kind='nft_metadata'
                            AND 'ipfs://'||primary_pin.cid=$4

@@ -1,5 +1,8 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
-import type { IpfsGatewayVerifier } from "@pirate/application/data/ipfs-live-verification";
+import type {
+  IpfsGatewayVerificationResult,
+  IpfsGatewayVerifier,
+} from "@pirate/application/data/ipfs-live-verification";
 import { pinAndVerifyIpfsArtifact } from "@pirate/application/data/ipfs-live-verification";
 import type { IpfsPinningResult, IpfsPinningService } from "@pirate/application/data/ipfs-pinning";
 import {
@@ -854,6 +857,24 @@ export function makeDataRegistrationArtifactPipeline(
     return `data-registration://pin-failed/${artifactId}?${query.toString()}`;
   };
 
+  /**
+   * A non-verified gateway result retains only closed classifications and a
+   * validated HTTP status. Provider response bodies, headers, tokens and
+   * credential-bearing URLs are never copied into persisted evidence.
+   */
+  const gatewayFailureEvidence = (
+    artifactId: string,
+    gateway: Exclude<IpfsGatewayVerificationResult, { readonly status: "verified" }>,
+  ): string => {
+    const query = new URLSearchParams();
+    query.set("class", gateway.status);
+    query.set("reason", gateway.reason);
+    if ("http_status" in gateway && typeof gateway.http_status === "number") {
+      query.set("http_status", String(gateway.http_status));
+    }
+    return `data-registration://filebase-gateway/${artifactId}?${query.toString()}`;
+  };
+
   const pinAndVerifyEffect = Effect.fn("DataRegistrationArtifactPipeline.pinAndVerify")(function* (
     prepared: DataRegistrationPreparedArtifact,
   ): Effect.fn.Return<DataRegistrationPinResult, unknown> {
@@ -889,7 +910,7 @@ export function makeDataRegistrationArtifactPipeline(
           byteLength: BigInt(gateway.byte_length),
           canonicalSha256: gateway.sha256,
           primaryEvidenceRef: retainedPrimary.evidenceRef,
-          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+          gatewayEvidenceRef: `data-registration://filebase-gateway/${prepared.artifact.artifactId}`,
           verifiedAt: new Date(now()).toISOString(),
         };
       }
@@ -899,7 +920,7 @@ export function makeDataRegistrationArtifactPipeline(
         byteLength: prepared.artifact.byteLength,
         canonicalSha256: prepared.artifact.canonicalSha256,
         primaryEvidenceRef: retainedPrimary.evidenceRef,
-        gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+        gatewayEvidenceRef: gatewayFailureEvidence(prepared.artifact.artifactId, gateway),
         verifiedAt: retainedPrimary.verifiedAt ?? new Date(now()).toISOString(),
         gatewayRetryable: gateway.status === "retryable",
       };
@@ -923,7 +944,7 @@ export function makeDataRegistrationArtifactPipeline(
         byteLength: BigInt(result.pin.byte_length),
         canonicalSha256: result.pin.sha256,
         primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
-        gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+        gatewayEvidenceRef: `data-registration://filebase-gateway/${prepared.artifact.artifactId}`,
         verifiedAt: new Date(now()).toISOString(),
       };
     }
@@ -934,7 +955,7 @@ export function makeDataRegistrationArtifactPipeline(
         byteLength: BigInt(result.pin.byte_length),
         canonicalSha256: result.pin.sha256,
         primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
-        gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+        gatewayEvidenceRef: gatewayFailureEvidence(prepared.artifact.artifactId, result.gateway),
         verifiedAt: new Date(now()).toISOString(),
         gatewayRetryable: result.gateway.status === "retryable",
       };

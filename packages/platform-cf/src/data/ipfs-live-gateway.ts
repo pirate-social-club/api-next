@@ -3,12 +3,30 @@ import type {
   IpfsGatewayVerificationResult,
   IpfsGatewayVerifier,
 } from "@pirate/application/data/ipfs-live-verification";
+import { FILEBASE_GATEWAY_PROVIDER_ID } from "@pirate/application/data/ipfs-live-verification";
 import { Effect } from "effect";
 import { isValidFilebaseCid } from "./filebase-ipfs-pinning";
 
-export const IPFS_IO_GATEWAY_ORIGIN = "https://ipfs.io" as const;
-export const IPFS_IO_GATEWAY_TIMEOUT_MS = 120_000;
-export const IPFS_IO_GATEWAY_MAX_BYTES = 64 * 1024 * 1024;
+/**
+ * The registration gate retrieves pinned artifacts through the Filebase
+ * dedicated gateway. This verifies availability and integrity inside one
+ * provider; it is not independent replication and must never be described or
+ * persisted as such. The packaged origin is validated at module load so a
+ * configuration drift cannot redirect verification to another provider, and
+ * there is no fallback origin.
+ */
+export const FILEBASE_GATEWAY_ORIGIN = "https://highseas.myfilebase.com" as const;
+export const FILEBASE_GATEWAY_TIMEOUT_MS = 120_000;
+export const FILEBASE_GATEWAY_MAX_BYTES = 64 * 1024 * 1024;
+export const FILEBASE_GATEWAY_TOKEN_HEADER = "x-filebase-gateway-token" as const;
+
+const PACKAGED_GATEWAY_ORIGIN = (() => {
+  const url = new URL(FILEBASE_GATEWAY_ORIGIN);
+  if (url.protocol !== "https:" || url.origin !== FILEBASE_GATEWAY_ORIGIN) {
+    throw new Error("invalid Filebase gateway origin");
+  }
+  return url.origin;
+})();
 
 type DigestWritable = WritableStream<ArrayBuffer | ArrayBufferView> & {
   readonly digest: Promise<ArrayBuffer>;
@@ -16,10 +34,12 @@ type DigestWritable = WritableStream<ArrayBuffer | ArrayBufferView> & {
 
 type GatewayFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export type IpfsIoGatewayVerifierOptions = Readonly<{
+export type FilebaseGatewayVerifierOptions = Readonly<{
   fetch?: GatewayFetch;
   timeout_ms?: number;
   max_bytes?: number;
+  /** Optional dedicated-gateway token, sent only as the documented header. */
+  gateway_token?: string;
 }>;
 
 const digestStream = (): DigestWritable => {
@@ -44,12 +64,13 @@ const validInput = (input: IpfsGatewayVerificationInput, maxBytes: number): bool
   /^[0-9a-f]{64}$/u.test(input.expected_sha256) &&
   (input.signal === undefined || input.signal instanceof AbortSignal);
 
-export const makeIpfsIoGatewayVerifier = (
-  options: IpfsIoGatewayVerifierOptions = {},
+export const makeFilebaseGatewayVerifier = (
+  options: FilebaseGatewayVerifierOptions = {},
 ): IpfsGatewayVerifier => {
   const transport = options.fetch ?? globalThis.fetch.bind(globalThis);
-  const timeoutMs = options.timeout_ms ?? IPFS_IO_GATEWAY_TIMEOUT_MS;
-  const maxBytes = options.max_bytes ?? IPFS_IO_GATEWAY_MAX_BYTES;
+  const timeoutMs = options.timeout_ms ?? FILEBASE_GATEWAY_TIMEOUT_MS;
+  const maxBytes = options.max_bytes ?? FILEBASE_GATEWAY_MAX_BYTES;
+  const token = options.gateway_token?.trim();
 
   return {
     verify: (input) =>
@@ -61,20 +82,31 @@ export const makeIpfsIoGatewayVerifier = (
         const timeout = setTimeout(() => controller.abort("timeout"), timeoutMs);
         try {
           const response = await transport(
-            `${IPFS_IO_GATEWAY_ORIGIN}/ipfs/${encodeURIComponent(input.cid)}`,
-            { method: "GET", redirect: "manual", signal: controller.signal },
+            `${PACKAGED_GATEWAY_ORIGIN}/ipfs/${encodeURIComponent(input.cid)}`,
+            {
+              method: "GET",
+              redirect: "manual",
+              signal: controller.signal,
+              ...(token === undefined || token.length === 0
+                ? {}
+                : { headers: { [FILEBASE_GATEWAY_TOKEN_HEADER]: token } }),
+            },
           );
           if (response.status >= 300 && response.status < 400) {
             await response.body?.cancel("redirect_rejected");
-            return { status: "rejected", reason: "redirect" };
+            return { status: "rejected", reason: "redirect", http_status: response.status };
+          }
+          if (response.status === 401 || response.status === 403) {
+            await response.body?.cancel("gateway_unauthorized");
+            return { status: "rejected", reason: "unauthorized", http_status: response.status };
           }
           if (response.status === 404) {
             await response.body?.cancel("not_found");
-            return { status: "retryable", reason: "not_found" };
+            return { status: "retryable", reason: "not_found", http_status: 404 };
           }
           if (response.status < 200 || response.status >= 300) {
             await response.body?.cancel("gateway_unavailable");
-            return { status: "retryable", reason: "unavailable" };
+            return { status: "retryable", reason: "unavailable", http_status: response.status };
           }
           if (response.body === null) return { status: "retryable", reason: "transport" };
 
@@ -111,7 +143,7 @@ export const makeIpfsIoGatewayVerifier = (
             cid: input.cid,
             byte_length: byteLength,
             sha256,
-            provider_id: "ipfs.io",
+            provider_id: FILEBASE_GATEWAY_PROVIDER_ID,
           };
         } catch {
           if (controller.signal.aborted) {

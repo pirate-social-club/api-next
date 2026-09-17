@@ -3257,11 +3257,12 @@ CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS bool
         JOIN data_registration_pin_verifications gateway
           ON gateway.registration_operation_id=primary_pin.registration_operation_id
          AND gateway.artifact_id=primary_pin.artifact_id
-         AND gateway.role='independent_gateway' AND gateway.outcome='verified'
+         AND gateway.role IN ('independent_gateway','filebase_gateway')
+         AND gateway.provider_id IN ('filebase-gateway','ipfs.io')
+         AND gateway.outcome='verified'
          AND gateway.cid=primary_pin.cid
          AND gateway.canonical_sha256=primary_pin.canonical_sha256
          AND gateway.byte_length=primary_pin.byte_length
-         AND gateway.provider_id<>primary_pin.provider_id
         WHERE primary_pin.registration_operation_id=operation_id
           AND primary_pin.artifact_id=artifact.artifact_id
           AND primary_pin.role='primary' AND primary_pin.provider_id='filebase'
@@ -26818,7 +26819,7 @@ CREATE TABLE data_registration_pin_verifications (
     CONSTRAINT data_registration_pin_verifications_outcome_check CHECK ((outcome = ANY (ARRAY['verified'::text, 'failed'::text]))),
     CONSTRAINT data_registration_pin_verifications_pin_verification_id_check CHECK (((btrim(pin_verification_id) <> ''::text) AND (pin_verification_id = btrim(pin_verification_id)) AND (octet_length(pin_verification_id) <= 512))),
     CONSTRAINT data_registration_pin_verifications_provider_id_check CHECK (((btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (octet_length(provider_id) <= 128))),
-    CONSTRAINT data_registration_pin_verifications_role_check CHECK ((role = ANY (ARRAY['primary'::text, 'redundant'::text, 'independent_gateway'::text])))
+    CONSTRAINT data_registration_pin_verifications_role_check CHECK ((role = ANY (ARRAY['primary'::text, 'redundant'::text, 'independent_gateway'::text, 'filebase_gateway'::text])))
 );
 
 CREATE TABLE data_registration_receipt_observations (

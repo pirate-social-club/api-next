@@ -463,7 +463,7 @@ async function seedReconcilableSong(
     });
     for (const [role, providerId] of [
       ["primary", "filebase"],
-      ["independent_gateway", "ipfs.io"],
+      ["filebase_gateway", "filebase-gateway"],
     ] as const) {
       await store.recordPinVerification({
         pinVerificationId: `${artifactId}:pin:${role}:1`,
@@ -796,7 +796,7 @@ suite("DATA registration persistence", () => {
         ).toBe("created");
         for (const [role, providerId] of [
           ["primary", "filebase"],
-          ["independent_gateway", "ipfs.io"],
+          ["filebase_gateway", "filebase-gateway"],
         ] as const) {
           expect(
             await store.recordPinVerification({
@@ -1161,7 +1161,7 @@ suite("DATA registration persistence", () => {
         });
         for (const [role, providerId] of [
           ["primary", "filebase"],
-          ["independent_gateway", "ipfs.io"],
+          ["filebase_gateway", "filebase-gateway"],
         ] as const) {
           await store.recordPinVerification({
             pinVerificationId: `${artifactId}:pin:${role}:1`,
@@ -1579,7 +1579,7 @@ suite("DATA registration persistence", () => {
         });
         for (const [role, providerId] of [
           ["primary", "filebase"],
-          ["independent_gateway", "ipfs.io"],
+          ["filebase_gateway", "filebase-gateway"],
         ] as const) {
           await store.recordPinVerification({
             pinVerificationId: `${artifactId}:pin:${role}:1`,
@@ -2081,7 +2081,7 @@ suite("DATA registration persistence", () => {
           });
           for (const [role, providerId] of [
             ["primary", "filebase"],
-            ["independent_gateway", "ipfs.io"],
+            ["filebase_gateway", "filebase-gateway"],
           ] as const) {
             await store.recordPinVerification({
               pinVerificationId: `${artifactId}:pin:${role}:1`,
@@ -2500,6 +2500,192 @@ suite("DATA metadata preparation snapshots", () => {
           )
         ).rows[0].canonical_sha256,
       ).toBe(hash("e"));
+    });
+  });
+});
+
+
+suite("DATA registration pin readiness SQL", () => {
+  const ready = async (admin: Client, registrationOperationId: string): Promise<boolean> =>
+    (
+      await admin.query("SELECT data_registration_pins_are_ready($1) AS ready", [
+        registrationOperationId,
+      ])
+    ).rows[0].ready;
+
+  test("requires the Filebase pin and gateway evidence and accepts historical gateway rows", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const media = await seedPublishedSong(admin, scopedConnection);
+      const store = makeDataRegistrationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const fixture = await seedReconcilableSong(store, media, 2n);
+      expect(await ready(admin, fixture.registrationOperationId)).toBe(true);
+      const roles = await admin.query<{ role: string; provider_id: string }>(
+        `SELECT DISTINCT role, provider_id FROM data_registration_pin_verifications
+          WHERE registration_operation_id=$1 AND role IN ('filebase_gateway','independent_gateway')
+          ORDER BY role`,
+        [fixture.registrationOperationId],
+      );
+      expect(roles.rows).toEqual([{ role: "filebase_gateway", provider_id: "filebase-gateway" }]);
+
+      const artifactId = deterministicDataRegistrationArtifactId(
+        fixture.registrationOperationId,
+        "canonical_audio",
+      );
+      await store.recordPinVerification({
+        pinVerificationId: `${artifactId}:pin:independent_gateway:1`,
+        registrationOperationId: fixture.registrationOperationId,
+        artifactId,
+        artifactKind: "canonical_audio",
+        role: "independent_gateway",
+        providerId: "ipfs.io",
+        attemptNumber: 1,
+        outcome: "verified",
+        cid: "bafycanonical_audio",
+        canonicalSha256: hash("a"),
+        byteLength: 8n,
+        evidenceRef: "evidence://pin/canonical_audio/independent_gateway",
+        verifiedAt: "2026-09-11T00:00:00.000Z",
+      });
+      expect(await ready(admin, fixture.registrationOperationId)).toBe(true);
+    });
+  });
+
+  test("refuses inconsistent pin evidence and rejects a wrong provider or CID", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const media = await seedPublishedSong(admin, scopedConnection);
+      const store = makeDataRegistrationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const fixture = await seedReconcilableSong(store, media, 3n);
+      const artifactId = deterministicDataRegistrationArtifactId(
+        fixture.registrationOperationId,
+        "canonical_audio",
+      );
+      // The schema refuses a pin whose hash or length disagrees with the artifact.
+      await expect(
+        store.recordPinVerification({
+          pinVerificationId: `${artifactId}:pin:independent_gateway:2`,
+          registrationOperationId: fixture.registrationOperationId,
+          artifactId,
+          artifactKind: "canonical_audio",
+          role: "independent_gateway",
+          providerId: "ipfs.io",
+          attemptNumber: 2,
+          outcome: "verified",
+          cid: "bafycanonical_audio",
+          canonicalSha256: hash("f"),
+          byteLength: 8n,
+          evidenceRef: "evidence://pin/canonical_audio/mismatch",
+          verifiedAt: "2026-09-11T00:00:00.000Z",
+        }),
+      ).rejects.toThrow();
+
+      const seedOperationWithGateway = async (
+        registrationRevision: bigint,
+        gatewayProviderId: string,
+        gatewayCidFor: (kind: string) => string,
+      ): Promise<string> => {
+        const registrationOperationId = deterministicDataRegistrationOperationId(
+          1315n,
+          media.postId,
+          registrationRevision,
+        );
+        await store.createOperation({
+          registrationOperationId,
+          communityId: media.communityId,
+          actorUserId: media.accountId,
+          submissionId: media.submissionId,
+          mediaOperationId: media.mediaOperationId,
+          postId: media.postId,
+          assetId: media.postId,
+          chainId: 1315n,
+          registrationRevision,
+          publicationCreationRevision: 2n,
+          publicationAudioRevision: 1n,
+          publicationAnalysisRevision: 1n,
+          publicationDecisionRevision: 1n,
+          canonicalAudioSha256: hash("a"),
+          workflowRevision: 1n,
+          workflowInstanceId: deterministicDataRegistrationWorkflowId(
+            registrationOperationId,
+            1n,
+          ),
+          outboxId: deterministicDataRegistrationOutboxId(registrationOperationId, 1n),
+          outboxEffectIdentity: `${registrationOperationId}:launch:r1`,
+          endpointTemplate: "/internal/data-registration/operations",
+          idempotencyKey: `${registrationOperationId}:create`,
+          requestHash: hash("4"),
+          responseSnapshotBytes: new TextEncoder().encode("{}"),
+          responseSnapshotSha256: await sha256Hex(new TextEncoder().encode("{}")),
+        });
+        for (const [kind, byte, mediaType, canonicalizationRevision] of [
+          ["canonical_audio", "a", "audio/mpeg", null],
+          ["ip_metadata", "b", "application/json", "rfc8785-jcs-v1"],
+          ["nft_metadata", "c", "application/json", "rfc8785-jcs-v1"],
+        ] as const) {
+          const wrongArtifactId = deterministicDataRegistrationArtifactId(
+            registrationOperationId,
+            kind,
+          );
+          await store.recordArtifact({
+            artifactId: wrongArtifactId,
+            registrationOperationId,
+            artifactKind: kind,
+            sourceRef: `fixture://${kind}`,
+            mediaType,
+            byteLength: 8n,
+            canonicalSha256: hash(byte),
+            canonicalizationRevision,
+          });
+          await store.recordPinVerification({
+            pinVerificationId: `${wrongArtifactId}:pin:primary:1`,
+            registrationOperationId,
+            artifactId: wrongArtifactId,
+            artifactKind: kind,
+            role: "primary",
+            providerId: "filebase",
+            attemptNumber: 1,
+            outcome: "verified",
+            cid: `bafy${kind}`,
+            canonicalSha256: hash(byte),
+            byteLength: 8n,
+            evidenceRef: `evidence://pin/${kind}/primary`,
+            verifiedAt: "2026-09-11T00:00:00.000Z",
+          });
+          await store.recordPinVerification({
+            pinVerificationId: `${wrongArtifactId}:pin:filebase_gateway:1`,
+            registrationOperationId,
+            artifactId: wrongArtifactId,
+            artifactKind: kind,
+            role: "filebase_gateway",
+            providerId: gatewayProviderId,
+            attemptNumber: 1,
+            outcome: "verified",
+            cid: gatewayCidFor(kind),
+            canonicalSha256: hash(byte),
+            byteLength: 8n,
+            evidenceRef: `evidence://pin/${kind}/gateway`,
+            verifiedAt: "2026-09-11T00:00:00.000Z",
+          });
+        }
+        return registrationOperationId;
+      };
+
+      const wrongProviderOperation = await seedOperationWithGateway(
+        4n,
+        "unknown-gateway",
+        (kind) => `bafy${kind}`,
+      );
+      expect(await ready(admin, wrongProviderOperation)).toBe(false);
+
+      const mismatchedCidOperation = await seedOperationWithGateway(
+        5n,
+        "filebase-gateway",
+        (kind) => `bafy-other-${kind}`,
+      );
+      expect(await ready(admin, mismatchedCidOperation)).toBe(false);
     });
   });
 });

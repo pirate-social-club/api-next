@@ -58,7 +58,7 @@ const pinFromRow = (row: Row): DataRegistrationPinVerification => {
       "ip_metadata",
       "nft_metadata",
     ].includes(artifactKind) ||
-    !["primary", "independent_gateway"].includes(role) ||
+    !["primary", "independent_gateway", "filebase_gateway"].includes(role) ||
     !["verified", "failed"].includes(outcome)
   ) {
     throw new Error("invalid DATA pin row");

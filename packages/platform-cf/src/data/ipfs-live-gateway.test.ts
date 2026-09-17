@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import { makeIpfsIoGatewayVerifier } from "./ipfs-live-gateway";
+import { makeFilebaseGatewayVerifier } from "./ipfs-live-gateway";
 
 const CID = "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani";
 const BYTES = new TextEncoder().encode("test");
@@ -68,10 +68,10 @@ const input = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-describe("ipfs.io gateway verification", () => {
+describe("Filebase gateway verification", () => {
   test("streams and verifies the retained CID without credentials", async () => {
     let requested = "";
-    const verifier = makeIpfsIoGatewayVerifier({
+    const verifier = makeFilebaseGatewayVerifier({
       fetch: async (request, init) => {
         requested = String(request);
         expect(init).toMatchObject({ method: "GET", redirect: "manual" });
@@ -84,29 +84,98 @@ describe("ipfs.io gateway verification", () => {
       cid: CID,
       byte_length: 4,
       sha256: SHA256,
-      provider_id: "ipfs.io",
+      provider_id: "filebase-gateway",
     });
-    expect(requested).toBe(`https://ipfs.io/ipfs/${CID}`);
+    expect(requested).toBe(`https://highseas.myfilebase.com/ipfs/${CID}`);
   });
 
-  test("rejects wrong bytes, oversized bodies, and redirects", async () => {
-    const wrong = makeIpfsIoGatewayVerifier({ fetch: async () => new Response("nope") });
+  test("rejects wrong bytes, wrong length, oversized bodies, and redirects", async () => {
+    const wrong = makeFilebaseGatewayVerifier({ fetch: async () => new Response("nope") });
     expect(await Effect.runPromise(wrong.verify(input()))).toEqual({
       status: "rejected",
       reason: "sha256",
     });
-    const oversized = makeIpfsIoGatewayVerifier({ fetch: async () => new Response("tests") });
+    const short = makeFilebaseGatewayVerifier({ fetch: async () => new Response("tes") });
+    expect(await Effect.runPromise(short.verify(input()))).toEqual({
+      status: "rejected",
+      reason: "length",
+    });
+    const oversized = makeFilebaseGatewayVerifier({ fetch: async () => new Response("tests") });
     expect(await Effect.runPromise(oversized.verify(input()))).toEqual({
       status: "rejected",
       reason: "oversized",
     });
-    const redirect = makeIpfsIoGatewayVerifier({
+    const redirect = makeFilebaseGatewayVerifier({
       fetch: async () => new Response(null, { status: 302 }),
     });
     expect(await Effect.runPromise(redirect.verify(input()))).toEqual({
       status: "rejected",
       reason: "redirect",
+      http_status: 302,
     });
+  });
+
+  test("never accepts an HTML error page as retrieval", async () => {
+    const verifier = makeFilebaseGatewayVerifier({
+      fetch: async () =>
+        new Response("HTML", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    });
+    expect(await Effect.runPromise(verifier.verify(input()))).toEqual({
+      status: "rejected",
+      reason: "sha256",
+    });
+  });
+
+  test("sends the optional dedicated-gateway token only as the documented header", async () => {
+    let headers: unknown;
+    const verifier = makeFilebaseGatewayVerifier({
+      fetch: async (_request, init) => {
+        headers = init?.headers;
+        return new Response(BYTES);
+      },
+      gateway_token: "token-1",
+    });
+    await expect(Effect.runPromise(verifier.verify(input()))).resolves.toMatchObject({
+      status: "verified",
+      provider_id: "filebase-gateway",
+    });
+    expect(headers).toEqual({ "x-filebase-gateway-token": "token-1" });
+  });
+
+  test("rejects an invalid CID before any request", async () => {
+    let calls = 0;
+    const verifier = makeFilebaseGatewayVerifier({
+      fetch: async () => {
+        calls += 1;
+        return new Response(BYTES);
+      },
+    });
+    expect(await Effect.runPromise(verifier.verify(input({ cid: "not-a-cid" })))).toEqual({
+      status: "rejected",
+      reason: "invalid_input",
+    });
+    expect(calls).toBe(0);
+  });
+
+  test("retains validated statuses and separates permanent authorization failures", async () => {
+    const cases = [
+      [500, { status: "retryable", reason: "unavailable", http_status: 500 }],
+      [503, { status: "retryable", reason: "unavailable", http_status: 503 }],
+      [429, { status: "retryable", reason: "unavailable", http_status: 429 }],
+      [404, { status: "retryable", reason: "not_found", http_status: 404 }],
+      [401, { status: "rejected", reason: "unauthorized", http_status: 401 }],
+      [403, { status: "rejected", reason: "unauthorized", http_status: 403 }],
+      [307, { status: "rejected", reason: "redirect", http_status: 307 }],
+    ] as const;
+    for (const [status, expected] of cases) {
+      const verifier = makeFilebaseGatewayVerifier({
+        fetch: async () => new Response("provider body", { status }),
+      });
+      expect(await Effect.runPromise(verifier.verify(input()))).toEqual(expected);
+    }
   });
 
   test("maps cancellation and timeout without exposing transport errors", async () => {
@@ -117,7 +186,7 @@ describe("ipfs.io gateway verification", () => {
           once: true,
         });
       });
-    const verifier = makeIpfsIoGatewayVerifier({ fetch: pendingFetch, timeout_ms: 10 });
+    const verifier = makeFilebaseGatewayVerifier({ fetch: pendingFetch, timeout_ms: 10 });
     const cancellation = Effect.runPromise(verifier.verify(input({ signal: cancelled.signal })));
     cancelled.abort();
     expect(await cancellation).toEqual({ status: "retryable", reason: "cancelled" });

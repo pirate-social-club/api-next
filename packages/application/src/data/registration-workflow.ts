@@ -1,3 +1,4 @@
+import { FILEBASE_GATEWAY_PROVIDER_ID } from "./ipfs-live-verification";
 import type {
   ConfirmDataRegistrationInput,
   DataAttachedLicense,
@@ -34,6 +35,43 @@ class PinStateFailure extends Error {
     this.name = "PinStateFailure";
   }
 }
+
+const PIN_ATTEMPT_BUDGET = 10;
+/** The registration retrieval provider is the Filebase dedicated gateway.
+ * `independent_gateway` is a historical role label retained for reads only;
+ * new gateway rows must never be written with it or described as independent. */
+const GATEWAY_PIN_ROLE = "filebase_gateway" as const;
+const GATEWAY_PIN_PROVIDER_ID = FILEBASE_GATEWAY_PROVIDER_ID;
+
+const isGatewayPin = (pin: DataRegistrationPinVerification): boolean =>
+  pin.role === "independent_gateway" || pin.role === "filebase_gateway";
+
+const pinAttemptMax = (
+  pins: readonly DataRegistrationPinVerification[],
+  role: DataRegistrationPinVerification["role"],
+  providerId: string,
+): number =>
+  Math.max(
+    0,
+    ...pins
+      .filter((pin) => pin.role === role && pin.providerId === providerId)
+      .map((pin) => pin.attemptNumber),
+  );
+
+const pinAttemptBudgetEvidence = (
+  role: DataRegistrationPinVerification["role"],
+  providerId: string,
+  attempts: number,
+  lastEvidenceRef: string | undefined,
+): string => {
+  const query = new URLSearchParams();
+  query.set("role", role);
+  query.set("provider", providerId);
+  query.set("attempts", String(attempts));
+  query.set("budget", String(PIN_ATTEMPT_BUDGET));
+  if (lastEvidenceRef !== undefined) query.set("last", lastEvidenceRef);
+  return `data-registration://pin-attempt-budget-exhausted?${query.toString()}`;
+};
 
 export type DataRegistrationWorkflowPayload = Readonly<{
   outboxId: string;
@@ -510,11 +548,13 @@ const recordPins = async (
   };
   const verified = existing.filter((pin) => pin.outcome === "verified");
   const primary = verified.find((pin) => pin.role === "primary");
-  const gateway = verified.find((pin) => pin.role === "independent_gateway");
+  const gateway = verified.find((pin) => isGatewayPin(pin));
   for (const pin of verified) {
     if (
       (pin.role === "primary" && pin.providerId !== "filebase") ||
-      (pin.role === "independent_gateway" && pin.providerId !== "ipfs.io") ||
+      (isGatewayPin(pin) &&
+        pin.providerId !== GATEWAY_PIN_PROVIDER_ID &&
+        pin.providerId !== "ipfs.io") ||
       pin.cid !== result.cid ||
       pin.canonicalSha256 !== result.canonicalSha256 ||
       pin.byteLength !== result.byteLength
@@ -523,15 +563,16 @@ const recordPins = async (
     }
   }
   const nextAttempt = (role: DataRegistrationPinVerification["role"], providerId: string) => {
-    const attemptNumber =
-      Math.max(
-        0,
-        ...existing
-          .filter((pin) => pin.role === role && pin.providerId === providerId)
-          .map((pin) => pin.attemptNumber),
-      ) + 1;
-    if (attemptNumber > 10) {
-      throw new PinStateFailure("data-registration://pin-attempt-budget-exhausted");
+    const attempts = pinAttemptMax(existing, role, providerId);
+    const attemptNumber = attempts + 1;
+    if (attemptNumber > PIN_ATTEMPT_BUDGET) {
+      const last = existing
+        .filter((pin) => pin.role === role && pin.providerId === providerId)
+        .sort((a, b) => a.attemptNumber - b.attemptNumber)
+        .at(-1);
+      throw new PinStateFailure(
+        pinAttemptBudgetEvidence(role, providerId, attempts, last?.evidenceRef),
+      );
     }
     return attemptNumber;
   };
@@ -547,7 +588,7 @@ const recordPins = async (
     });
   }
   if (gateway === undefined) {
-    const attemptNumber = nextAttempt("independent_gateway", "ipfs.io");
+    const attemptNumber = nextAttempt(GATEWAY_PIN_ROLE, GATEWAY_PIN_PROVIDER_ID);
     await dependencies.store.recordPinVerification({
       ...(result.status === "verified"
         ? common
@@ -561,9 +602,9 @@ const recordPins = async (
             byteLength: null,
             verifiedAt: null,
           }),
-      pinVerificationId: `${prepared.artifact.artifactId}:gateway:ipfs.io:${attemptNumber}`,
-      role: "independent_gateway",
-      providerId: "ipfs.io",
+      pinVerificationId: `${prepared.artifact.artifactId}:gateway:filebase-gateway:${attemptNumber}`,
+      role: GATEWAY_PIN_ROLE,
+      providerId: GATEWAY_PIN_PROVIDER_ID,
       attemptNumber,
       evidenceRef: result.gatewayEvidenceRef,
     });
@@ -640,13 +681,41 @@ export async function advanceDataRegistrationWorkflow(
         (pin) =>
           pin.artifactId === prepared.artifact.artifactId &&
           ((pin.role === "primary" && pin.providerId === "filebase") ||
-            (pin.role === "independent_gateway" && pin.providerId === "ipfs.io")),
+            (isGatewayPin(pin) &&
+              (pin.providerId === GATEWAY_PIN_PROVIDER_ID || pin.providerId === "ipfs.io"))),
       );
-      if (
-        artifactPins.some((pin) => pin.role === "primary" && pin.outcome === "verified") &&
-        artifactPins.some((pin) => pin.role === "independent_gateway" && pin.outcome === "verified")
-      ) {
+      const primaryVerified = artifactPins.some(
+        (pin) => pin.role === "primary" && pin.outcome === "verified",
+      );
+      const gatewayVerified = artifactPins.some(
+        (pin) => isGatewayPin(pin) && pin.outcome === "verified",
+      );
+      if (primaryVerified && gatewayVerified) {
         continue;
+      }
+      // The attempt budget is checked before the provider call so an exhausted
+      // budget cannot issue an unrecorded extra request in normal completion.
+      // The counter is persisted after the call, so interruption or re-entry
+      // between the call and the record can still repeat an unrecorded attempt.
+      for (const [role, providerId, verified] of [
+        ["primary", "filebase", primaryVerified],
+        [GATEWAY_PIN_ROLE, GATEWAY_PIN_PROVIDER_ID, gatewayVerified],
+      ] as const) {
+        if (verified) continue;
+        const attempts = pinAttemptMax(artifactPins, role, providerId);
+        if (attempts < PIN_ATTEMPT_BUDGET) continue;
+        const last = artifactPins
+          .filter((pin) => pin.role === role && pin.providerId === providerId)
+          .sort((a, b) => a.attemptNumber - b.attemptNumber)
+          .at(-1);
+        return failOperation(
+          dependencies,
+          operation,
+          null,
+          "failed",
+          "pin_verification_failed",
+          pinAttemptBudgetEvidence(role, providerId, attempts, last?.evidenceRef),
+        );
       }
       const pinned = await dependencies.artifacts.pinAndVerify(operation, prepared);
       if (pinned.status === "retryable") return { outcome: "waiting" };

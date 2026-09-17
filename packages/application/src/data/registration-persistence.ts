@@ -30,7 +30,7 @@ export type DataRegistrationArtifactKind =
   | "ip_metadata"
   | "nft_metadata";
 
-export type DataRegistrationPinRole = "primary" | "independent_gateway";
+export type DataRegistrationPinRole = "primary" | "independent_gateway" | "filebase_gateway";
 
 export type DataRegistrationFailureCode =
   | "pin_verification_failed"
