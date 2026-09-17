@@ -2504,7 +2504,6 @@ suite("DATA metadata preparation snapshots", () => {
   });
 });
 
-
 suite("DATA registration pin readiness SQL", () => {
   const ready = async (admin: Client, registrationOperationId: string): Promise<boolean> =>
     (
@@ -2608,10 +2607,7 @@ suite("DATA registration pin readiness SQL", () => {
           publicationDecisionRevision: 1n,
           canonicalAudioSha256: hash("a"),
           workflowRevision: 1n,
-          workflowInstanceId: deterministicDataRegistrationWorkflowId(
-            registrationOperationId,
-            1n,
-          ),
+          workflowInstanceId: deterministicDataRegistrationWorkflowId(registrationOperationId, 1n),
           outboxId: deterministicDataRegistrationOutboxId(registrationOperationId, 1n),
           outboxEffectIdentity: `${registrationOperationId}:launch:r1`,
           endpointTemplate: "/internal/data-registration/operations",
