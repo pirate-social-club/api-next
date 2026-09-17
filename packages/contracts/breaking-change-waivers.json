@@ -1,13 +1,3 @@
 {
-  "breakingChangeWaivers": [
-    {
-      "baselineSha": "3d3d8f20133ef13a3164c3e2f7c19e4d16664a05",
-      "expectedViolations": [
-        "response GET /personas: enum value added: \"activity_participation\""
-      ],
-      "kind": "clean-break",
-      "operationId": "get_personas",
-      "reason": "Spec 014 activity preparation adds the activity_participation binding source so a prepared non-member persona is representable, and GET /personas exposes the binding union. Strict older clients reject the new value; the paired immutable client 0.82.0 and the standalone Solid adoption are the only consumers and land in the same release. Remove this waiver after the transition lands."
-    }
-  ]
+  "breakingChangeWaivers": []
 }
