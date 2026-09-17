@@ -523,6 +523,25 @@ exercised through `scripts/moderation-staging-session-discovery.ts` before the
 authorized acceptance run, because that script registers an unregistered
 identity by posting `auth/register` after a 401 session exchange.
 
+### Staging HTTP Study-generation OpenRouter assignment — 2026-09-17
+
+The existing staging `OPENROUTER_API_KEY` at `/services/api-next`, whose
+reviewed role is the media-processor lyrics classifier, is additionally
+assigned to the staging HTTP Worker's Study-generation consumer. The checked
+staging configuration declares the name in `secrets.required`, enables
+`STUDY_GENERATION_ENABLED`, and pins
+`STUDY_GENERATION_OPENROUTER_MODEL=google/gemini-3.8-flash`; the composition
+refuses to start without the exact key, model and flag, and the development and
+production environments remain disabled.
+
+This clause records the proposed assignment only. It does not authorize
+synchronizing the key to `pirate-http-worker-staging`, enabling
+`STUDY_GENERATION_ENABLED`, or any deployment or generation run; each remains a
+separately authorized step, the synchronization must name the exact Worker and
+secret, and blanket synchronization of `/services/api-next` remains forbidden.
+A reviewed model change within OpenRouter requires no new secret; changing the
+provider requires a separately reviewed binding.
+
 ### R2 seal-probe retirement — 2026-08-26
 
 The disposable proof Worker, bucket, and operator credential pair were torn

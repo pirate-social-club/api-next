@@ -268,8 +268,8 @@
     // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
     // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
-        "STUDY_GENERATION_ENABLED": "false",
-        "STUDY_GENERATION_OPENROUTER_MODEL": "",
+        "STUDY_GENERATION_ENABLED": "true",
+        "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -361,6 +361,7 @@
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
           "ELEVENLABS_API_KEY",
           "OPENAI_API_KEY",
+          "OPENROUTER_API_KEY",
           "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
           "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
           "SONG_PLAYBACK_SOURCE_HMAC_BASE64"
