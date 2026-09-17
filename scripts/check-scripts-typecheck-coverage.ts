@@ -7,16 +7,20 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const tscScript = resolve(repositoryRoot, "node_modules/typescript/bin/tsc");
 const workflowDirectory = resolve(repositoryRoot, ".github/workflows");
 
-// Every program bun run check builds. Coverage is derived from the compiler's
-// own file list for each program, never from include strings.
-const programConfigs = [
-  "tsconfig.json",
-  "tsconfig.workers.json",
-  "tsconfig.binding-contract.json",
-  "tsconfig.persona-collector.json",
-  "tsconfig.persona-executor.json",
-  "tsconfig.scripts.json",
-] as const;
+// Every credited program, paired with the package scripts whose commands
+// semantically typecheck it. The coverage below is derived from the compiler's
+// own file list for each program, never from include strings; the wiring
+// assertion proves each of these commands is reached from `bun run check`, so
+// deleting a program's `tsc --noEmit` invocation cannot leave its files
+// credited as checked.
+export const programTypechecks: ReadonlyMap<string, readonly string[]> = new Map([
+  ["tsconfig.json", ["check"]],
+  ["tsconfig.workers.json", ["check"]],
+  ["tsconfig.binding-contract.json", ["check:binding-contract"]],
+  ["tsconfig.persona-collector.json", ["check:persona-collector"]],
+  ["tsconfig.persona-executor.json", ["check:persona-collector"]],
+  ["tsconfig.scripts.json", ["check:scripts"]],
+]);
 
 // Non-test TypeScript entry points named in package.json or a CI workflow that
 // are knowingly not yet in a typecheck program. Each entry needs a recorded
@@ -28,24 +32,96 @@ const deferredEntryPoints: ReadonlyMap<string, string> = new Map([
   ],
 ]);
 
+// Discovery is literal: only `scripts/<path>.ts` references spelled out in
+// package.json commands and CI workflow text are entry points. A dynamically
+// constructed path such as `scripts/${name}.ts` is intentionally not
+// discovered, because this gate does not interpret shell or interpolate
+// variables.
 const entryPointPattern = /scripts\/[A-Za-z0-9._/-]+\.ts/g;
+const scriptReferencePattern = /\bbun run ([A-Za-z0-9:_-]+)/g;
 
-function collectEntryPoints(): readonly string[] {
+export function entryPointsFromTexts(texts: readonly string[]): readonly string[] {
   const references = new Set<string>();
-  const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8")) as {
-    readonly scripts?: Readonly<Record<string, string>>;
-  };
-  for (const command of Object.values(packageJson.scripts ?? {})) {
-    for (const match of command.matchAll(entryPointPattern)) references.add(match[0]);
-  }
-  for (const name of readdirSync(workflowDirectory)) {
-    if (!name.endsWith(".yml") && !name.endsWith(".yaml")) continue;
-    const workflow = readFileSync(resolve(workflowDirectory, name), "utf8");
-    for (const match of workflow.matchAll(entryPointPattern)) references.add(match[0]);
+  for (const text of texts) {
+    for (const match of text.matchAll(entryPointPattern)) references.add(match[0]);
   }
   return [...references]
     .filter((path) => !path.endsWith(".test.ts"))
     .sort((left, right) => left.localeCompare(right));
+}
+
+// Bounded reachability over package-script names: the only edges are literal
+// `bun run <script>` references in command strings. This is a wiring check,
+// not a shell interpreter.
+export function reachableScripts(
+  scripts: Readonly<Record<string, string>>,
+  roots: readonly string[],
+): ReadonlySet<string> {
+  const reached = new Set<string>();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (name === undefined || reached.has(name)) continue;
+    const command = scripts[name];
+    if (command === undefined) continue;
+    reached.add(name);
+    for (const match of command.matchAll(scriptReferencePattern)) {
+      const target = match[1];
+      if (target !== undefined && !reached.has(target)) pending.push(target);
+    }
+  }
+  return reached;
+}
+
+export function unwiredPrograms(
+  programs: ReadonlyMap<string, readonly string[]>,
+  scripts: Readonly<Record<string, string>>,
+): readonly string[] {
+  const reached = reachableScripts(scripts, ["check"]);
+  const unwired: string[] = [];
+  for (const [config, scriptNames] of programs) {
+    const wired = scriptNames.some((name) => {
+      if (!reached.has(name)) return false;
+      const command = scripts[name];
+      if (command === undefined) return false;
+      return command.includes("tsc --noEmit") && command.includes(`-p ${config}`);
+    });
+    if (!wired) unwired.push(config);
+  }
+  return unwired;
+}
+
+export function findUncovered(
+  entryPoints: readonly string[],
+  covered: ReadonlySet<string>,
+  deferred: ReadonlySet<string>,
+): { readonly uncovered: readonly string[]; readonly staleDeferred: readonly string[] } {
+  const uncovered: string[] = [];
+  const staleDeferred: string[] = [];
+  for (const entryPoint of entryPoints) {
+    if (covered.has(entryPoint)) {
+      if (deferred.has(entryPoint)) staleDeferred.push(entryPoint);
+      continue;
+    }
+    if (!deferred.has(entryPoint)) uncovered.push(entryPoint);
+  }
+  return { uncovered, staleDeferred };
+}
+
+function readPackageScripts(): Readonly<Record<string, string>> {
+  const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8")) as {
+    readonly scripts?: Readonly<Record<string, string>>;
+  };
+  return packageJson.scripts ?? {};
+}
+
+function collectEntryPoints(scripts: Readonly<Record<string, string>>): readonly string[] {
+  const texts: string[] = Object.values(scripts);
+  for (const name of readdirSync(workflowDirectory)) {
+    if (!name.endsWith(".yml") && !name.endsWith(".yaml")) continue;
+    texts.push(readFileSync(resolve(workflowDirectory, name), "utf8"));
+  }
+  return entryPointsFromTexts(texts);
 }
 
 function programFiles(configPath: string): readonly string[] {
@@ -67,30 +143,27 @@ function programFiles(configPath: string): readonly string[] {
     .filter((path) => path.length > 0 && !path.startsWith(".."));
 }
 
-export function findUncovered(
-  entryPoints: readonly string[],
-  covered: ReadonlySet<string>,
-  deferred: ReadonlySet<string>,
-): { readonly uncovered: readonly string[]; readonly staleDeferred: readonly string[] } {
-  const uncovered: string[] = [];
-  const staleDeferred: string[] = [];
-  for (const entryPoint of entryPoints) {
-    if (covered.has(entryPoint)) {
-      if (deferred.has(entryPoint)) staleDeferred.push(entryPoint);
-      continue;
-    }
-    if (!deferred.has(entryPoint)) uncovered.push(entryPoint);
-  }
-  return { uncovered, staleDeferred };
-}
-
 export async function main(): Promise<void> {
+  const scripts = readPackageScripts();
+
+  // Wiring first: no program may credit files until its semantic typecheck is
+  // demonstrably reached from the check chain.
+  const unwired = unwiredPrograms(programTypechecks, scripts);
+  if (unwired.length > 0) {
+    throw new Error(
+      [
+        "Credited typecheck programs are not demonstrably executed by bun run check; restore each `tsc --noEmit -p <config>` in a package script the check chain reaches:",
+        ...unwired.map((path) => `- ${path}`),
+      ].join("\n"),
+    );
+  }
+
   const covered = new Set<string>();
-  for (const config of programConfigs) {
+  for (const config of programTypechecks.keys()) {
     for (const path of programFiles(config)) covered.add(path);
   }
 
-  const entryPoints = collectEntryPoints();
+  const entryPoints = collectEntryPoints(scripts);
   const { uncovered, staleDeferred } = findUncovered(
     entryPoints,
     covered,
@@ -121,7 +194,7 @@ export async function main(): Promise<void> {
   }
 
   console.log(
-    `Scripts typecheck coverage is complete for ${entryPoints.length} entry points across ${programConfigs.length} programs (${deferredEntryPoints.size} reasoned deferral).`,
+    `Scripts typecheck coverage is complete for ${entryPoints.length} entry points across ${programTypechecks.size} programs (${deferredEntryPoints.size} reasoned deferral).`,
   );
 }
 
