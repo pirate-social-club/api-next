@@ -740,6 +740,14 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     await this.runtimeCtx.storage.setAlarm(Date.now());
   }
 
+  protected makeSttAdapter(apiKey: string): KaraokeStreamingSttAdapter {
+    return new ElevenLabsKaraokeSttAdapter({
+      apiKey,
+      enableLogging: this.providerPolicy().enableLogging,
+      onProviderRetentionChanged: (retention) => this.recordProviderRetention(retention),
+    });
+  }
+
   private ensureHost(): Promise<KaraokeSessionHost> {
     return this.resetProducers.run(() => this.ensureHostActive());
   }
@@ -756,11 +764,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.serverSequence = Number(row.server_sequence);
     const key = this.runtimeEnv.ELEVENLABS_API_KEY;
     if (key === undefined || key.trim() === "") throw new Error("karaoke_provider_unavailable");
-    const adapter = new ElevenLabsKaraokeSttAdapter({
-      apiKey: key,
-      enableLogging: this.providerPolicy().enableLogging,
-      onProviderRetentionChanged: (retention) => this.recordProviderRetention(retention),
-    });
+    const adapter = this.makeSttAdapter(key);
     this.adapter = {
       get streamGeneration() {
         return adapter.streamGeneration;
