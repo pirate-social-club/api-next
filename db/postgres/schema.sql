@@ -28619,6 +28619,38 @@ CREATE TABLE media_alignment_projections (
     CONSTRAINT media_alignment_projections_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'ready'::text, 'unavailable'::text])))
 );
 
+CREATE TABLE media_alignment_recovery_actions (
+    recovery_action_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision integer NOT NULL,
+    analysis_revision integer NOT NULL,
+    lyrics_revision integer NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    lyrics_sha256 text NOT NULL,
+    attempt_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    state text DEFAULT 'requested'::text NOT NULL,
+    result_kind text,
+    artifact_ref text,
+    artifact_sha256 text,
+    failure_code text,
+    requested_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT media_alignment_recovery_actions_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT media_alignment_recovery_actions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT media_alignment_recovery_actions_check CHECK ((((state = 'requested'::text) AND (result_kind IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (result_kind IS NOT NULL) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT media_alignment_recovery_actions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_alignment_recovery_actions_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT media_alignment_recovery_actions_recovery_action_id_check CHECK ((btrim(recovery_action_id) <> ''::text)),
+    CONSTRAINT media_alignment_recovery_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['ready'::text, 'unavailable'::text]))),
+    CONSTRAINT media_alignment_recovery_actions_state_check CHECK ((state = ANY (ARRAY['requested'::text, 'completed'::text])))
+);
+
 CREATE TABLE media_audio_revisions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -28774,6 +28806,7 @@ CREATE TABLE media_processing_attempts (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
+    failure_evidence jsonb,
     CONSTRAINT media_processing_attempt_state_shape CHECK ((((state = 'pending'::text) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'running'::text) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (((evidence_ref IS NULL) AND (result IS NULL)) OR ((evidence_ref IS NOT NULL) AND (result IS NOT NULL)))) OR ((state = 'retry_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'poll_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable IS NULL) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'failed'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND ((result IS NULL) OR (evidence_ref IS NOT NULL))) OR ((state = 'succeeded'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'exhausted'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable = false) AND (failure_code IS NOT NULL) AND ((result IS NULL) OR (evidence_ref IS NOT NULL))))),
     CONSTRAINT media_processing_attempts_adapter_revision_check CHECK ((btrim(adapter_revision) <> ''::text)),
     CONSTRAINT media_processing_attempts_analysis_revision_check CHECK ((analysis_revision > 0)),
@@ -28782,12 +28815,13 @@ CREATE TABLE media_processing_attempts (
     CONSTRAINT media_processing_attempts_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT media_processing_attempts_claim_fence_check CHECK ((claim_fence >= 0)),
     CONSTRAINT media_processing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['invalid_media'::text, 'unsupported_media'::text, 'probe_failed'::text, 'hash_failed'::text, 'transform_failed'::text, 'publication_failed'::text, 'upload_seal_conflict'::text, 'elevenlabs_key_missing'::text, 'key_invalid'::text, 'rate_limited'::text, 'provider_unavailable'::text, 'timeout'::text, 'invalid_response'::text, 'alignment_failed'::text, 'lyrics_missing'::text, 'audio_missing'::text, 'provider_timeout'::text, 'provider_invalid'::text])))),
+    CONSTRAINT media_processing_attempts_failure_evidence_shape CHECK (((failure_evidence IS NULL) OR ((jsonb_typeof(failure_evidence) = 'object'::text) AND (failure_evidence ? 'providerStatusClass'::text) AND (failure_evidence ? 'outcome'::text) AND (failure_evidence ? 'reason'::text) AND ((failure_evidence - ARRAY['providerStatusClass'::text, 'outcome'::text, 'reason'::text]) = '{}'::jsonb)))),
     CONSTRAINT media_processing_attempts_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_processing_attempts_input_kind_check CHECK ((input_kind = ANY (ARRAY['audio'::text, 'analysis'::text, 'transcript'::text, 'lyrics'::text, 'reference'::text, 'publication'::text]))),
     CONSTRAINT media_processing_attempts_input_revision_check CHECK ((input_revision > 0)),
     CONSTRAINT media_processing_attempts_policy_revision_check CHECK ((btrim(policy_revision) <> ''::text)),
     CONSTRAINT media_processing_attempts_provider_idempotency_key_check CHECK ((btrim(provider_idempotency_key) <> ''::text)),
-    CONSTRAINT media_processing_attempts_stage_check CHECK ((stage = ANY (ARRAY['probe'::text, 'sample_primary'::text, 'sample_alternate'::text, 'acr_primary'::text, 'acr_alternate'::text, 'metadata'::text, 'classifier'::text, 'publication'::text, 'alignment'::text]))),
+    CONSTRAINT media_processing_attempts_stage_check CHECK ((stage = ANY (ARRAY['probe'::text, 'sample_primary'::text, 'sample_alternate'::text, 'acr_primary'::text, 'acr_alternate'::text, 'metadata'::text, 'classifier'::text, 'publication'::text, 'alignment'::text, 'alignment_recovery'::text]))),
     CONSTRAINT media_processing_attempts_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'poll_wait'::text, 'failed'::text, 'succeeded'::text, 'exhausted'::text])))
 );
 
@@ -33799,6 +33833,18 @@ ALTER TABLE ONLY media_alignment_projections
 
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_projections_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_acti_community_id_actor_user_id_su_key UNIQUE (community_id, actor_user_id, submission_id, operation_id, post_id, audio_revision, analysis_revision, lyrics_revision);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_actio_operation_id_idempotency_key_key UNIQUE (operation_id, idempotency_key);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_actions_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_actions_pkey PRIMARY KEY (recovery_action_id);
 
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_pkey PRIMARY KEY (submission_id, analysis_revision);

@@ -20,6 +20,7 @@ import {
 } from "../media-provider-contracts.ts";
 import {
   decodeMediaProcessingWorkflowPayload,
+  type MediaProcessingAlignmentFailureEvidence,
   type MediaProcessingAnalysis,
   type MediaProcessingAttemptLease,
   type MediaProcessingAttemptResult,
@@ -171,7 +172,8 @@ const attemptId = (
   stage: MediaProcessingAttemptStage,
 ): string => {
   const lyricsBinding =
-    (stage === "classifier" || stage === "alignment") && authority.lyrics !== null
+    (stage === "classifier" || stage === "alignment" || stage === "alignment_recovery") &&
+    authority.lyrics !== null
       ? `-l${authority.lyrics.lyricsRevision}`
       : "";
   return `media-attempt-${authority.operationId}-a${authority.audioRevision}-n${authority.analysisRevision}-${stage}${lyricsBinding}`;
@@ -195,6 +197,7 @@ function startAttempt(
   inputRevision: number,
   adapterRevision: string,
   dependencies: MediaProcessingWorkflowDependencies,
+  attemptIdOverride?: string,
 ): WorkflowEffect<
   | Readonly<{ readonly kind: "run"; readonly lease: MediaProcessingAttemptLease }>
   | Readonly<{ readonly kind: "replay"; readonly result: MediaProcessingAttemptResult }>
@@ -209,7 +212,7 @@ function startAttempt(
       dependencies.store.startAttempt({
         authority,
         stage,
-        attemptId: attemptId(authority, stage),
+        attemptId: attemptIdOverride ?? attemptId(authority, stage),
         workerId: dependencies.options.workerId,
         inputRevision,
         inputHash: audio.canonicalSha256,
@@ -264,9 +267,14 @@ function failAttempt(
   lease: MediaProcessingAttemptLease,
   dependencies: MediaProcessingWorkflowDependencies,
   failure: "provider_unavailable" | "publication_failed" = "provider_unavailable",
+  providerEvidence?: MediaProcessingAlignmentFailureEvidence,
 ): WorkflowEffect<void> {
   return Effect.gen(function* () {
-    if (!(yield* storeWrite(() => dependencies.store.failAttempt(lease, failure, true)))) {
+    if (
+      !(yield* storeWrite(() =>
+        dependencies.store.failAttempt(lease, failure, true, providerEvidence),
+      ))
+    ) {
       return yield* Effect.fail(new DeferredAttempt("stale_fence"));
     }
     dependencies.options.observe?.(observation(authority, "attempt_failed", lease.stage));
@@ -1146,12 +1154,26 @@ function align(
     if (current.publishedLyricsRevision !== (current.lyrics?.lyricsRevision ?? null)) {
       return { outcome: "inert" } as const;
     }
+    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
+    if (recovery.kind === "stale") {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    if (recovery.kind === "failed") {
+      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+    }
+    const recoveryAttemptId =
+      recovery.kind === "recovery"
+        ? recovery.attemptId
+        : recovery.kind === "committed"
+          ? recovery.recoveryAttemptId
+          : undefined;
     const started = yield* startAttempt(
       current,
-      "alignment",
+      recoveryAttemptId === undefined ? "alignment" : "alignment_recovery",
       current.publishedLyricsRevision ?? current.analysisRevision,
       "alignment-port-v1",
       dependencies,
+      recoveryAttemptId,
     ).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
@@ -1161,20 +1183,16 @@ function align(
       }),
     );
     if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
-    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
     if (recovery.kind === "committed") {
       if (started.kind === "run") {
         yield* completeAttempt(current, started.lease, recovery.result, dependencies);
       }
       return { outcome: "alignment_recorded" } as const;
     }
-    if (recovery.kind === "stale") {
-      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
-    }
-    if (recovery.kind === "failed") {
-      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
-    }
     if (started.kind === "exhausted") {
+      if (recovery.kind === "recovery") {
+        return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+      }
       const exhaustedResult = {
         kind: "alignment",
         status: "unavailable",
@@ -1219,9 +1237,13 @@ function align(
               value.status === "unavailable" &&
               ["rate_limited", "provider_unavailable", "timeout"].includes(value.failureCode)
             ) {
-              return failAttempt(current, started.lease, dependencies).pipe(
-                Effect.andThen(Effect.fail(new DeferredAttempt("provider_progress"))),
-              );
+              return failAttempt(
+                current,
+                started.lease,
+                dependencies,
+                "provider_unavailable",
+                value.providerEvidence,
+              ).pipe(Effect.andThen(Effect.fail(new DeferredAttempt("provider_progress"))));
             }
             return Effect.succeed(value);
           }),
@@ -1244,6 +1266,9 @@ function align(
               kind: "alignment",
               status: "unavailable",
               failureCode: aligned.failureCode,
+              ...(aligned.providerEvidence === undefined
+                ? {}
+                : { providerEvidence: aligned.providerEvidence }),
             };
     }
     const committed = yield* storeWrite(() => dependencies.store.commitAlignment(current, result));

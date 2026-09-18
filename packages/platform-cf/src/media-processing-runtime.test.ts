@@ -410,4 +410,187 @@ describe("media processor runtime boundary", () => {
     ).resolves.toEqual({ status: "unavailable", failureCode: "provider_unavailable" });
     expect(providerCalls).toBe(0);
   });
+
+  test("persists sanitized provider evidence for a permanent refusal", async () => {
+    const audio = new Uint8Array([9, 8, 7, 6]);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", audio)), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+    const port = makeElevenLabsProcessingAlignmentPort(
+      r2Bucket("immutable/operation/audio/1", audio, "audio/mpeg"),
+      {
+        align: async () => ({
+          status: "unavailable" as const,
+          alignment: "unavailable" as const,
+          outcome: "permanent" as const,
+          reason: "provider_rejected" as const,
+          provider_status: 402,
+        }),
+      },
+      64,
+    );
+    await expect(
+      port.align({
+        operationId: "operation",
+        postId: "post",
+        audioRevision: 1,
+        analysisRevision: 1,
+        lyricsRevision: 2,
+        canonicalAudioSha256: hash,
+        audioArtifactRef: "media://immutable/operation/audio/1",
+        lyrics: "project lyrics",
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual({
+      status: "unavailable",
+      failureCode: "alignment_failed",
+      providerEvidence: {
+        providerStatusClass: "4xx",
+        outcome: "permanent",
+        reason: "provider_rejected",
+      },
+    });
+  });
+
+  test("persists sanitized provider evidence for a rate-limited refusal", async () => {
+    const audio = new Uint8Array([9, 8, 7, 6]);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", audio)), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+    const port = makeElevenLabsProcessingAlignmentPort(
+      r2Bucket("immutable/operation/audio/1", audio, "audio/mpeg"),
+      {
+        align: async () => ({
+          status: "unavailable" as const,
+          alignment: "unavailable" as const,
+          outcome: "retryable" as const,
+          reason: "rate_limited" as const,
+          provider_status: 429,
+          retry_after_seconds: 3,
+        }),
+      },
+      64,
+    );
+    await expect(
+      port.align({
+        operationId: "operation",
+        postId: "post",
+        audioRevision: 1,
+        analysisRevision: 1,
+        lyricsRevision: 2,
+        canonicalAudioSha256: hash,
+        audioArtifactRef: "media://immutable/operation/audio/1",
+        lyrics: "project lyrics",
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual({
+      status: "unavailable",
+      failureCode: "rate_limited",
+      providerEvidence: {
+        providerStatusClass: "4xx",
+        outcome: "retryable",
+        reason: "rate_limited",
+      },
+    });
+  });
+
+  test("keeps transcript mismatches fail-closed with the provider outcome recorded", async () => {
+    const audio = new Uint8Array([9, 8, 7, 6]);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", audio)), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+    const port = makeElevenLabsProcessingAlignmentPort(
+      r2Bucket("immutable/operation/audio/1", audio, "audio/mpeg"),
+      {
+        align: async () => ({
+          status: "unavailable" as const,
+          alignment: "unavailable" as const,
+          outcome: "transcript_mismatch" as const,
+          reason: "transcript_mismatch" as const,
+          context: {
+            operation_id: "operation",
+            post_id: "post",
+            audio_revision: 1,
+            analysis_revision: 1,
+            canonical_audio_sha256: hash,
+            transcript_artifact_ref: "media://lyrics/operation/2",
+            adapter_revision: "elevenlabs-alignment-adapter-v2-provider-quantization" as const,
+          },
+          expected_text_length: 14,
+          received_text_length: 13,
+        }),
+      },
+      64,
+    );
+    await expect(
+      port.align({
+        operationId: "operation",
+        postId: "post",
+        audioRevision: 1,
+        analysisRevision: 1,
+        lyricsRevision: 2,
+        canonicalAudioSha256: hash,
+        audioArtifactRef: "media://immutable/operation/audio/1",
+        lyrics: "project lyrics",
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual({
+      status: "unavailable",
+      failureCode: "invalid_response",
+      providerEvidence: {
+        providerStatusClass: null,
+        outcome: "transcript_mismatch",
+        reason: "transcript_mismatch",
+      },
+    });
+  });
+
+  test("records the no-speech provider outcome on the alignment_failed fall-through", async () => {
+    const audio = new Uint8Array([9, 8, 7, 6]);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", audio)), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+    const port = makeElevenLabsProcessingAlignmentPort(
+      r2Bucket("immutable/operation/audio/1", audio, "audio/mpeg"),
+      {
+        align: async () => ({
+          status: "unavailable" as const,
+          alignment: "unavailable" as const,
+          outcome: "no_speech" as const,
+          reason: "no_speech" as const,
+          context: {
+            operation_id: "operation",
+            post_id: "post",
+            audio_revision: 1,
+            analysis_revision: 1,
+            canonical_audio_sha256: hash,
+            transcript_artifact_ref: "media://lyrics/operation/2",
+            adapter_revision: "elevenlabs-alignment-adapter-v2-provider-quantization" as const,
+          },
+        }),
+      },
+      64,
+    );
+    await expect(
+      port.align({
+        operationId: "operation",
+        postId: "post",
+        audioRevision: 1,
+        analysisRevision: 1,
+        lyricsRevision: 2,
+        canonicalAudioSha256: hash,
+        audioArtifactRef: "media://immutable/operation/audio/1",
+        lyrics: "project lyrics",
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual({
+      status: "unavailable",
+      failureCode: "alignment_failed",
+      providerEvidence: {
+        providerStatusClass: null,
+        outcome: "no_speech",
+        reason: "no_speech",
+      },
+    });
+  });
 });

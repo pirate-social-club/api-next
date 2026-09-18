@@ -1,4 +1,5 @@
 import type {
+  MediaProcessingAlignmentFailureEvidence,
   MediaProcessingAlignmentPort,
   MediaProcessingArtifactReader,
   MediaProcessingAuthority,
@@ -775,31 +776,55 @@ function alignmentSegments(
   return cursor === lyrics.length ? segments : null;
 }
 
+type AlignmentUnavailableOutcome = Exclude<
+  ElevenLabsAlignmentOutcome,
+  { readonly status: "ready" }
+>;
+
+const providerStatusClass = (
+  outcome: AlignmentUnavailableOutcome,
+): MediaProcessingAlignmentFailureEvidence["providerStatusClass"] => {
+  if (!("provider_status" in outcome) || typeof outcome.provider_status !== "number") return null;
+  if (outcome.provider_status >= 500) return "5xx";
+  if (outcome.provider_status >= 400) return "4xx";
+  if (outcome.provider_status >= 300) return "3xx";
+  return null;
+};
+
+const alignmentEvidence = (
+  outcome: AlignmentUnavailableOutcome,
+): MediaProcessingAlignmentFailureEvidence => ({
+  providerStatusClass: providerStatusClass(outcome),
+  outcome: outcome.outcome,
+  reason: outcome.reason,
+});
+
 function alignmentFailure(
-  outcome: ElevenLabsAlignmentOutcome,
+  outcome: AlignmentUnavailableOutcome,
 ): Extract<
   Awaited<ReturnType<MediaProcessingAlignmentPort["align"]>>,
   { readonly status: "unavailable" }
 > {
+  const providerEvidence = alignmentEvidence(outcome);
   if (outcome.outcome === "retryable" && outcome.reason === "rate_limited") {
-    return { status: "unavailable", failureCode: "rate_limited" };
+    return { status: "unavailable", failureCode: "rate_limited", providerEvidence };
   }
   if (outcome.outcome === "timeout" || outcome.outcome === "cancelled") {
-    return { status: "unavailable", failureCode: "timeout" };
+    return { status: "unavailable", failureCode: "timeout", providerEvidence };
   }
   if (outcome.outcome === "disabled") {
-    return { status: "unavailable", failureCode: "elevenlabs_key_missing" };
+    return { status: "unavailable", failureCode: "elevenlabs_key_missing", providerEvidence };
   }
   if (outcome.outcome === "permanent" && outcome.reason === "configuration") {
-    return { status: "unavailable", failureCode: "key_invalid" };
+    return { status: "unavailable", failureCode: "key_invalid", providerEvidence };
   }
   if (outcome.outcome === "malformed" || outcome.outcome === "transcript_mismatch") {
-    return { status: "unavailable", failureCode: "invalid_response" };
+    return { status: "unavailable", failureCode: "invalid_response", providerEvidence };
   }
   if (outcome.outcome === "retryable") {
-    return { status: "unavailable", failureCode: "provider_unavailable" };
+    return { status: "unavailable", failureCode: "provider_unavailable", providerEvidence };
   }
-  return { status: "unavailable", failureCode: "alignment_failed" };
+  return { status: "unavailable", failureCode: "alignment_failed", providerEvidence };
 }
 
 function r2AlignmentAudio(
