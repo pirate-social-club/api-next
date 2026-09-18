@@ -442,7 +442,8 @@ export type ProcessingAttemptStage =
   | "metadata"
   | "classifier"
   | "publication"
-  | "alignment";
+  | "alignment"
+  | "alignment_recovery";
 export type ProcessingAttemptInput = Readonly<{
   attemptId: string;
   communityId: string;
@@ -483,6 +484,11 @@ export type ProcessingAttemptFailInput = Readonly<{
   retryable: boolean;
   nextEligibleAt?: string;
   evidenceRef?: string;
+  failureEvidence?: Readonly<{
+    providerStatusClass: "3xx" | "4xx" | "5xx" | null;
+    outcome: string;
+    reason: string;
+  }>;
 }>;
 export type MediaProcessingAttemptFailureCode =
   | ProcessingFailure["code"]
@@ -671,6 +677,27 @@ const validHash = (value: unknown): value is string =>
   typeof value === "string" && HASH.test(value);
 const validRevision = (value: unknown, minimum = 0): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+const validFailureEvidence = (
+  value: unknown,
+): value is Readonly<{
+  providerStatusClass: "3xx" | "4xx" | "5xx" | null;
+  outcome: string;
+  reason: string;
+}> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(record).sort();
+  if (keys.join(",") !== "outcome,providerStatusClass,reason") return false;
+  const statusClass = record.providerStatusClass;
+  return (
+    (statusClass === null ||
+      statusClass === "3xx" ||
+      statusClass === "4xx" ||
+      statusClass === "5xx") &&
+    validId(record.outcome) &&
+    validId(record.reason)
+  );
+};
 const bytes = (value: unknown): Bytes | null =>
   value instanceof Uint8Array && value.byteLength > 0 ? new Uint8Array(value) : null;
 const integer = (value: unknown): number | null => {
@@ -3720,6 +3747,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       if (
         ![input.attemptId, input.workerId, input.failureCode].every(validId) ||
         (input.evidenceRef !== undefined && !validId(input.evidenceRef)) ||
+        (input.failureEvidence !== undefined && !validFailureEvidence(input.failureEvidence)) ||
         !validRevision(input.claimFence, 1) ||
         (input.retryable &&
           (input.nextEligibleAt === undefined ||
@@ -3732,7 +3760,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-attempt.fail",
-        text: "UPDATE media_processing_attempts SET state=CASE WHEN $3 AND attempt_number < 3 THEN 'failed' ELSE 'exhausted' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,evidence_ref=COALESCE($2,evidence_ref),retryable=CASE WHEN $3 AND attempt_number < 3 THEN TRUE ELSE FALSE END,next_eligible_at=CASE WHEN $3 AND attempt_number < 3 THEN $4::timestamptz ELSE NULL END,updated_at=clock_timestamp() WHERE attempt_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
+        text: "UPDATE media_processing_attempts SET state=CASE WHEN $3 AND attempt_number < 3 THEN 'failed' ELSE 'exhausted' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,evidence_ref=COALESCE($2,evidence_ref),failure_evidence=$8::jsonb,retryable=CASE WHEN $3 AND attempt_number < 3 THEN TRUE ELSE FALSE END,next_eligible_at=CASE WHEN $3 AND attempt_number < 3 THEN $4::timestamptz ELSE NULL END,updated_at=clock_timestamp() WHERE attempt_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
         values: [
           input.failureCode,
           input.evidenceRef ?? null,
@@ -3741,6 +3769,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           input.attemptId,
           input.workerId,
           input.claimFence,
+          input.failureEvidence === undefined ? null : json(input.failureEvidence),
         ],
         readonly: false,
       });
@@ -3868,7 +3897,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               fail("alignment", "transition-rejected", { submissionId: current.submissionId }),
             );
           const recoveryActionId = `media-alignment-recovery-${current.operationId}-l${expected.lyricsRevision}`;
-          const attemptId = `media-attempt-${current.operationId}-a${expected.audioRevision}-n${expected.analysisRevision}-alignment-l${expected.lyricsRevision}-recovery-1`;
+          const attemptId = `media-attempt-${current.operationId}-a${expected.audioRevision}-n${expected.analysisRevision}-alignment_recovery-l${expected.lyricsRevision}`;
           const outboxEventId = `media-alignment-recovery-outbox-${current.operationId}-l${expected.lyricsRevision}`;
           const effectIdentity = `media-alignment-recovery-${current.operationId}-l${expected.lyricsRevision}`;
           const prior = yield* tx.execute<Row>({

@@ -13,6 +13,7 @@ import type { MediaExplicitnessClassifierInput } from "../media-provider-contrac
 import { TextModerationProviderError } from "../ports.ts";
 import type {
   AlignmentRecoveryRead,
+  MediaProcessingAlignmentFailureEvidence,
   MediaProcessingAnalysis,
   MediaProcessingAttemptLease,
   MediaProcessingAttemptResult,
@@ -214,12 +215,19 @@ class FakeStore implements MediaProcessingStore {
     | "provider_invalid"
     | "publication_failed"
   )[] = [];
+  readonly failureEvidence: (MediaProcessingAlignmentFailureEvidence | undefined)[] = [];
 
-  failAttempt: MediaProcessingStore["failAttempt"] = async (lease, failure) => {
+  failAttempt: MediaProcessingStore["failAttempt"] = async (
+    lease,
+    failure,
+    _retryable,
+    providerEvidence,
+  ) => {
     const prior = this.attempts.get(lease.attemptId);
     if (prior?.lease.claimFence !== lease.claimFence) return false;
     this.events.push(`fail:${lease.stage}`);
     this.failureCodes.push(failure);
+    this.failureEvidence.push(providerEvidence);
     this.attempts.set(lease.attemptId, { lease, failed: true });
     return true;
   };
@@ -1609,7 +1617,7 @@ describe("media processing workflow", () => {
     store.alignmentRecovery = {
       kind: "recovery",
       recoveryActionId: "media-alignment-recovery-operation-1-l1",
-      attemptId: "media-attempt-operation-1-a1-n1-alignment-l1-recovery-1",
+      attemptId: "media-attempt-operation-1-a1-n1-alignment_recovery-l1",
     };
     expect(
       await runWorkflow(
@@ -1623,9 +1631,10 @@ describe("media processing workflow", () => {
     ]);
     expect(store.alignments).toBe(1);
     expect(store.alignmentResults[0]).toMatchObject({ kind: "alignment", status: "ready" });
+    expect(store.events).toContain("complete:alignment_recovery");
     expect(store.attempts.get("media-attempt-operation-1-a1-n1-alignment-l1")).toBeUndefined();
     expect(
-      store.attempts.get("media-attempt-operation-1-a1-n1-alignment-l1-recovery-1")?.result,
+      store.attempts.get("media-attempt-operation-1-a1-n1-alignment_recovery-l1")?.result,
     ).toMatchObject({ kind: "alignment", status: "ready" });
 
     const replayEvents: string[] = [];
@@ -1638,6 +1647,90 @@ describe("media processing workflow", () => {
     ).toEqual({ outcome: "alignment_recorded" });
     expect(replayEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
     expect(store.alignments).toBe(1);
+  });
+
+  test("completes an interrupted recovery attempt from the committed result without a provider call", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        replacementSequence: 0,
+        publishedLyricsRevision: 1,
+      }),
+      "workflow_replacement",
+    );
+    const providerEvents: string[] = [];
+    const committedResult = {
+      kind: "alignment",
+      status: "ready",
+      artifactRef: "persisted-recovery-l1",
+      artifactSha256: "c".repeat(64),
+      artifact: { version: "timed-lyrics-v1", timings: [] },
+    } as const;
+    const recoveryAttemptId = "media-attempt-operation-1-a1-n1-alignment_recovery-l1";
+    store.attempts.set(recoveryAttemptId, {
+      lease: {
+        attemptId: recoveryAttemptId,
+        attemptNumber: 1,
+        stage: "alignment_recovery",
+        claimOwner: "evicted-worker",
+        claimFence: 1,
+      },
+      failed: true,
+    });
+    store.alignmentRecovery = {
+      kind: "committed",
+      result: committedResult,
+      recoveryAttemptId,
+    };
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "workflow_replacement",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.events).toContain("complete:alignment_recovery");
+    expect(store.attempts.get(recoveryAttemptId)?.result).toEqual(committedResult);
+    expect(store.alignments).toBe(0);
+  });
+
+  test("persists sanitized provider evidence for retryable alignment failures", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        replacementSequence: 0,
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const base = providers([]);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      alignment: {
+        align: async () => ({
+          status: "unavailable",
+          failureCode: "provider_unavailable",
+          providerEvidence: {
+            providerStatusClass: "5xx",
+            outcome: "retryable",
+            reason: "provider_unavailable",
+          },
+        }),
+      },
+    };
+    expect(
+      await runWorkflow(workflowPayload(store), "alignment", dependencies(store, provider)),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.failureEvidence.at(-1)).toEqual({
+      providerStatusClass: "5xx",
+      outcome: "retryable",
+      reason: "provider_unavailable",
+    });
   });
 
   test("workflow replacement for a lyrics-free published song stays inert", async () => {

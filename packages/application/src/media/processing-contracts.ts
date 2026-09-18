@@ -255,7 +255,8 @@ export type MediaProcessingAttemptStage =
   | "metadata"
   | "classifier"
   | "publication"
-  | "alignment";
+  | "alignment"
+  | "alignment_recovery";
 
 export type MediaProcessingAlignmentFailureEvidence = Readonly<{
   readonly providerStatusClass: "3xx" | "4xx" | "5xx" | null;
@@ -340,6 +341,7 @@ export type AlignmentRecoveryRead =
   | Readonly<{
       readonly kind: "committed";
       readonly result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
+      readonly recoveryAttemptId?: string;
     }>
   | Readonly<{ readonly kind: "stale" }>
   | Readonly<{ readonly kind: "failed" }>
@@ -391,6 +393,7 @@ export interface MediaProcessingStore {
       | "provider_invalid"
       | "publication_failed",
     retryable: boolean,
+    providerEvidence?: MediaProcessingAlignmentFailureEvidence,
   ) => Promise<boolean>;
   readonly commitAnalysis: (
     authority: MediaProcessingAuthority,

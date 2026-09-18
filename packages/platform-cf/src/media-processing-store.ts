@@ -277,7 +277,7 @@ const attemptInputKind = (
 ): "audio" | "lyrics" | "publication" =>
   stage === "classifier"
     ? "lyrics"
-    : stage === "publication" || stage === "alignment"
+    : stage === "publication" || stage === "alignment" || stage === "alignment_recovery"
       ? "publication"
       : "audio";
 
@@ -618,7 +618,12 @@ export function makeMediaProcessingStore(
       }),
     );
 
-  const failAttempt: MediaProcessingStore["failAttempt"] = (lease, failure, retryable) =>
+  const failAttempt: MediaProcessingStore["failAttempt"] = (
+    lease,
+    failure,
+    retryable,
+    providerEvidence,
+  ) =>
     run(
       submissions.failProcessingAttempt({
         attemptId: lease.attemptId,
@@ -626,6 +631,7 @@ export function makeMediaProcessingStore(
         claimFence: lease.claimFence,
         failureCode: failure,
         retryable,
+        ...(providerEvidence === undefined ? {} : { failureEvidence: providerEvidence }),
         ...(retryable
           ? {
               nextEligibleAt: new Date(
@@ -1117,6 +1123,10 @@ export function makeMediaProcessingStore(
           return { kind: "stale" } as const;
         return { kind: "recovery", recoveryActionId, attemptId } as const;
       }
+      const recoveryAttemptId =
+        recoveryRow?.state === "completed" && typeof recoveryRow.attempt_id === "string"
+          ? recoveryRow.attempt_id
+          : undefined;
       const result = await run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
@@ -1156,6 +1166,7 @@ export function makeMediaProcessingStore(
             status: "unavailable",
             failureCode: failureCode as (typeof alignmentFailureCodes)[number],
           },
+          ...(recoveryAttemptId === undefined ? {} : { recoveryAttemptId }),
         } as const;
       }
       if (row.status === "ready") {
@@ -1182,6 +1193,7 @@ export function makeMediaProcessingStore(
             artifactSha256,
             artifact: artifact as Readonly<Record<string, unknown>>,
           },
+          ...(recoveryAttemptId === undefined ? {} : { recoveryAttemptId }),
         } as const;
       }
       return { kind: "stale" } as const;

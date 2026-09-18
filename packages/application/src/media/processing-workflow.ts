@@ -20,6 +20,7 @@ import {
 } from "../media-provider-contracts.ts";
 import {
   decodeMediaProcessingWorkflowPayload,
+  type MediaProcessingAlignmentFailureEvidence,
   type MediaProcessingAnalysis,
   type MediaProcessingAttemptLease,
   type MediaProcessingAttemptResult,
@@ -171,7 +172,8 @@ const attemptId = (
   stage: MediaProcessingAttemptStage,
 ): string => {
   const lyricsBinding =
-    (stage === "classifier" || stage === "alignment") && authority.lyrics !== null
+    (stage === "classifier" || stage === "alignment" || stage === "alignment_recovery") &&
+    authority.lyrics !== null
       ? `-l${authority.lyrics.lyricsRevision}`
       : "";
   return `media-attempt-${authority.operationId}-a${authority.audioRevision}-n${authority.analysisRevision}-${stage}${lyricsBinding}`;
@@ -265,9 +267,14 @@ function failAttempt(
   lease: MediaProcessingAttemptLease,
   dependencies: MediaProcessingWorkflowDependencies,
   failure: "provider_unavailable" | "publication_failed" = "provider_unavailable",
+  providerEvidence?: MediaProcessingAlignmentFailureEvidence,
 ): WorkflowEffect<void> {
   return Effect.gen(function* () {
-    if (!(yield* storeWrite(() => dependencies.store.failAttempt(lease, failure, true)))) {
+    if (
+      !(yield* storeWrite(() =>
+        dependencies.store.failAttempt(lease, failure, true, providerEvidence),
+      ))
+    ) {
       return yield* Effect.fail(new DeferredAttempt("stale_fence"));
     }
     dependencies.options.observe?.(observation(authority, "attempt_failed", lease.stage));
@@ -1154,13 +1161,19 @@ function align(
     if (recovery.kind === "failed") {
       return yield* Effect.fail(new DeferredAttempt("provider_progress"));
     }
+    const recoveryAttemptId =
+      recovery.kind === "recovery"
+        ? recovery.attemptId
+        : recovery.kind === "committed"
+          ? recovery.recoveryAttemptId
+          : undefined;
     const started = yield* startAttempt(
       current,
-      "alignment",
+      recoveryAttemptId === undefined ? "alignment" : "alignment_recovery",
       current.publishedLyricsRevision ?? current.analysisRevision,
       "alignment-port-v1",
       dependencies,
-      recovery.kind === "recovery" ? recovery.attemptId : undefined,
+      recoveryAttemptId,
     ).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
@@ -1224,9 +1237,13 @@ function align(
               value.status === "unavailable" &&
               ["rate_limited", "provider_unavailable", "timeout"].includes(value.failureCode)
             ) {
-              return failAttempt(current, started.lease, dependencies).pipe(
-                Effect.andThen(Effect.fail(new DeferredAttempt("provider_progress"))),
-              );
+              return failAttempt(
+                current,
+                started.lease,
+                dependencies,
+                "provider_unavailable",
+                value.providerEvidence,
+              ).pipe(Effect.andThen(Effect.fail(new DeferredAttempt("provider_progress"))));
             }
             return Effect.succeed(value);
           }),
