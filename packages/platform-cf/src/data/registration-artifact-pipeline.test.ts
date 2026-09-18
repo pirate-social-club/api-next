@@ -933,11 +933,11 @@ describe("DATA registration lyrics authority", () => {
   const reader = (row: Readonly<Record<string, unknown>>) => {
     const execute = <R>(statement: ControlPlaneStatement) => {
       if (statement.label === "data-registration.artifacts.authority") {
-        return Effect.succeed({ rows: [row] as readonly R[], rowCount: 1 });
+        return Effect.succeed({ rows: [row] as unknown as readonly R[], rowCount: 1 });
       }
       if (statement.label === "data-registration.artifacts.recipients") {
         return Effect.succeed({
-          rows: recipientRows as readonly R[],
+          rows: recipientRows as unknown as readonly R[],
           rowCount: recipientRows.length,
         });
       }
@@ -953,21 +953,30 @@ describe("DATA registration lyrics authority", () => {
     );
   };
 
+  const songAuthority = (result: DataRegistrationArtifactAuthority) => {
+    if (result.mediaKind !== "song") throw new Error("expected song authority");
+    return result;
+  };
+
   test("accepts the exact stored lyrics, including the trailing newline, without trimming", async () => {
-    const result = await reader(songRow()).read(operation);
+    const result = songAuthority(await reader(songRow()).read(operation));
     expect(result.lyrics).toBe(storedLyrics);
     expect(result.lyrics?.endsWith("\n")).toBe(true);
   });
 
   test("accepts leading whitespace and preserves it byte for byte", async () => {
     const leading = `  indented first line\nsecond line\n\n`;
-    const result = await reader(songRow({ lyrics_text: leading })).read(operation);
+    const result = songAuthority(await reader(songRow({ lyrics_text: leading })).read(operation));
     expect(result.lyrics).toBe(leading);
   });
 
   test("keeps null and absent lyrics nullable", async () => {
-    expect((await reader(songRow({ lyrics_text: null })).read(operation)).lyrics).toBeNull();
-    expect((await reader(songRow({ lyrics_text: undefined })).read(operation)).lyrics).toBeNull();
+    expect(
+      songAuthority(await reader(songRow({ lyrics_text: null })).read(operation)).lyrics,
+    ).toBeNull();
+    expect(
+      songAuthority(await reader(songRow({ lyrics_text: undefined })).read(operation)).lyrics,
+    ).toBeNull();
   });
 
   test.each([
