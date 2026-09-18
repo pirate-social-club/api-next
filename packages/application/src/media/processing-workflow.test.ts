@@ -10,6 +10,7 @@ import type {
 } from "../media/transform.ts";
 import type { MediaIdentificationRequest } from "../media-identification-provider.ts";
 import type { MediaExplicitnessClassifierInput } from "../media-provider-contracts.ts";
+import { TextModerationProviderError } from "../ports.ts";
 import type {
   AlignmentRecoveryRead,
   MediaProcessingAnalysis,
@@ -2107,4 +2108,163 @@ test("resumes a processing submission through a workflow replacement event", asy
   expect(result).toEqual({ outcome: "published_without_alignment" });
   expect(store.publications).toBe(1);
   expect(store.alignments).toBe(0);
+});
+
+describe("media text moderation input normalization", () => {
+  const lyricsWithText = (text: string) => ({
+    lyricsRevision: 1,
+    audioRevision: 1,
+    canonicalAudioSha256: hash,
+    text,
+  });
+
+  const canonicalSha = (title: string, body: string): string => {
+    const canonical = canonicalTextModerationInput({
+      version: "text-moderation-input-v1",
+      surface: "text_post",
+      title,
+      body,
+    });
+    if (canonical.kind !== "accepted") throw new TypeError("fixture must be canonical");
+    return canonical.sha256;
+  };
+
+  const captureModerationInput = (base: MediaProcessingProviders) => {
+    const seen: Array<Readonly<{ title: string | null; body: string | null }>> = [];
+    const provider: MediaProcessingProviders = {
+      ...base,
+      textModeration: {
+        evaluate: (input) => {
+          seen.push({ title: input.title, body: input.body });
+          return base.textModeration.evaluate(input);
+        },
+      },
+    };
+    return { provider, seen };
+  };
+
+  test.each([
+    ["a trailing newline", "Line one\nLine two\n"],
+    ["leading and trailing whitespace", "  Line one\nLine two  "],
+    ["already-canonical lyrics", "Line one\nLine two"],
+  ])("normalizes %s and reaches moderation", async (_label, text) => {
+    const store = new FakeStore(authority({ lyrics: lyricsWithText(text) }));
+    const { provider, seen } = captureModerationInput(providers([]));
+    const result = await runWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, provider),
+    );
+    expect(result).toEqual({ outcome: "published" });
+    expect(store.publications).toBe(1);
+    expect(seen).toEqual([{ title: "Song title", body: "Line one\nLine two" }]);
+    const moderation = store.current.analysis?.contentModeration;
+    expect(moderation?.decision).toBe("allow");
+    expect(moderation?.inputSha256).toBe(canonicalSha("Song title", "Line one\nLine two"));
+    expect(moderation?.evidenceRef).not.toBeNull();
+    expect(store.current.lyrics?.text).toBe(text);
+    expect(store.current.lyrics?.lyricsRevision).toBe(1);
+  });
+
+  test("keeps whitespace-only input fail-closed with no provider call", async () => {
+    const store = new FakeStore(authority({ title: "   ", lyrics: lyricsWithText("  \n  ") }));
+    const events: string[] = [];
+    const { provider, seen } = captureModerationInput(providers(events));
+    const result = await runWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, provider),
+    );
+    expect(result).toEqual({ outcome: "manual_review" });
+    expect(seen).toEqual([]);
+    expect(store.publications).toBe(0);
+    const moderation = store.current.analysis?.contentModeration;
+    expect(moderation?.decision).toBe("manual_review");
+    expect(moderation?.inputSha256).toBe("invalid");
+    expect(moderation?.evidenceRef).toBeNull();
+  });
+
+  test("keeps provider unavailability fail-closed without publication", async () => {
+    const store = new FakeStore(authority({ lyrics: lyricsWithText("Line one\nLine two\n") }));
+    const base = providers([]);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      textModeration: {
+        evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
+      },
+    };
+    const result = await runWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, provider),
+    );
+    expect(result).toEqual({ outcome: "manual_review" });
+    expect(store.publications).toBe(0);
+    expect(store.current.analysis?.contentModeration?.decision).toBe("manual_review");
+  });
+
+  test("composed regression: the held submission shape now yields a valid decision", async () => {
+    const heldLyrics =
+      "[Verse 1]\n" +
+      "Who's the most important man this country ever knew?\n" +
+      "Who's the man our presidents tell all their troubles to?\n" +
+      "No it isn't Mr. Bryan and it isn't Mr. Hughes\n" +
+      "[Chorus]\n" +
+      "Barney Google with his goo-goo-googly eyes\n" +
+      "Barney Google had a wife three times his size\n";
+    const rawCanonical = canonicalTextModerationInput({
+      version: "text-moderation-input-v1",
+      surface: "text_post",
+      title: "Barney Google 1789679675214",
+      body: heldLyrics,
+    });
+    expect(rawCanonical.kind).toBe("rejected");
+    const store = new FakeStore(
+      authority({
+        title: "Barney Google 1789679675214",
+        lyrics: lyricsWithText(heldLyrics),
+      }),
+    );
+    const { provider, seen } = captureModerationInput(
+      providers([], {
+        cover: {
+          status: "ready",
+          artifactRef: "held-cover-1",
+          artifactSha256: "d".repeat(64),
+          mediaType: "image/webp",
+          width: 360,
+          height: 360,
+          normalizationRevision: "cloudflare-images-cover-v1",
+          safetyPolicyRevision: "openai-cover-general-audience-v1",
+        },
+      }),
+    );
+    const result = await runWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, provider),
+    );
+    expect(result).toEqual({ outcome: "published" });
+    expect(seen).toEqual([{ title: "Barney Google 1789679675214", body: heldLyrics.trim() }]);
+    expect(store.current.analysis?.contentModeration?.decision).toBe("allow");
+    expect(store.current.analysis?.contentModeration?.evidenceRef).not.toBeNull();
+    expect(store.current.analysis?.acr.decision).toBe("allow");
+    expect(store.current.analysis?.lyricsAnalysis).toMatchObject({
+      status: "ready",
+      explicitness: "not_explicit",
+    });
+    expect(store.current.analysis?.mediaSafety).toBe("allow");
+    expect(store.current.lyrics?.text).toBe(heldLyrics);
+  });
+
+  test("keeps review-category moderation holds in place", async () => {
+    const store = new FakeStore(authority({ lyrics: lyricsWithText("Line one\nLine two\n") }));
+    const result = await runWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, providers([], { matchedCategories: ["illicit"] })),
+    );
+    expect(result).toEqual({ outcome: "manual_review" });
+    expect(store.publications).toBe(0);
+  });
 });
