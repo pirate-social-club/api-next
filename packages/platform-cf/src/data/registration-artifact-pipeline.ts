@@ -29,6 +29,13 @@ const IMMUTABLE_REF_PREFIX = "media://immutable/";
 // Spec 008 requires DATA to admit every permitted original-video source. This
 // does not choose U.6's separate song-video master ceiling or enable rendering.
 export const DATA_REGISTRATION_MAX_SOURCE_BYTES = VIDEO_INGEST_POLICY_V1.maxBytes;
+/**
+ * The registration policy for song artwork. A publication may carry a cover
+ * for display, but song registration excludes artwork from its artifacts and
+ * metadata under this named revision. A future policy that registers artwork
+ * must add its own branch instead of weakening this one.
+ */
+export const DATA_SONG_ARTWORK_POLICY_REVISION = "song-artwork-excluded-v1" as const;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const ADDRESS = /^0x[0-9a-f]{40}$/u;
 
@@ -165,6 +172,22 @@ const lyricsText = (row: Row, key: string): string | null => {
     throw new Error("invalid DATA artifact authority");
   }
   return value;
+};
+
+export type DataRegistrationSongArtworkDisposition = "absent" | "excluded";
+
+/**
+ * A present cover is accepted only when the named policy revision excludes
+ * artwork from song registration. Any other policy revision fails closed, so a
+ * future artwork policy cannot silently inherit the exclusion.
+ */
+export const songArtworkDisposition = (input: {
+  readonly policyRevision: string;
+  readonly coverArtifactRef: string | null;
+}): DataRegistrationSongArtworkDisposition => {
+  if (input.coverArtifactRef === null) return "absent";
+  if (input.policyRevision === DATA_SONG_ARTWORK_POLICY_REVISION) return "excluded";
+  throw new Error("DATA song artwork policy does not handle the present cover");
 };
 
 const instant = (row: Row, key: string): string => {
@@ -1227,11 +1250,14 @@ export function makeDataRegistrationArtifactPipeline(
       }
       if (
         authority.postId !== operation.postId ||
-        authority.canonicalAudioSha256 !== operation.canonicalAudioSha256 ||
-        authority.coverArtifactRef !== null
+        authority.canonicalAudioSha256 !== operation.canonicalAudioSha256
       ) {
         throw new Error("DATA publication authority mismatch");
       }
+      const artworkDisposition = songArtworkDisposition({
+        policyRevision: DATA_SONG_ARTWORK_POLICY_REVISION,
+        coverArtifactRef: authority.coverArtifactRef,
+      });
       const audio = audioArtifact(operation, authority, options.immutableOriginals);
       const pins = await options.authority.listPins(operation.registrationOperationId);
       const audioPin = pins.find(
@@ -1280,6 +1306,8 @@ export function makeDataRegistrationArtifactPipeline(
         provenance: {
           acr_decision: authority.acrDecision,
           acr_policy_revision: authority.acrPolicyRevision,
+          artwork_disposition: artworkDisposition,
+          artwork_policy_revision: DATA_SONG_ARTWORK_POLICY_REVISION,
         },
         lyrics_explicitness: authority.lyricsExplicitness,
         primary_language_bcp47: authority.primaryLanguageBcp47,

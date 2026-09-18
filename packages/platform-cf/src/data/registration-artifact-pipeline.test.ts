@@ -11,6 +11,7 @@ import {
   type DataRegistrationArtifactAuthority,
   makeDataRegistrationArtifactPipeline,
   makePostgresDataRegistrationArtifactAuthorityReader,
+  songArtworkDisposition,
 } from "./registration-artifact-pipeline";
 
 const memoryMetadata = () => {
@@ -459,19 +460,48 @@ describe("DATA registration artifact pipeline", () => {
     });
   });
 
-  test("does not silently register a publication with unhandled artwork", async () => {
+  test("registers a cover-bearing song under the explicit artwork exclusion policy", async () => {
     const pipeline = makeDataRegistrationArtifactPipeline({
       authority: {
         resolveMetadata: memoryMetadata(),
         read: async () => ({ ...authority, coverArtifactRef: "media://cover/present" }),
-        listPins: async () => [],
+        listPins: async () => [audioPin],
       },
       immutableOriginals: fakeBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
       publicOrigin: "https://staging.pirate.sc",
     });
-    await expect(pipeline.prepare(operation)).rejects.toThrow("authority mismatch");
+    const prepared = await pipeline.prepare(operation);
+    expect(prepared.map(({ artifact }) => artifact.artifactKind)).toEqual([
+      "canonical_audio",
+      "ip_metadata",
+      "nft_metadata",
+    ]);
+    const ipMetadata = prepared.find(({ artifact }) => artifact.artifactKind === "ip_metadata");
+    if (ipMetadata === undefined) throw new Error("IP metadata fixture missing");
+    const decoded = JSON.parse(await collect(ipMetadata.open));
+    expect(decoded).not.toHaveProperty("image");
+    expect(decoded).not.toHaveProperty("imageHash");
+    expect(decoded.provenance).toMatchObject({
+      artwork_disposition: "excluded",
+      artwork_policy_revision: "song-artwork-excluded-v1",
+    });
+  });
+
+  test("fails closed for a present cover under an unknown artwork policy", () => {
+    expect(() =>
+      songArtworkDisposition({
+        policyRevision: "song-artwork-registered-v2",
+        coverArtifactRef: "media://cover/present",
+      }),
+    ).toThrow("DATA song artwork policy does not handle the present cover");
+    expect(
+      songArtworkDisposition({
+        policyRevision: "song-artwork-excluded-v1",
+        coverArtifactRef: null,
+      }),
+    ).toBe("absent");
   });
 
   test("retries only the independent gateway after a durable Filebase pin", async () => {
