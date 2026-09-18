@@ -4,7 +4,7 @@ import {
   type KaraokeReadiness,
   KaraokeReadiness as KaraokeReadinessSchema,
 } from "@pirate/contracts";
-import { canonicalJson } from "@pirate/domain";
+import { canonicalJson, isStandaloneLyricMetadataLine } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -33,6 +33,7 @@ const TimedLyricsArtifact = Schema.Struct({
 });
 
 type CatalogLine = Readonly<{ id: string; index: number; text: string }>;
+type TimedWord = Readonly<{ text: string; start_ms: number; end_ms: number }>;
 type TimedArtifact = Schema.Schema.Type<typeof TimedLyricsArtifact>;
 type PayloadLine = Readonly<{
   id: string;
@@ -41,7 +42,7 @@ type PayloadLine = Readonly<{
   text: string;
   start_ms: number;
   end_ms: number;
-  words: readonly Readonly<{ text: string; start_ms: number; end_ms: number }>[];
+  words: readonly TimedWord[];
 }>;
 
 const compact = (value: string): string => value.replace(/\s+/gu, "");
@@ -76,9 +77,22 @@ const timedWords = (
   return words;
 };
 
+const rawChunks = (
+  rawLyrics: string,
+): readonly Readonly<{ kind: "lyric" | "metadata"; text: string }>[] =>
+  rawLyrics
+    .split(/\r\n?|\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => ({
+      kind: isStandaloneLyricMetadataLine(line) ? ("metadata" as const) : ("lyric" as const),
+      text: line,
+    }));
+
 export const buildKaraokePayloadLines = (input: {
   readonly artifact: unknown;
   readonly catalogLines: readonly CatalogLine[];
+  readonly rawLyrics?: string | null;
 }): readonly PayloadLine[] | null => {
   let artifact: TimedArtifact;
   try {
@@ -89,24 +103,24 @@ export const buildKaraokePayloadLines = (input: {
   const words = timedWords(artifact);
   if (words === null) return null;
   let wordIndex = 0;
-  const lines = [];
-  for (const line of input.catalogLines) {
-    const expected = compact(line.text);
+  const consume = (expected: string): readonly TimedWord[] | null => {
     if (expected.length === 0) return null;
-    const lineWords = [];
+    const consumed: TimedWord[] = [];
     let received = "";
     while (received.length < expected.length) {
       const word = words[wordIndex];
       if (word === undefined) return null;
-      lineWords.push(word);
+      consumed.push(word);
       received += compact(word.text);
       wordIndex += 1;
     }
-    if (received !== expected) return null;
+    return received === expected ? consumed : null;
+  };
+  const payloadLine = (line: CatalogLine, lineWords: readonly TimedWord[]): PayloadLine | null => {
     const first = lineWords[0];
     const last = lineWords.at(-1);
     if (first === undefined || last === undefined) return null;
-    lines.push({
+    return {
       id: line.id,
       index: line.index,
       kind: "lyric" as const,
@@ -114,8 +128,34 @@ export const buildKaraokePayloadLines = (input: {
       start_ms: first.start_ms,
       end_ms: last.end_ms,
       words: lineWords,
-    });
+    };
+  };
+  const lines: PayloadLine[] = [];
+  if (input.rawLyrics === undefined || input.rawLyrics === null) {
+    for (const line of input.catalogLines) {
+      const lineWords = consume(compact(line.text));
+      if (lineWords === null) return null;
+      const payload = payloadLine(line, lineWords);
+      if (payload === null) return null;
+      lines.push(payload);
+    }
+    return wordIndex === words.length ? lines : null;
   }
+  let catalogIndex = 0;
+  for (const chunk of rawChunks(input.rawLyrics)) {
+    const lineWords = consume(compact(chunk.text));
+    if (lineWords === null) return null;
+    if (chunk.kind === "metadata") continue;
+    const catalogLine = input.catalogLines[catalogIndex];
+    if (catalogLine === undefined || compact(catalogLine.text) !== compact(chunk.text)) {
+      return null;
+    }
+    const payload = payloadLine(catalogLine, lineWords);
+    if (payload === null) return null;
+    lines.push(payload);
+    catalogIndex += 1;
+  }
+  if (catalogIndex !== input.catalogLines.length) return null;
   return wordIndex === words.length ? lines : null;
 };
 
@@ -144,6 +184,7 @@ const repository = (input: {
                     publication.title, publication.audio_asset_ref,
                     publication.canonical_audio_sha256, publication.lyrics_status,
                     publication.lyrics_revision, alignment.status AS alignment_status,
+                    publication.lyrics_text,
                     artifact.artifact_sha256, artifact.artifact
                FROM posts AS post
                LEFT JOIN media_publication_projections AS publication
@@ -229,7 +270,12 @@ const repository = (input: {
     if (catalogLines.length === 0 || catalogLines.length !== catalog.rows.length) {
       return decode({ state: "unavailable", reason: "line_catalog_missing" });
     }
-    const lines = buildKaraokePayloadLines({ artifact: row.artifact, catalogLines });
+    const rawLyrics = typeof row.lyrics_text === "string" ? row.lyrics_text : null;
+    const lines = buildKaraokePayloadLines({
+      artifact: row.artifact,
+      catalogLines,
+      rawLyrics,
+    });
     if (lines === null || lines.length === 0) {
       return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
     }
