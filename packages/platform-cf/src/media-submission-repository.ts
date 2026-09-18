@@ -381,6 +381,7 @@ export type AlignmentInput = Readonly<{
     artifact: Readonly<Record<string, unknown>>;
   }>;
   failureCode?: MediaAlignmentFailureCode;
+  recoveryActionId?: string;
 }>;
 export type WorkflowReplacementInput = Readonly<{
   communityId: string;
@@ -389,6 +390,32 @@ export type WorkflowReplacementInput = Readonly<{
   personaId: string;
   expectedWorkflowRevision: number;
   outbox: OutboxWrite;
+}>;
+type AlignmentRecoveryInput = Readonly<{
+  communityId: string;
+  submissionId: string;
+  actorUserId: string;
+  personaId: string;
+  operatorPrincipalId: string;
+  idempotencyKey: string;
+  evidenceRef: string;
+  expectedWorkflowRevision: number;
+  expected: Readonly<{
+    postId: string;
+    audioRevision: number;
+    analysisRevision: number;
+    lyricsRevision: number;
+    canonicalAudioSha256: string;
+    lyricsSha256: string;
+  }>;
+}>;
+type AlignmentRecoveryOutcome = Readonly<{
+  kind: "replay" | "committed";
+  submissionId: string;
+  recoveryActionId: string;
+  attemptId: string;
+  outboxEventId: string;
+  workflowRevision: number;
 }>;
 export type AuthorLyricsSnapshot = Readonly<{
   current:
@@ -415,7 +442,8 @@ export type ProcessingAttemptStage =
   | "metadata"
   | "classifier"
   | "publication"
-  | "alignment";
+  | "alignment"
+  | "alignment_recovery";
 export type ProcessingAttemptInput = Readonly<{
   attemptId: string;
   communityId: string;
@@ -456,6 +484,11 @@ export type ProcessingAttemptFailInput = Readonly<{
   retryable: boolean;
   nextEligibleAt?: string;
   evidenceRef?: string;
+  failureEvidence?: Readonly<{
+    providerStatusClass: "3xx" | "4xx" | "5xx" | null;
+    outcome: string;
+    reason: string;
+  }>;
 }>;
 export type MediaProcessingAttemptFailureCode =
   | ProcessingFailure["code"]
@@ -619,6 +652,9 @@ export type MediaSubmissionStore = {
     MediaSubmissionRepositoryFailure,
     ControlPlaneDb
   >;
+  requestAlignmentRecovery(
+    input: AlignmentRecoveryInput,
+  ): Effect.Effect<AlignmentRecoveryOutcome, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
 };
 
 const fail = (
@@ -641,6 +677,27 @@ const validHash = (value: unknown): value is string =>
   typeof value === "string" && HASH.test(value);
 const validRevision = (value: unknown, minimum = 0): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+const validFailureEvidence = (
+  value: unknown,
+): value is Readonly<{
+  providerStatusClass: "3xx" | "4xx" | "5xx" | null;
+  outcome: string;
+  reason: string;
+}> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(record).sort();
+  if (keys.join(",") !== "outcome,providerStatusClass,reason") return false;
+  const statusClass = record.providerStatusClass;
+  return (
+    (statusClass === null ||
+      statusClass === "3xx" ||
+      statusClass === "4xx" ||
+      statusClass === "5xx") &&
+    validId(record.outcome) &&
+    validId(record.reason)
+  );
+};
 const bytes = (value: unknown): Bytes | null =>
   value instanceof Uint8Array && value.byteLength > 0 ? new Uint8Array(value) : null;
 const integer = (value: unknown): number | null => {
@@ -3357,7 +3414,8 @@ export function makeControlPlaneMediaSubmissionRepository(
             sha256Text(canonicalJson(input.artifact.artifact)) !==
               input.artifact.artifactSha256)) ||
         (input.outcome === "unavailable" &&
-          (input.failureCode === undefined || input.artifact !== undefined))
+          (input.failureCode === undefined || input.artifact !== undefined)) ||
+        (input.recoveryActionId !== undefined && !validId(input.recoveryActionId))
       )
         return yield* Effect.fail(
           fail("alignment", "invalid-input", { submissionId: input.submissionId }),
@@ -3441,6 +3499,24 @@ export function makeControlPlaneMediaSubmissionRepository(
             return yield* Effect.fail(
               fail("alignment", "stale-revision", { submissionId: input.submissionId }),
             );
+          if (input.recoveryActionId !== undefined) {
+            const completed = yield* tx.execute({
+              label: "media-alignment.recovery-complete",
+              text: "UPDATE media_alignment_recovery_actions SET state='completed',result_kind=$2,artifact_ref=$3,artifact_sha256=$4,failure_code=$5,completed_at=clock_timestamp() WHERE recovery_action_id=$1 AND state='requested'",
+              values: [
+                input.recoveryActionId,
+                input.outcome,
+                input.artifact?.artifactRef ?? null,
+                input.artifact?.artifactSha256 ?? null,
+                input.failureCode ?? null,
+              ],
+              readonly: false,
+            });
+            if (completed.rowCount !== 1)
+              return yield* Effect.fail(
+                fail("alignment", "stale-revision", { submissionId: input.submissionId }),
+              );
+          }
         }),
       );
     });
@@ -3671,6 +3747,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       if (
         ![input.attemptId, input.workerId, input.failureCode].every(validId) ||
         (input.evidenceRef !== undefined && !validId(input.evidenceRef)) ||
+        (input.failureEvidence !== undefined && !validFailureEvidence(input.failureEvidence)) ||
         !validRevision(input.claimFence, 1) ||
         (input.retryable &&
           (input.nextEligibleAt === undefined ||
@@ -3683,7 +3760,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-attempt.fail",
-        text: "UPDATE media_processing_attempts SET state=CASE WHEN $3 AND attempt_number < 3 THEN 'failed' ELSE 'exhausted' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,evidence_ref=COALESCE($2,evidence_ref),retryable=CASE WHEN $3 AND attempt_number < 3 THEN TRUE ELSE FALSE END,next_eligible_at=CASE WHEN $3 AND attempt_number < 3 THEN $4::timestamptz ELSE NULL END,updated_at=clock_timestamp() WHERE attempt_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
+        text: "UPDATE media_processing_attempts SET state=CASE WHEN $3 AND attempt_number < 3 THEN 'failed' ELSE 'exhausted' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,evidence_ref=COALESCE($2,evidence_ref),failure_evidence=$8::jsonb,retryable=CASE WHEN $3 AND attempt_number < 3 THEN TRUE ELSE FALSE END,next_eligible_at=CASE WHEN $3 AND attempt_number < 3 THEN $4::timestamptz ELSE NULL END,updated_at=clock_timestamp() WHERE attempt_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
         values: [
           input.failureCode,
           input.evidenceRef ?? null,
@@ -3692,6 +3769,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           input.attemptId,
           input.workerId,
           input.claimFence,
+          input.failureEvidence === undefined ? null : json(input.failureEvidence),
         ],
         readonly: false,
       });
@@ -3759,6 +3837,240 @@ export function makeControlPlaneMediaSubmissionRepository(
       );
     });
 
+  const requestAlignmentRecovery: MediaSubmissionStore["requestAlignmentRecovery"] = (input) =>
+    Effect.gen(function* () {
+      const expected = input.expected;
+      if (
+        ![input.communityId, input.submissionId, input.actorUserId, input.personaId].every(
+          validId,
+        ) ||
+        !validId(input.operatorPrincipalId) ||
+        !validId(input.idempotencyKey) ||
+        !validId(input.evidenceRef) ||
+        !validRevision(input.expectedWorkflowRevision, 1) ||
+        !validId(expected.postId) ||
+        !validRevision(expected.audioRevision, 1) ||
+        !validRevision(expected.analysisRevision, 1) ||
+        !validRevision(expected.lyricsRevision, 1) ||
+        !validHash(expected.canonicalAudioSha256) ||
+        !validHash(expected.lyricsSha256)
+      )
+        return yield* Effect.fail(
+          fail("alignment", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const requestHash = createHash("sha256")
+        .update(
+          json([
+            "media-alignment-recovery-v1",
+            input.communityId,
+            input.submissionId,
+            input.actorUserId,
+            input.personaId,
+            input.operatorPrincipalId,
+            input.idempotencyKey,
+            input.evidenceRef,
+            input.expectedWorkflowRevision,
+            expected.postId,
+            expected.audioRevision,
+            expected.analysisRevision,
+            expected.lyricsRevision,
+            expected.canonicalAudioSha256,
+            expected.lyricsSha256,
+          ]),
+        )
+        .digest("hex");
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "alignment");
+          const current = yield* loadState(tx, input, "alignment", true);
+          if (current === null)
+            return yield* Effect.fail(
+              fail("alignment", "not-found", { submissionId: input.submissionId }),
+            );
+          if (
+            current.status !== "published" ||
+            current.lyrics === null ||
+            current.lyrics.lyricsRevision !== expected.lyricsRevision
+          )
+            return yield* Effect.fail(
+              fail("alignment", "transition-rejected", { submissionId: current.submissionId }),
+            );
+          const recoveryActionId = `media-alignment-recovery-${current.operationId}-l${expected.lyricsRevision}`;
+          const attemptId = `media-attempt-${current.operationId}-a${expected.audioRevision}-n${expected.analysisRevision}-alignment_recovery-l${expected.lyricsRevision}`;
+          const outboxEventId = `media-alignment-recovery-outbox-${current.operationId}-l${expected.lyricsRevision}`;
+          const effectIdentity = `media-alignment-recovery-${current.operationId}-l${expected.lyricsRevision}`;
+          const prior = yield* tx.execute<Row>({
+            label: "media-alignment-recovery.replay",
+            text: "SELECT request_hash,recovery_action_id,attempt_id FROM media_alignment_recovery_actions WHERE operation_id=$1 AND idempotency_key=$2 FOR UPDATE",
+            values: [current.operationId, input.idempotencyKey],
+            readonly: false,
+          });
+          const priorRow = prior.rows[0];
+          if (priorRow !== undefined) {
+            if (
+              priorRow.request_hash !== requestHash ||
+              priorRow.recovery_action_id !== recoveryActionId ||
+              priorRow.attempt_id !== attemptId
+            )
+              return yield* Effect.fail(
+                fail("alignment", "idempotency-conflict", { submissionId: current.submissionId }),
+              );
+            return {
+              kind: "replay",
+              submissionId: current.submissionId,
+              recoveryActionId,
+              attemptId,
+              outboxEventId,
+              workflowRevision: current.workflowRevision,
+            } as const;
+          }
+          if (current.workflowRevision !== input.expectedWorkflowRevision)
+            return yield* Effect.fail(
+              fail("alignment", "stale-revision", { submissionId: current.submissionId }),
+            );
+          const binding = yield* tx.execute<Row>({
+            label: "media-alignment-recovery.binding",
+            text: `SELECT publication.post_id,publication.audio_revision,publication.analysis_revision,
+                          publication.lyrics_revision,publication.canonical_audio_sha256,
+                          publication.lyrics_text,alignment.status AS alignment_status
+                     FROM media_publication_projections publication
+                     JOIN media_alignment_projections alignment
+                       ON alignment.community_id=publication.community_id
+                      AND alignment.actor_user_id=publication.actor_user_id
+                      AND alignment.submission_id=publication.submission_id
+                      AND alignment.operation_id=publication.operation_id
+                      AND alignment.post_id=publication.post_id
+                      AND alignment.audio_revision=publication.audio_revision
+                      AND alignment.analysis_revision=publication.analysis_revision
+                      AND alignment.lyrics_revision=publication.lyrics_revision
+                      AND alignment.canonical_audio_sha256=publication.canonical_audio_sha256
+                    WHERE publication.community_id=$1 AND publication.actor_user_id=$2
+                      AND publication.submission_id=$3 AND publication.operation_id=$4`,
+            values: [input.communityId, input.actorUserId, input.submissionId, current.operationId],
+            readonly: true,
+          });
+          const row = binding.rows[0];
+          if (
+            binding.rows.length !== 1 ||
+            row === undefined ||
+            row.post_id !== expected.postId ||
+            Number(row.audio_revision) !== expected.audioRevision ||
+            Number(row.analysis_revision) !== expected.analysisRevision ||
+            Number(row.lyrics_revision) !== expected.lyricsRevision ||
+            row.canonical_audio_sha256 !== expected.canonicalAudioSha256 ||
+            typeof row.lyrics_text !== "string" ||
+            createHash("sha256").update(row.lyrics_text, "utf8").digest("hex") !==
+              expected.lyricsSha256 ||
+            row.alignment_status !== "unavailable"
+          )
+            return yield* Effect.fail(
+              fail("alignment", "transition-rejected", { submissionId: current.submissionId }),
+            );
+          const existing = yield* tx.execute<Row>({
+            label: "media-alignment-recovery.identity",
+            text: `SELECT recovery_action_id FROM media_alignment_recovery_actions
+                    WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3
+                      AND operation_id=$4 AND post_id=$5 AND audio_revision=$6
+                      AND analysis_revision=$7 AND lyrics_revision=$8`,
+            values: [
+              input.communityId,
+              input.actorUserId,
+              input.submissionId,
+              current.operationId,
+              expected.postId,
+              expected.audioRevision,
+              expected.analysisRevision,
+              expected.lyricsRevision,
+            ],
+            readonly: false,
+          });
+          if (existing.rows.length > 0)
+            return yield* Effect.fail(
+              fail("alignment", "transition-rejected", { submissionId: current.submissionId }),
+            );
+          yield* tx.execute({
+            label: "media-alignment-recovery.insert",
+            text: `INSERT INTO media_alignment_recovery_actions
+              (recovery_action_id,community_id,actor_user_id,submission_id,operation_id,post_id,
+               audio_revision,analysis_revision,lyrics_revision,canonical_audio_sha256,
+               lyrics_sha256,attempt_id,idempotency_key,request_hash)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+            values: [
+              recoveryActionId,
+              input.communityId,
+              input.actorUserId,
+              input.submissionId,
+              current.operationId,
+              expected.postId,
+              expected.audioRevision,
+              expected.analysisRevision,
+              expected.lyricsRevision,
+              expected.canonicalAudioSha256,
+              expected.lyricsSha256,
+              attemptId,
+              input.idempotencyKey,
+              requestHash,
+            ],
+            readonly: false,
+          });
+          const next = {
+            ...current,
+            workflowRevision: current.workflowRevision + 1,
+          };
+          const updated = yield* tx.execute<Row>({
+            label: "media-alignment-recovery.replace",
+            text: "UPDATE media_post_submissions SET workflow_revision=workflow_revision+1,workflow_replacement_sequence=workflow_replacement_sequence+1,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND workflow_revision=$4 RETURNING event_sequence,workflow_replacement_sequence",
+            values: [
+              current.communityId,
+              current.actorId,
+              current.submissionId,
+              input.expectedWorkflowRevision,
+            ],
+            readonly: false,
+          });
+          const sequence = integer(updated.rows[0]?.event_sequence);
+          const replacementSequence = integer(updated.rows[0]?.workflow_replacement_sequence);
+          if (updated.rowCount !== 1 || sequence === null || replacementSequence === null)
+            return yield* Effect.fail(
+              fail("alignment", "stale-revision", { submissionId: current.submissionId }),
+            );
+          yield* insertEvent(tx, next, sequence, "workflow_replaced", {
+            action: "alignment_recovery",
+            recovery_action_id: recoveryActionId,
+            operator_principal_id: input.operatorPrincipalId,
+            idempotency_key: input.idempotencyKey,
+            request_hash: requestHash,
+            evidence_ref: input.evidenceRef,
+            replacement_sequence: replacementSequence,
+          });
+          yield* insertOutbox(tx, next, "workflow_replacement", {
+            outboxEventId,
+            effectIdentity,
+            payload: {
+              kind: "workflow_replacement",
+              submission_id: current.submissionId,
+              operation_id: current.operationId,
+              replacement_sequence: replacementSequence,
+              workflow_revision: next.workflowRevision,
+              workflow_instance_id: deterministicMediaWorkflowInstanceId(
+                current.operationId,
+                next.workflowRevision,
+              ),
+            },
+          });
+          return {
+            kind: "committed",
+            submissionId: current.submissionId,
+            recoveryActionId,
+            attemptId,
+            outboxEventId,
+            workflowRevision: next.workflowRevision,
+          } as const;
+        }),
+      );
+    });
+
   return {
     reserve,
     createSubmission,
@@ -3793,5 +4105,6 @@ export function makeControlPlaneMediaSubmissionRepository(
     deferProcessingAttempt,
     failProcessingAttempt,
     replaceLostWorkflow,
+    requestAlignmentRecovery,
   };
 }

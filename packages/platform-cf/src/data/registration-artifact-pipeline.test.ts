@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import type { IpfsGatewayVerifier } from "@pirate/application/data/ipfs-live-verification";
 import type { IpfsPinningService } from "@pirate/application/data/ipfs-pinning";
 import type {
   DataRegistrationOperation,
   DataRegistrationPinVerification,
 } from "@pirate/application/data/registration-persistence";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import {
   type DataRegistrationArtifactAuthority,
   makeDataRegistrationArtifactPipeline,
+  makePostgresDataRegistrationArtifactAuthorityReader,
+  songArtworkDisposition,
 } from "./registration-artifact-pipeline";
 
 const memoryMetadata = () => {
@@ -457,19 +460,48 @@ describe("DATA registration artifact pipeline", () => {
     });
   });
 
-  test("does not silently register a publication with unhandled artwork", async () => {
+  test("registers a cover-bearing song under the explicit artwork exclusion policy", async () => {
     const pipeline = makeDataRegistrationArtifactPipeline({
       authority: {
         resolveMetadata: memoryMetadata(),
         read: async () => ({ ...authority, coverArtifactRef: "media://cover/present" }),
-        listPins: async () => [],
+        listPins: async () => [audioPin],
       },
       immutableOriginals: fakeBucket,
       pinning: fakePinning,
       gateway: fakeGateway,
       publicOrigin: "https://staging.pirate.sc",
     });
-    await expect(pipeline.prepare(operation)).rejects.toThrow("authority mismatch");
+    const prepared = await pipeline.prepare(operation);
+    expect(prepared.map(({ artifact }) => artifact.artifactKind)).toEqual([
+      "canonical_audio",
+      "ip_metadata",
+      "nft_metadata",
+    ]);
+    const ipMetadata = prepared.find(({ artifact }) => artifact.artifactKind === "ip_metadata");
+    if (ipMetadata === undefined) throw new Error("IP metadata fixture missing");
+    const decoded = JSON.parse(await collect(ipMetadata.open));
+    expect(decoded).not.toHaveProperty("image");
+    expect(decoded).not.toHaveProperty("imageHash");
+    expect(decoded.provenance).toMatchObject({
+      artwork_disposition: "excluded",
+      artwork_policy_revision: "song-artwork-excluded-v1",
+    });
+  });
+
+  test("fails closed for a present cover under an unknown artwork policy", () => {
+    expect(() =>
+      songArtworkDisposition({
+        policyRevision: "song-artwork-registered-v2",
+        coverArtifactRef: "media://cover/present",
+      }),
+    ).toThrow("DATA song artwork policy does not handle the present cover");
+    expect(
+      songArtworkDisposition({
+        policyRevision: "song-artwork-excluded-v1",
+        coverArtifactRef: null,
+      }),
+    ).toBe("absent");
   });
 
   test("retries only the independent gateway after a durable Filebase pin", async () => {
@@ -895,5 +927,101 @@ describe("rated song metadata snapshots", () => {
     expect(nft.attributes).not.toContainEqual(
       expect.objectContaining({ trait_type: "Content rating" }),
     );
+  });
+});
+
+describe("DATA registration lyrics authority", () => {
+  const storedLyrics = "Barney Google had a wife three times his size\nNo it isn't Mr. Bryan\n";
+  const songRow = (overrides: Readonly<Record<string, unknown>> = {}) => ({
+    post_id: "post-1",
+    title: "Explicit staging song",
+    projected_at: new Date("2026-08-27T00:00:00.000Z"),
+    audio_asset_ref: "media://immutable/song.mp3",
+    canonical_audio_sha256: "a".repeat(64),
+    cover_artifact_ref: null,
+    lyrics_text: storedLyrics,
+    lyrics_explicitness: "explicit",
+    primary_language_bcp47: "en",
+    content_type: "audio/mpeg",
+    size_bytes: "2951824",
+    song_type: "original",
+    license_preset: "non-commercial",
+    commercial_remix_share_bps: 1000,
+    royalty_allocations: [{ recipientId: "actor-1", shareBps: 10_000 }],
+    acr_decision: "allow",
+    acr_policy_revision: "acr-v1",
+    creator_address: "0x1111111111111111111111111111111111111111",
+    content_rating: "general",
+    ...overrides,
+  });
+  const recipientRows = [
+    {
+      recipient_id: "actor-1",
+      address: "0x1111111111111111111111111111111111111111",
+    },
+  ];
+  const reader = (row: Readonly<Record<string, unknown>>) => {
+    const execute = <R>(statement: ControlPlaneStatement) => {
+      if (statement.label === "data-registration.artifacts.authority") {
+        return Effect.succeed({ rows: [row] as unknown as readonly R[], rowCount: 1 });
+      }
+      if (statement.label === "data-registration.artifacts.recipients") {
+        return Effect.succeed({
+          rows: recipientRows as unknown as readonly R[],
+          rowCount: recipientRows.length,
+        });
+      }
+      return Effect.succeed({ rows: [] as readonly R[], rowCount: 0 });
+    };
+    return makePostgresDataRegistrationArtifactAuthorityReader(
+      Layer.succeed(ControlPlaneDb, {
+        execute,
+        withTransaction: <A, E, R>(
+          use: (transaction: { execute: typeof execute }) => Effect.Effect<A, E, R>,
+        ) => use({ execute }),
+      }),
+    );
+  };
+
+  const songAuthority = (result: DataRegistrationArtifactAuthority) => {
+    if (result.mediaKind !== "song") throw new Error("expected song authority");
+    return result;
+  };
+
+  test("accepts the exact stored lyrics, including the trailing newline, without trimming", async () => {
+    const result = songAuthority(await reader(songRow()).read(operation));
+    expect(result.lyrics).toBe(storedLyrics);
+    expect(result.lyrics?.endsWith("\n")).toBe(true);
+  });
+
+  test("accepts leading whitespace and preserves it byte for byte", async () => {
+    const leading = `  indented first line\nsecond line\n\n`;
+    const result = songAuthority(await reader(songRow({ lyrics_text: leading })).read(operation));
+    expect(result.lyrics).toBe(leading);
+  });
+
+  test("keeps null and absent lyrics nullable", async () => {
+    expect(
+      songAuthority(await reader(songRow({ lyrics_text: null })).read(operation)).lyrics,
+    ).toBeNull();
+    expect(
+      songAuthority(await reader(songRow({ lyrics_text: undefined })).read(operation)).lyrics,
+    ).toBeNull();
+  });
+
+  test.each([
+    ["empty", ""],
+    ["whitespace only", " \n\t\n"],
+    ["non-string", 42],
+  ])("refuses %s lyrics", async (_label, lyrics_text) => {
+    await expect(reader(songRow({ lyrics_text })).read(operation)).rejects.toThrow(
+      "invalid DATA artifact authority",
+    );
+  });
+
+  test("keeps the strict trim validator for identifiers", async () => {
+    await expect(
+      reader(songRow({ title: "Explicit staging song " })).read(operation),
+    ).rejects.toThrow("invalid DATA artifact authority");
   });
 });
