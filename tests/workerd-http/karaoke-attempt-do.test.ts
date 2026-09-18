@@ -11,6 +11,7 @@ import type { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-at
 
 const env = testEnv as unknown as {
   readonly KARAOKE_ATTEMPT: DurableObjectNamespace<KaraokeAttemptDO>;
+  readonly RECORDING_KARAOKE_ATTEMPT: DurableObjectNamespace<KaraokeAttemptDO>;
   readonly LEARNER_AUDIO: R2Bucket;
 };
 
@@ -92,6 +93,17 @@ const connect = async (stub: DurableObjectStub<KaraokeAttemptDO>, token: string)
 };
 
 describe("Karaoke attempt Durable Object", () => {
+  it("invokes an overridden STT adapter factory instead of constructing the production adapter", async () => {
+    const sessionId = `karaoke-override-${crypto.randomUUID()}`;
+    const stub = env.RECORDING_KARAOKE_ATTEMPT.getByName(sessionId);
+    const initialized = await stub.initialize(authority(sessionId));
+    await expect(connect(stub, initialized.token)).rejects.toThrow("harness_stt_adapter_override");
+    await runInDurableObject(stub, async (instance) => {
+      const recording = instance as unknown as { adapterFactoryCalls: number };
+      expect(recording.adapterFactoryCalls).toBe(1);
+    });
+  });
+
   it("consumes connection tokens once and counts only later sockets as reconnects", async () => {
     const sessionId = `karaoke-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
