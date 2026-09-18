@@ -1,6 +1,7 @@
 import {
   canonicalTextModerationInput,
   MODERATION_RATING_RULE_V2,
+  normalizeTextModerationInput,
   resolveCommunityModerationPolicyV2,
 } from "@pirate/domain";
 import { Cause, Effect } from "effect";
@@ -662,14 +663,11 @@ function moderateSongText(
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
 ): WorkflowEffect<MediaProcessingAnalysis["contentModeration"]> {
-  const moderationInput = {
-    version: "text-moderation-input-v1" as const,
+  const normalized = normalizeTextModerationInput({
     surface: "text_post" as const,
-    community_id: authority.communityId,
     title: authority.title,
     body: authority.lyrics?.text ?? null,
-  };
-  const canonical = canonicalTextModerationInput(moderationInput);
+  });
   return Effect.gen(function* () {
     const policy = yield* promiseEffect(() =>
       dependencies.store.readModerationPolicy(authority.communityId),
@@ -685,10 +683,12 @@ function moderateSongText(
       evidenceRef: null,
       providerEvidence: null,
     });
+    if (normalized.kind !== "accepted") return fallback("invalid");
+    const canonical = canonicalTextModerationInput(normalized.input);
     if (canonical.kind !== "accepted") return fallback("invalid");
     return yield* Effect.gen(function* () {
       const provider = yield* Effect.suspend(() =>
-        providers.textModeration.evaluate(moderationInput),
+        providers.textModeration.evaluate(normalized.input),
       );
       if (provider.input_sha256 !== canonical.sha256) {
         return yield* Effect.die(new MediaProcessingInvariantError("moderation input mismatch"));
