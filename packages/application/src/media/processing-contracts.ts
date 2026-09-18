@@ -257,6 +257,34 @@ export type MediaProcessingAttemptStage =
   | "publication"
   | "alignment";
 
+export type MediaProcessingAlignmentFailureEvidence = Readonly<{
+  readonly providerStatusClass: "3xx" | "4xx" | "5xx" | null;
+  readonly outcome:
+    | "disabled"
+    | "no_speech"
+    | "transcript_mismatch"
+    | "retryable"
+    | "timeout"
+    | "cancelled"
+    | "permanent"
+    | "malformed";
+  readonly reason:
+    | "disabled"
+    | "no_speech"
+    | "transcript_mismatch"
+    | "rate_limited"
+    | "provider_unavailable"
+    | "transport"
+    | "timeout"
+    | "cancelled"
+    | "invalid_request"
+    | "provider_rejected"
+    | "configuration"
+    | "malformed_response"
+    | "invalid_timing"
+    | "oversized_response";
+}>;
+
 export type MediaProcessingAttemptResult =
   | Readonly<{ readonly kind: "probe"; readonly value: MediaTransformProbeOutcome }>
   | Readonly<{ readonly kind: "sample"; readonly value: MediaTransformAudioSampleOutcome }>
@@ -287,6 +315,7 @@ export type MediaProcessingAttemptResult =
         | "alignment_failed"
         | "lyrics_missing"
         | "audio_missing";
+      readonly providerEvidence?: MediaProcessingAlignmentFailureEvidence;
     }>;
 
 export type MediaProcessingAttemptLease = Readonly<{
@@ -313,7 +342,12 @@ export type AlignmentRecoveryRead =
       readonly result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
     }>
   | Readonly<{ readonly kind: "stale" }>
-  | Readonly<{ readonly kind: "failed" }>;
+  | Readonly<{ readonly kind: "failed" }>
+  | Readonly<{
+      readonly kind: "recovery";
+      readonly recoveryActionId: string;
+      readonly attemptId: string;
+    }>;
 
 export interface MediaProcessingStore {
   readonly getOutbox: (outboxId: string) => Promise<MediaProcessingOutboxRecord | null>;
@@ -470,6 +504,7 @@ export interface MediaProcessingAlignmentPort {
           | "alignment_failed"
           | "lyrics_missing"
           | "audio_missing";
+        readonly providerEvidence?: MediaProcessingAlignmentFailureEvidence;
       }>
   >;
 }

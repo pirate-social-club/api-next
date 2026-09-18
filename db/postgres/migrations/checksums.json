@@ -189,6 +189,7 @@
     "0186_retained_content_rating_reconciliation.sql": "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab",
     "0187_text_rating_raise_counts.sql": "4eb58bd66f3f4d5f453e6033dc6f2e38eaba27dd18658e6cac6c6525487f49c8",
     "0188_activity_participation_authority.sql": "d855a8f8b3abf31fea90656668fbbbb8aa08bf844b9522c13e62f38516638cdc",
-    "0189_filebase_gateway_verification.sql": "c9118b9815c36efce72cc7f3605c8f3f5c313267d40f1bf998dcca2ca3911fde"
+    "0189_filebase_gateway_verification.sql": "c9118b9815c36efce72cc7f3605c8f3f5c313267d40f1bf998dcca2ca3911fde",
+    "0190_media_alignment_recovery_actions.sql": "52ed7ef3fb93b7e34b46615ea8c02ed4c501284a514ed5d3539fbae50b9db842"
   }
 }

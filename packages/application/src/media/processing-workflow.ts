@@ -195,6 +195,7 @@ function startAttempt(
   inputRevision: number,
   adapterRevision: string,
   dependencies: MediaProcessingWorkflowDependencies,
+  attemptIdOverride?: string,
 ): WorkflowEffect<
   | Readonly<{ readonly kind: "run"; readonly lease: MediaProcessingAttemptLease }>
   | Readonly<{ readonly kind: "replay"; readonly result: MediaProcessingAttemptResult }>
@@ -209,7 +210,7 @@ function startAttempt(
       dependencies.store.startAttempt({
         authority,
         stage,
-        attemptId: attemptId(authority, stage),
+        attemptId: attemptIdOverride ?? attemptId(authority, stage),
         workerId: dependencies.options.workerId,
         inputRevision,
         inputHash: audio.canonicalSha256,
@@ -1146,12 +1147,20 @@ function align(
     if (current.publishedLyricsRevision !== (current.lyrics?.lyricsRevision ?? null)) {
       return { outcome: "inert" } as const;
     }
+    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
+    if (recovery.kind === "stale") {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    if (recovery.kind === "failed") {
+      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+    }
     const started = yield* startAttempt(
       current,
       "alignment",
       current.publishedLyricsRevision ?? current.analysisRevision,
       "alignment-port-v1",
       dependencies,
+      recovery.kind === "recovery" ? recovery.attemptId : undefined,
     ).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
@@ -1161,20 +1170,16 @@ function align(
       }),
     );
     if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
-    const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
     if (recovery.kind === "committed") {
       if (started.kind === "run") {
         yield* completeAttempt(current, started.lease, recovery.result, dependencies);
       }
       return { outcome: "alignment_recorded" } as const;
     }
-    if (recovery.kind === "stale") {
-      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
-    }
-    if (recovery.kind === "failed") {
-      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
-    }
     if (started.kind === "exhausted") {
+      if (recovery.kind === "recovery") {
+        return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+      }
       const exhaustedResult = {
         kind: "alignment",
         status: "unavailable",
@@ -1244,6 +1249,9 @@ function align(
               kind: "alignment",
               status: "unavailable",
               failureCode: aligned.failureCode,
+              ...(aligned.providerEvidence === undefined
+                ? {}
+                : { providerEvidence: aligned.providerEvidence }),
             };
     }
     const committed = yield* storeWrite(() => dependencies.store.commitAlignment(current, result));

@@ -47,6 +47,36 @@ type AuthorityLocation = Readonly<{
   authorDeclaredRating: "general" | "adult_18";
 }>;
 
+const AlignmentFailureEvidence = Schema.Struct({
+  providerStatusClass: Schema.NullOr(Schema.Literals(["3xx", "4xx", "5xx"])),
+  outcome: Schema.Literals([
+    "disabled",
+    "no_speech",
+    "transcript_mismatch",
+    "retryable",
+    "timeout",
+    "cancelled",
+    "permanent",
+    "malformed",
+  ]),
+  reason: Schema.Literals([
+    "disabled",
+    "no_speech",
+    "transcript_mismatch",
+    "rate_limited",
+    "provider_unavailable",
+    "transport",
+    "timeout",
+    "cancelled",
+    "invalid_request",
+    "provider_rejected",
+    "configuration",
+    "malformed_response",
+    "invalid_timing",
+    "oversized_response",
+  ]),
+});
+
 const AttemptResultEnvelope = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("probe"), value: Schema.Json }),
   Schema.Struct({ kind: Schema.Literal("sample"), value: Schema.Json }),
@@ -65,6 +95,7 @@ const AttemptResultEnvelope = Schema.Union([
     kind: Schema.Literal("alignment"),
     status: Schema.Literal("unavailable"),
     failureCode: Schema.String,
+    providerEvidence: Schema.optional(AlignmentFailureEvidence),
   }),
 ]);
 
@@ -738,7 +769,38 @@ export function makeMediaProcessingStore(
     );
     if (current.rows.length !== 1) return "stale";
     const row = current.rows[0];
+    let recoveryActionId: string | undefined;
+    if (row?.status === "unavailable") {
+      const active = await run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute<Row>({
+            label: "media-processing.alignment-recovery-active",
+            text: "SELECT recovery_action_id FROM media_alignment_recovery_actions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND post_id=$5 AND audio_revision=$6 AND analysis_revision=$7 AND lyrics_revision=$8 AND canonical_audio_sha256=$9 AND state='requested'",
+            values: [
+              authority.communityId,
+              authority.actorAccountId,
+              authority.submissionId,
+              authority.operationId,
+              authority.postId,
+              authority.audioRevision,
+              authority.analysisRevision,
+              authority.publishedLyricsRevision,
+              authority.audio.canonicalSha256,
+            ],
+            readonly: true,
+          });
+        }),
+      );
+      if (active.rows.length > 1) return "stale";
+      const activeId = active.rows[0]?.recovery_action_id;
+      if (activeId !== undefined) {
+        if (typeof activeId !== "string" || activeId.length === 0) return "stale";
+        recoveryActionId = activeId;
+      }
+    }
     if (
+      recoveryActionId === undefined &&
       row?.status === result.status &&
       (result.status === "ready"
         ? row.current_artifact_ref === result.artifactRef
@@ -746,7 +808,7 @@ export function makeMediaProcessingStore(
     ) {
       return "replay";
     }
-    if (row?.status !== "pending") return "stale";
+    if (recoveryActionId === undefined && row?.status !== "pending") return "stale";
     try {
       await run(
         submissions.recordAlignment({
@@ -760,6 +822,7 @@ export function makeMediaProcessingStore(
           lyricsRevision: authority.publishedLyricsRevision,
           canonicalAudioSha256: authority.audio.canonicalSha256,
           outcome: result.status,
+          ...(recoveryActionId === undefined ? {} : { recoveryActionId }),
           ...(result.status === "ready"
             ? {
                 artifact: {
@@ -1022,6 +1085,36 @@ export function makeMediaProcessingStore(
     )
       return { kind: "stale" } as const;
     try {
+      const recovery = await run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute<Row>({
+            label: "media-processing.alignment-recovery-authorization",
+            text: "SELECT state,recovery_action_id,attempt_id FROM media_alignment_recovery_actions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND post_id=$5 AND audio_revision=$6 AND analysis_revision=$7 AND lyrics_revision=$8 AND canonical_audio_sha256=$9",
+            values: [
+              authority.communityId,
+              authority.actorAccountId,
+              authority.submissionId,
+              authority.operationId,
+              postId,
+              authority.audioRevision,
+              authority.analysisRevision,
+              publishedLyricsRevision,
+              audio.canonicalSha256,
+            ],
+            readonly: true,
+          });
+        }),
+      );
+      if (recovery.rows.length > 1) return { kind: "stale" } as const;
+      const recoveryRow = recovery.rows[0];
+      if (recoveryRow?.state === "requested") {
+        const recoveryActionId = recoveryRow.recovery_action_id;
+        const attemptId = recoveryRow.attempt_id;
+        if (typeof recoveryActionId !== "string" || typeof attemptId !== "string")
+          return { kind: "stale" } as const;
+        return { kind: "recovery", recoveryActionId, attemptId } as const;
+      }
       const result = await run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;

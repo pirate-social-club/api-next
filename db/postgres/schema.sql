@@ -28619,6 +28619,38 @@ CREATE TABLE media_alignment_projections (
     CONSTRAINT media_alignment_projections_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'ready'::text, 'unavailable'::text])))
 );
 
+CREATE TABLE media_alignment_recovery_actions (
+    recovery_action_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision integer NOT NULL,
+    analysis_revision integer NOT NULL,
+    lyrics_revision integer NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    lyrics_sha256 text NOT NULL,
+    attempt_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    state text DEFAULT 'requested'::text NOT NULL,
+    result_kind text,
+    artifact_ref text,
+    artifact_sha256 text,
+    failure_code text,
+    requested_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT media_alignment_recovery_actions_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT media_alignment_recovery_actions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT media_alignment_recovery_actions_check CHECK ((((state = 'requested'::text) AND (result_kind IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (result_kind IS NOT NULL) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT media_alignment_recovery_actions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_alignment_recovery_actions_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT media_alignment_recovery_actions_recovery_action_id_check CHECK ((btrim(recovery_action_id) <> ''::text)),
+    CONSTRAINT media_alignment_recovery_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['ready'::text, 'unavailable'::text]))),
+    CONSTRAINT media_alignment_recovery_actions_state_check CHECK ((state = ANY (ARRAY['requested'::text, 'completed'::text])))
+);
+
 CREATE TABLE media_audio_revisions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -33799,6 +33831,18 @@ ALTER TABLE ONLY media_alignment_projections
 
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_projections_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_acti_community_id_actor_user_id_su_key UNIQUE (community_id, actor_user_id, submission_id, operation_id, post_id, audio_revision, analysis_revision, lyrics_revision);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_actio_operation_id_idempotency_key_key UNIQUE (operation_id, idempotency_key);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_actions_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY media_alignment_recovery_actions
+    ADD CONSTRAINT media_alignment_recovery_actions_pkey PRIMARY KEY (recovery_action_id);
 
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_pkey PRIMARY KEY (submission_id, analysis_revision);

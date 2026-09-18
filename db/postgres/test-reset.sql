@@ -237,6 +237,7 @@ TRUNCATE TABLE
   "localization_translation_selections",
   "localization_translation_versions",
   "media_alignment_projections",
+  "media_alignment_recovery_actions",
   "media_analysis_evidence",
   "media_audio_revisions",
   "media_immutable_objects",

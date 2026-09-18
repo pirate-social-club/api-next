@@ -64,7 +64,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 64;
+const testCount = 65;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -4346,12 +4346,19 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         study_units: "3",
       });
       const timedTokens = [
+        "[Verse",
+        "1]",
         "Hold",
         "on!",
         "Explicit",
         "fixture",
         "verse",
+        "[Bridge",
+        "–",
+        "Beat",
+        "Drops]",
         ...longDialogue.split(" "),
+        "[Instrumental]",
         "Hold",
         "on!",
       ];
@@ -4451,6 +4458,250 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+
+  test("recovery launches are replay-safe, single-identity and atomically completed", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const lyrics = "[Verse 1]\nHold on!\n[Instrumental]\nHold on!";
+      const lyricsAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        lyricsAnalysis: {
+          status: "ready",
+          lyricsRevision: 1,
+          explicitness: "not_explicit",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "lyrics_recovery_evidence",
+          policyRevision: "lyrics_recovery_policy",
+          adapterRevision: "lyrics_recovery_adapter",
+        },
+        lyricsSafety: "allow",
+      };
+      const allowDecision: PublicationDecision = {
+        ...decision,
+        creationRevision: 3,
+        lyricsRevision: 1,
+      };
+      await createThroughDecision(connection, allowDecision, lyricsAnalysis, false, lyrics);
+      const postId = `media-post-${operation}`;
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "publish-recovery-fixture",
+          ),
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId,
+          outbox: {
+            outboxEventId: "media_pg_recovery_alignment_outbox",
+            effectIdentity: "media_pg_recovery_alignment_effect",
+            payload: {
+              kind: "alignment",
+              submission_id: submission,
+              operation_id: operation,
+              post_id: postId,
+              lyrics_revision: 1,
+              workflow_revision: 2,
+              workflow_instance_id: `media-${operation}-r2`,
+            },
+          },
+        }),
+      );
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      const authority = await processing.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing recovery authority");
+      expect(
+        await processing.commitAlignment(authority, {
+          kind: "alignment",
+          status: "unavailable",
+          failureCode: "alignment_failed",
+        }),
+      ).toBe("committed");
+      const lyricsSha256 = sha256(new TextEncoder().encode(lyrics));
+      const base = {
+        communityId: community,
+        submissionId: submission,
+        actorUserId: actor,
+        personaId: personaFor(connection),
+        operatorPrincipalId: "fixture-operator",
+        idempotencyKey: "alignment-recovery-a",
+        evidenceRef: "fixture://alignment-recovery",
+        expectedWorkflowRevision: 2,
+        expected: {
+          postId,
+          audioRevision: 1,
+          analysisRevision: 1,
+          lyricsRevision: 1,
+          canonicalAudioSha256: audioSha256,
+          lyricsSha256,
+        },
+      };
+      const asReason = (error: unknown) => error as Readonly<{ reason?: unknown; _tag?: unknown }>;
+      const inputs = [base, { ...base, idempotencyKey: "alignment-recovery-b" }];
+      const outcomes = await Promise.all(
+        inputs.map((input) =>
+          run(connection, (store) => store.requestAlignmentRecovery(input)).then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error: asReason(error) }),
+          ),
+        ),
+      );
+      const successes = outcomes.filter(({ ok }) => ok);
+      if (successes.length !== 1) {
+        throw new Error(
+          `recovery launches: ${JSON.stringify(
+            outcomes.map((entry) => (entry.ok ? "committed" : entry.error.reason)),
+          )}`,
+        );
+      }
+      expect(successes).toHaveLength(1);
+      const winnerIndex = outcomes.findIndex(({ ok }) => ok);
+      const winner = outcomes[winnerIndex];
+      const winnerInput = inputs[winnerIndex];
+      if (winner === undefined || !winner.ok || winnerInput === undefined)
+        throw new Error("no recovery winner");
+      expect(winner.value).toMatchObject({
+        kind: "committed",
+        submissionId: submission,
+        workflowRevision: 3,
+      });
+      const loser = outcomes.find(({ ok }) => !ok);
+      const loserReason = loser?.ok === false ? loser.error.reason : null;
+      expect(["stale-revision", "transition-rejected"]).toContain(loserReason);
+      const actions = await admin.query<Record<string, unknown>>(
+        "SELECT * FROM media_alignment_recovery_actions WHERE operation_id=$1",
+        [operation],
+      );
+      expect(actions.rows).toHaveLength(1);
+      expect(actions.rows[0]).toMatchObject({
+        state: "requested",
+        result_kind: null,
+        recovery_action_id: winner.value.recoveryActionId,
+        attempt_id: winner.value.attemptId,
+        lyrics_sha256: lyricsSha256,
+      });
+      const replacements = await admin.query<{ workflow_revision: string }>(
+        "SELECT workflow_revision FROM media_submission_outbox WHERE operation_id=$1 AND event_type='workflow_replacement'",
+        [operation],
+      );
+      expect(replacements.rows).toHaveLength(1);
+      expect(replacements.rows[0]?.workflow_revision).toBe("3");
+      const events = await admin.query<{ evidence: Record<string, unknown> }>(
+        "SELECT evidence FROM media_submission_events WHERE submission_id=$1 AND event_kind='workflow_replaced' AND evidence->>'action'='alignment_recovery'",
+        [submission],
+      );
+      expect(events.rows).toHaveLength(1);
+      expect(events.rows[0]?.evidence).toMatchObject({
+        recovery_action_id: winner.value.recoveryActionId,
+      });
+
+      expect(
+        await run(connection, (store) => store.requestAlignmentRecovery(winnerInput)),
+      ).toMatchObject({ kind: "replay", attemptId: winner.value.attemptId });
+
+      const conflict = await run(connection, (store) =>
+        store.requestAlignmentRecovery({
+          ...winnerInput,
+          evidenceRef: "fixture://alignment-recovery/other",
+        }),
+      ).then(() => null, asReason);
+      expect(conflict?.reason).toBe("idempotency-conflict");
+
+      const secondIdentity = await run(connection, (store) =>
+        store.requestAlignmentRecovery({
+          ...base,
+          idempotencyKey: "alignment-recovery-c",
+          expectedWorkflowRevision: 3,
+        }),
+      ).then(() => null, asReason);
+      expect(secondIdentity?.reason).toBe("transition-rejected");
+
+      const stale = await run(connection, (store) =>
+        store.requestAlignmentRecovery({
+          ...base,
+          idempotencyKey: "alignment-recovery-d",
+          expectedWorkflowRevision: 1,
+        }),
+      ).then(() => null, asReason);
+      expect(stale?.reason).toBe("stale-revision");
+
+      const drifted = await run(connection, (store) =>
+        store.requestAlignmentRecovery({
+          ...base,
+          idempotencyKey: "alignment-recovery-e",
+          expectedWorkflowRevision: 3,
+          expected: { ...base.expected, canonicalAudioSha256: "d".repeat(64) },
+        }),
+      ).then(() => null, asReason);
+      expect(drifted?.reason).toBe("transition-rejected");
+
+      expect(await processing.readAlignmentRecovery(authority)).toMatchObject({
+        kind: "recovery",
+        recoveryActionId: winner.value.recoveryActionId,
+        attemptId: winner.value.attemptId,
+      });
+
+      const artifact = {
+        version: "media-timed-lyrics-artifact-v1",
+        mode: "word",
+        segments: [
+          { text: "Hold", start_ms: 0, end_ms: 100 },
+          { text: "on!", start_ms: 120, end_ms: 300 },
+          { text: "Hold", start_ms: 400, end_ms: 500 },
+          { text: "on!", start_ms: 520, end_ms: 700 },
+        ],
+      };
+      const artifactSha256 = (
+        await admin.query<{ sha256: string }>(
+          "SELECT encode(sha256(convert_to($1::jsonb::text,'UTF8')),'hex') AS sha256",
+          [JSON.stringify(artifact)],
+        )
+      ).rows[0]?.sha256;
+      if (artifactSha256 === undefined) throw new Error("missing recovery artifact digest");
+      await run(connection, (store) =>
+        store.recordAlignment({
+          communityId: community,
+          submissionId: submission,
+          actorUserId: actor,
+          personaId: personaFor(connection),
+          postId,
+          audioRevision: 1,
+          analysisRevision: 1,
+          lyricsRevision: 1,
+          canonicalAudioSha256: audioSha256,
+          outcome: "ready",
+          artifact: { artifactRef: "recovery-timed-lyrics", artifactSha256, artifact },
+          recoveryActionId: winner.value.recoveryActionId,
+        }),
+      );
+      const completed = await admin.query<Record<string, unknown>>(
+        "SELECT state,result_kind,artifact_ref,completed_at FROM media_alignment_recovery_actions WHERE recovery_action_id=$1",
+        [winner.value.recoveryActionId],
+      );
+      expect(completed.rows[0]).toMatchObject({
+        state: "completed",
+        result_kind: "ready",
+        artifact_ref: "recovery-timed-lyrics",
+      });
+      expect(completed.rows[0]?.completed_at).not.toBeNull();
+      expect(
+        (
+          await admin.query(
+            "SELECT status FROM media_alignment_projections WHERE submission_id=$1 AND lyrics_revision=1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ status: "ready" });
+      expect(await processing.readAlignmentRecovery(authority)).toMatchObject({
+        kind: "committed",
+        result: { kind: "alignment", status: "ready", artifactRef: "recovery-timed-lyrics" },
+      });
+    });
+    completedTestCount += 1;
+  }, 120_000);
 
   test("requires durable exhaustion evidence for ACR override moderation", async () => {
     await withCurrentSchema(async (admin, connection) => {

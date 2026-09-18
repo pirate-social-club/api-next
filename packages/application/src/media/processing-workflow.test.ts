@@ -1594,6 +1594,52 @@ describe("media processing workflow", () => {
     expect(store.alignments).toBe(0);
   });
 
+  test("recovery authorization uses the distinct recovery attempt identity", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        replacementSequence: 0,
+        publishedLyricsRevision: 1,
+      }),
+      "workflow_replacement",
+    );
+    const providerEvents: string[] = [];
+    store.alignmentRecovery = {
+      kind: "recovery",
+      recoveryActionId: "media-alignment-recovery-operation-1-l1",
+      attemptId: "media-attempt-operation-1-a1-n1-alignment-l1-recovery-1",
+    };
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "workflow_replacement",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([
+      "effect:alignment:l1:accepted lyrics",
+    ]);
+    expect(store.alignments).toBe(1);
+    expect(store.alignmentResults[0]).toMatchObject({ kind: "alignment", status: "ready" });
+    expect(store.attempts.get("media-attempt-operation-1-a1-n1-alignment-l1")).toBeUndefined();
+    expect(
+      store.attempts.get("media-attempt-operation-1-a1-n1-alignment-l1-recovery-1")?.result,
+    ).toMatchObject({ kind: "alignment", status: "ready" });
+
+    const replayEvents: string[] = [];
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "workflow_replacement",
+        dependencies(store, providers(replayEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(replayEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.alignments).toBe(1);
+  });
+
   test("workflow replacement for a lyrics-free published song stays inert", async () => {
     const store = new FakeStore(
       authority({
