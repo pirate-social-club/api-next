@@ -749,6 +749,8 @@ export function makeMediaProcessingStore(
 
   const commitAlignment: MediaProcessingStore["commitAlignment"] = async (authority, result) => {
     if (authority.postId === null || authority.audio === null) return "stale";
+    const postId = authority.postId;
+    const audio = authority.audio;
     const current = await run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -782,11 +784,11 @@ export function makeMediaProcessingStore(
               authority.actorAccountId,
               authority.submissionId,
               authority.operationId,
-              authority.postId,
+              postId,
               authority.audioRevision,
               authority.analysisRevision,
               authority.publishedLyricsRevision,
-              authority.audio.canonicalSha256,
+              audio.canonicalSha256,
             ],
             readonly: true,
           });

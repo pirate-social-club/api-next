@@ -4539,7 +4539,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           lyricsSha256,
         },
       };
-      const asReason = (error: unknown) => error as Readonly<{ reason?: unknown; _tag?: unknown }>;
+      const asReason = (error: unknown) => error as Readonly<{ reason?: string; _tag?: unknown }>;
       const inputs = [base, { ...base, idempotencyKey: "alignment-recovery-b" }];
       const outcomes = await Promise.all(
         inputs.map((input) =>
@@ -4569,8 +4569,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         workflowRevision: 3,
       });
       const loser = outcomes.find(({ ok }) => !ok);
-      const loserReason = loser?.ok === false ? loser.error.reason : null;
-      expect(["stale-revision", "transition-rejected"]).toContain(loserReason);
+      const loserReason = loser?.ok === false ? loser.error.reason : undefined;
+      expect(loserReason === "stale-revision" || loserReason === "transition-rejected").toBe(true);
       const actions = await admin.query<Record<string, unknown>>(
         "SELECT * FROM media_alignment_recovery_actions WHERE operation_id=$1",
         [operation],

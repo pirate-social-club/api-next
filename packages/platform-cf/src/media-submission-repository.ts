@@ -391,7 +391,7 @@ export type WorkflowReplacementInput = Readonly<{
   expectedWorkflowRevision: number;
   outbox: OutboxWrite;
 }>;
-export type AlignmentRecoveryInput = Readonly<{
+type AlignmentRecoveryInput = Readonly<{
   communityId: string;
   submissionId: string;
   actorUserId: string;
@@ -409,7 +409,7 @@ export type AlignmentRecoveryInput = Readonly<{
     lyricsSha256: string;
   }>;
 }>;
-export type AlignmentRecoveryOutcome = Readonly<{
+type AlignmentRecoveryOutcome = Readonly<{
   kind: "replay" | "committed";
   submissionId: string;
   recoveryActionId: string;
