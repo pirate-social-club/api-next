@@ -158,6 +158,15 @@ const nullableText = (row: Row, key: string): string | null => {
   return value === null || value === undefined ? null : text(row, key);
 };
 
+const lyricsText = (row: Row, key: string): string | null => {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("invalid DATA artifact authority");
+  }
+  return value;
+};
+
 const instant = (row: Row, key: string): string => {
   const value = row[key];
   const milliseconds = value instanceof Date ? value.getTime() : Date.parse(String(value));
@@ -549,7 +558,7 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             audioByteLength: positiveBigint(row.size_bytes),
             canonicalAudioSha256: audioSha256,
             coverArtifactRef: nullableText(row, "cover_artifact_ref"),
-            lyrics: nullableText(row, "lyrics_text"),
+            lyrics: lyricsText(row, "lyrics_text"),
             lyricsExplicitness: explicitness as
               | "not_applicable"
               | "not_explicit"
