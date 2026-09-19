@@ -283,6 +283,50 @@ describe("Karaoke attempt Durable Object", () => {
     expect((await connect(stub, initialized.token)).status).toBe(410);
   });
 
+  it("keeps a legitimate finish while dropping duplicate and late messages", async () => {
+    const sessionId = `karaoke-finish-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    const initialized = await stub.initialize(authority(sessionId));
+    expect((await connect(stub, initialized.token)).status).toBe(101);
+
+    const finishMessage = (sequence: number) =>
+      JSON.stringify({
+        audioTimeMs: 0,
+        attemptId: `attempt-${sessionId}`,
+        protocolVersion: 1,
+        sequence,
+        sessionId,
+        type: "finish",
+      });
+    await runInDurableObject(stub, async (instance, state) => {
+      const readTerminal = () =>
+        state.storage.sql
+          .exec<{ outbox: number; terminal: number }>(
+            `SELECT (SELECT count(*) FROM karaoke_outbox WHERE id=1) AS outbox,
+                    session.terminal
+               FROM karaoke_session AS session WHERE session.id=1`,
+          )
+          .one();
+      // A legitimate finish still completes and persists its outbox; the
+      // finish runs on the serialized commit chain, so wait for it to settle.
+      await instance.webSocketMessage({} as WebSocket, finishMessage(1));
+      let terminal = readTerminal();
+      const deadline = Date.now() + 5_000;
+      while (terminal.terminal === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        terminal = readTerminal();
+      }
+      expect(terminal).toEqual({ outbox: 1, terminal: 1 });
+      // A duplicate of the same event and any later event are harmless: the
+      // terminal guard drops them without resurrecting the host.
+      await instance.webSocketMessage({} as WebSocket, finishMessage(1));
+      await instance.webSocketMessage({} as WebSocket, finishMessage(2));
+      expect(readTerminal()).toEqual({ outbox: 1, terminal: 1 });
+    });
+    // A reconnect after completion is still refused with the terminal status.
+    expect((await connect(stub, initialized.token)).status).toBe(410);
+  });
+
   it("exhausts locally, then centrally rearms each axis exactly once", async () => {
     const sessionId = `karaoke-exhausted-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
