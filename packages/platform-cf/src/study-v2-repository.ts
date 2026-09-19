@@ -23,6 +23,20 @@ import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
+// Serializes Study session starts per account so two identical concurrent
+// requests replay the committed session instead of racing the streak-clock
+// primary key or the idempotency unique constraint into a storage conflict.
+// The lock is transaction-scoped and releases on commit or rollback.
+export const STUDY_SESSION_START_LOCK_NAMESPACE = 83_000_002;
+
+const lockStudySessionStart = (transaction: ControlPlaneTransaction, accountId: string) =>
+  transaction.execute({
+    label: "study-v2.start.account-lock",
+    text: "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))",
+    values: [accountId, STUDY_SESSION_START_LOCK_NAMESPACE],
+    readonly: false,
+  });
+
 const failed = (reason: StudyV2StoreFailed["reason"]) => new StudyV2StoreFailed({ reason });
 const rejected = (reason: StudyV2CommandRejected["reason"]) =>
   new StudyV2CommandRejected({ reason });
@@ -489,6 +503,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            // Identical concurrent starts serialize here: the loser then finds
+            // the winner's committed row in the replay read below and returns
+            // the same session instead of a storage conflict.
+            yield* lockStudySessionStart(transaction, input.accountId);
             const replay = yield* transaction.execute<Row>({
               label: "study-v2.start.replay",
               text: `SELECT session_id, request_hash FROM study_sessions_v2
