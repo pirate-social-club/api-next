@@ -252,6 +252,37 @@ describe("Karaoke attempt Durable Object", () => {
     });
   });
 
+  it("ignores socket messages that arrive after finalization", async () => {
+    const sessionId = `karaoke-terminal-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    const initialized = await stub.initialize(authority(sessionId));
+    const response = await connect(stub, initialized.token);
+    expect(response.webSocket).not.toBeNull();
+
+    const lateMessage = JSON.stringify({
+      attemptId: `attempt-${sessionId}`,
+      postId: "post-workerd",
+      protocolVersion: 1,
+      sequence: 1,
+      sessionId,
+      startedAtAudioMs: 0,
+      type: "start",
+    });
+    await runInDurableObject(stub, async (instance, state) => {
+      await instance.enqueueFinalization("abandoned", abandonedSummary);
+      // A socket that outlives finalization must not reach the host factory
+      // with the emptied snapshot; the late message is dropped instead.
+      await instance.webSocketMessage({} as WebSocket, lateMessage);
+      const row = state.storage.sql
+        .exec<{ snapshot_json: string; terminal: number }>(
+          "SELECT snapshot_json,terminal FROM karaoke_session WHERE id=1",
+        )
+        .one();
+      expect(row).toEqual({ snapshot_json: "{}", terminal: 1 });
+    });
+    expect((await connect(stub, initialized.token)).status).toBe(410);
+  });
+
   it("exhausts locally, then centrally rearms each axis exactly once", async () => {
     const sessionId = `karaoke-exhausted-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);

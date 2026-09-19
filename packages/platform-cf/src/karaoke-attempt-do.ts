@@ -586,6 +586,12 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async webSocketMessageActive(message: string | ArrayBuffer): Promise<void> {
+    // A finalized session keeps its terminal row and clears the host snapshot.
+    // A late message on a socket that outlived finalization must be ignored:
+    // reaching the host factory with the emptied snapshot would raise
+    // KaraokeSnapshotValidationError and terminate the object.
+    const session = one(this.sql, "SELECT terminal FROM karaoke_session WHERE id=1");
+    if (Number(session?.terminal ?? 0) === 1) return;
     const host = await this.ensureHost();
     if (this.resetFenced) return;
     if (typeof message === "string") {
