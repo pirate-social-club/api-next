@@ -231,6 +231,16 @@ async function seedContent(
      VALUES ($1, $2, 'post-slug-v1')`,
     [POST_SLUG, POST_ID],
   );
+  // Make the seeded song a home-feed item so the browser harness can drive the
+  // feed entry. The projection is normally written by the publication
+  // pipeline; this is a local fixture insert, not a runtime path.
+  await admin.query(
+    `INSERT INTO home_feed_projection (
+       community_id, feed_item_id, post_id, rank_score, projected_at
+     ) VALUES ($1, $2, $3, 100, clock_timestamp())
+     ON CONFLICT (community_id, post_id) DO NOTHING`,
+    [COMMUNITY_ID, `feed-item-${POST_ID}`, POST_ID],
+  );
   // Content seeding below mirrors the repository's own PG fixture pattern:
   // raw publication rows are inserted with user triggers disabled on this
   // disposable database. Application-time guards are not bypassed anywhere the
