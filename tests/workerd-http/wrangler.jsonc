@@ -47,6 +47,10 @@
       {
         "name": "KARAOKE_ATTEMPT",
         "class_name": "KaraokeAttemptDO"
+      },
+      {
+        "name": "RECORDING_KARAOKE_ATTEMPT",
+        "class_name": "RecordingKaraokeAttemptDO"
       }
     ]
   },
@@ -69,6 +73,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["KaraokeAttemptDO"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["RecordingKaraokeAttemptDO"]
     }
   ],
   "r2_buckets": [

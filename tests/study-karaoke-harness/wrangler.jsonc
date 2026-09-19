@@ -1,0 +1,117 @@
+{
+  // Local Study/Karaoke browser-harness Worker. Never deploy this: it binds a
+  // scripted STT adapter and a scripted Study transcriber through reviewed test
+  // seams and expects a disposable PostgreSQL on 127.0.0.1:5432.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pirate-http-worker-study-karaoke-harness",
+  "main": "./entry.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      // Disposable local PostgreSQL only; see start-local.sh.
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "KARAOKE_ATTEMPT",
+        "class_name": "ScriptedKaraokeAttemptDO"
+      },
+      {
+        "name": "REGISTRATION_IP_LIMITER",
+        "class_name": "RegistrationIpRateLimiterDO"
+      },
+      {
+        "name": "REGISTRATION_APPLICATION_LIMITER",
+        "class_name": "RegistrationApplicationRateLimiterDO"
+      },
+      {
+        "name": "HNS_COMMUNITY_APP_API_REPLAY",
+        "class_name": "HnsForwarderReplayStoreDO"
+      },
+      {
+        "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RegistrationIpRateLimiterDO",
+        "RegistrationApplicationRateLimiterDO",
+        "HnsForwarderReplayStoreDO"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ScriptedKaraokeAttemptDO"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LEARNER_AUDIO",
+      "bucket_name": "pirate-learner-audio-harness"
+    }
+  ],
+  "vars": {
+    "API_NEXT_ENV": "development",
+    "CORS_ORIGIN": "http://127.0.0.1:8787",
+    "PIRATE_API_PUBLIC_ORIGIN": "http://127.0.0.1:8788",
+    "TELEGRAM_ENABLED": "false",
+    "SONG_PLAYBACK_ENABLED": "false",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
+    "STUDY_GENERATION_ENABLED": "false",
+    "STUDY_GENERATION_OPENROUTER_MODEL": "",
+    "MEGAPOT_REWARDS_ENABLED": "false",
+    "MEGAPOT_CHAIN_ID": "84532",
+    "MEGAPOT_ATTESTATION_ID": "harness-local-only",
+    "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+    "MEGAPOT_V2_RPC_URL": "http://127.0.0.1:8545",
+    "COMMUNITY_PURCHASE_FUNDING_RPC_URL": "http://127.0.0.1:8545",
+    "MEDIA_UPLOADS_ENABLED": "false",
+    "VIDEO_SONG_REFERENCE_ENABLED": "false",
+    "REGISTRATION_IP_LIMIT": "1000",
+    "REGISTRATION_IP_WINDOW_SECONDS": "900",
+    "REGISTRATION_APPLICATION_LIMIT": "1000",
+    "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60",
+    "SELF_PASS_ENABLED": "false",
+    "SELF_PASS_APP_NAME": "Pirate",
+    "SELF_PASS_MOCK_PASSPORT": "false",
+    "ZKPASSPORT_ENABLED": "false",
+    "VERY_OAUTH_ENABLED": "false",
+    "VERY_WEB_ENABLED": "false",
+    "OPENAI_MODERATION_ENABLED": "false",
+    "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
+    "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
+    "OPENAI_MODERATION_TIMEOUT_MS": "10000",
+    "HNS_OWNERSHIP_ENABLED": "false",
+    "HNS_COMMUNITY_APP_API_ENABLED": "false",
+    "HNS_HANDLE_HOST_API_ENABLED": "false",
+    "HNS_EDGE_STATUS_ENABLED": "false",
+    "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "false",
+    "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
+    "PIRATE_APP_JWT_ISSUER": "api-next-session-harness",
+    "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-harness",
+    "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-harness",
+    "PIRATE_APP_JWT_TTL_SECONDS": "3600",
+    "PRIVY_APP_ID": "harness-local-app",
+    // Reserved-TLD hostnames: never resolvable, and the entry's fetch guard
+    // refuses any non-loopback request before it could leave the Worker.
+    "PRIVY_API_URL": "https://privy.invalid",
+    "PRIVY_JWKS_URL": "https://privy.invalid/v1/jwks.json",
+    "PRIVY_JWT_ISSUER": "privy.io",
+    "PRIVY_JWT_AUDIENCE": "harness-local-app",
+    "NATIONALITY_AUTHORING_ENABLED": "false"
+  }
+}

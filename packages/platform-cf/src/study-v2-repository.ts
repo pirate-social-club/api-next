@@ -309,6 +309,99 @@ const itemFromExercise = (row: Row, sessionId: string, ordinal: number): StudySe
     maximum_attempts: 3,
   });
 
+const studyAudioObjectRef = (attemptId: string, audioDigest: string): string =>
+  `learner-audio/study/${attemptId}/${audioDigest}`;
+
+const spokenPayloadMatches = (
+  row: Row,
+  input: { readonly requestHash: string; readonly audioDigest: string },
+): boolean =>
+  text(row, "request_hash") === input.requestHash &&
+  text(row, "audio_digest") === input.audioDigest;
+
+/**
+ * Reclaims a reservation that owns no grade yet: `retryable_failed`, or a
+ * `reserved` row whose lease expired. A reclaim may carry newly recorded audio,
+ * so the command and its artifact adopt the new payload identity; a `completed`
+ * row and a live `reserved` lease are never replaceable and keep their strict
+ * digest checks at the call sites. Returns null when the guarded update loses a
+ * race with another finalizer.
+ */
+const reclaimSpokenAnswer = (
+  transaction: ControlPlaneTransaction,
+  row: Row,
+  input: {
+    readonly accountId: string;
+    readonly audioByteSize: number;
+    readonly audioContentType: string;
+    readonly audioDigest: string;
+    readonly audioDurationMs: number;
+    readonly idempotencyKey: string;
+    readonly leaseToken: string;
+    readonly requestHash: string;
+  },
+) =>
+  Effect.gen(function* () {
+    const commandId = text(row, "command_id");
+    const attemptId = text(row, "attempt_id");
+    const artifactId = text(row, "learner_audio_artifact_id");
+    const reclaimed = yield* transaction.execute<Row>({
+      label: "study-v2.spoken.reserve-retry",
+      text: `UPDATE study_spoken_answer_commands
+                SET state='reserved', provider_failure_kind=NULL, completed_at=NULL,
+                    lease_token=$3,
+                    lease_expires_at=clock_timestamp() + interval '60 seconds',
+                    reserved_at=clock_timestamp(),
+                    idempotency_key=$4, request_hash=$5, audio_digest=$6,
+                    audio_content_type=$7, audio_byte_size=$8, audio_duration_ms=$9
+              WHERE command_id=$1 AND account_id=$2
+                AND (state='retryable_failed' OR
+                  (state='reserved' AND lease_expires_at <= clock_timestamp()))
+          RETURNING command_id`,
+      values: [
+        commandId,
+        input.accountId,
+        input.leaseToken,
+        input.idempotencyKey,
+        input.requestHash,
+        input.audioDigest,
+        input.audioContentType,
+        input.audioByteSize,
+        input.audioDurationMs,
+      ],
+      readonly: false,
+    });
+    if (reclaimed.rows.length !== 1) return null;
+    // The artifact keeps its identity but must expect the audio of this
+    // submission, or completion would reject the new archive reference.
+    yield* transaction.execute({
+      label: "study-v2.spoken.reserve-artifact-retry",
+      text: `UPDATE learner_audio_artifacts
+                SET recording_state='pending', object_ref=NULL, deleted_at=NULL,
+                    expected_object_ref=$3, content_digest=$4, content_type=$5,
+                    byte_size=$6, duration_ms=$7
+              WHERE learner_audio_artifact_id=$1 AND account_id=$2
+                AND recording_state IN ('failed','pending')`,
+      values: [
+        artifactId,
+        input.accountId,
+        studyAudioObjectRef(attemptId, input.audioDigest),
+        input.audioDigest,
+        input.audioContentType,
+        input.audioByteSize,
+        input.audioDurationMs,
+      ],
+      readonly: false,
+    });
+    return {
+      state: "reserved" as const,
+      commandId,
+      leaseToken: input.leaseToken,
+      attemptId,
+      artifactId,
+    };
+  });
+
 export const makeControlPlaneStudyV2Repository = () => ({
   getAvailability: (input: Parameters<StudyV2Store["getAvailability"]>[0]) =>
     mapErrors(
@@ -683,17 +776,26 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (replay.rows.length > 1) return yield* rejected("idempotency-conflict");
             const replayRow = replay.rows[0] as Row | undefined;
             if (replayRow !== undefined) {
-              if (
-                text(replayRow, "request_hash") !== input.requestHash ||
-                text(replayRow, "audio_digest") !== input.audioDigest
-              ) {
-                return yield* rejected("idempotency-conflict");
-              }
-              if (text(replayRow, "state") === "completed") {
+              const state = text(replayRow, "state");
+              if (state === "completed") {
+                // A stored grade is bound to the exact submission that produced
+                // it; different audio under the same identity stays a conflict.
+                if (!spokenPayloadMatches(replayRow, input)) {
+                  return yield* rejected("idempotency-conflict");
+                }
                 return {
                   state: "completed" as const,
                   result: decode(StudyAnswerResultV2, json(replayRow.result_snapshot)),
                 };
+              }
+              if (
+                state === "reserved" &&
+                replayRow.lease_live === true &&
+                !spokenPayloadMatches(replayRow, input)
+              ) {
+                // A live reservation owns its payload; only an exact replay may
+                // observe it as in-flight, and nothing may replace it.
+                return yield* rejected("idempotency-conflict");
               }
             }
             const selected = yield* transaction.execute<Row>({
@@ -741,38 +843,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
               return yield* rejected("attempt-conflict");
             }
             if (replayRow !== undefined) {
-              const commandId = text(replayRow, "command_id");
-              const reclaimed = yield* transaction.execute<Row>({
-                label: "study-v2.spoken.reserve-retry",
-                text: `UPDATE study_spoken_answer_commands
-                          SET state='reserved', provider_failure_kind=NULL, completed_at=NULL,
-                              lease_token=$3,
-                              lease_expires_at=clock_timestamp() + interval '60 seconds',
-                              reserved_at=clock_timestamp()
-                        WHERE command_id=$1 AND account_id=$2
-                          AND (state='retryable_failed' OR
-                            (state='reserved' AND lease_expires_at <= clock_timestamp()))
-                    RETURNING command_id`,
-                values: [commandId, input.accountId, input.leaseToken],
-                readonly: false,
-              });
-              if (reclaimed.rows.length !== 1) return yield* rejected("command-in-flight");
-              yield* transaction.execute({
-                label: "study-v2.spoken.reserve-artifact-retry",
-                text: `UPDATE learner_audio_artifacts
-                          SET recording_state='pending', object_ref=NULL, deleted_at=NULL
-                        WHERE learner_audio_artifact_id=$1 AND account_id=$2
-                          AND recording_state='failed'`,
-                values: [text(replayRow, "learner_audio_artifact_id"), input.accountId],
-                readonly: false,
-              });
-              return {
-                state: "reserved" as const,
-                commandId,
-                leaseToken: input.leaseToken,
-                attemptId: text(replayRow, "attempt_id"),
-                artifactId: text(replayRow, "learner_audio_artifact_id"),
-              };
+              const reclaimed = yield* reclaimSpokenAnswer(transaction, replayRow, input);
+              if (reclaimed === null) return yield* rejected("command-in-flight");
+              return reclaimed;
             }
             const inserted = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-insert",
@@ -854,53 +927,25 @@ export const makeControlPlaneStudyV2Repository = () => ({
             });
             if (existing.rows.length !== 1) return yield* rejected("idempotency-conflict");
             const row = existing.rows[0] as Row;
-            if (
-              text(row, "request_hash") !== input.requestHash ||
-              text(row, "audio_digest") !== input.audioDigest
-            ) {
-              return yield* rejected("idempotency-conflict");
-            }
             const commandId = text(row, "command_id");
             const state = text(row, "state");
             if (state === "completed") {
+              if (!spokenPayloadMatches(row, input)) {
+                return yield* rejected("idempotency-conflict");
+              }
               return {
                 state: "completed" as const,
                 result: decode(StudyAnswerResultV2, json(row.result_snapshot)),
               };
             }
-            if (state === "reserved" && row.lease_live === true)
-              return yield* rejected("command-in-flight");
-            const reclaimed = yield* transaction.execute<Row>({
-              label: "study-v2.spoken.reserve-retry",
-              text: `UPDATE study_spoken_answer_commands
-                        SET state='reserved', provider_failure_kind=NULL, completed_at=NULL,
-                            lease_token=$3,
-                            lease_expires_at=clock_timestamp() + interval '60 seconds',
-                            reserved_at=clock_timestamp()
-                      WHERE command_id=$1 AND account_id=$2
-                        AND (state='retryable_failed' OR
-                          (state='reserved' AND lease_expires_at <= clock_timestamp()))
-                  RETURNING command_id`,
-              values: [commandId, input.accountId, input.leaseToken],
-              readonly: false,
-            });
-            if (reclaimed.rows.length !== 1) return yield* rejected("command-in-flight");
-            yield* transaction.execute({
-              label: "study-v2.spoken.reserve-artifact-retry",
-              text: `UPDATE learner_audio_artifacts
-                        SET recording_state='pending', object_ref=NULL, deleted_at=NULL
-                      WHERE learner_audio_artifact_id=$1 AND account_id=$2
-                        AND recording_state='failed'`,
-              values: [text(row, "learner_audio_artifact_id"), input.accountId],
-              readonly: false,
-            });
-            return {
-              state: "reserved" as const,
-              commandId,
-              leaseToken: input.leaseToken,
-              attemptId: text(row, "attempt_id"),
-              artifactId: text(row, "learner_audio_artifact_id"),
-            };
+            if (state === "reserved" && row.lease_live === true) {
+              return yield* rejected(
+                spokenPayloadMatches(row, input) ? "command-in-flight" : "idempotency-conflict",
+              );
+            }
+            const reclaimed = yield* reclaimSpokenAnswer(transaction, row, input);
+            if (reclaimed === null) return yield* rejected("command-in-flight");
+            return reclaimed;
           }),
         );
       }),

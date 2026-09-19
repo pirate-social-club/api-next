@@ -72,6 +72,18 @@ import { videoAccessFixtureHandlers } from "./video-access.fixture.ts";
 
 export { HnsForwarderReplayStoreDO } from "../../packages/platform-cf/src/hns-forwarder-replay-store-do.ts";
 export { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+
+import { KaraokeAttemptDO as ProductionKaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+
+export class RecordingKaraokeAttemptDO extends ProductionKaraokeAttemptDO {
+  adapterFactoryCalls = 0;
+
+  protected override makeSttAdapter(_apiKey: string): never {
+    this.adapterFactoryCalls += 1;
+    throw new Error("harness_stt_adapter_override");
+  }
+}
+
 export { KaraokeResetOperatorEntrypoint } from "../../packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts";
 export {
   RegistrationApplicationRateLimiterDO,

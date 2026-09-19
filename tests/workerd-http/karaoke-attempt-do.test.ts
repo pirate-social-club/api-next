@@ -11,6 +11,7 @@ import type { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-at
 
 const env = testEnv as unknown as {
   readonly KARAOKE_ATTEMPT: DurableObjectNamespace<KaraokeAttemptDO>;
+  readonly RECORDING_KARAOKE_ATTEMPT: DurableObjectNamespace<KaraokeAttemptDO>;
   readonly LEARNER_AUDIO: R2Bucket;
 };
 
@@ -92,6 +93,17 @@ const connect = async (stub: DurableObjectStub<KaraokeAttemptDO>, token: string)
 };
 
 describe("Karaoke attempt Durable Object", () => {
+  it("invokes an overridden STT adapter factory instead of constructing the production adapter", async () => {
+    const sessionId = `karaoke-override-${crypto.randomUUID()}`;
+    const stub = env.RECORDING_KARAOKE_ATTEMPT.getByName(sessionId);
+    const initialized = await stub.initialize(authority(sessionId));
+    await expect(connect(stub, initialized.token)).rejects.toThrow("harness_stt_adapter_override");
+    await runInDurableObject(stub, async (instance) => {
+      const recording = instance as unknown as { adapterFactoryCalls: number };
+      expect(recording.adapterFactoryCalls).toBe(1);
+    });
+  });
+
   it("consumes connection tokens once and counts only later sockets as reconnects", async () => {
     const sessionId = `karaoke-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
@@ -238,6 +250,81 @@ describe("Karaoke attempt Durable Object", () => {
       expect(terminal.terminal).toBe(1);
       expect(terminal.payload_json).not.toContain("hold on");
     });
+  });
+
+  it("ignores socket messages that arrive after finalization", async () => {
+    const sessionId = `karaoke-terminal-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    const initialized = await stub.initialize(authority(sessionId));
+    const response = await connect(stub, initialized.token);
+    expect(response.webSocket).not.toBeNull();
+
+    const lateMessage = JSON.stringify({
+      attemptId: `attempt-${sessionId}`,
+      postId: "post-workerd",
+      protocolVersion: 1,
+      sequence: 1,
+      sessionId,
+      startedAtAudioMs: 0,
+      type: "start",
+    });
+    await runInDurableObject(stub, async (instance, state) => {
+      await instance.enqueueFinalization("abandoned", abandonedSummary);
+      // A socket that outlives finalization must not reach the host factory
+      // with the emptied snapshot; the late message is dropped instead.
+      await instance.webSocketMessage({} as WebSocket, lateMessage);
+      const row = state.storage.sql
+        .exec<{ snapshot_json: string; terminal: number }>(
+          "SELECT snapshot_json,terminal FROM karaoke_session WHERE id=1",
+        )
+        .one();
+      expect(row).toEqual({ snapshot_json: "{}", terminal: 1 });
+    });
+    expect((await connect(stub, initialized.token)).status).toBe(410);
+  });
+
+  it("keeps a legitimate finish while dropping duplicate and late messages", async () => {
+    const sessionId = `karaoke-finish-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    const initialized = await stub.initialize(authority(sessionId));
+    expect((await connect(stub, initialized.token)).status).toBe(101);
+
+    const finishMessage = (sequence: number) =>
+      JSON.stringify({
+        audioTimeMs: 0,
+        attemptId: `attempt-${sessionId}`,
+        protocolVersion: 1,
+        sequence,
+        sessionId,
+        type: "finish",
+      });
+    await runInDurableObject(stub, async (instance, state) => {
+      const readTerminal = () =>
+        state.storage.sql
+          .exec<{ outbox: number; terminal: number }>(
+            `SELECT (SELECT count(*) FROM karaoke_outbox WHERE id=1) AS outbox,
+                    session.terminal
+               FROM karaoke_session AS session WHERE session.id=1`,
+          )
+          .one();
+      // A legitimate finish still completes and persists its outbox; the
+      // finish runs on the serialized commit chain, so wait for it to settle.
+      await instance.webSocketMessage({} as WebSocket, finishMessage(1));
+      let terminal = readTerminal();
+      const deadline = Date.now() + 5_000;
+      while (terminal.terminal === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        terminal = readTerminal();
+      }
+      expect(terminal).toEqual({ outbox: 1, terminal: 1 });
+      // A duplicate of the same event and any later event are harmless: the
+      // terminal guard drops them without resurrecting the host.
+      await instance.webSocketMessage({} as WebSocket, finishMessage(1));
+      await instance.webSocketMessage({} as WebSocket, finishMessage(2));
+      expect(readTerminal()).toEqual({ outbox: 1, terminal: 1 });
+    });
+    // A reconnect after completion is still refused with the terminal status.
+    expect((await connect(stub, initialized.token)).status).toBe(410);
   });
 
   it("exhausts locally, then centrally rearms each axis exactly once", async () => {
