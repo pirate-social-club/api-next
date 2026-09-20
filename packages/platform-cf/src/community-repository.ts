@@ -41,6 +41,7 @@ import { PLATFORM_AGE_18_VERIFICATION_INTENT_ID } from "./verification-intent-re
 type CommunityRow = {
   readonly community_id: unknown;
   readonly display_name: unknown;
+  readonly avatar_ref?: unknown;
   readonly description?: unknown;
   readonly route_slug?: unknown;
   readonly membership_mode: unknown;
@@ -505,6 +506,7 @@ const communityLookup = (communityId: string, viewerUserId?: string) => ({
   label: "community.communities.get-preview",
   text: `SELECT c.community_id,
                 c.display_name,
+                c.avatar_ref,
                 c.description,
                 c.route_slug,
                 c.membership_mode,
@@ -744,6 +746,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         id,
         object: "community_preview" as const,
         display_name: displayName,
+        ...(typeof community.avatar_ref === "string" ? { avatar_ref: community.avatar_ref } : {}),
         ...(description === undefined ? {} : { description }),
         ...(routeSlug === undefined ? {} : { route_slug: routeSlug }),
         membership_mode: mode,

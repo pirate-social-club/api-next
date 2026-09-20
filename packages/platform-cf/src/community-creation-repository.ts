@@ -42,6 +42,7 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { attachCreationAvatars, bindCreationAvatars } from "./avatar-attachment.ts";
 import {
   asNonNegativeInteger,
   asPositiveInteger,
@@ -615,6 +616,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (inserted.rowCount !== 1) {
             return yield* Effect.fail(failure("create", "invalid-row"));
           }
+          yield* bindCreationAvatars(transaction, input.actor.userId, intentId, canonicalDraft);
           const row = yield* loadLockedIntent(transaction, input.actor.userId, intentId, "create");
           if (row === null) return yield* Effect.fail(failure("create", "invalid-row"));
           const document = documentFromRow(row);
@@ -785,6 +787,12 @@ export function makeControlPlaneCommunityCreationRepository(
                   : "verification_required";
           }
           const canonicalDraft = body.draft;
+          yield* bindCreationAvatars(
+            transaction,
+            input.actor.userId,
+            input.intentId,
+            canonicalDraft,
+          );
           const updated = yield* transaction.execute({
             label: "community.creation.update.persist-intent",
             text: `UPDATE community_creation_intents
@@ -986,6 +994,14 @@ export function makeControlPlaneCommunityCreationRepository(
         creatorPersonaId = document.draft.persona.persona_id;
       }
       yield* lockActiveOwnedPersona(transaction, input.actor.userId, creatorPersonaId, "commit");
+      const communityId = nextCommunityId();
+      const avatars = yield* attachCreationAvatars(transaction, {
+        ownerId: input.actor.userId,
+        intentId: input.intentId,
+        communityId,
+        personaId: creatorPersonaId,
+        draft: document.draft,
+      });
       const owner = yield* transaction.execute<Row>({
         label: "community.creation.commit-v2.ready-owner",
         text: `SELECT public_persona_projection(persona.persona_id) AS presentation
@@ -1007,7 +1023,6 @@ export function makeControlPlaneCommunityCreationRepository(
         persona: publicOwner.value,
       };
 
-      const communityId = nextCommunityId();
       const membershipId = nextMembershipId();
       const followId = nextFollowId();
       const routeAuthorityGrantId = nextRouteAuthorityGrantId();
@@ -1046,6 +1061,9 @@ export function makeControlPlaneCommunityCreationRepository(
         next_action: creationNextAction(transitioned.state),
         persona_role_presentation: creatorPresentation,
         committed_resource: resource,
+        ...(document.draft.community_avatar_ref || document.draft.persona_avatar_ref
+          ? { avatar_outcomes: avatars.outcomes }
+          : {}),
       });
       if (Option.isNone(committed)) {
         return yield* Effect.fail(failure("commit", "invalid-row"));
@@ -1300,12 +1318,20 @@ export function makeControlPlaneCommunityCreationRepository(
           readonly: false,
         });
       }
+      if (avatars.communityRef !== null) {
+        yield* transaction.execute({
+          label: "avatars.attach.community",
+          text: "UPDATE communities SET avatar_ref=$2 WHERE community_id=$1",
+          values: [communityId, avatars.communityRef],
+          readonly: false,
+        });
+      }
       const updated = yield* transaction.execute({
         label: "community.creation.commit-v2.persist-intent",
         text: `UPDATE community_creation_intents
                   SET revision = $1, status = 'committed',
                       committed_community_id = $2, committed_resource_href = $3,
-                      minted_persona_id = $8,
+                      minted_persona_id = $8, avatar_outcomes = $9::jsonb,
                       updated_at = $7::timestamptz
                 WHERE intent_id = $4 AND actor_id = $5 AND revision = $6
                   AND status = 'commit_ready'
@@ -1320,6 +1346,9 @@ export function makeControlPlaneCommunityCreationRepository(
           document.revision,
           activationNow,
           mintedPersonaId,
+          document.draft.community_avatar_ref || document.draft.persona_avatar_ref
+            ? JSON.stringify(avatars.outcomes)
+            : null,
         ],
         readonly: false,
       });

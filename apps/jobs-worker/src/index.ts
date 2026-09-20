@@ -37,6 +37,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
+import { type AvatarCleanupBuckets, makeAvatarCleanupJob } from "./avatar-cleanup.ts";
 
 import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
 import {
@@ -130,6 +131,9 @@ export interface JobsWorkerEnv
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
   readonly CONTROL_PLANE?: HyperdriveConnection;
   readonly LEARNER_AUDIO?: R2Bucket;
+  readonly AVATAR_INGRESS?: R2Bucket;
+  readonly AVATAR_SEALED?: R2Bucket;
+  readonly AVATAR_CLEANUP_ENABLED?: string;
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
   readonly KARAOKE_FINALIZATION_RECOVERY_ENABLED?: string;
@@ -694,6 +698,7 @@ export function makeJobsWorkerDeclarations(
     namespace: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
   }>,
   hnsRootHealthRenewalEnabled = false,
+  avatars?: AvatarCleanupBuckets,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -713,6 +718,7 @@ export function makeJobsWorkerDeclarations(
       }),
     );
   }
+  if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
   if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
   if (learnerAudio !== undefined) {
@@ -789,6 +795,13 @@ export default {
       env.LEARNER_AUDIO,
       karaokeFinalization,
       env.HNS_ROOT_HEALTH_RENEWAL_ENABLED === "true",
+      env.AVATAR_CLEANUP_ENABLED === "true"
+        ? (() => {
+            if (!env.AVATAR_INGRESS || !env.AVATAR_SEALED)
+              throw new Error("Avatar cleanup requires both storage buckets");
+            return { ingress: env.AVATAR_INGRESS, sealed: env.AVATAR_SEALED };
+          })()
+        : undefined,
     );
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);

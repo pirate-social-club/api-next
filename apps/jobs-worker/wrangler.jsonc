@@ -92,6 +92,7 @@
     ]
   },
   "vars": {
+    "AVATAR_CLEANUP_ENABLED": "false",
     "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
@@ -215,6 +216,7 @@
         ]
       },
       "vars": {
+    "AVATAR_CLEANUP_ENABLED": "false",
     "TELEGRAM_ENABLED": "false",
         "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
         "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
@@ -366,6 +368,7 @@
         ]
       },
       "vars": {
+    "AVATAR_CLEANUP_ENABLED": "false",
     "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",

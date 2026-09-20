@@ -415,7 +415,13 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
               label: "identity.personas.sync-first-profile",
               text: `UPDATE persona_profiles AS profile
                       SET display_name=$2::jsonb #>> '{profile,display_name}',
-                          avatar_ref=$2::jsonb #>> '{profile,avatar_ref}',
+                          avatar_ref=CASE WHEN EXISTS (
+                            SELECT 1 FROM avatar_assets AS avatar
+                             WHERE avatar.purpose='persona'
+                               AND avatar.attached_target_id=profile.persona_id
+                               AND avatar.owner_account_id=$1
+                               AND profile.avatar_ref='/api/avatars/' || avatar.asset_id
+                          ) THEN profile.avatar_ref ELSE $2::jsonb #>> '{profile,avatar_ref}' END,
                           cover_ref=$2::jsonb #>> '{profile,cover_ref}',
                           bio=$2::jsonb #>> '{profile,bio}',
                           preferred_locale=$2::jsonb #>> '{profile,preferred_locale}',

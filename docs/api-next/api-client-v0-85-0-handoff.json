@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.85.0",
+  "sourceBranch": "feat/community-and-persona-avatar",
+  "sourceBase": "81350aa85b9dc3f9f532d2bfe4e9bbd0f2145dce",
+  "wireContract": "Optional community and persona creation avatar references, explicit attachment outcomes, authenticated upload reservations and finalization, revocable JPEG delivery and scoped moderator removal. Avatar authoring remains disabled until provider-backed acceptance.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.85.0.tgz",
+    "sha256": "5a9b3001412c1ef426312d4e4fd7df04f12349ecd2677c418bb0f4d8aea0a86e"
+  },
+  "validation": {
+    "status": "Local candidate gates passed; publication and provider-backed acceptance pending",
+    "passed": [
+      "bun run check",
+      "bun run test: 4548 unit passed, 1 skipped; 20 Node and 189 Worker tests passed",
+      "PostgreSQL 17: isolated partition and all four general partitions; 851 passed and 7 skipped after focused schema-inventory correction",
+      "Avatar PostgreSQL lifecycle: 9 passed, including production wallet confirmation and operator CLI preview/apply",
+      "PostgreSQL 18.6 shape and staging-lock reset: 5 passed",
+      "41 PostgreSQL completion markers verified and fresh for this run",
+      "Generated PostgreSQL baseline freshness",
+      "Exact-base OpenAPI comparison against 81350aa85b9dc3f9f532d2bfe4e9bbd0f2145dce; landed creator-removal waivers retired",
+      "Client artifact and provenance verification",
+      "Local candidate secret-boundary audit: 59 changed paths, zero violations",
+      "Independent Luna xhigh storage and attachment review; findings resolved or explicitly gated for live acceptance"
+    ],
+    "skipDisposition": "The unit PostgreSQL 18 shape skip and four PostgreSQL 17 disposable-reset skips were exercised separately on PostgreSQL 18.6. Three HNS regtest-dependent cases remain skipped because no regtest node was supplied.",
+    "notes": "The initial full PostgreSQL run found stale expected table and column inventories in the foundation test; both were corrected and the complete 14-test foundation suite passed. Final avatar suite reran after the wallet and operator changes. The local Images/R2 integration uses real workerd bindings. Host-loopback PostgreSQL containers were used after Docker bridge connections failed; all task-owned servers were stopped. Existing Biome warnings and one reasoned script-typecheck deferral remain.",
+    "remaining": [
+      "Authorized publication and hosted required checks",
+      "Private R2 buckets, Images binding, signing credentials and CORS provisioning",
+      "Live browser PUT with signed content length, provider failure, removal and cleanup acceptance",
+      "Solid client consumption and upload wiring after backend merge",
+      "Nationality-only member policy tranche"
+    ],
+    "operationalBoundary": "Authoring and cleanup flags default off. No cloud resources, deployments or production migrations were performed. Production sessions cannot issue admin principals; removal is available through the database-owner operator CLI until scoped admin issuance exists."
+  }
+}

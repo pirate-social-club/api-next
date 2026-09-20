@@ -6827,6 +6827,16 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_creation_avatar_outcomes() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.status='committed' AND NEW.avatar_outcomes IS DISTINCT FROM OLD.avatar_outcomes THEN
+    RAISE EXCEPTION 'committed avatar outcomes are immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_dance_attempt() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -23385,6 +23395,39 @@ CREATE TABLE assertions (
     CONSTRAINT assertions_identifiers_not_blank CHECK (((btrim(claim_id) <> ''::text) AND (btrim(assurance) <> ''::text)))
 );
 
+CREATE TABLE avatar_assets (
+    asset_id text NOT NULL,
+    owner_account_id text NOT NULL,
+    purpose text NOT NULL,
+    idempotency_key text NOT NULL,
+    content_type text NOT NULL,
+    byte_length integer NOT NULL,
+    state text DEFAULT 'reserved'::text NOT NULL,
+    intent_id text,
+    ingress_key text NOT NULL,
+    sealed_key text NOT NULL,
+    digest text,
+    width integer,
+    height integer,
+    normalized_bytes integer,
+    attached_target_id text,
+    moderation_status text DEFAULT 'unscanned'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone DEFAULT (clock_timestamp() + '24:00:00'::interval) NOT NULL,
+    upload_expires_at timestamp with time zone DEFAULT (clock_timestamp() + '00:10:00'::interval) NOT NULL,
+    next_cleanup_at timestamp with time zone DEFAULT (clock_timestamp() + '24:00:00'::interval) NOT NULL,
+    cleanup_attempts integer DEFAULT 0 NOT NULL,
+    CONSTRAINT avatar_assets_asset_id_check CHECK ((asset_id ~ '^avatar-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)),
+    CONSTRAINT avatar_assets_byte_length_check CHECK (((byte_length >= 1) AND (byte_length <= 5242880))),
+    CONSTRAINT avatar_assets_check CHECK (((state <> ALL (ARRAY['ready'::text, 'attached'::text])) OR COALESCE(((digest ~ '^[0-9a-f]{64}$'::text) AND ((width >= 1) AND (width <= 512)) AND ((height >= 1) AND (height <= 512)) AND ((normalized_bytes >= 1) AND (normalized_bytes <= 5242880))), false))),
+    CONSTRAINT avatar_assets_check1 CHECK (((state <> 'attached'::text) OR ((intent_id IS NOT NULL) AND (attached_target_id IS NOT NULL)))),
+    CONSTRAINT avatar_assets_content_type_check CHECK ((content_type = ANY (ARRAY['image/jpeg'::text, 'image/png'::text, 'image/webp'::text]))),
+    CONSTRAINT avatar_assets_idempotency_key_check CHECK (((length(idempotency_key) >= 1) AND (length(idempotency_key) <= 128))),
+    CONSTRAINT avatar_assets_moderation_status_check CHECK ((moderation_status = ANY (ARRAY['unscanned'::text, 'removed'::text]))),
+    CONSTRAINT avatar_assets_purpose_check CHECK ((purpose = ANY (ARRAY['community'::text, 'persona'::text]))),
+    CONSTRAINT avatar_assets_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'ready'::text, 'attached'::text, 'deleting'::text, 'removed'::text])))
+);
+
 CREATE TABLE comment_moderation_actions (
     action_id text NOT NULL,
     community_id text NOT NULL,
@@ -23498,6 +23541,8 @@ CREATE TABLE communities (
     description text,
     canonical_route_binding_id text,
     route_authority_version text DEFAULT 'legacy_slug_v1'::text NOT NULL,
+    avatar_ref text,
+    CONSTRAINT communities_avatar_ref_check CHECK (((avatar_ref IS NULL) OR (avatar_ref ~ '^/api/avatars/avatar-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text))),
     CONSTRAINT communities_human_verification_lane_check CHECK (((human_verification_lane IS NULL) OR (human_verification_lane = ANY (ARRAY['very'::text, 'self'::text])))),
     CONSTRAINT communities_id_not_blank CHECK ((btrim(community_id) <> ''::text)),
     CONSTRAINT communities_membership_mode_check CHECK ((membership_mode = ANY (ARRAY['open'::text, 'request'::text, 'gated'::text]))),
@@ -23799,6 +23844,7 @@ CREATE TABLE community_creation_intents (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     creation_contract_version text DEFAULT 'legacy_slug_v1'::text NOT NULL,
     minted_persona_id text,
+    avatar_outcomes jsonb,
     CONSTRAINT community_creation_intents_canonical_policy_hash_check CHECK ((canonical_policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_creation_intents_canonical_policy_revision_check CHECK ((canonical_policy_revision > 0)),
     CONSTRAINT community_creation_intents_committed_shape CHECK ((((status = 'committed'::text) AND (committed_community_id IS NOT NULL) AND (committed_resource_href IS NOT NULL) AND (committed_resource_href ~~ '/%'::text)) OR ((status <> 'committed'::text) AND (committed_community_id IS NULL) AND (committed_resource_href IS NULL)))),
@@ -23808,12 +23854,13 @@ CREATE TABLE community_creation_intents (
     CONSTRAINT community_creation_intents_draft_check CHECK ((jsonb_typeof(draft) = 'object'::text)),
     CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND ((verification_provider_id IS NULL) OR ((btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)))) AND ((provider_configuration_ref IS NULL) OR ((btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)))) AND ((provider_configuration_version IS NULL) OR ((btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))))),
     CONSTRAINT community_creation_intents_optional_route_v2_committed_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR (status <> 'committed'::text) OR ((committed_community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (committed_resource_href = ('/c/'::text || committed_community_id))))),
-    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND ((((((draft - 'persona'::text) - 'name'::text) - 'description'::text) - 'policy'::text) - 'public_name'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona'::text)) = 'object'::text) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'kind'::text)) = 'string'::text) AND (((draft -> 'persona'::text) ->> 'kind'::text) = ANY (ARRAY['existing'::text, 'create_new'::text])) AND (((((draft -> 'persona'::text) ->> 'kind'::text) = 'existing'::text) AND ((((draft -> 'persona'::text) - 'kind'::text) - 'persona_id'::text) = '{}'::jsonb) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'persona_id'::text)) = 'string'::text) AND (btrim(((draft -> 'persona'::text) ->> 'persona_id'::text)) <> ''::text)) OR ((((draft -> 'persona'::text) ->> 'kind'::text) = 'create_new'::text) AND (((draft -> 'persona'::text) - 'kind'::text) = '{}'::jsonb))) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND ((NOT (draft ? 'public_name'::text)) OR ((jsonb_typeof((draft -> 'public_name'::text)) = 'string'::text) AND ((length((draft ->> 'public_name'::text)) >= 1) AND (length((draft ->> 'public_name'::text)) <= 80)) AND (btrim((draft ->> 'public_name'::text)) <> ''::text))) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
+    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND ((((((((draft - 'persona'::text) - 'name'::text) - 'description'::text) - 'policy'::text) - 'public_name'::text) - 'community_avatar_ref'::text) - 'persona_avatar_ref'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona'::text)) = 'object'::text) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'kind'::text)) = 'string'::text) AND (((draft -> 'persona'::text) ->> 'kind'::text) = ANY (ARRAY['existing'::text, 'create_new'::text])) AND (((((draft -> 'persona'::text) ->> 'kind'::text) = 'existing'::text) AND ((((draft -> 'persona'::text) - 'kind'::text) - 'persona_id'::text) = '{}'::jsonb) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'persona_id'::text)) = 'string'::text) AND (btrim(((draft -> 'persona'::text) ->> 'persona_id'::text)) <> ''::text)) OR ((((draft -> 'persona'::text) ->> 'kind'::text) = 'create_new'::text) AND (((draft -> 'persona'::text) - 'kind'::text) = '{}'::jsonb))) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND ((NOT (draft ? 'public_name'::text)) OR ((jsonb_typeof((draft -> 'public_name'::text)) = 'string'::text) AND ((length((draft ->> 'public_name'::text)) >= 1) AND (length((draft ->> 'public_name'::text)) <= 80)) AND (btrim((draft ->> 'public_name'::text)) <> ''::text))) AND ((NOT (draft ? 'community_avatar_ref'::text)) OR COALESCE(((jsonb_typeof((draft -> 'community_avatar_ref'::text)) = 'string'::text) AND ((draft ->> 'community_avatar_ref'::text) ~ '^avatar-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)), false)) AND ((NOT (draft ? 'persona_avatar_ref'::text)) OR COALESCE(((jsonb_typeof((draft -> 'persona_avatar_ref'::text)) = 'string'::text) AND ((draft ->> 'persona_avatar_ref'::text) ~ '^avatar-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)), false)) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
     CONSTRAINT community_creation_intents_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_creation_intents_revision_check CHECK ((revision > 0)),
     CONSTRAINT community_creation_intents_route_v1_committed_href CHECK (((creation_contract_version <> 'route_v1'::text) OR (status <> 'committed'::text) OR (committed_resource_href ~~ '/c/%'::text))),
     CONSTRAINT community_creation_intents_route_v1_draft_shape CHECK (((creation_contract_version <> 'route_v1'::text) OR ((NOT (draft ? 'slug'::text)) AND (jsonb_typeof((draft -> 'route_request'::text)) = 'object'::text) AND ((draft -> 'route_request'::text) ? 'family'::text) AND ((draft -> 'route_request'::text) ? 'root_label'::text) AND ((((draft -> 'route_request'::text) - 'family'::text) - 'root_label'::text) = '{}'::jsonb) AND (((draft -> 'route_request'::text) ->> 'family'::text) = ANY (ARRAY['hns'::text, 'spaces'::text])) AND (is_community_route_root_label(((draft -> 'route_request'::text) ->> 'family'::text), ((draft -> 'route_request'::text) ->> 'root_label'::text)) IS TRUE)))),
-    CONSTRAINT community_creation_intents_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'verification_required'::text, 'commit_ready'::text, 'committed'::text, 'quota_exceeded'::text, 'gate_unsupported'::text, 'expired'::text, 'cancelled'::text])))
+    CONSTRAINT community_creation_intents_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'verification_required'::text, 'commit_ready'::text, 'committed'::text, 'quota_exceeded'::text, 'gate_unsupported'::text, 'expired'::text, 'cancelled'::text]))),
+    CONSTRAINT creation_avatar_outcomes_shape CHECK (((avatar_outcomes IS NULL) OR COALESCE(((creation_contract_version = 'optional_route_v2'::text) AND (status = 'committed'::text) AND (jsonb_typeof(avatar_outcomes) = 'object'::text) AND (avatar_outcomes ?& ARRAY['community'::text, 'persona'::text]) AND (((avatar_outcomes - 'community'::text) - 'persona'::text) = '{}'::jsonb) AND ((avatar_outcomes ->> 'community'::text) = ANY (ARRAY['not_requested'::text, 'attached'::text, 'omitted_unavailable'::text])) AND ((avatar_outcomes ->> 'persona'::text) = ANY (ARRAY['not_requested'::text, 'attached'::text, 'omitted_unavailable'::text, 'preserved_existing'::text]))), false)))
 );
 
 CREATE TABLE community_creation_quota_approvals (
@@ -32579,6 +32626,18 @@ ALTER TABLE ONLY assertions
 ALTER TABLE ONLY assertions
     ADD CONSTRAINT assertions_pkey PRIMARY KEY (assertion_id);
 
+ALTER TABLE ONLY avatar_assets
+    ADD CONSTRAINT avatar_assets_ingress_key_key UNIQUE (ingress_key);
+
+ALTER TABLE ONLY avatar_assets
+    ADD CONSTRAINT avatar_assets_owner_account_id_idempotency_key_key UNIQUE (owner_account_id, idempotency_key);
+
+ALTER TABLE ONLY avatar_assets
+    ADD CONSTRAINT avatar_assets_pkey PRIMARY KEY (asset_id);
+
+ALTER TABLE ONLY avatar_assets
+    ADD CONSTRAINT avatar_assets_sealed_key_key UNIQUE (sealed_key);
+
 ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_actor_key_unique UNIQUE (case_ref, actor_user_id, idempotency_key);
 
@@ -34992,6 +35051,12 @@ CREATE INDEX assertions_binding_claim_idx ON assertions USING btree (binding_gro
 
 CREATE INDEX assertions_user_claim_observed_idx ON assertions USING btree (user_id, claim_id, observed_at DESC);
 
+CREATE INDEX avatar_assets_cleanup ON avatar_assets USING btree (next_cleanup_at) WHERE (state <> 'removed'::text);
+
+CREATE INDEX avatar_assets_owner_created ON avatar_assets USING btree (owner_account_id, created_at);
+
+CREATE INDEX avatar_assets_unscanned ON avatar_assets USING btree (created_at, asset_id) WHERE (moderation_status = 'unscanned'::text);
+
 CREATE UNIQUE INDEX comment_moderation_cases_open_source_submission_unique ON comment_moderation_cases USING btree (source, submission_id) WHERE (status = 'open'::text);
 
 CREATE INDEX comment_moderation_cases_open_target_idx ON comment_moderation_cases USING btree (community_id, comment_id, created_at, case_ref) WHERE (status = 'open'::text);
@@ -35761,6 +35826,8 @@ CREATE TRIGGER community_route_revalidation_start_guard_owner_delete BEFORE DELE
 CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON community_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
 
 CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON community_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
+
+CREATE TRIGGER creation_avatar_outcomes_guard BEFORE UPDATE ON community_creation_intents FOR EACH ROW EXECUTE FUNCTION guard_creation_avatar_outcomes();
 
 CREATE CONSTRAINT TRIGGER creation_intent_requirement_cardinality AFTER INSERT OR UPDATE ON community_creation_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_creation_requirement_cardinality();
 
@@ -36684,6 +36751,12 @@ ALTER TABLE ONLY assertions
 
 ALTER TABLE ONLY assertions
     ADD CONSTRAINT assertions_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY avatar_assets
+    ADD CONSTRAINT avatar_assets_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY avatar_assets
+    ADD CONSTRAINT avatar_assets_owner_account_id_intent_id_fkey FOREIGN KEY (owner_account_id, intent_id) REFERENCES community_creation_intents(actor_id, intent_id);
 
 ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES comment_moderation_cases(community_id, case_ref);

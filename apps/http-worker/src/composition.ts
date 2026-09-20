@@ -57,6 +57,8 @@ import { compileAccountAgeVerificationPolicy } from "@pirate/domain";
 import { makeControlPlaneAccountAgeVerification } from "@pirate/platform-cf/account-age-verification";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
+import { type AvatarBindings, makeAvatarStorage } from "@pirate/platform-cf/avatar-storage";
+import { makeAvatarStore } from "@pirate/platform-cf/avatar-store";
 import { makeCommentThreadStore } from "@pirate/platform-cf/comment-thread-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
@@ -211,6 +213,7 @@ import {
 } from "../../../packages/platform-cf/src/telegram-runtime.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { assertSupportedAuthPolicies, supportedAuthPolicy } from "./auth-policy.ts";
+import { makeAvatarHandlers } from "./avatar-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommentThreadHandler } from "./comment-thread-handler.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
@@ -392,6 +395,14 @@ export interface HttpWorkerBindings
    * preflight and reserve but not start a submission.
    */
   readonly VIDEO_SONG_REFERENCE_ENABLED?: string;
+  readonly AVATAR_AUTHORING_ENABLED?: string;
+  readonly AVATAR_INGRESS?: AvatarBindings["ingress"];
+  readonly AVATAR_SEALED?: AvatarBindings["sealed"];
+  readonly AVATAR_IMAGES?: AvatarBindings["images"];
+  readonly AVATAR_R2_ACCOUNT_ID?: string;
+  readonly AVATAR_R2_BUCKET_NAME?: string;
+  readonly AVATAR_R2_ACCESS_KEY_ID?: string;
+  readonly AVATAR_R2_SECRET_ACCESS_KEY?: string;
   readonly MEDIA_INGRESS_R2_ACCOUNT_ID?: string;
   readonly MEDIA_INGRESS_R2_BUCKET_NAME?: string;
   readonly MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID?: string;
@@ -1490,6 +1501,44 @@ export async function createProductionHttpWorker(
     Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
   const publicProfile = makePublicProfileHandler({ publicProfileStore });
 
+  const avatarAuthoring = bindings.AVATAR_AUTHORING_ENABLED === "true";
+  if (
+    bindings.AVATAR_AUTHORING_ENABLED !== undefined &&
+    !["true", "false"].includes(bindings.AVATAR_AUTHORING_ENABLED)
+  )
+    throw new Error("Invalid AVATAR_AUTHORING_ENABLED");
+  const avatarBindings: AvatarBindings | null = bindings.AVATAR_SEALED
+    ? {
+        sealed: bindings.AVATAR_SEALED,
+        ...(bindings.AVATAR_INGRESS ? { ingress: bindings.AVATAR_INGRESS } : {}),
+        ...(bindings.AVATAR_IMAGES ? { images: bindings.AVATAR_IMAGES } : {}),
+        ...(bindings.AVATAR_R2_ACCOUNT_ID &&
+        bindings.AVATAR_R2_BUCKET_NAME &&
+        bindings.AVATAR_R2_ACCESS_KEY_ID &&
+        bindings.AVATAR_R2_SECRET_ACCESS_KEY
+          ? {
+              signing: {
+                accountId: bindings.AVATAR_R2_ACCOUNT_ID,
+                bucket: bindings.AVATAR_R2_BUCKET_NAME,
+                accessKeyId: bindings.AVATAR_R2_ACCESS_KEY_ID,
+                secretAccessKey: bindings.AVATAR_R2_SECRET_ACCESS_KEY,
+              },
+            }
+          : {}),
+      }
+    : null;
+  if (
+    avatarAuthoring &&
+    (!avatarBindings?.ingress || !avatarBindings.images || !avatarBindings.signing)
+  )
+    throw new Error(
+      "Avatar authoring requires isolated storage, Images and upload signing bindings",
+    );
+  const avatarHandlers = makeAvatarHandlers(
+    makeAvatarStore(controlPlane),
+    avatarBindings ? makeAvatarStorage(avatarBindings) : null,
+    avatarAuthoring,
+  );
   const worker = createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
     hnsCommunityAppApi,
@@ -1503,6 +1552,7 @@ export async function createProductionHttpWorker(
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
       }),
       ...communityCreationHandlers,
+      ...avatarHandlers,
       ...canonicalCommunityRouteHandlers,
       ...publicPostRouteHandlers,
       ...namespaceOwnershipHandlers,
@@ -1549,6 +1599,12 @@ export async function createProductionHttpWorker(
             ) {
               return;
             }
+            return yield* new AuthError({ message: "Authorization failed" });
+          }
+          if (
+            policy.kind === "admin" &&
+            (input.principal?.kind !== "admin" || !input.principal.scopes?.includes(policy.scope))
+          ) {
             return yield* new AuthError({ message: "Authorization failed" });
           }
           yield* authorizeSession({

@@ -23,6 +23,8 @@
     "scripts/postgres-foundation-table-catalog.ts",
     "scripts/postgres-test-suite-manifest.ts",
     "scripts/reconcile-content-ratings.ts",
+    "scripts/remove-avatar.ts",
+    "scripts/remove-avatar.test.ts",
     "scripts/review-study-translation-corpus-dual-ai.ts",
     "scripts/run-postgres-tests.ts",
     "scripts/secret-boundary-check.ts",

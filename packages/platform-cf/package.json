@@ -167,7 +167,9 @@
     "./video-safety-evidence-repository": "./src/video-safety-evidence-repository.ts",
     "./comment-thread-repository": "./src/comment-thread-repository.ts",
     "./handle-nationality-authoring-repository": "./src/handle-nationality-authoring-repository.ts",
-    "./handle-nationality-qualification-repository": "./src/handle-nationality-qualification-repository.ts"
+    "./handle-nationality-qualification-repository": "./src/handle-nationality-qualification-repository.ts",
+    "./avatar-store": "./src/avatar-store.ts",
+    "./avatar-storage": "./src/avatar-storage.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",
