@@ -32,8 +32,9 @@ const LYRICS_REVISION = 1;
 const CANONICAL_AUDIO_SHA256 = "a".repeat(64);
 // The browser specs partition the manifest so no two spec files share an
 // account (and therefore a pinned timezone and review schedule): study-journey
-// uses 0-5, karaoke-journey 6-11, and study-entry 12-19.
-const LEARNER_COUNT = Number(process.env.HARNESS_LEARNER_COUNT ?? "20");
+// uses 0-5, karaoke-journey 6-11, study-entry 12-19, and the feed playback
+// policy journey uses 20-23.
+const LEARNER_COUNT = Number(process.env.HARNESS_LEARNER_COUNT ?? "24");
 
 const learnerAccountId = (index: number): string =>
   `usr_harness_learner_${String(index).padStart(2, "0")}`;

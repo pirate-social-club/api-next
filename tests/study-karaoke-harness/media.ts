@@ -60,8 +60,14 @@ if (!existsSync(playlistPath)) {
     "2",
     "-hls_playlist_type",
     "vod",
+    // fMP4 segments keep the transport stream from using a `.ts` extension,
+    // which would otherwise enter TypeScript tooling inside the harness.
+    "-hls_segment_type",
+    "fmp4",
+    "-hls_fmp4_init_filename",
+    "init.mp4",
     "-hls_segment_filename",
-    path.join(mediaDirectory, "seg_%03d.ts"),
+    path.join(mediaDirectory, "seg_%03d.m4s"),
     playlistPath,
   ]);
 }
@@ -108,8 +114,8 @@ if (!existsSync(certificatePath) || !existsSync(keyPath)) {
 const contentType = (name: string): string =>
   name.endsWith(".m3u8")
     ? "application/vnd.apple.mpegurl"
-    : name.endsWith(".ts")
-      ? "video/mp2t"
+    : name.endsWith(".m4s") || name.endsWith(".mp4")
+      ? "video/mp4"
       : "image/jpeg";
 
 const server = createServer(
