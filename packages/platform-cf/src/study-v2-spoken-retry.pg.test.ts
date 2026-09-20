@@ -809,6 +809,33 @@ suite("Study v2 session start concurrency", () => {
     });
   }, 60_000);
 
+  test("a distinct key while the schedule is not due is refused without a session", async () => {
+    await withSchema("start-not-due", async ({ admin, driver }) => {
+      const first = await driver.startRaw({
+        idempotencyKey: "session-not-due-1",
+        requestHash: hex("session-not-due-1"),
+        sessionId: "study-session-not-due-1",
+      });
+      expect(first.session_id).toBe("study-session-not-due-1");
+      // A start creates the account's card schedule; while those items are not
+      // due, a different key cannot start another lesson and must not persist
+      // a second session. This is the server-side state behind the start
+      // conflicts the browser suite saw when a concurrent consumer had already
+      // started the account.
+      await expect(
+        driver.startRaw({
+          idempotencyKey: "session-not-due-2",
+          requestHash: hex("session-not-due-2"),
+          sessionId: "study-session-not-due-2",
+        }),
+      ).rejects.toMatchObject({ reason: "insufficient-exercises" });
+      const stored = await admin.query(
+        `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
+      );
+      expect((stored.rows[0] as { n: number }).n).toBe(1);
+    });
+  }, 60_000);
+
   test("a distinct key creates a later session once the schedule is due again", async () => {
     await withSchema("start-later", async ({ admin, driver }) => {
       const first = await driver.startRaw({
