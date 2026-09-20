@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.84.0",
+  "sourceBranch": "feat/community-creation-creator-verification-removal",
+  "sourceBase": "bd7b4164099309f4bd3fa589172756a9bf13e03e",
+  "wireContract": "Remove creator nationality requirement and creation nationality start/wait actions. Member nationality policy authoring and join/claim verification remain unchanged. Historical human creator entries remain readable.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.84.0.tgz",
+    "sha256": "fa8038a1c3cc8bd9847b70c10ef56bc648259956b209ecafd0331770ca36b87a"
+  },
+  "validation": {
+    "status": "local gates passed; publication and staging cutover pending",
+    "validatedSourceCommit": "773e6f599b9e57ef9933b73b260e3f2a2d1d7c92",
+    "passed": [
+      "bun run check",
+      "bun run test: 4532 unit passed, 1 skipped; 20 Node and 188 Worker tests passed",
+      "PostgreSQL 17: isolated partition plus all four general partitions, 842 passed and 7 skipped",
+      "PostgreSQL 18.6: schema-shape test and staging-shaped disposable-reset suite, 5 passed",
+      "41 PostgreSQL completion markers verified and fresh for this run",
+      "generated PostgreSQL baseline freshness",
+      "exact-base OpenAPI comparison with ratified clean-break waivers",
+      "local candidate secret-boundary audit: zero violations",
+      "CI partition and secret-boundary unit tests: 26 passed"
+    ],
+    "postgresHarness": {
+      "version": "17.11",
+      "network": "host loopback TCP; independent server per partition",
+      "storage": "disposable tmpfs with fsync enabled",
+      "maxLocksPerTransaction": 512,
+      "maxConnections": 100,
+      "postgres18StagingShape": "18.6, max_locks_per_transaction=64, max_connections=25, max_prepared_transactions=0"
+    },
+    "skipDisposition": "The unit PostgreSQL 18 shape skip and four PostgreSQL 17-run disposable-reset skips were exercised in the separate PostgreSQL 18.6 runs. Three HNS regtest-dependent cases remain skipped because no regtest node was supplied.",
+    "remaining": [
+      "Hosted required checks after authorized publication",
+      "Authorized staging before/after flag and intent-count readback",
+      "Worker/schema deployment under the cutover runbook"
+    ],
+    "notes": "0.83.0 is reserved by the existing HNS capability lane. Local artifact only. The initial Unix-socket harness was rejected by recovery admission and suffered checkpoint-bound cleanup timeouts. Independent host-network tmpfs servers resolved both. The replay regression changed weighted shard ownership; the song-video render-host sentinel upload now follows its computed CI shard."
+  }
+}

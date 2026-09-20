@@ -15954,6 +15954,17 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION reject_retired_creation_nationality_write() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.action_kind = 'community_creation' THEN
+    RAISE EXCEPTION 'creator nationality verification is retired';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION reject_reward_append_only_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -36332,6 +36343,10 @@ CREATE CONSTRAINT TRIGGER namespace_ownership_start_reservation_coherence AFTER 
 CREATE TRIGGER nationality_ceremony_attempt_append_only BEFORE DELETE OR UPDATE ON nationality_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_nationality_ceremony_mutation();
 
 CREATE TRIGGER nationality_ceremony_attempt_insert_guard BEFORE INSERT ON nationality_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_nationality_ceremony_attempt_insert();
+
+CREATE TRIGGER nationality_creation_attempt_retired BEFORE INSERT ON nationality_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_retired_creation_nationality_write();
+
+CREATE TRIGGER nationality_creation_state_retired BEFORE INSERT OR UPDATE ON nationality_requirement_states FOR EACH ROW EXECUTE FUNCTION reject_retired_creation_nationality_write();
 
 CREATE TRIGGER nationality_requirement_state_provider_guard BEFORE INSERT OR UPDATE ON nationality_requirement_states FOR EACH ROW EXECUTE FUNCTION validate_nationality_requirement_state_providers();
 
