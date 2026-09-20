@@ -13,7 +13,6 @@ import {
   communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  nationalityProviderBindingHash,
   VERY_WEB_CONFIGURATION_REFERENCE,
   VERY_WEB_CONFIGURATION_VERSION,
   VERY_WEB_ISSUER,
@@ -23,16 +22,6 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
-import {
-  COMMUNITY_CREATION_INTENT_TTL_SECONDS,
-  compileOptionalRouteDraft,
-} from "./community-creation-repository.ts";
-import {
-  NationalityCeremonyDataInvalid,
-  resolveOrIssueNationalityCeremony,
-} from "./nationality-ceremony-store.ts";
-
-type Row = Readonly<Record<string, unknown>>;
 
 type IntentRow = Readonly<{
   readonly intent_id: unknown;
@@ -72,26 +61,6 @@ type IntentRow = Readonly<{
   readonly ceremony_active: unknown;
 }>;
 
-type NationalityIntentRow = Readonly<{
-  readonly ceremony_intent_id: unknown;
-  readonly actor_id: unknown;
-  readonly intent_id: unknown;
-  readonly generation: unknown;
-  readonly requirement_hash: unknown;
-  readonly provider_id: unknown;
-  readonly provider_binding_hash: unknown;
-  readonly state_actor_id: unknown;
-  readonly state_status: unknown;
-  readonly state_generation: unknown;
-  readonly state_requirement_hash: unknown;
-  readonly current_ceremony_intent_id: unknown;
-  readonly intent_status: unknown;
-  readonly intent_actor_id: unknown;
-  readonly intent_draft: unknown;
-  readonly creation_contract_version: unknown;
-  readonly intent_active: unknown;
-}>;
-
 const CANONICAL_REQUIREMENTS = [
   { claim_id: "credential.subject_unique" },
   { claim_id: "human.personhood" },
@@ -107,47 +76,12 @@ export type CommunityCreationIntentResolverRuntime = Readonly<{
   ) => Effect.Effect<A, VerificationStartStorageFailed>;
 }>;
 
-export type CommunityCreationIntentResolverOptions = Readonly<{
-  /** Server-resolved nationality authoring; absent keeps nationality fail-closed. */
-  readonly nationality_authoring?: unknown;
-  readonly nationality_ceremony_ttl_seconds?: number;
-  readonly next_ceremony_intent_id?: () => string;
-}>;
-
 function storageFailure(): VerificationStartStorageFailed {
   return new VerificationStartStorageFailed();
 }
 
 function validEnvironment(value: string): boolean {
   return value.length > 0 && value.trim() === value && !value.includes("\u0000");
-}
-
-function canonicalId(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.trim() === value &&
-    !value.includes("\u0000")
-  );
-}
-
-function positiveInteger(value: unknown): number | null {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && /^[0-9]+$/u.test(value)
-        ? Number(value)
-        : Number.NaN;
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function jsonValue(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
-  }
 }
 
 function oneRow<RowType>(result: ControlPlaneResult<RowType>): RowType | null | undefined {
@@ -304,166 +238,9 @@ const HUMAN_RESOLVE_SQL = {
   readonly: false,
 } as const;
 
-/**
- * Resolves the creator nationality ceremony identified by its issued ceremony
- * intent id. When the requested provider already holds the current pending
- * attempt the plan replays; a provider switch advances the generation through
- * the append-only ceremony store and rebinds, which supersedes the caller's
- * ceremony id so the generic start revalidation refuses the stale start.
- */
-function resolveNationality(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actor_id: string;
-    readonly intent_id: string;
-    readonly provider_id: string;
-  }>,
-  options: CommunityCreationIntentResolverOptions,
-): Effect.Effect<unknown, ControlPlaneError | VerificationStartStorageFailed> {
-  return Effect.gen(function* () {
-    if (!canonicalId(input.actor_id) || !canonicalId(input.intent_id)) {
-      return yield* Effect.fail(storageFailure());
-    }
-    const result = yield* transaction.execute<NationalityIntentRow>({
-      label: "community.creation.resolve-nationality-intent",
-      text: `SELECT attempt.ceremony_intent_id,
-                    attempt.actor_id,
-                    attempt.intent_id,
-                    attempt.generation,
-                    attempt.requirement_hash,
-                    attempt.provider_id,
-                    attempt.provider_binding_hash,
-                    state.actor_id AS state_actor_id,
-                    state.status AS state_status,
-                    state.generation AS state_generation,
-                    state.requirement_hash AS state_requirement_hash,
-                    state.current_ceremony_intent_id,
-                    intent.status AS intent_status,
-                    intent.actor_id AS intent_actor_id,
-                    intent.draft AS intent_draft,
-                    intent.creation_contract_version,
-                    intent.expires_at > clock_timestamp() AS intent_active
-               FROM nationality_ceremony_attempts AS attempt
-               JOIN nationality_requirement_states AS state
-                 ON state.action_kind = attempt.action_kind
-                AND state.intent_id = attempt.intent_id
-                AND state.requirement_kind = attempt.requirement_kind
-               JOIN community_creation_intents AS intent
-                 ON intent.intent_id = attempt.intent_id
-                AND intent.actor_id = attempt.actor_id
-              WHERE attempt.ceremony_intent_id = $1
-                AND attempt.actor_id = $2
-                AND attempt.action_kind = 'community_creation'
-                AND attempt.requirement_kind = 'nationality'
-              FOR UPDATE OF state`,
-      values: [input.intent_id, input.actor_id],
-      readonly: false,
-    });
-    const row = oneRow(result);
-    if (row === undefined) return yield* Effect.fail(storageFailure());
-    if (row === null) return null;
-
-    const generation = positiveInteger(row.generation);
-    const stateGeneration = positiveInteger(row.state_generation);
-    if (
-      row.actor_id !== input.actor_id ||
-      row.state_actor_id !== input.actor_id ||
-      row.intent_actor_id !== input.actor_id ||
-      row.creation_contract_version !== "optional_route_v2" ||
-      row.intent_status !== "verification_required" ||
-      row.intent_active !== true ||
-      row.state_status !== "pending" ||
-      generation === null ||
-      stateGeneration === null ||
-      generation !== stateGeneration ||
-      row.current_ceremony_intent_id !== input.intent_id ||
-      row.state_requirement_hash !== row.requirement_hash ||
-      !canonicalId(row.intent_id)
-    ) {
-      return null;
-    }
-
-    const draft = jsonValue(row.intent_draft);
-    const compiled =
-      draft !== null && typeof draft === "object" && !Array.isArray(draft)
-        ? compileOptionalRouteDraft((draft as Row).policy, options.nationality_authoring)
-        : null;
-    if (compiled === null || compiled.nationality === undefined) return null;
-    const nationality = compiled.nationality;
-    if (nationality.requirementHash !== row.state_requirement_hash) return null;
-    const selected = nationality.providerBindings.find(
-      (binding) => binding.provider_id === input.provider_id,
-    );
-    if (selected === undefined) return null;
-    const selectedBindingHash = nationalityProviderBindingHash(selected);
-    if (
-      row.provider_id === input.provider_id &&
-      row.provider_binding_hash !== selectedBindingHash
-    ) {
-      return null;
-    }
-
-    const ttlSeconds =
-      options.nationality_ceremony_ttl_seconds ?? COMMUNITY_CREATION_INTENT_TTL_SECONDS;
-    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
-      return yield* Effect.fail(storageFailure());
-    }
-    const storeOptions =
-      options.next_ceremony_intent_id === undefined
-        ? {}
-        : { nextCeremonyIntentId: options.next_ceremony_intent_id };
-    const action = yield* resolveOrIssueNationalityCeremony(
-      transaction,
-      {
-        actionKind: "community_creation",
-        intentId: row.intent_id,
-        actorId: input.actor_id,
-        requirementHash: row.state_requirement_hash,
-        acceptedProviderIds: ["self.pass", "zkpassport"],
-        selectedProviderId: input.provider_id,
-        selectedBinding: {
-          bindingHash: selectedBindingHash,
-          configurationKind: selected.provider_configuration.kind,
-          configurationRef: selected.provider_configuration.reference,
-          configurationVersion: selected.provider_configuration.version,
-        },
-        reservationRequest: {
-          action_kind: "community_creation",
-          actor_id: input.actor_id,
-          intent_id: row.intent_id,
-          requirement_hash: row.state_requirement_hash,
-          provider_id: input.provider_id,
-          provider_binding_hash: selectedBindingHash,
-        },
-        ttlSeconds,
-      },
-      storeOptions,
-    ).pipe(
-      Effect.mapError((error) =>
-        error instanceof NationalityCeremonyDataInvalid ? storageFailure() : error,
-      ),
-    );
-
-    const decoded = Schema.decodeUnknownOption(VerificationProviderPlanInput)({
-      method: selected.method,
-      scope: selected.scope,
-      requested_requirements: [nationality.policy.requirement],
-      requested_claim_ids: ["nationality.allowed"],
-      subject_binding_intent: "establish",
-      protocol_version: selected.protocol_version,
-      environment: selected.environment,
-      verification_purpose: { intent: "community_creation" },
-    });
-    return Option.isSome(decoded)
-      ? { ...decoded.value, resolved_intent_id: action.ceremonyIntentId }
-      : yield* Effect.fail(storageFailure());
-  });
-}
-
 export function makeCommunityCreationIntentResolver(
   runtime: CommunityCreationIntentResolverRuntime,
   environment: string,
-  options: CommunityCreationIntentResolverOptions = {},
 ): VerificationIntentResolver {
   const decodedPlan = Schema.decodeUnknownOption(VerificationProviderPlanInput)(plan(environment));
   if (!validEnvironment(environment) || Option.isNone(decodedPlan)) {
@@ -489,9 +266,9 @@ export function makeCommunityCreationIntentResolver(
             }),
           );
         }
-        return yield* runtime.withTransaction((transaction) =>
-          resolveNationality(transaction, input, options),
-        );
+        // Creation no longer issues document ceremonies. Generic join and
+        // handle-claim sessions are resolved by their own action resolvers.
+        return null;
       }),
   };
 }
@@ -500,7 +277,6 @@ export function makeCommunityCreationIntentResolver(
 export function makeControlPlaneCommunityCreationIntentResolver(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   environment: string,
-  options: CommunityCreationIntentResolverOptions = {},
 ): VerificationIntentResolver {
   return makeCommunityCreationIntentResolver(
     {
@@ -518,6 +294,5 @@ export function makeControlPlaneCommunityCreationIntentResolver(
         ),
     },
     environment,
-    options,
   );
 }

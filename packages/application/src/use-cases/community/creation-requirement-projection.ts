@@ -1,7 +1,6 @@
 import {
   type CommunityCreationRequirementsV1,
   type CommunityCreationRequirementsV2,
-  type CreationNationalityRequirementProgressV2,
   type CreationRequirementProgressV1,
   decodeCommunityCreationRequirementsV1,
   decodeCommunityCreationRequirementsV2,
@@ -55,9 +54,8 @@ export function publicCommunityCreationRequirements(
 
 export function publicOptionalRouteCommunityCreationRequirements(
   humanIdentity: CreationRequirementProgress | null,
-  nationality: CreationNationalityRequirementProgressV2 | null = null,
 ): CommunityCreationRequirementsV2 {
-  if (humanIdentity === null && nationality === null) {
+  if (humanIdentity === null) {
     return decodeCommunityCreationRequirementsV2({});
   }
   const requirements: Record<string, unknown> = {};
@@ -67,9 +65,6 @@ export function publicOptionalRouteCommunityCreationRequirements(
       throw new Error("Optional-route creation requires human identity progress");
     }
     requirements.human_identity = projected;
-  }
-  if (nationality !== null) {
-    requirements.nationality = nationality;
   }
   return decodeCommunityCreationRequirementsV2(requirements);
 }

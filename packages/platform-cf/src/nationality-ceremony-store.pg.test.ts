@@ -141,31 +141,26 @@ suite("nationality ceremony store", () => {
     completedTestCount += 1;
   }, 30_000);
 
-  test("keeps join, claim, and creator ceremonies separate per action intent", async () => {
+  test("keeps join and claim ceremonies separate and rejects retired creator ceremonies", async () => {
     await withSchema(async (connection, admin) => {
       const join = await issue(connection, requirement({ intentId: "join-intent-shared" }));
       const claim = await issue(
         connection,
         requirement({ actionKind: "handle_claim", intentId: "claim-intent-shared" }),
       );
-      const creation = await issue(
-        connection,
-        requirement({ actionKind: "community_creation", intentId: "creation-intent-shared" }),
-      );
+      await expect(
+        issue(
+          connection,
+          requirement({ actionKind: "community_creation", intentId: "creation-intent-shared" }),
+        ),
+      ).rejects.toThrow();
       expect(join).toMatchObject({ kind: "start", generation: 1 });
       expect(claim).toMatchObject({ kind: "start", generation: 1 });
-      expect(creation).toMatchObject({ kind: "start", generation: 1 });
-      expect(
-        new Set([join.ceremonyIntentId, claim.ceremonyIntentId, creation.ceremonyIntentId]).size,
-      ).toBe(3);
+      expect(join.ceremonyIntentId).not.toBe(claim.ceremonyIntentId);
       const kinds = await admin.query({
         text: `SELECT action_kind FROM nationality_requirement_states ORDER BY action_kind`,
       });
-      expect(kinds.rows.map((row) => row.action_kind)).toEqual([
-        "community_creation",
-        "community_join",
-        "handle_claim",
-      ]);
+      expect(kinds.rows.map((row) => row.action_kind)).toEqual(["community_join", "handle_claim"]);
     });
     completedTestCount += 1;
   }, 30_000);

@@ -20,7 +20,6 @@ import { startNationalityFixture } from "@pirate/testing/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
-import { enforceCreatorNationalityPolicy } from "./community-creation-repository.ts";
 import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-verification-settlement.ts";
 import { makeControlPlaneCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
@@ -741,93 +740,6 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
     completedTestCount += 1;
   }, 45_000);
 
-  test("creator activation rejects without nationality evidence and passes with it", async () => {
-    await withSchema(async (connection, admin) => {
-      const policy = nationalityPolicy(["US"]);
-      await seedHumanCommunity(admin, "community-creator-guard");
-      await seedNationalityPolicy(admin, "community-creator-guard", policy);
-
-      const rejected = Effect.scoped(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.withTransaction((transaction) =>
-            enforceCreatorNationalityPolicy(transaction, {
-              communityId: "community-creator-guard",
-              userId: "user-a",
-            }),
-          );
-        }),
-      );
-      await expect(
-        Effect.runPromise(
-          rejected.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
-        ),
-      ).rejects.toMatchObject({ _tag: "VerificationCompletionStorageFailed" });
-      const rejection = await admin.query({
-        text: `SELECT outcome FROM decision_records
-                WHERE community_id = 'community-creator-guard' AND policy_version_id = 'curated-nationality-v1'`,
-      });
-      expect(rejection.rows).toEqual([]);
-
-      await insertCompletedNationalityEvidence(admin, {
-        suffix: "creator-guard",
-        provider: "zkpassport",
-        requirement: policy.requirement,
-      });
-      const admitted = Effect.scoped(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.withTransaction((transaction) =>
-            enforceCreatorNationalityPolicy(transaction, {
-              communityId: "community-creator-guard",
-              userId: "user-a",
-            }),
-          );
-        }),
-      );
-      await expect(
-        Effect.runPromise(
-          admitted.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
-        ),
-      ).resolves.toBe(true);
-      const decisions = await admin.query({
-        text: `SELECT outcome FROM decision_records
-                WHERE community_id = 'community-creator-guard' AND policy_version_id = 'curated-nationality-v1'
-                ORDER BY created_at`,
-      });
-      expect(decisions.rows).toEqual([{ outcome: "pass" }]);
-    });
-    completedTestCount += 1;
-  }, 30_000);
-
-  test("creator activation is a no-op without a current nationality policy", async () => {
-    await withSchema(async (connection, admin) => {
-      await seedHumanCommunity(admin, "community-creator-palm-only");
-      const program = Effect.scoped(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.withTransaction((transaction) =>
-            enforceCreatorNationalityPolicy(transaction, {
-              communityId: "community-creator-palm-only",
-              userId: "user-a",
-            }),
-          );
-        }),
-      );
-      await expect(
-        Effect.runPromise(
-          program.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
-        ),
-      ).resolves.toBe(true);
-      const decisions = await admin.query({
-        text: `SELECT COUNT(*)::int AS count FROM decision_records
-                WHERE community_id = 'community-creator-palm-only' AND policy_version_id = 'curated-nationality-v1'`,
-      });
-      expect(decisions.rows[0]).toEqual({ count: 0 });
-    });
-    completedTestCount += 1;
-  }, 30_000);
-
   test("issues, fences, completes, and joins through the joiner nationality ceremony", async () => {
     await withSchema(async (connection, admin) => {
       const policy = nationalityPolicy(["US"]);
@@ -1050,7 +962,7 @@ suite("Gates v2 nationality provider alternatives and evidence loader", () => {
   }, 90_000);
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 14) {
+    if (connectionString !== undefined && completedTestCount === 12) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

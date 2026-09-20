@@ -9730,7 +9730,14 @@
                                   ]
                                 },
                                 "status": {
-                                  "$ref": "#/$defs/Union_"
+                                  "type": "string",
+                                  "enum": [
+                                    "unmet",
+                                    "pending",
+                                    "satisfied",
+                                    "failed",
+                                    "expired"
+                                  ]
                                 },
                                 "requirement_hash": {
                                   "type": "string"
@@ -9777,90 +9784,6 @@
                               "type": "null"
                             }
                           ]
-                        },
-                        "nationality": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "requirement": {
-                                  "type": "string",
-                                  "enum": [
-                                    "nationality"
-                                  ]
-                                },
-                                "status": {
-                                  "$ref": "#/$defs/Union_"
-                                },
-                                "requirement_hash": {
-                                  "type": "string"
-                                },
-                                "provider_id": {
-                                  "type": "string",
-                                  "enum": [
-                                    "self.pass",
-                                    "zkpassport"
-                                  ]
-                                },
-                                "generation": {
-                                  "type": "integer"
-                                },
-                                "ceremony_intent_id": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "satisfied_at": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "accepted_provider_ids": {
-                                  "type": "array",
-                                  "prefixItems": [
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "self.pass"
-                                      ]
-                                    },
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "zkpassport"
-                                      ]
-                                    }
-                                  ],
-                                  "maxItems": 2,
-                                  "minItems": 2
-                                }
-                              },
-                              "required": [
-                                "requirement",
-                                "status",
-                                "requirement_hash",
-                                "provider_id",
-                                "generation",
-                                "ceremony_intent_id",
-                                "satisfied_at",
-                                "accepted_provider_ids"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
                         }
                       },
                       "additionalProperties": false
@@ -9879,8 +9802,7 @@
                             "requirement": {
                               "type": "string",
                               "enum": [
-                                "human_identity",
-                                "nationality"
+                                "human_identity"
                               ]
                             },
                             "provider_id": {
@@ -9974,8 +9896,7 @@
                                 {
                                   "type": "string",
                                   "enum": [
-                                    "human_identity",
-                                    "nationality"
+                                    "human_identity"
                                   ]
                                 },
                                 {
@@ -10132,16 +10053,6 @@
                   ],
                   "additionalProperties": false,
                   "$defs": {
-                    "Union_": {
-                      "type": "string",
-                      "enum": [
-                        "unmet",
-                        "pending",
-                        "satisfied",
-                        "failed",
-                        "expired"
-                      ]
-                    },
                     "Objects_": {
                       "type": "object",
                       "properties": {
@@ -10641,7 +10552,14 @@
                                   ]
                                 },
                                 "status": {
-                                  "$ref": "#/$defs/Union_"
+                                  "type": "string",
+                                  "enum": [
+                                    "unmet",
+                                    "pending",
+                                    "satisfied",
+                                    "failed",
+                                    "expired"
+                                  ]
                                 },
                                 "requirement_hash": {
                                   "type": "string"
@@ -10688,90 +10606,6 @@
                               "type": "null"
                             }
                           ]
-                        },
-                        "nationality": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "requirement": {
-                                  "type": "string",
-                                  "enum": [
-                                    "nationality"
-                                  ]
-                                },
-                                "status": {
-                                  "$ref": "#/$defs/Union_"
-                                },
-                                "requirement_hash": {
-                                  "type": "string"
-                                },
-                                "provider_id": {
-                                  "type": "string",
-                                  "enum": [
-                                    "self.pass",
-                                    "zkpassport"
-                                  ]
-                                },
-                                "generation": {
-                                  "type": "integer"
-                                },
-                                "ceremony_intent_id": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "satisfied_at": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "accepted_provider_ids": {
-                                  "type": "array",
-                                  "prefixItems": [
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "self.pass"
-                                      ]
-                                    },
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "zkpassport"
-                                      ]
-                                    }
-                                  ],
-                                  "maxItems": 2,
-                                  "minItems": 2
-                                }
-                              },
-                              "required": [
-                                "requirement",
-                                "status",
-                                "requirement_hash",
-                                "provider_id",
-                                "generation",
-                                "ceremony_intent_id",
-                                "satisfied_at",
-                                "accepted_provider_ids"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
                         }
                       },
                       "additionalProperties": false
@@ -10790,8 +10624,7 @@
                             "requirement": {
                               "type": "string",
                               "enum": [
-                                "human_identity",
-                                "nationality"
+                                "human_identity"
                               ]
                             },
                             "provider_id": {
@@ -10885,8 +10718,7 @@
                                 {
                                   "type": "string",
                                   "enum": [
-                                    "human_identity",
-                                    "nationality"
+                                    "human_identity"
                                   ]
                                 },
                                 {
@@ -11043,16 +10875,6 @@
                   ],
                   "additionalProperties": false,
                   "$defs": {
-                    "Union_": {
-                      "type": "string",
-                      "enum": [
-                        "unmet",
-                        "pending",
-                        "satisfied",
-                        "failed",
-                        "expired"
-                      ]
-                    },
                     "Objects_": {
                       "type": "object",
                       "properties": {
@@ -11514,10 +11336,24 @@
                                       "type": "integer"
                                     },
                                     "ceremony_intent_id": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     },
                                     "satisfied_at": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -11528,76 +11364,6 @@
                                     "generation",
                                     "ceremony_intent_id",
                                     "satisfied_at"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "nationality": {
-                              "anyOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "requirement": {
-                                      "type": "string",
-                                      "enum": [
-                                        "nationality"
-                                      ]
-                                    },
-                                    "status": {
-                                      "$ref": "#/$defs/Union_1"
-                                    },
-                                    "requirement_hash": {
-                                      "type": "string"
-                                    },
-                                    "provider_id": {
-                                      "type": "string",
-                                      "enum": [
-                                        "self.pass",
-                                        "zkpassport"
-                                      ]
-                                    },
-                                    "generation": {
-                                      "type": "integer"
-                                    },
-                                    "ceremony_intent_id": {
-                                      "$ref": "#/$defs/Union_2"
-                                    },
-                                    "satisfied_at": {
-                                      "$ref": "#/$defs/Union_3"
-                                    },
-                                    "accepted_provider_ids": {
-                                      "type": "array",
-                                      "prefixItems": [
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "self.pass"
-                                          ]
-                                        },
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "zkpassport"
-                                          ]
-                                        }
-                                      ],
-                                      "maxItems": 2,
-                                      "minItems": 2
-                                    }
-                                  },
-                                  "required": [
-                                    "requirement",
-                                    "status",
-                                    "requirement_hash",
-                                    "provider_id",
-                                    "generation",
-                                    "ceremony_intent_id",
-                                    "satisfied_at",
-                                    "accepted_provider_ids"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -11623,8 +11389,7 @@
                                 "requirement": {
                                   "type": "string",
                                   "enum": [
-                                    "human_identity",
-                                    "nationality"
+                                    "human_identity"
                                   ]
                                 },
                                 "provider_id": {
@@ -11718,8 +11483,7 @@
                                     {
                                       "type": "string",
                                       "enum": [
-                                        "human_identity",
-                                        "nationality"
+                                        "human_identity"
                                       ]
                                     },
                                     {
@@ -11728,7 +11492,7 @@
                                   ]
                                 },
                                 "reason_code": {
-                                  "$ref": "#/$defs/Union_4"
+                                  "$ref": "#/$defs/Union_2"
                                 },
                                 "retry_after_seconds": {
                                   "anyOf": [
@@ -11974,7 +11738,7 @@
                                   ]
                                 },
                                 "requirement": {
-                                  "$ref": "#/$defs/Union_5"
+                                  "$ref": "#/$defs/Union_3"
                                 },
                                 "provider_id": {
                                   "type": "string",
@@ -12041,7 +11805,7 @@
                                 "requirement": {
                                   "anyOf": [
                                     {
-                                      "$ref": "#/$defs/Union_5"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     {
                                       "type": "null"
@@ -12049,7 +11813,7 @@
                                   ]
                                 },
                                 "reason_code": {
-                                  "$ref": "#/$defs/Union_4"
+                                  "$ref": "#/$defs/Union_2"
                                 },
                                 "retry_after_seconds": {
                                   "anyOf": [
@@ -12567,26 +12331,6 @@
                       ]
                     },
                     "Union_2": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_3": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_4": {
                       "type": "string",
                       "enum": [
                         "verification_pending",
@@ -12663,7 +12407,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_5": {
+                    "Union_3": {
                       "type": "string",
                       "enum": [
                         "human_identity",
@@ -12674,7 +12418,7 @@
                       "type": "object",
                       "properties": {
                         "requirement": {
-                          "$ref": "#/$defs/Union_5"
+                          "$ref": "#/$defs/Union_3"
                         },
                         "status": {
                           "$ref": "#/$defs/Union_1"
@@ -12689,10 +12433,24 @@
                           "type": "integer"
                         },
                         "ceremony_intent_id": {
-                          "$ref": "#/$defs/Union_2"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "satisfied_at": {
-                          "$ref": "#/$defs/Union_3"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -13723,7 +13481,14 @@
                                   ]
                                 },
                                 "status": {
-                                  "$ref": "#/$defs/Union_"
+                                  "type": "string",
+                                  "enum": [
+                                    "unmet",
+                                    "pending",
+                                    "satisfied",
+                                    "failed",
+                                    "expired"
+                                  ]
                                 },
                                 "requirement_hash": {
                                   "type": "string"
@@ -13770,90 +13535,6 @@
                               "type": "null"
                             }
                           ]
-                        },
-                        "nationality": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "requirement": {
-                                  "type": "string",
-                                  "enum": [
-                                    "nationality"
-                                  ]
-                                },
-                                "status": {
-                                  "$ref": "#/$defs/Union_"
-                                },
-                                "requirement_hash": {
-                                  "type": "string"
-                                },
-                                "provider_id": {
-                                  "type": "string",
-                                  "enum": [
-                                    "self.pass",
-                                    "zkpassport"
-                                  ]
-                                },
-                                "generation": {
-                                  "type": "integer"
-                                },
-                                "ceremony_intent_id": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "satisfied_at": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "accepted_provider_ids": {
-                                  "type": "array",
-                                  "prefixItems": [
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "self.pass"
-                                      ]
-                                    },
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "zkpassport"
-                                      ]
-                                    }
-                                  ],
-                                  "maxItems": 2,
-                                  "minItems": 2
-                                }
-                              },
-                              "required": [
-                                "requirement",
-                                "status",
-                                "requirement_hash",
-                                "provider_id",
-                                "generation",
-                                "ceremony_intent_id",
-                                "satisfied_at",
-                                "accepted_provider_ids"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
                         }
                       },
                       "additionalProperties": false
@@ -13872,8 +13553,7 @@
                             "requirement": {
                               "type": "string",
                               "enum": [
-                                "human_identity",
-                                "nationality"
+                                "human_identity"
                               ]
                             },
                             "provider_id": {
@@ -13967,8 +13647,7 @@
                                 {
                                   "type": "string",
                                   "enum": [
-                                    "human_identity",
-                                    "nationality"
+                                    "human_identity"
                                   ]
                                 },
                                 {
@@ -14125,16 +13804,6 @@
                   ],
                   "additionalProperties": false,
                   "$defs": {
-                    "Union_": {
-                      "type": "string",
-                      "enum": [
-                        "unmet",
-                        "pending",
-                        "satisfied",
-                        "failed",
-                        "expired"
-                      ]
-                    },
                     "Objects_": {
                       "type": "object",
                       "properties": {
@@ -14678,10 +14347,24 @@
                                       "type": "integer"
                                     },
                                     "ceremony_intent_id": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     },
                                     "satisfied_at": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -14692,76 +14375,6 @@
                                     "generation",
                                     "ceremony_intent_id",
                                     "satisfied_at"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "nationality": {
-                              "anyOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "requirement": {
-                                      "type": "string",
-                                      "enum": [
-                                        "nationality"
-                                      ]
-                                    },
-                                    "status": {
-                                      "$ref": "#/$defs/Union_1"
-                                    },
-                                    "requirement_hash": {
-                                      "type": "string"
-                                    },
-                                    "provider_id": {
-                                      "type": "string",
-                                      "enum": [
-                                        "self.pass",
-                                        "zkpassport"
-                                      ]
-                                    },
-                                    "generation": {
-                                      "type": "integer"
-                                    },
-                                    "ceremony_intent_id": {
-                                      "$ref": "#/$defs/Union_2"
-                                    },
-                                    "satisfied_at": {
-                                      "$ref": "#/$defs/Union_3"
-                                    },
-                                    "accepted_provider_ids": {
-                                      "type": "array",
-                                      "prefixItems": [
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "self.pass"
-                                          ]
-                                        },
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "zkpassport"
-                                          ]
-                                        }
-                                      ],
-                                      "maxItems": 2,
-                                      "minItems": 2
-                                    }
-                                  },
-                                  "required": [
-                                    "requirement",
-                                    "status",
-                                    "requirement_hash",
-                                    "provider_id",
-                                    "generation",
-                                    "ceremony_intent_id",
-                                    "satisfied_at",
-                                    "accepted_provider_ids"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -14787,8 +14400,7 @@
                                 "requirement": {
                                   "type": "string",
                                   "enum": [
-                                    "human_identity",
-                                    "nationality"
+                                    "human_identity"
                                   ]
                                 },
                                 "provider_id": {
@@ -14882,8 +14494,7 @@
                                     {
                                       "type": "string",
                                       "enum": [
-                                        "human_identity",
-                                        "nationality"
+                                        "human_identity"
                                       ]
                                     },
                                     {
@@ -14892,7 +14503,7 @@
                                   ]
                                 },
                                 "reason_code": {
-                                  "$ref": "#/$defs/Union_4"
+                                  "$ref": "#/$defs/Union_2"
                                 },
                                 "retry_after_seconds": {
                                   "anyOf": [
@@ -15138,7 +14749,7 @@
                                   ]
                                 },
                                 "requirement": {
-                                  "$ref": "#/$defs/Union_5"
+                                  "$ref": "#/$defs/Union_3"
                                 },
                                 "provider_id": {
                                   "type": "string",
@@ -15205,7 +14816,7 @@
                                 "requirement": {
                                   "anyOf": [
                                     {
-                                      "$ref": "#/$defs/Union_5"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     {
                                       "type": "null"
@@ -15213,7 +14824,7 @@
                                   ]
                                 },
                                 "reason_code": {
-                                  "$ref": "#/$defs/Union_4"
+                                  "$ref": "#/$defs/Union_2"
                                 },
                                 "retry_after_seconds": {
                                   "anyOf": [
@@ -15731,26 +15342,6 @@
                       ]
                     },
                     "Union_2": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_3": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_4": {
                       "type": "string",
                       "enum": [
                         "verification_pending",
@@ -15827,7 +15418,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_5": {
+                    "Union_3": {
                       "type": "string",
                       "enum": [
                         "human_identity",
@@ -15838,7 +15429,7 @@
                       "type": "object",
                       "properties": {
                         "requirement": {
-                          "$ref": "#/$defs/Union_5"
+                          "$ref": "#/$defs/Union_3"
                         },
                         "status": {
                           "$ref": "#/$defs/Union_1"
@@ -15853,10 +15444,24 @@
                           "type": "integer"
                         },
                         "ceremony_intent_id": {
-                          "$ref": "#/$defs/Union_2"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "satisfied_at": {
-                          "$ref": "#/$defs/Union_3"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -16018,10 +15623,24 @@
                                       "type": "integer"
                                     },
                                     "ceremony_intent_id": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     },
                                     "satisfied_at": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -16032,76 +15651,6 @@
                                     "generation",
                                     "ceremony_intent_id",
                                     "satisfied_at"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "nationality": {
-                              "anyOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "requirement": {
-                                      "type": "string",
-                                      "enum": [
-                                        "nationality"
-                                      ]
-                                    },
-                                    "status": {
-                                      "$ref": "#/$defs/Union_1"
-                                    },
-                                    "requirement_hash": {
-                                      "type": "string"
-                                    },
-                                    "provider_id": {
-                                      "type": "string",
-                                      "enum": [
-                                        "self.pass",
-                                        "zkpassport"
-                                      ]
-                                    },
-                                    "generation": {
-                                      "type": "integer"
-                                    },
-                                    "ceremony_intent_id": {
-                                      "$ref": "#/$defs/Union_2"
-                                    },
-                                    "satisfied_at": {
-                                      "$ref": "#/$defs/Union_3"
-                                    },
-                                    "accepted_provider_ids": {
-                                      "type": "array",
-                                      "prefixItems": [
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "self.pass"
-                                          ]
-                                        },
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "zkpassport"
-                                          ]
-                                        }
-                                      ],
-                                      "maxItems": 2,
-                                      "minItems": 2
-                                    }
-                                  },
-                                  "required": [
-                                    "requirement",
-                                    "status",
-                                    "requirement_hash",
-                                    "provider_id",
-                                    "generation",
-                                    "ceremony_intent_id",
-                                    "satisfied_at",
-                                    "accepted_provider_ids"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -16127,8 +15676,7 @@
                                 "requirement": {
                                   "type": "string",
                                   "enum": [
-                                    "human_identity",
-                                    "nationality"
+                                    "human_identity"
                                   ]
                                 },
                                 "provider_id": {
@@ -16222,8 +15770,7 @@
                                     {
                                       "type": "string",
                                       "enum": [
-                                        "human_identity",
-                                        "nationality"
+                                        "human_identity"
                                       ]
                                     },
                                     {
@@ -16232,7 +15779,7 @@
                                   ]
                                 },
                                 "reason_code": {
-                                  "$ref": "#/$defs/Union_4"
+                                  "$ref": "#/$defs/Union_2"
                                 },
                                 "retry_after_seconds": {
                                   "anyOf": [
@@ -16478,7 +16025,7 @@
                                   ]
                                 },
                                 "requirement": {
-                                  "$ref": "#/$defs/Union_5"
+                                  "$ref": "#/$defs/Union_3"
                                 },
                                 "provider_id": {
                                   "type": "string",
@@ -16545,7 +16092,7 @@
                                 "requirement": {
                                   "anyOf": [
                                     {
-                                      "$ref": "#/$defs/Union_5"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     {
                                       "type": "null"
@@ -16553,7 +16100,7 @@
                                   ]
                                 },
                                 "reason_code": {
-                                  "$ref": "#/$defs/Union_4"
+                                  "$ref": "#/$defs/Union_2"
                                 },
                                 "retry_after_seconds": {
                                   "anyOf": [
@@ -17071,26 +16618,6 @@
                       ]
                     },
                     "Union_2": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_3": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_4": {
                       "type": "string",
                       "enum": [
                         "verification_pending",
@@ -17167,7 +16694,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Union_5": {
+                    "Union_3": {
                       "type": "string",
                       "enum": [
                         "human_identity",
@@ -17178,7 +16705,7 @@
                       "type": "object",
                       "properties": {
                         "requirement": {
-                          "$ref": "#/$defs/Union_5"
+                          "$ref": "#/$defs/Union_3"
                         },
                         "status": {
                           "$ref": "#/$defs/Union_1"
@@ -17193,10 +16720,24 @@
                           "type": "integer"
                         },
                         "ceremony_intent_id": {
-                          "$ref": "#/$defs/Union_2"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "satisfied_at": {
-                          "$ref": "#/$defs/Union_3"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [

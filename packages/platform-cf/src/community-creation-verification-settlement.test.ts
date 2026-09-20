@@ -493,7 +493,7 @@ describe("community creation verification settlement", () => {
     );
   });
 
-  test("holds a grandfathered composed intent open while creator nationality is pending", async () => {
+  test("ignores retired creator nationality when historical human verification completes", async () => {
     const statements: ControlPlaneStatement[] = [];
     const transaction = transactionWith(
       {
@@ -562,6 +562,6 @@ describe("community creation verification settlement", () => {
     const persisted = statements.find(
       (statement) => statement.label === "community.creation.verification.persist-intent",
     );
-    expect(persisted?.values.slice(0, 3)).toEqual([2, "verification_required", intentId]);
+    expect(persisted?.values.slice(0, 3)).toEqual([2, "commit_ready", intentId]);
   });
 });

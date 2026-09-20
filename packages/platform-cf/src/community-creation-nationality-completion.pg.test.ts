@@ -40,6 +40,11 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
     await applyPostgresTestBaselineConnection({
       connectionString: connectionForSchema(connectionString, schema),
     });
+    // Reconstruct the immediately preceding schema to exercise the cutover
+    // with historical rows; all other baseline constraints remain in force.
+    await admin.query(
+      "DROP TRIGGER nationality_creation_state_retired ON nationality_requirement_states; DROP TRIGGER nationality_creation_attempt_retired ON nationality_ceremony_attempts; DROP FUNCTION reject_retired_creation_nationality_write()",
+    );
     await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
     return await use(connectionForSchema(connectionString, schema), admin);
   } finally {
@@ -242,180 +247,171 @@ async function stateRow(
   return result.rows[0] as Record<string, unknown> | undefined;
 }
 
-suite("community creation nationality completion", () => {
-  test("matching completion satisfies the requirement and advances the intent", async () => {
-    await withSchema(async (connection, admin) => {
-      await seedIntent(admin, { intentId: "intent-match", actorId: "user-a" });
-      await seedUnmetNationalityState(admin, { intentId: "intent-match", actorId: "user-a" });
-      await seedAttempt(admin, {
-        ceremonyIntentId: "ceremony-a",
-        intentId: "intent-match",
+async function cutover(admin: Client) {
+  const sql = await Bun.file(
+    new URL(
+      "../../../db/postgres/migrations/0193_creation_nationality_retirement.sql",
+      import.meta.url,
+    ),
+  ).text();
+  await admin.query("BEGIN");
+  try {
+    await admin.query(sql);
+    await admin.query("COMMIT");
+  } catch (error) {
+    await admin.query("ROLLBACK");
+    throw error;
+  }
+}
+async function seedHistorical(admin: Client, intentId: string) {
+  await seedIntent(admin, { intentId, actorId: "user-a" });
+  await seedUnmetNationalityState(admin, { intentId, actorId: "user-a" });
+  await seedAttempt(admin, {
+    ceremonyIntentId: `ceremony-${intentId}`,
+    intentId,
+    actorId: "user-a",
+    generation: 1,
+    providerId: "self.pass",
+  });
+  await seedPendingNationalityState(admin, {
+    ceremonyIntentId: `ceremony-${intentId}`,
+    intentId,
+    actorId: "user-a",
+    generation: 1,
+    providerId: "self.pass",
+  });
+}
+
+suite("community creation nationality retirement", () => {
+  test("expires only affected intents and retains historical ceremony evidence", async () => {
+    await withSchema(async (_connection, admin) => {
+      await seedHistorical(admin, "waiting");
+      await seedIntent(admin, {
+        intentId: "unrelated",
         actorId: "user-a",
-        generation: 1,
-        providerId: "self.pass",
+        status: "gate_unsupported",
       });
-      await seedPendingNationalityState(admin, {
-        intentId: "intent-match",
+      await seedIntent(admin, {
+        intentId: "unsupported-nationality",
         actorId: "user-a",
-        ceremonyIntentId: "ceremony-a",
-        generation: 1,
-        providerId: "self.pass",
+        status: "draft",
       });
-      await seedCompletedSession(admin, {
-        sessionId: "session-match",
-        actorId: "user-a",
-        intentId: "ceremony-a",
-      });
-      await expect(
-        advance(connection, { actorId: "user-a", sessionId: "session-match" }),
-      ).resolves.toMatchObject({ kind: "advanced", intent_id: "intent-match", revision: 2 });
-      expect(await stateRow(admin, "intent-match")).toMatchObject({ status: "satisfied" });
-      const intent = await admin.query({
-        text: `SELECT status, revision FROM community_creation_intents WHERE intent_id = 'intent-match'`,
-      });
-      expect(intent.rows[0]).toEqual({ status: "commit_ready", revision: 2 });
+      await admin.query(`UPDATE community_creation_intents SET revision=revision+1, status='gate_unsupported',
+        draft=jsonb_set(draft, '{policy}', '{"version":1,"accessPaths":[{"requirements":[{"requirement":"nationality-allowed","allowedCountries":["US"]}]}]}'::jsonb)
+        WHERE intent_id='unsupported-nationality'`);
+      await cutover(admin);
+      expect(
+        (
+          await admin.query(
+            "SELECT intent_id,status FROM community_creation_intents ORDER BY intent_id",
+          )
+        ).rows,
+      ).toEqual([
+        { intent_id: "unrelated", status: "gate_unsupported" },
+        { intent_id: "unsupported-nationality", status: "expired" },
+        { intent_id: "waiting", status: "expired" },
+      ]);
+      expect(await stateRow(admin, "waiting")).toMatchObject({ status: "expired", generation: 1 });
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM nationality_ceremony_attempts"))
+          .rows,
+      ).toEqual([{ count: 1 }]);
     });
     completedTestCount += 1;
   }, 30_000);
 
-  test("a superseded generation after a provider switch grants nothing", async () => {
+  test("late completed creator sessions never advance a retired intent", async () => {
     await withSchema(async (connection, admin) => {
-      await seedIntent(admin, { intentId: "intent-switch", actorId: "user-a" });
-      await seedUnmetNationalityState(admin, { intentId: "intent-switch", actorId: "user-a" });
-      await seedAttempt(admin, {
-        ceremonyIntentId: "ceremony-old",
-        intentId: "intent-switch",
-        actorId: "user-a",
-        generation: 1,
-        providerId: "self.pass",
-      });
-      await seedPendingNationalityState(admin, {
-        intentId: "intent-switch",
-        actorId: "user-a",
-        ceremonyIntentId: "ceremony-old",
-        generation: 1,
-        providerId: "self.pass",
-      });
-      await seedAttempt(admin, {
-        ceremonyIntentId: "ceremony-zk",
-        intentId: "intent-switch",
-        actorId: "user-a",
-        generation: 2,
-        providerId: "zkpassport",
-      });
-      await seedPendingNationalityState(admin, {
-        intentId: "intent-switch",
-        actorId: "user-a",
-        ceremonyIntentId: "ceremony-zk",
-        generation: 2,
-        providerId: "zkpassport",
-      });
+      await seedHistorical(admin, "late");
       await seedCompletedSession(admin, {
-        sessionId: "session-old",
+        sessionId: "session-late",
         actorId: "user-a",
-        intentId: "ceremony-old",
+        intentId: "ceremony-late",
       });
+      await cutover(admin);
       await expect(
-        advance(connection, { actorId: "user-a", sessionId: "session-old" }),
-      ).resolves.toMatchObject({ kind: "stale" });
-      expect(await stateRow(admin, "intent-switch")).toMatchObject({
-        status: "pending",
-        generation: 2,
-      });
-      const intent = await admin.query({
-        text: `SELECT status FROM community_creation_intents WHERE intent_id = 'intent-switch'`,
-      });
-      expect(intent.rows[0]).toEqual({ status: "verification_required" });
+        advance(connection, { actorId: "user-a", sessionId: "session-late" }),
+      ).resolves.toEqual({ kind: "stale", reason: "session_binding_drift" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,revision FROM community_creation_intents WHERE intent_id='late'",
+          )
+        ).rows,
+      ).toEqual([{ status: "expired", revision: 2 }]);
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM proof_session_completion_events"))
+          .rows,
+      ).toEqual([{ count: 1 }]);
     });
     completedTestCount += 1;
   }, 30_000);
 
-  test("a foreign actor cannot satisfy another actor's requirement", async () => {
-    await withSchema(async (connection, admin) => {
-      await seedIntent(admin, { intentId: "intent-foreign", actorId: "user-b" });
-      await seedUnmetNationalityState(admin, { intentId: "intent-foreign", actorId: "user-b" });
-      await seedAttempt(admin, {
-        ceremonyIntentId: "ceremony-b",
-        intentId: "intent-foreign",
-        actorId: "user-b",
-        generation: 1,
-        providerId: "self.pass",
-      });
-      await seedPendingNationalityState(admin, {
-        intentId: "intent-foreign",
-        actorId: "user-b",
-        ceremonyIntentId: "ceremony-b",
-        generation: 1,
-        providerId: "self.pass",
-      });
-      await seedCompletedSession(admin, {
-        sessionId: "session-b",
-        actorId: "user-b",
-        intentId: "ceremony-b",
-      });
+  test("blocks new creator states and attempts but permits join and claim states", async () => {
+    await withSchema(async (_connection, admin) => {
+      await seedHistorical(admin, "blocked");
+      await cutover(admin);
       await expect(
-        advance(connection, { actorId: "user-a", sessionId: "session-b" }),
-      ).resolves.toMatchObject({ kind: "not_applicable" });
-      expect(await stateRow(admin, "intent-foreign")).toMatchObject({ status: "pending" });
+        seedUnmetNationalityState(admin, { intentId: "new", actorId: "user-a" }),
+      ).rejects.toThrow("creator nationality verification is retired");
+      await expect(
+        seedAttempt(admin, {
+          ceremonyIntentId: "next",
+          intentId: "blocked",
+          actorId: "user-a",
+          generation: 2,
+          providerId: "self.pass",
+        }),
+      ).rejects.toThrow();
+      for (const actionKind of ["community_join", "handle_claim"]) {
+        await seedUnmetNationalityState(admin, {
+          intentId: actionKind,
+          actorId: "user-a",
+          actionKind,
+        });
+        await seedAttempt(admin, {
+          ceremonyIntentId: actionKind,
+          intentId: actionKind,
+          actorId: "user-a",
+          generation: 1,
+          providerId: "self.pass",
+          actionKind,
+        });
+      }
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM nationality_ceremony_attempts"))
+          .rows,
+      ).toEqual([{ count: 3 }]);
     });
     completedTestCount += 1;
   }, 30_000);
 
-  test("a non-creation ceremony never satisfies a creation requirement", async () => {
-    await withSchema(async (connection, admin) => {
-      await seedIntent(admin, { intentId: "intent-join", actorId: "user-a" });
-      await seedUnmetNationalityState(admin, { intentId: "intent-join", actorId: "user-a" });
-      await seedPendingNationalityState(admin, {
-        intentId: "intent-join",
-        actorId: "user-a",
-        ceremonyIntentId: "ceremony-creation",
-        generation: 1,
-        providerId: "self.pass",
-      });
-      await seedUnmetNationalityState(admin, {
-        intentId: "intent-join",
-        actorId: "user-a",
-        actionKind: "community_join",
-      });
-      await seedAttempt(admin, {
-        ceremonyIntentId: "ceremony-join",
-        intentId: "intent-join",
-        actorId: "user-a",
-        generation: 1,
-        providerId: "self.pass",
-        actionKind: "community_join",
-      });
-      await seedPendingNationalityState(admin, {
-        intentId: "intent-join",
-        actorId: "user-a",
-        ceremonyIntentId: "ceremony-join",
-        generation: 1,
-        providerId: "self.pass",
-        actionKind: "community_join",
-      });
-      await seedCompletedSession(admin, {
-        sessionId: "session-join",
-        actorId: "user-a",
-        intentId: "ceremony-join",
-      });
+  test("retains satisfied and unmet historical states unchanged and prevents later mutation", async () => {
+    await withSchema(async (_connection, admin) => {
+      await seedHistorical(admin, "satisfied");
+      await admin.query(
+        "UPDATE nationality_requirement_states SET status='satisfied', satisfied_at=clock_timestamp(), updated_at=clock_timestamp() WHERE intent_id='satisfied'",
+      );
+      await seedIntent(admin, { intentId: "unmet", actorId: "user-a" });
+      await seedUnmetNationalityState(admin, { intentId: "unmet", actorId: "user-a" });
+      const unmetBefore = await stateRow(admin, "unmet");
+      const before = await stateRow(admin, "satisfied");
+      await cutover(admin);
+      expect(await stateRow(admin, "unmet")).toEqual(unmetBefore);
+      expect(await stateRow(admin, "satisfied")).toEqual(before);
       await expect(
-        advance(connection, { actorId: "user-a", sessionId: "session-join" }),
-      ).resolves.toMatchObject({ kind: "stale" });
-      expect(await stateRow(admin, "intent-join")).toMatchObject({ status: "pending" });
-      const intent = await admin.query({
-        text: `SELECT status FROM community_creation_intents WHERE intent_id = 'intent-join'`,
-      });
-      expect(intent.rows[0]).toEqual({ status: "verification_required" });
+        admin.query(
+          "UPDATE nationality_requirement_states SET updated_at=clock_timestamp() WHERE intent_id='satisfied'",
+        ),
+      ).rejects.toThrow("creator nationality verification is retired");
     });
     completedTestCount += 1;
   }, 30_000);
-
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 4) {
+    if (connectionString !== undefined && completedTestCount === 4)
       await Bun.write(
         sentinelPath,
         "api-next-control-plane-postgres-creation-nationality-completion-suite-complete\n",
       );
-    }
   });
 });
