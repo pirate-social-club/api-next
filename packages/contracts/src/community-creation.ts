@@ -160,7 +160,7 @@ export type CreationNextActionV1 = Schema.Schema.Type<typeof CreationNextActionV
 export const CommunityCreationNextActionV2 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("start_verification"),
-    requirement: Schema.Literals(["human_identity", "nationality"]),
+    requirement: Schema.Literal("human_identity"),
     provider_id: Schema.NonEmptyString,
     creation_intent_id: Schema.NonEmptyString,
     ceremony_intent_id: Schema.NonEmptyString,
@@ -170,7 +170,7 @@ export const CommunityCreationNextActionV2 = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("commit") }),
   Schema.Struct({
     kind: Schema.Literal("wait"),
-    requirement: Schema.NullOr(Schema.Literals(["human_identity", "nationality"])),
+    requirement: Schema.NullOr(Schema.Literal("human_identity")),
     reason_code: NextActionWaitReasonCode,
     retry_after_seconds: Schema.optional(PositiveInteger),
   }),
@@ -366,14 +366,7 @@ export const CommunityCreationIntentV2 = Schema.Struct({
       return "Non-committed intents cannot expose a committed resource";
     }
     if (intent.status === "verification_required") {
-      const requested =
-        intent.next_action.kind === "start_verification" || intent.next_action.kind === "wait"
-          ? intent.next_action.requirement
-          : null;
-      const progress =
-        requested === "nationality"
-          ? intent.requirements.nationality
-          : intent.requirements.human_identity;
+      const progress = intent.requirements.human_identity;
       if (progress === undefined) {
         return "Requirement-free intents never require verification";
       }

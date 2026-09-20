@@ -1076,11 +1076,7 @@ export async function createProductionHttpWorker(
   );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
-    makeControlPlaneCommunityCreationIntentResolver(
-      controlPlane,
-      config.API_NEXT_ENV,
-      nationalityAuthoring === null ? {} : { nationality_authoring: nationalityAuthoring },
-    ),
+    makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneHandleNationalityIntentResolver(controlPlane),
     accountAgeVerification.intents,

@@ -121,9 +121,7 @@ const compiledNationality = (() => {
   return draft;
 })();
 const selfBinding = compiledNationality.providerBindings[0];
-const zkBinding = compiledNationality.providerBindings[1];
 const selfBindingHash = nationalityProviderBindingHash(selfBinding);
-const zkBindingHash = nationalityProviderBindingHash(zkBinding);
 
 function nationalityRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -234,11 +232,6 @@ function nationalityRuntime(
         ).pipe(Effect.mapError(() => new VerificationStartStorageFailed())),
     },
     "test",
-    {
-      nationality_authoring: authoring,
-      nationality_ceremony_ttl_seconds: 600,
-      next_ceremony_intent_id: () => "ceremony-next",
-    },
   );
   return { resolver, statements };
 }
@@ -312,63 +305,14 @@ describe("community creation verification intent resolver", () => {
     );
   });
 
-  test("returns the parsed plan for an unstarted nationality draft", async () => {
-    const { resolver } = nationalityRuntime();
-    await expect(Effect.runPromise(resolver.resolve(nationalityInput))).resolves.toEqual(
-      expect.objectContaining({
-        method: "document",
-        subject_binding_intent: "establish",
-        protocol_version: "self-pass-v1",
-        environment: "test",
-        requested_claim_ids: ["nationality.allowed"],
-        verification_purpose: { intent: "community_creation" },
-      }),
-    );
-  });
-
-  test("replays the bound provider without advancing the generation", async () => {
-    const { resolver, statements } = nationalityRuntime({
-      attemptProvider: "zkpassport",
-    });
-    await expect(
-      Effect.runPromise(resolver.resolve({ ...nationalityInput, provider_id: "zkpassport" })),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        protocol_version: "zkpassport-v2",
-        requested_requirements: [{ claim_id: "nationality.allowed", allowed_countries: ["US"] }],
-      }),
-    );
-    expect(
-      statements.some((statement) => statement.label === "nationality.ceremony.attempt.insert"),
-    ).toBe(false);
-  });
-
-  test("advances the generation once when the provider switches", async () => {
-    const { resolver, statements } = nationalityRuntime({
-      attemptProvider: "self.pass",
-    });
-    await expect(
-      Effect.runPromise(resolver.resolve({ ...nationalityInput, provider_id: "zkpassport" })),
-    ).resolves.toEqual(expect.objectContaining({ protocol_version: "zkpassport-v2" }));
-    const inserted = statements.find(
-      (statement) => statement.label === "nationality.ceremony.attempt.insert",
-    );
-    expect(inserted?.values).toEqual([
-      "ceremony-next",
-      "user-1",
-      "community_creation",
-      "intent-1",
-      2,
-      compiledNationality.requirementHash,
-      "zkpassport",
-      zkBindingHash,
-      "dynamic",
-      "test:zkpassport",
-      "1",
-      expect.stringMatching(/^[0-9a-f]{64}$/u),
-      expect.any(String),
-      600,
-    ]);
+  test("never starts, replays or switches retired creator document ceremonies", async () => {
+    for (const provider_id of ["self.pass", "zkpassport"]) {
+      const { resolver, statements } = nationalityRuntime();
+      await expect(
+        Effect.runPromise(resolver.resolve({ ...nationalityInput, provider_id })),
+      ).resolves.toBeNull();
+      expect(statements).toEqual([]);
+    }
   });
 
   test("refuses a superseded ceremony id and a draft requirement that moved", async () => {

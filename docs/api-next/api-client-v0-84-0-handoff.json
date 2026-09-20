@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.84.0",
+  "sourceBranch": "feat/community-creation-creator-verification-removal",
+  "sourceBase": "bd7b4164099309f4bd3fa589172756a9bf13e03e",
+  "wireContract": "Remove creator nationality requirement and creation nationality start/wait actions. Member nationality policy authoring and join/claim verification remain unchanged. Historical human creator entries remain readable.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.84.0.tgz",
+    "sha256": "fa8038a1c3cc8bd9847b70c10ef56bc648259956b209ecafd0331770ca36b87a"
+  },
+  "validation": {
+    "status": "local candidate; full PostgreSQL gate unresolved",
+    "passed": [
+      "bun run check",
+      "bun run test: 4532 unit passed, 1 skipped; 20 Node and 188 Worker tests passed",
+      "focused PostgreSQL suites: 26 passed; review regressions: 10 passed",
+      "focused creation unit suites: 33 passed",
+      "generated PostgreSQL baseline freshness",
+      "exact-base OpenAPI comparison with ratified clean-break waivers",
+      "local candidate secret-boundary audit: zero violations"
+    ],
+    "remaining": [
+      "Full PostgreSQL gate on a harness accepted by operational recovery suites",
+      "Remote required checks and authorized staging before/after readback"
+    ],
+    "notes": "0.83.0 is reserved by the existing HNS capability lane. Local artifact only; no publication or deployment. Full PostgreSQL Unix-socket run is not green: recovery tests reject the URL as local_recovery_test_target_required and database collector tests time out."
+  }
+}

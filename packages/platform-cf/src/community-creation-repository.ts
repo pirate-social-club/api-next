@@ -10,7 +10,6 @@ import {
   type ControlPlaneTransaction,
   type CreateCommunityCreationIntentResult,
 } from "@pirate/application";
-import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import {
   CommitCommunityCreationIntent,
   CommunityCreationIntent as CommunityCreationIntentContract,
@@ -31,9 +30,7 @@ import {
   compileCommunityGatePolicyV2,
   creationNextAction,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  type NationalityEvaluation,
   type NationalityPolicy,
-  nationalityProviderBindingHash,
   type SupportedCommunityGateCompilation,
   transitionCommunityCreationIntent,
   VERY_WEB_CONFIGURATION_REFERENCE,
@@ -66,19 +63,8 @@ import {
   SHA256_HEX,
   TERMINAL_STATUSES,
   validId,
-  verificationStorageFailure,
 } from "./community-creation-internals.ts";
 import { reserveCommunityOwner } from "./community-owner-reservation.ts";
-import {
-  GatesV2CommunityDataInvalid,
-  loadCuratedNationalityEvaluation,
-  loadCuratedNationalityPolicy,
-  persistNationalityEnforceDecision,
-} from "./gates-v2-community.ts";
-import {
-  NationalityCeremonyDataInvalid,
-  resolveOrIssueNationalityCeremony,
-} from "./nationality-ceremony-store.ts";
 
 export const COMMUNITY_CREATION_INTENT_TTL_SECONDS = 24 * 60 * 60;
 
@@ -304,8 +290,6 @@ function stateFromDocument(
   document: CommunityCreationIntentDocument,
   providerId: string | null,
 ): CommunityCreationIntentState {
-  const nationalityRequirement =
-    "creation_contract_version" in document ? document.requirements.nationality : undefined;
   return {
     intent_id: document.intent_id,
     revision: document.revision,
@@ -319,22 +303,6 @@ function stateFromDocument(
         : document.requirements.human_identity.provider_id || providerId,
     expires_at: document.expires_at,
     committed_resource: document.committed_resource,
-    ...(nationalityRequirement === undefined
-      ? {}
-      : {
-          nationality: {
-            status:
-              nationalityRequirement.status === "satisfied"
-                ? ("satisfied" as const)
-                : ("pending" as const),
-            requirement_hash: nationalityRequirement.requirement_hash,
-            provider_id: nationalityRequirement.provider_id,
-            generation: nationalityRequirement.generation,
-            ceremony_intent_id: nationalityRequirement.ceremony_intent_id ?? "",
-            satisfied_at: nationalityRequirement.satisfied_at,
-            started: false,
-          },
-        }),
   };
 }
 
@@ -400,7 +368,12 @@ function replayByKey(
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: `community.creation.${input.operation}.load-replay`,
-      text: `SELECT revision.intent_id, revision.request_hash, revision.state_snapshot
+      text: `SELECT revision.intent_id, revision.request_hash, revision.state_snapshot,
+                    intent.status AS current_status, intent.draft AS current_draft,
+                    EXISTS (SELECT 1 FROM nationality_requirement_states AS state
+                             WHERE state.action_kind = 'community_creation'
+                               AND state.intent_id = intent.intent_id
+                               AND state.actor_id = intent.actor_id) AS retired_creator_nationality
                FROM community_creation_intent_revisions AS revision
                JOIN community_creation_intents AS intent
                  ON intent.intent_id = revision.intent_id
@@ -422,6 +395,28 @@ function replayByKey(
       (input.intentId !== undefined && row.intent_id !== input.intentId)
     ) {
       return yield* Effect.fail(failure(input.operation, "idempotency-conflict"));
+    }
+    // Cutover expires obsolete nationality waits. Replay must return the
+    // retired intent, never resurrect a removed verification action.
+    const currentDraft = jsonValue(row.current_draft);
+    const carriesNationality =
+      currentDraft !== null &&
+      typeof currentDraft === "object" &&
+      "policy" in currentDraft &&
+      policyCarriesNationalityRequirement(currentDraft.policy);
+    if (
+      row.current_status === "expired" &&
+      (carriesNationality || row.retired_creator_nationality === true)
+    ) {
+      const current = yield* loadLockedIntent(
+        transaction,
+        input.actorId,
+        String(row.intent_id),
+        input.operation,
+      );
+      const document = current === null ? null : documentFromRow(current);
+      if (document === null) return yield* Effect.fail(failure(input.operation, "invalid-row"));
+      return document;
     }
     const snapshot = decodeSnapshot(row.state_snapshot);
     return snapshot === null
@@ -472,322 +467,6 @@ function replaceCreationRequirementBindings(
     }
   });
 }
-
-type LockedCreationNationalityState = Readonly<{
-  readonly status: string;
-  readonly requirementHash: string;
-  readonly generation: number;
-  readonly ceremonyIntentId: string;
-  readonly providerId: string | null;
-  readonly providerBindingHash: string | null;
-  readonly configurationKind: string | null;
-  readonly configurationReference: string | null;
-  readonly configurationVersion: string | null;
-}>;
-
-function lockCreationNationalityState(
-  transaction: ControlPlaneTransaction,
-  actorId: string,
-  intentId: string,
-  operation: "create" | "update",
-): Effect.Effect<LockedCreationNationalityState | null, CommunityCreationRepositoryFailure> {
-  return Effect.gen(function* () {
-    const result = yield* transaction.execute<Row>({
-      label: "community.creation.nationality.lock-state",
-      text: `SELECT status, requirement_hash, generation, current_ceremony_intent_id,
-                    current_provider_id, current_provider_binding_hash,
-                    current_provider_configuration_kind, current_provider_configuration_ref,
-                    current_provider_configuration_version
-               FROM nationality_requirement_states
-              WHERE action_kind = 'community_creation' AND intent_id = $1
-                AND requirement_kind = 'nationality' AND actor_id = $2
-              FOR UPDATE`,
-      values: [intentId, actorId],
-      readonly: false,
-    });
-    const row = oneRow(result.rows);
-    if (row === undefined) return yield* Effect.fail(failure(operation, "invalid-row"));
-    if (row === null) return null;
-    const status = asString(row.status);
-    const requirementHash = asString(row.requirement_hash);
-    const generation = asNonNegativeInteger(row.generation);
-    const ceremonyIntentId = asString(row.current_ceremony_intent_id);
-    if (
-      status === null ||
-      requirementHash === null ||
-      generation === null ||
-      ceremonyIntentId === null
-    ) {
-      return yield* Effect.fail(failure(operation, "invalid-row"));
-    }
-    return {
-      status,
-      requirementHash,
-      generation,
-      ceremonyIntentId,
-      providerId: asString(row.current_provider_id),
-      providerBindingHash: asString(row.current_provider_binding_hash),
-      configurationKind: asString(row.current_provider_configuration_kind),
-      configurationReference: asString(row.current_provider_configuration_ref),
-      configurationVersion: asString(row.current_provider_configuration_version),
-    };
-  });
-}
-
-function deleteCreationNationalityState(
-  transaction: ControlPlaneTransaction,
-  actorId: string,
-  intentId: string,
-): Effect.Effect<void, CommunityCreationRepositoryFailure> {
-  return transaction
-    .execute({
-      label: "community.creation.nationality.delete-state",
-      text: `DELETE FROM nationality_requirement_states
-              WHERE action_kind = 'community_creation' AND intent_id = $1
-                AND requirement_kind = 'nationality' AND actor_id = $2`,
-      values: [intentId, actorId],
-      readonly: false,
-    })
-    .pipe(Effect.asVoid);
-}
-
-/**
- * Replaces a superseded requirement state without touching append-only
- * attempts. A changed allowlist cannot rewrite requirement identity, so the
- * old row is retired at its generation count and the new row starts from the
- * next unused generation; the previous attempt rows remain evidence.
- */
-function resetCreationNationalityState(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actorId: string;
-    readonly intentId: string;
-    readonly requirementHash: string;
-    readonly previous: LockedCreationNationalityState | null;
-  }>,
-): Effect.Effect<void, CommunityCreationRepositoryFailure> {
-  return Effect.gen(function* () {
-    yield* deleteCreationNationalityState(transaction, input.actorId, input.intentId);
-    const previous = input.previous;
-    const generation = previous?.generation ?? 0;
-    const carried =
-      generation > 0 && previous !== null
-        ? {
-            ceremonyIntentId: previous.ceremonyIntentId,
-            providerId: previous.providerId,
-            providerBindingHash: previous.providerBindingHash,
-            configurationKind: previous.configurationKind,
-            configurationReference: previous.configurationReference,
-            configurationVersion: previous.configurationVersion,
-          }
-        : null;
-    if (
-      carried !== null &&
-      (carried.providerId === null ||
-        carried.providerBindingHash === null ||
-        carried.configurationKind === null ||
-        carried.configurationReference === null ||
-        carried.configurationVersion === null)
-    ) {
-      return yield* Effect.fail(failure("update", "invalid-row"));
-    }
-    const inserted = yield* transaction.execute({
-      label: "community.creation.nationality.reset-state",
-      text: `INSERT INTO nationality_requirement_states (
-               action_kind, intent_id, requirement_kind, actor_id, status,
-               requirement_hash, accepted_provider_ids, generation,
-               current_ceremony_intent_id, current_provider_id,
-               current_provider_binding_hash, current_provider_configuration_kind,
-               current_provider_configuration_ref, current_provider_configuration_version,
-               satisfied_at
-             ) VALUES (
-               'community_creation', $1, 'nationality', $2, $3, $4,
-               '["self.pass","zkpassport"]'::jsonb, $5, $6, $7, $8, $9, $10, $11, NULL
-             )`,
-      values: [
-        input.intentId,
-        input.actorId,
-        carried === null ? "unmet" : "expired",
-        input.requirementHash,
-        generation,
-        carried?.ceremonyIntentId ?? null,
-        carried?.providerId ?? null,
-        carried?.providerBindingHash ?? null,
-        carried?.configurationKind ?? null,
-        carried?.configurationReference ?? null,
-        carried?.configurationVersion ?? null,
-      ],
-      readonly: false,
-    });
-    if (inserted.rowCount !== 1) {
-      return yield* Effect.fail(failure("update", "invalid-row"));
-    }
-  });
-}
-
-/**
- * Evaluates the creator's account-bound nationality evidence against the
- * compiled draft policy and keeps the requirement satisfied without a
- * ceremony when accepted evidence already covers it. Otherwise the first
- * policy binding is reserved as the currently bound session; switching
- * providers later advances the generation through the ceremony store.
- */
-function ensureCreationNationalityRequirement(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actorId: string;
-    readonly intentId: string;
-    readonly operation: "create" | "update";
-    readonly compiled: CompiledHumanDraft;
-    readonly ttlSeconds: number;
-    readonly evaluation: NationalityEvaluation | null;
-  }>,
-): Effect.Effect<"satisfied" | "pending" | "none", CommunityCreationRepositoryFailure> {
-  return Effect.gen(function* () {
-    const nationality = input.compiled.nationality;
-    if (nationality === undefined) return "none" as const;
-
-    const evaluation =
-      input.evaluation ??
-      (yield* loadCuratedNationalityEvaluation(transaction, {
-        userId: input.actorId,
-        policy: nationality.policy,
-      }));
-    if (evaluation.outcome === "pass") {
-      // Accepted evidence is reused for the exact requirement; no requirement
-      // row is recorded, and activation re-evaluates it before any grant.
-      yield* deleteCreationNationalityState(transaction, input.actorId, input.intentId);
-      return "satisfied" as const;
-    }
-
-    const existing = yield* lockCreationNationalityState(
-      transaction,
-      input.actorId,
-      input.intentId,
-      input.operation,
-    );
-    const existingBinding =
-      existing === null || existing.providerId === null
-        ? null
-        : (nationality.providerBindings.find(
-            (binding) => binding.provider_id === existing.providerId,
-          ) ?? null);
-    const reusable =
-      existing !== null &&
-      existingBinding !== null &&
-      existing.status === "pending" &&
-      existing.requirementHash === nationality.requirementHash &&
-      existing.providerBindingHash === nationalityProviderBindingHash(existingBinding) &&
-      existing.configurationKind === existingBinding.provider_configuration.kind &&
-      existing.configurationReference === existingBinding.provider_configuration.reference &&
-      existing.configurationVersion === existingBinding.provider_configuration.version;
-
-    if (!reusable) {
-      yield* resetCreationNationalityState(transaction, {
-        actorId: input.actorId,
-        intentId: input.intentId,
-        requirementHash: nationality.requirementHash,
-        previous: existing,
-      });
-    }
-
-    const selected =
-      reusable && existingBinding !== null ? existingBinding : nationality.providerBindings[0];
-    const selectedBindingHash = nationalityProviderBindingHash(selected);
-    yield* resolveOrIssueNationalityCeremony(transaction, {
-      actionKind: "community_creation",
-      intentId: input.intentId,
-      actorId: input.actorId,
-      requirementHash: nationality.requirementHash,
-      acceptedProviderIds: ["self.pass", "zkpassport"],
-      selectedProviderId: selected.provider_id,
-      selectedBinding: {
-        bindingHash: selectedBindingHash,
-        configurationKind: selected.provider_configuration.kind,
-        configurationRef: selected.provider_configuration.reference,
-        configurationVersion: selected.provider_configuration.version,
-      },
-      reservationRequest: {
-        action_kind: "community_creation",
-        actor_id: input.actorId,
-        intent_id: input.intentId,
-        requirement_hash: nationality.requirementHash,
-        provider_id: selected.provider_id,
-        provider_binding_hash: selectedBindingHash,
-      },
-      ttlSeconds: input.ttlSeconds,
-    });
-    return "pending" as const;
-  }).pipe(
-    Effect.mapError((error) => {
-      if (
-        error instanceof GatesV2CommunityDataInvalid ||
-        error instanceof NationalityCeremonyDataInvalid
-      ) {
-        return failure(input.operation, "invalid-row");
-      }
-      return error;
-    }),
-  );
-}
-
-function loadCreationNationalityEvaluation(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actorId: string;
-    readonly policy: NationalityPolicy;
-    readonly operation: "create" | "update";
-  }>,
-) {
-  return loadCuratedNationalityEvaluation(transaction, {
-    userId: input.actorId,
-    policy: input.policy,
-  }).pipe(
-    Effect.mapError((error) =>
-      error instanceof GatesV2CommunityDataInvalid
-        ? failure(input.operation, "invalid-row")
-        : error,
-    ),
-  );
-}
-
-/**
- * Creator activation under the composed member policy: the creator must
- * satisfy the community's current nationality policy exactly like a joining
- * member, with no owner exemption. Returns true when activation may proceed
- * and fails the transaction when the policy exists and the creator's
- * nationality evidence does not pass. A community without a current
- * nationality policy is a no-op, so Palm-only creation is unchanged until
- * composed authoring lands.
- */
-export const enforceCreatorNationalityPolicy = Effect.fn("enforceCreatorNationalityPolicy")(
-  function* (
-    transaction: ControlPlaneTransaction,
-    input: Readonly<{ readonly communityId: string; readonly userId: string }>,
-  ): Effect.fn.Return<
-    boolean,
-    VerificationCompletionStorageFailed | GatesV2CommunityDataInvalid | ControlPlaneError
-  > {
-    const policy = yield* loadCuratedNationalityPolicy(transaction, input.communityId);
-    if (policy === null) return true;
-    const evaluation = yield* loadCuratedNationalityEvaluation(transaction, {
-      userId: input.userId,
-      policy,
-      lockEvidence: true,
-    });
-    yield* persistNationalityEnforceDecision(transaction, {
-      communityId: input.communityId,
-      userId: input.userId,
-      requestId: `creation-${globalThis.crypto.randomUUID()}`,
-      policy,
-      evaluation,
-    });
-    if (evaluation.outcome !== "pass") {
-      return yield* Effect.fail(verificationStorageFailure());
-    }
-    return true;
-  },
-);
 
 function exactCreateBody(value: unknown) {
   return Schema.decodeUnknownOption(CreateCommunityCreationIntent.request.body, {
@@ -898,24 +577,7 @@ export function makeControlPlaneCommunityCreationRepository(
           });
           if (replay !== null) return { document: replay, outcome: "replayed" as const };
 
-          // Composed drafts evaluate the creator's nationality evidence before
-          // the durable status is chosen: accepted evidence needs no ceremony,
-          // anything else reserves the first policy binding as verification.
-          const nationality = compiled.nationality;
-          const nationalityEvaluation =
-            nationality === undefined
-              ? null
-              : yield* loadCreationNationalityEvaluation(transaction, {
-                  actorId: input.actor.userId,
-                  policy: nationality.policy,
-                  operation: "create",
-                });
-          const initialStatus =
-            nationality === undefined
-              ? requirementFreeStatus(compiled)
-              : nationalityEvaluation?.outcome === "pass"
-                ? ("commit_ready" as const)
-                : ("verification_required" as const);
+          const initialStatus = requirementFreeStatus(compiled);
 
           // Creator-requirement removal amendment: a new intent carries no
           // human authority, no requirement row, and no ceremony reservation.
@@ -952,16 +614,6 @@ export function makeControlPlaneCommunityCreationRepository(
           });
           if (inserted.rowCount !== 1) {
             return yield* Effect.fail(failure("create", "invalid-row"));
-          }
-          if (nationality !== undefined) {
-            yield* ensureCreationNationalityRequirement(transaction, {
-              actorId: input.actor.userId,
-              intentId,
-              operation: "create",
-              compiled,
-              ttlSeconds: intentTtlSeconds,
-              evaluation: nationalityEvaluation,
-            });
           }
           const row = yield* loadLockedIntent(transaction, input.actor.userId, intentId, "create");
           if (row === null) return yield* Effect.fail(failure("create", "invalid-row"));
@@ -1102,45 +754,9 @@ export function makeControlPlaneCommunityCreationRepository(
             return yield* Effect.fail(failure("update", "constraint"));
           }
           const requirementFree = document.requirements.human_identity === undefined;
-          const nationality = compiled.nationality;
-          if (nationality === undefined) {
-            // The new draft no longer carries a representable nationality
-            // requirement; retire any previous state without touching attempts.
-            if (document.requirements.nationality !== undefined) {
-              yield* deleteCreationNationalityState(
-                transaction,
-                input.actor.userId,
-                input.intentId,
-              );
-            }
-          }
-          const nationalityEvaluation =
-            nationality === undefined
-              ? null
-              : yield* loadCreationNationalityEvaluation(transaction, {
-                  actorId: input.actor.userId,
-                  policy: nationality.policy,
-                  operation: "update",
-                });
-          const nationalityOutcome =
-            nationality === undefined
-              ? ("none" as const)
-              : yield* ensureCreationNationalityRequirement(transaction, {
-                  actorId: input.actor.userId,
-                  intentId: input.intentId,
-                  operation: "update",
-                  compiled,
-                  ttlSeconds: intentTtlSeconds,
-                  evaluation: nationalityEvaluation,
-                });
           let nextStatus: "commit_ready" | "gate_unsupported" | "verification_required";
           if (requirementFree) {
-            nextStatus =
-              compiled.status === "gate_unsupported"
-                ? "gate_unsupported"
-                : nationalityOutcome === "pending"
-                  ? "verification_required"
-                  : requirementFreeStatus(compiled);
+            nextStatus = requirementFreeStatus(compiled);
           } else {
             // Grandfathered intents keep their pre-amendment creator ceremony.
             yield* replaceCreationRequirementBindings(transaction, {
@@ -1165,9 +781,7 @@ export function makeControlPlaneCommunityCreationRepository(
               compiled.status === "gate_unsupported"
                 ? "gate_unsupported"
                 : selection === "complete"
-                  ? nationalityOutcome === "pending"
-                    ? "verification_required"
-                    : "commit_ready"
+                  ? "commit_ready"
                   : "verification_required";
           }
           const canonicalDraft = body.draft;
@@ -1322,31 +936,6 @@ export function makeControlPlaneCommunityCreationRepository(
           Date.parse(claim.approvalExpiresAt) <= Date.parse(activationNow))
       ) {
         return yield* Effect.fail(failure("commit", "constraint"));
-      }
-
-      if (nationality !== null) {
-        const nationalityStateResult = yield* transaction.execute<Row>({
-          label: "community.creation.commit-v2.lock-nationality-state",
-          text: `SELECT actor_id, status, requirement_hash
-                   FROM nationality_requirement_states
-                  WHERE action_kind = 'community_creation' AND intent_id = $1
-                    AND requirement_kind = 'nationality'
-                  FOR UPDATE`,
-          values: [input.intentId],
-          readonly: false,
-        });
-        const nationalityState = oneRow(nationalityStateResult.rows);
-        if (nationalityState === undefined) {
-          return yield* Effect.fail(failure("commit", "invalid-row"));
-        }
-        if (
-          nationalityState !== null &&
-          (nationalityState.actor_id !== input.actor.userId ||
-            nationalityState.status !== "satisfied" ||
-            nationalityState.requirement_hash !== nationality.requirementHash)
-        ) {
-          return yield* Effect.fail(failure("commit", "constraint"));
-        }
       }
 
       let mintedPersonaId: string | null = null;
@@ -1687,20 +1276,6 @@ export function makeControlPlaneCommunityCreationRepository(
           readonly: false,
         });
       }
-      yield* enforceCreatorNationalityPolicy(transaction, {
-        communityId,
-        userId: input.actor.userId,
-      }).pipe(
-        Effect.mapError((error) => {
-          if (error instanceof VerificationCompletionStorageFailed) {
-            return failure("commit", "constraint");
-          }
-          if (error instanceof GatesV2CommunityDataInvalid) {
-            return failure("commit", "invalid-row");
-          }
-          return error;
-        }),
-      );
       if (claim !== null && subjectClaimId !== null) {
         // Pre-amendment intents keep the verified-subject quota ledger.
         yield* transaction.execute({

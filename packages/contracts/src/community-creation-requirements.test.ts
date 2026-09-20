@@ -110,8 +110,8 @@ describe("creator nationality provider alternatives", () => {
     provider_id: "self.pass",
     accepted_provider_ids: ["self.pass", "zkpassport"],
   } as const;
-  test("preserves the bound provider while exposing both pinned alternatives", () => {
-    expect(decodeCommunityCreationRequirementsV2({ nationality })).toEqual({ nationality });
+  test("rejects removed creator nationality requirements", () => {
+    expect(() => decodeCommunityCreationRequirementsV2({ nationality })).toThrow();
   });
   test("fails closed without the accepted set or with a duplicated provider", () => {
     const { accepted_provider_ids: _, ...missing } = nationality;
