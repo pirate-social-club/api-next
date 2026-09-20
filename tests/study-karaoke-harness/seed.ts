@@ -30,7 +30,10 @@ const POST_SLUG = "harness-practice-song";
 const AUDIO_REVISION = 1;
 const LYRICS_REVISION = 1;
 const CANONICAL_AUDIO_SHA256 = "a".repeat(64);
-const LEARNER_COUNT = Number(process.env.HARNESS_LEARNER_COUNT ?? "12");
+// The browser specs partition the manifest so no two spec files share an
+// account (and therefore a pinned timezone and review schedule): study-journey
+// uses 0-5, karaoke-journey 6-11, and study-entry 12-19.
+const LEARNER_COUNT = Number(process.env.HARNESS_LEARNER_COUNT ?? "20");
 
 const learnerAccountId = (index: number): string =>
   `usr_harness_learner_${String(index).padStart(2, "0")}`;
@@ -364,7 +367,13 @@ async function seedVideoContent(
              extracted_audio_ref, extracted_audio_sha256, extraction_policy_revision,
              retention_policy_revision
            ) VALUES ($1,$2,$3,1,$4,$5,'extract_harness_v1',1)`,
-          [originalSoundId, submissionId, video.postId, `/harness/${video.postId}.mp4`, audioSha256],
+          [
+            originalSoundId,
+            submissionId,
+            video.postId,
+            `/harness/${video.postId}.mp4`,
+            audioSha256,
+          ],
         );
       }
       await admin.query(
