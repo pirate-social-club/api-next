@@ -22,6 +22,7 @@ import {
 import { makeRetryingPromiseCache } from "../../apps/http-worker/src/production-app-cache.ts";
 import type { KaraokeAttemptDoStub } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
 import { KaraokeAttemptDO as ProductionKaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+import posterJpeg from "./assets/poster.jpg";
 import {
   type KaraokeSttScriptMode,
   type KaraokeSttScriptState,
@@ -174,10 +175,52 @@ const productionApp = makeRetryingPromiseCache(async (bindings: HarnessBindings)
   }),
 );
 
+/** The seeded video fixtures the review feed plays. */
+const seededVideoPostIds = new Set([
+  "post_harness_video_linked",
+  "post_harness_video_unlinked",
+  "post_harness_video_unavailable",
+]);
+
+/**
+ * Local playback double for the review feed. The real client still mints
+ * playback access through the real endpoint and validates the grant shape;
+ * this answers with a grant pointing at the loopback TLS media server that
+ * Chromium maps the customer host onto (see media.ts), and serves the
+ * committed harness thumbnail for the poster route. Local-only; never
+ * deployable, and it answers for the seeded posts only.
+ */
+async function handleVideoAccessDouble(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\/posts\/([^/]+)\/video\/(playback-access|poster)$/u);
+  if (match === null) return null;
+  const postId = decodeURIComponent(match[1] ?? "");
+  if (!seededVideoPostIds.has(postId)) return json({ ok: false, reason: "video_not_seeded" }, 404);
+  if (match[2] === "poster") {
+    return new Response(posterJpeg, {
+      headers: {
+        "cache-control": "private, no-cache",
+        "content-type": "image/jpeg",
+        etag: `"harness-${postId}"`,
+      },
+    });
+  }
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  const now = Math.floor(Date.now() / 1000);
+  return json({
+    playback_url:
+      "https://customer-harness.cloudflarestream.com/harness.harness.harness/manifest/video.m3u8",
+    expires_at: now + 240,
+    renew_after: now + 120,
+  });
+}
+
 export default {
   async fetch(request: Request, bindings: HarnessBindings, ctx: ExecutionContext) {
     const harnessResponse = await handleHarnessRoute(request, bindings);
     if (harnessResponse !== null) return harnessResponse;
+    const videoAccessResponse = await handleVideoAccessDouble(request);
+    if (videoAccessResponse !== null) return videoAccessResponse;
     const realtimeMatch = new URL(request.url).pathname.match(/^\/karaoke\/realtime\/([^/]+)$/u);
     if (realtimeMatch !== null) {
       const encodedSessionId = realtimeMatch[1];

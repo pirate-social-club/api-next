@@ -21,6 +21,11 @@ fi
 bun "$script_dir/keys.ts"
 
 mkdir -p "$script_dir/.local"
+# Local playback media (ffmpeg HLS plus a loopback TLS server) so the review
+# feed plays real video through the real playback path. Detached; stop-local.sh
+# stops it.
+setsid nohup bun "$script_dir/media.ts" > "$script_dir/.local/media.log" 2>&1 < /dev/null &
+printf '%s\n' "$!" > "$script_dir/.local/media.pid"
 printf '%s\n' "$$" > "$script_dir/.local/harness.pid"
 exec "$wrangler" dev \
   --config "$script_dir/wrangler.jsonc" \

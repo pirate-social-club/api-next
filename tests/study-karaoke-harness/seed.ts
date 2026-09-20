@@ -210,8 +210,11 @@ async function bindPersona(admin: pg.Client, accountId: string, personaId: strin
 
 // Test-only video fixtures: one linked to the eligible practice song, one with
 // original audio (no song link), and one linked to a song that has no Study
-// availability. Raw projection rows are inserted with RI triggers disabled on
-// the disposable database, mirroring the song fixture above.
+// availability. All three carry ready playback and a ready thumbnail so the
+// review feed shows playable videos; the harness Worker serves the playback
+// grant and poster locally (see entry.ts and media.ts). Raw projection rows are
+// inserted with RI triggers disabled on the disposable database, mirroring the
+// song fixture above.
 async function seedVideoContent(
   admin: pg.Client,
   authorAccountId: string,
@@ -380,8 +383,16 @@ async function seedVideoContent(
         `INSERT INTO media_video_enrichment_outbox (
            effect_identity, submission_id, operation_id, post_id, enrichment_kind,
            payload, state
-         ) VALUES ($1,$2,$3,$4,'thumbnail','{}'::jsonb,'pending')`,
+         ) VALUES ($1,$2,$3,$4,'thumbnail','{}'::jsonb,'ready')`,
         [`enrich_thumbnail_${video.postId}`, submissionId, operationId, video.postId],
+      );
+      await admin.query(
+        `INSERT INTO media_video_stream_ingests (
+           operation_id, state, creator_marker, source_sha256, provider_video_id,
+           claim_fence, updated_at, ingest_revision, acceptance_deadline_ms,
+           encoding_deadline_ms
+         ) VALUES ($1,'ready','harness_ingest',$2,$3,0,clock_timestamp(),1,1,1)`,
+        [operationId, audioSha256, (await digest(`provider-${video.postId}`)).slice(0, 32)],
       );
       await admin.query(
         `INSERT INTO data_registration_operations (
