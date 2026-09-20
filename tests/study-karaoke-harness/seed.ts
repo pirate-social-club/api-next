@@ -205,6 +205,209 @@ async function bindPersona(admin: pg.Client, accountId: string, personaId: strin
   );
 }
 
+// Test-only video fixtures: one linked to the eligible practice song, one with
+// original audio (no song link), and one linked to a song that has no Study
+// availability. Raw projection rows are inserted with RI triggers disabled on
+// the disposable database, mirroring the song fixture above.
+async function seedVideoContent(
+  admin: pg.Client,
+  authorAccountId: string,
+  authorPersonaId: string,
+): Promise<void> {
+  const unavailableSongPostId = "post_harness_song_unavailable";
+  await admin.query(
+    `INSERT INTO posts (
+       community_id, post_id, author_user_id, author_persona_id, post_type,
+       status, visibility, title, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, 'song', 'published', 'public',
+       'Harness song without Study', clock_timestamp(), clock_timestamp())`,
+    [COMMUNITY_ID, unavailableSongPostId, authorAccountId, authorPersonaId],
+  );
+  await admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [
+    unavailableSongPostId,
+  ]);
+  await admin.query(
+    `INSERT INTO post_slug_aliases (slug, post_id, slug_policy_version)
+     VALUES ('harness-song-unavailable', $1, 'post-slug-v1')`,
+    [unavailableSongPostId],
+  );
+
+  const videos = [
+    {
+      postId: "post_harness_video_linked",
+      slug: "harness-video-linked",
+      title: "Harness linked video",
+      intent: "song_reference",
+      songPostId: POST_ID,
+      planId: "plan_harness_linked",
+      masterRevisionId: "master_harness_linked",
+      rank: 90,
+    },
+    {
+      postId: "post_harness_video_unlinked",
+      slug: "harness-video-unlinked",
+      title: "Harness unlinked video",
+      intent: "original_audio",
+      songPostId: null,
+      planId: null,
+      masterRevisionId: null,
+      rank: 80,
+    },
+    {
+      postId: "post_harness_video_unavailable",
+      slug: "harness-video-unavailable",
+      title: "Harness unavailable-song video",
+      intent: "song_reference",
+      songPostId: unavailableSongPostId,
+      planId: "plan_harness_unavailable",
+      masterRevisionId: "master_harness_unavailable",
+      rank: 70,
+    },
+  ] as const;
+
+  await admin.query("SET session_replication_role = replica");
+  try {
+    for (const video of videos) {
+      const submissionId = `submission_${video.postId}`;
+      const operationId = `operation_${video.postId}`;
+      const caption = `Harness caption for ${video.title}`;
+      const audioSha256 = await digest(video.postId);
+      const originalSoundId = `sound_${video.postId}`;
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, author_persona_id, post_type,
+           status, visibility, title, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, 'video', 'published', 'public', $5,
+           clock_timestamp(), clock_timestamp())`,
+        [COMMUNITY_ID, video.postId, authorAccountId, authorPersonaId, video.title],
+      );
+      await admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [
+        video.postId,
+      ]);
+      await admin.query(
+        `INSERT INTO post_slug_aliases (slug, post_id, slug_policy_version)
+         VALUES ($1, $2, 'post-slug-v1')`,
+        [video.slug, video.postId],
+      );
+      await admin.query(
+        `INSERT INTO media_post_submissions (
+           submission_id, community_id, actor_user_id, operation_id, idempotency_key,
+           request_hash, caption, start_input, audio_reservation_id,
+           response_snapshot_bytes, response_snapshot_sha256, status, phase, post_id,
+           author_persona_id, media_kind, video_intent, video_revision, video_state_snapshot
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'{}'::jsonb,$8,convert_to('snapshot','UTF8'),$9,
+           'published',NULL,$10,$11,'video',$12,0,'{}'::jsonb)`,
+        [
+          submissionId,
+          COMMUNITY_ID,
+          authorAccountId,
+          operationId,
+          `idem_${video.postId}`,
+          audioSha256,
+          caption,
+          `reservation_${video.postId}`,
+          await digest("snapshot"),
+          video.postId,
+          authorPersonaId,
+          video.intent,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO media_publication_projections (
+           submission_id, community_id, actor_user_id, operation_id, post_id,
+           creation_revision, audio_revision, analysis_revision, decision_revision,
+           title, caption, video_asset_ref, video_revision, poster_artifact_ref,
+           language_status, primary_language_bcp47, lyrics_explicitness, alignment,
+           data_registration, locked_delivery, projected_at,
+           author_persona_id, media_kind, song_video_plan_id, song_video_master_revision_id,
+           original_sound_id
+         ) VALUES ($1,$2,$3,$4,$5,1,0,1,1,NULL,$6,$7,1,'poster_harness',
+           'ready','en','not_explicit','ready','registered','not_required',
+           clock_timestamp(),$8,'video',$9,$10,$11)`,
+        [
+          submissionId,
+          COMMUNITY_ID,
+          authorAccountId,
+          operationId,
+          video.postId,
+          caption,
+          `/harness/${video.postId}.mp4`,
+          authorPersonaId,
+          video.planId,
+          video.masterRevisionId,
+          video.intent === "original_audio" ? originalSoundId : null,
+        ],
+      );
+      if (video.intent === "song_reference") {
+        await admin.query(
+          `INSERT INTO media_video_song_references (
+             submission_id, operation_id, creation_revision, actor_account_id, post_id,
+             song_community_id, song_post_id, audio_revision, plan_id, master_revision_id,
+             owner_policy_revision, owner_policy_hash, derivative_video
+           ) VALUES ($1,$2,1,$3,$4,$5,$6,1,$7,$8,1,$9,'allowed')`,
+          [
+            submissionId,
+            operationId,
+            authorAccountId,
+            video.postId,
+            COMMUNITY_ID,
+            video.songPostId,
+            video.planId,
+            video.masterRevisionId,
+            await digest(`policy-${video.postId}`),
+          ],
+        );
+      } else {
+        await admin.query(
+          `INSERT INTO media_video_original_sounds (
+             original_sound_id, submission_id, origin_video_post_id, origin_video_revision,
+             extracted_audio_ref, extracted_audio_sha256, extraction_policy_revision,
+             retention_policy_revision
+           ) VALUES ($1,$2,$3,1,$4,$5,'extract_harness_v1',1)`,
+          [originalSoundId, submissionId, video.postId, `/harness/${video.postId}.mp4`, audioSha256],
+        );
+      }
+      await admin.query(
+        `INSERT INTO media_video_enrichment_outbox (
+           effect_identity, submission_id, operation_id, post_id, enrichment_kind,
+           payload, state
+         ) VALUES ($1,$2,$3,$4,'thumbnail','{}'::jsonb,'pending')`,
+        [`enrich_thumbnail_${video.postId}`, submissionId, operationId, video.postId],
+      );
+      await admin.query(
+        `INSERT INTO data_registration_operations (
+           registration_operation_id, community_id, actor_user_id, submission_id,
+           media_operation_id, post_id, asset_id, chain_id, registration_revision,
+           publication_creation_revision, publication_audio_revision,
+           publication_analysis_revision, publication_decision_revision,
+           canonical_audio_sha256, state, workflow_revision, workflow_instance_id,
+           media_kind, rights_basis
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,1,1,1,1,1,$8,'pending',1,$9,'video',$10)`,
+        [
+          `data-registration:1:${video.postId}:1`,
+          COMMUNITY_ID,
+          authorAccountId,
+          submissionId,
+          operationId,
+          video.postId,
+          video.postId,
+          audioSha256,
+          `data-registration-workflow:data-registration:1:${video.postId}:1:r1`,
+          video.intent === "song_reference" ? "derivative" : "original",
+        ],
+      );
+      await admin.query(
+        `INSERT INTO home_feed_projection (
+           community_id, feed_item_id, post_id, rank_score, projected_at
+         ) VALUES ($1,$2,$3,$4,clock_timestamp())`,
+        [COMMUNITY_ID, `feed-item-${video.postId}`, video.postId, video.rank],
+      );
+    }
+  } finally {
+    await admin.query("SET session_replication_role = origin");
+  }
+}
+
 async function seedContent(
   admin: pg.Client,
   authorAccountId: string,
@@ -525,6 +728,7 @@ async function main(): Promise<void> {
     }
     if (seeded && authorPersonaId !== null) {
       await seedContent(admin, authorAccountId, authorPersonaId);
+      await seedVideoContent(admin, authorAccountId, authorPersonaId);
       for (const learner of learners) {
         await bindPersona(admin, learner.accountId, learner.personaId);
       }
