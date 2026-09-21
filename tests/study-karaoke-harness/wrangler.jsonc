@@ -7,6 +7,11 @@
   "main": "./entry.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // The committed harness thumbnail is imported as a Data module so the
+  // local playback double can serve it without a bucket binding.
+  "rules": [
+    { "type": "Data", "globs": ["**/*.jpg"], "fallthrough": true }
+  ],
   "hyperdrive": [
     {
       "binding": "CONTROL_PLANE",
