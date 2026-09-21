@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.88.0",
+  "sourceBranch": "fix/video-moderation-call-protection",
+  "sourceBase": "3c62a4d4859599ae80d95caef94be6bcfefe7aa6",
+  "validatedSourceCommit": "0f570374dfcb38ef07a6949e27f74c5aff95539d",
+  "pullRequest": null,
+  "wireContract": "Expose the terminal author abandonment command for a video whose per-frame image-moderation dispatch remains unresolved. The immutable provider claim is retained, automatic redispatch and retry remain unavailable, and abandonment never becomes an allow decision.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.88.0.tgz",
+    "sha256": "b4c54d4334d6b05034dd287dae17eb0c2278d3e3de9d14bcba9fbe9754efc393"
+  },
+  "validation": {
+    "status": "Rebased local candidate; required repository and hosted gates pending",
+    "passed": [
+      "Contract generation",
+      "PostgreSQL baseline regeneration",
+      "Migration sequence integration after current main through 0198",
+      "Immutable package creation from the generated 0.88.0 client"
+    ],
+    "remaining": [
+      "Required local repository and PostgreSQL gates",
+      "Hosted required checks on the exact pull-request head",
+      "Paired Solid 0.88.0 adoption and local browser qualification"
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use, Stream operation or live product mutation occurred."
+  }
+}
