@@ -916,7 +916,12 @@ export function transitionMediaSubmission(
         decision: null,
         decisionRevision: 0,
         status: "processing",
-        phase: current.audio === null ? "awaiting_upload" : "analysis",
+        phase:
+          current.audio === null
+            ? "awaiting_upload"
+            : current.analysis === null
+              ? "analysis"
+              : "decision",
         action: null,
         review: null,
         moderatorApproval: null,

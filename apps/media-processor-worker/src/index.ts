@@ -27,6 +27,7 @@ import {
   SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleMediaProcessingQueueBatch } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
+import { MediaSubmissionRepositoryError } from "../../../packages/platform-cf/src/media-submission-repository-error.ts";
 
 export type MediaProcessorWorkerEnv = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
@@ -217,6 +218,23 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
               ),
             };
           } catch (error) {
+            if (error instanceof MediaSubmissionRepositoryError) {
+              console.error("media_workflow_repository_rejection", {
+                operation: error.operation,
+                reason: error.reason,
+                submissionId: error.submissionId ?? payload.submissionId,
+              });
+              if (
+                error.reason === "invalid-input" ||
+                error.reason === "constraint" ||
+                error.reason === "invalid-row" ||
+                error.reason === "transition-rejected"
+              ) {
+                throw nonRetryableError(
+                  `MediaSubmissionRepositoryError: ${error.operation}/${error.reason}`,
+                );
+              }
+            }
             if (error instanceof MediaProcessingInvariantError) {
               throw nonRetryableError(error.message);
             }
