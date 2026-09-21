@@ -3,9 +3,10 @@ import type { CommunityCreationStore } from "@pirate/application";
 import { Effect, Exit } from "effect";
 import type { Client } from "pg";
 import {
-  applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
-} from "../../../scripts/postgres-test-baseline.ts";
+  APPLY_SQL,
+  RESTORE_SQL,
+} from "../../../scripts/community-session-sufficiency-hotfix-sql.ts";
+import { withReusablePostgresTestSchema } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { makeControlPlanePersonaWalletStore } from "./persona-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
@@ -50,7 +51,12 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
     schemaName: "packages_platform_cf_src_community_creation_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
       await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-      return await use(connectionForSchema(connectionString, schema), admin);
+      await admin.query(APPLY_SQL);
+      try {
+        return await use(connectionForSchema(connectionString, schema), admin);
+      } finally {
+        await admin.query(RESTORE_SQL);
+      }
     },
   });
 }
@@ -90,7 +96,6 @@ const actor = { userId: "creator-1", kind: "user" as const };
 suite("Postgres 17 community creation repository", () => {
   test("creates requirement-free V2 intents that are commit-ready without any ceremony", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -259,9 +264,8 @@ suite("Postgres 17 community creation repository", () => {
     completedTestCount += 1;
   }, 30_000);
 
-  test("reserves a named owner privately and publishes only after confirmed activation", async () => {
+  test("publishes a named owner while its exact wallet reservation remains pending", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -293,62 +297,12 @@ suite("Postgres 17 community creation repository", () => {
         next_action: { kind: "commit" },
       });
 
-      const reserved = await Effect.runPromise(
+      const committed = await Effect.runPromise(
         creationStore.commit({
           actor,
           intentId: created.document.intent_id,
           requestHash: "5".repeat(64),
           body: { idempotency_key: "create-new-commit", expected_revision: 1 },
-        }),
-      );
-      expect(reserved.outcome).toBe("fresh_not_created");
-      expect(reserved.document.committed_resource).toBeNull();
-      expect(reserved.document.next_action.kind).toBe("activate_profile");
-      if (reserved.document.next_action.kind !== "activate_profile")
-        throw new Error("missing activation");
-      const pendingId = reserved.document.next_action.persona_id;
-      expect(
-        (
-          await admin.query(
-            "SELECT count(*)::int AS count FROM communities WHERE created_by_user_id=$1",
-            [actor.userId],
-          )
-        ).rows[0].count,
-      ).toBe(0);
-      expect(
-        (await admin.query("SELECT public_persona_projection($1) AS profile", [pendingId])).rows[0]
-          .profile,
-      ).toBeNull();
-      // Exercise the real confirmation repository, with a deterministic provider
-      // attestation supplied by the test. Proof validation is covered separately.
-      const wallets = makeControlPlanePersonaWalletStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
-      const preparation = await Effect.runPromise(
-        wallets.getEvmPreparation({ accountId: actor.userId, personaId: pendingId }),
-      );
-      if (preparation === null) throw new Error("missing reservation");
-      await Effect.runPromise(
-        wallets.confirmEvm({
-          accountId: actor.userId,
-          personaId: pendingId,
-          attestation: {
-            sourceUserId: actor.userId,
-            privyWalletId: "test-owner-wallet",
-            hdWalletIndex: preparation.hd_wallet_index,
-            address: "0x1234567890123456789012345678901234567890",
-          },
-        }),
-      );
-      const committed = await Effect.runPromise(
-        creationStore.commit({
-          actor,
-          intentId: created.document.intent_id,
-          requestHash: "4".repeat(64),
-          body: {
-            idempotency_key: "publish-active-owner",
-            expected_revision: reserved.document.revision,
-          },
         }),
       );
       expect(committed.outcome).toBe("fresh_created");
@@ -409,7 +363,7 @@ suite("Postgres 17 community creation repository", () => {
       expect(minted.rows).toEqual([
         {
           status: "active",
-          wallet_status: "active",
+          wallet_status: "pending",
           bound_community: resource.community_id,
           binding_source: "community_creation",
           role_persona: mintedId,
@@ -426,13 +380,50 @@ suite("Postgres 17 community creation repository", () => {
         throw new Error("expected an optional-route document on reread");
       }
       expect(reread.persona_role_presentation?.persona.persona_id).toBe(mintedId);
+
+      // Ordinary sign-in recovery can confirm the same reserved index later;
+      // wallet completion is not a publication prerequisite.
+      const wallets = makeControlPlanePersonaWalletStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const preparation = await Effect.runPromise(
+        wallets.getEvmPreparation({ accountId: actor.userId, personaId: mintedId }),
+      );
+      if (preparation === null) throw new Error("missing reservation");
+      await Effect.runPromise(
+        wallets.confirmEvm({
+          accountId: actor.userId,
+          personaId: mintedId,
+          attestation: {
+            sourceUserId: actor.userId,
+            privyWalletId: "test-owner-wallet",
+            hdWalletIndex: preparation.hd_wallet_index,
+            address: "0x1234567890123456789012345678901234567890",
+          },
+        }),
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT status FROM persona_wallet_assignments WHERE persona_id=$1 AND chain_account_kind='evm'",
+            [mintedId],
+          )
+        ).rows,
+      ).toEqual([{ status: "active" }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM communities WHERE community_id=$1",
+            [resource.community_id],
+          )
+        ).rows[0].count,
+      ).toBe(1);
     });
     completedTestCount += 1;
   }, 30_000);
 
   test("rejects an existing creator persona already bound to another community", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -492,7 +483,6 @@ suite("Postgres 17 community creation repository", () => {
 
   test("settles a requirement-free commit as quota_exceeded at the account cap", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -559,7 +549,6 @@ suite("Postgres 17 community creation repository", () => {
 
   test("persists create/update revisions and replays exact historical outcomes", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -662,7 +651,6 @@ suite("Postgres 17 community creation repository", () => {
 
   test("makes unsupported gates durable and expires active intents on read", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -768,7 +756,6 @@ suite("Postgres 17 community creation repository", () => {
 
   test("serializes concurrent create replays and stale draft writers", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -839,7 +826,6 @@ suite("Postgres 17 community creation repository", () => {
 
   test("rejects fresh route-v1 commits but replays an exact committed snapshot", async () => {
     await withSchema(async (connection, admin) => {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],

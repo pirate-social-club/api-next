@@ -9,6 +9,7 @@
     "apps/*"
   ],
   "overrides": {
+    "sharp": "0.35.4",
     "underscore": "1.13.8",
     "ws": "8.21.0"
   },
