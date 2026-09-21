@@ -1,5 +1,6 @@
 import {
   canonicalTextModerationInput,
+  MODERATION_POLICY_CATEGORIES_V1,
   MODERATION_RATING_RULE_V2,
   resolveCommunityModerationPolicyV2,
 } from "@pirate/domain";
@@ -72,6 +73,77 @@ export class VideoSafetyModerationUnresolvedError extends Error {
     super("video safety moderation dispatch is unresolved", options);
     this.name = "VideoSafetyModerationUnresolvedError";
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+};
+
+export function validateVideoSafetyFrameProviderResult(
+  value: unknown,
+  expectedSha256: string,
+): VideoSafetyFrameProviderResult {
+  if (!isRecord(value) || new TextEncoder().encode(JSON.stringify(value)).byteLength > 12_288)
+    throw new Error("video safety provider result invalid");
+  if (
+    !hasExactKeys(value, [
+      "provider_id",
+      "requested_model",
+      "returned_model",
+      "input_sha256",
+      "matched_categories",
+      "evidence",
+    ]) ||
+    value.provider_id !== "openai" ||
+    typeof value.requested_model !== "string" ||
+    value.requested_model.length === 0 ||
+    typeof value.returned_model !== "string" ||
+    value.returned_model.length === 0 ||
+    value.input_sha256 !== expectedSha256 ||
+    !Array.isArray(value.matched_categories) ||
+    !isRecord(value.evidence)
+  )
+    throw new Error("video safety provider result shape mismatch");
+  const categorySet = new Set<string>(MODERATION_POLICY_CATEGORIES_V1);
+  const matched = value.matched_categories;
+  if (
+    matched.some((category) => typeof category !== "string" || !categorySet.has(category)) ||
+    new Set(matched).size !== matched.length ||
+    !hasExactKeys(value.evidence, [
+      "input_sha256",
+      "categories",
+      "scores",
+      "applied_input_types",
+    ]) ||
+    value.evidence.input_sha256 !== expectedSha256 ||
+    !isRecord(value.evidence.categories) ||
+    !isRecord(value.evidence.scores) ||
+    !isRecord(value.evidence.applied_input_types) ||
+    !hasExactKeys(value.evidence.categories, MODERATION_POLICY_CATEGORIES_V1) ||
+    !hasExactKeys(value.evidence.scores, MODERATION_POLICY_CATEGORIES_V1) ||
+    !hasExactKeys(value.evidence.applied_input_types, MODERATION_POLICY_CATEGORIES_V1)
+  )
+    throw new Error("video safety provider evidence shape mismatch");
+  for (const category of MODERATION_POLICY_CATEGORIES_V1) {
+    const score = value.evidence.scores[category];
+    const applied = value.evidence.applied_input_types[category];
+    if (
+      typeof value.evidence.categories[category] !== "boolean" ||
+      typeof score !== "number" ||
+      !Number.isFinite(score) ||
+      score < 0 ||
+      score > 1 ||
+      !Array.isArray(applied) ||
+      applied.some((inputType) => inputType !== "text" && inputType !== "image") ||
+      value.evidence.categories[category] !== matched.includes(category)
+    )
+      throw new Error("video safety provider category evidence mismatch");
+  }
+  return value as VideoSafetyFrameProviderResult;
 }
 
 /** OpenAI is a signal provider; without the separate visual gate media allow is unreachable. */
@@ -183,13 +255,16 @@ export function makeVideoSafetyProvider(
           result = claim.result;
         } else {
           try {
-            result = await Effect.runPromise(
-              options.image.evaluateImage({ bytes, mediaType: "image/jpeg", sha256: frame.sha256 }),
+            result = validateVideoSafetyFrameProviderResult(
+              await Effect.runPromise(
+                options.image.evaluateImage({
+                  bytes,
+                  mediaType: "image/jpeg",
+                  sha256: frame.sha256,
+                }),
+              ),
+              frame.sha256,
             );
-            if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 12_288)
-              throw new Error("video safety evidence exceeds bound");
-            if (result.input_sha256 !== frame.sha256)
-              throw new Error("video safety input mismatch");
             result = await options.evidence.succeedFrame(claimInput, claim.claimToken, result);
           } catch (cause) {
             throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, { cause });

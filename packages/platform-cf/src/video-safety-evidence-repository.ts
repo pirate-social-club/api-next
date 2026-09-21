@@ -9,9 +9,9 @@ import type {
   VideoSafetyEvidence,
   VideoSafetyEvidenceStore,
   VideoSafetyFrameClaimInput,
-  VideoSafetyFrameProviderResult,
   VideoSafetyInput,
 } from "./video-safety-provider.ts";
+import { validateVideoSafetyFrameProviderResult } from "./video-safety-provider.ts";
 
 type Row = { input_sha256: string; evidence_snapshot: VideoSafetyEvidence };
 type FrameClaimRow = {
@@ -28,7 +28,7 @@ type FrameClaimRow = {
   request_id: string;
   claim_token: string;
   state: "sending" | "succeeded";
-  provider_result: VideoSafetyFrameProviderResult | null;
+  provider_result: unknown;
 };
 export function makeVideoSafetyEvidenceStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -172,7 +172,13 @@ export function makeVideoSafetyEvidenceStore(
           if (existing.state === "succeeded") {
             if (existing.provider_result === null)
               throw new Error("video safety provider-call result missing");
-            return { status: "succeeded", result: existing.provider_result } as const;
+            return {
+              status: "succeeded",
+              result: validateVideoSafetyFrameProviderResult(
+                existing.provider_result,
+                input.frameSha256,
+              ),
+            } as const;
           }
           return { status: "unresolved" } as const;
         }),
@@ -220,7 +226,13 @@ export function makeVideoSafetyEvidenceStore(
               if (existing.state === "succeeded") {
                 if (existing.provider_result === null)
                   throw new Error("video safety provider-call result missing");
-                return { status: "succeeded", result: existing.provider_result } as const;
+                return {
+                  status: "succeeded",
+                  result: validateVideoSafetyFrameProviderResult(
+                    existing.provider_result,
+                    input.frameSha256,
+                  ),
+                } as const;
               }
               return { status: "unresolved" } as const;
             }),
@@ -230,6 +242,7 @@ export function makeVideoSafetyEvidenceStore(
     succeedFrame: (input, claimToken, result) =>
       run(
         Effect.gen(function* () {
+          const validatedResult = validateVideoSafetyFrameProviderResult(result, input.frameSha256);
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
@@ -250,7 +263,7 @@ export function makeVideoSafetyEvidenceStore(
                     frame_role,frame_artifact_ref,input_sha256,timestamp_ms,requested_timestamp_ms,
                     request_id,claim_token,state,provider_result`,
                 values: [
-                  JSON.stringify(result),
+                  JSON.stringify(validatedResult),
                   ...frameIdentity(input),
                   input.submissionId,
                   input.communityId,
@@ -274,14 +287,14 @@ export function makeVideoSafetyEvidenceStore(
                       WHERE operation_id=$1 AND video_revision=$2 AND creation_revision=$3
                         AND frame_role=$4 AND claim_token=$5 AND state='succeeded'
                         AND provider_result=$6::jsonb`,
-                  values: [...frameIdentity(input), claimToken, JSON.stringify(result)],
+                  values: [...frameIdentity(input), claimToken, JSON.stringify(validatedResult)],
                 })).rows[0];
               if (row === undefined)
                 throw new Error("video safety provider-call completion mismatch");
               assertFrameIdentity(row, input);
               if (row.state !== "succeeded" || row.provider_result === null)
                 throw new Error("video safety provider-call completion mismatch");
-              return row.provider_result;
+              return validateVideoSafetyFrameProviderResult(row.provider_result, input.frameSha256);
             }),
           );
         }),

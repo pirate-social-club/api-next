@@ -167,11 +167,17 @@ suite("private video safety evidence PostgreSQL fences", () => {
   });
 
   test("concurrent claims admit one dispatch and persisted success replays", async () => {
+    expect(await store.inspectFrame(callInput)).toEqual({ status: "absent" });
     const claims = await Promise.all([store.claimFrame(callInput), store.claimFrame(callInput)]);
     expect(claims.map((claim) => claim.status).sort()).toEqual(["dispatch", "unresolved"]);
+    expect(await store.inspectFrame(callInput)).toEqual({ status: "unresolved" });
     const owner = claims.find((claim) => claim.status === "dispatch");
     if (owner?.status !== "dispatch") throw new Error("missing dispatch owner");
     expect(await store.succeedFrame(callInput, owner.claimToken, frameResult)).toEqual(frameResult);
+    expect(await store.inspectFrame(callInput)).toEqual({
+      status: "succeeded",
+      result: frameResult,
+    });
     expect(await store.claimFrame(callInput)).toEqual({ status: "succeeded", result: frameResult });
     expect(
       (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_provider_calls"))
@@ -197,6 +203,26 @@ suite("private video safety evidence PostgreSQL fences", () => {
     await expect(store.succeedFrame(callInput, "wrong-claim-token", frameResult)).rejects.toThrow(
       "completion mismatch",
     );
+    await expect(
+      admin.query(
+        `UPDATE media_video_safety_provider_calls
+          SET state='succeeded',provider_result=$1::jsonb,resolved_at=clock_timestamp()
+          WHERE operation_id=$2 AND video_revision=$3 AND creation_revision=$4 AND frame_role=$5`,
+        [
+          JSON.stringify({ ...frameResult, input_sha256: "c".repeat(64) }),
+          callInput.operationId,
+          callInput.videoRevision,
+          callInput.creationRevision,
+          callInput.frameRole,
+        ],
+      ),
+    ).rejects.toThrow("result_shape");
+    await expect(
+      store.succeedFrame(callInput, owner.claimToken, {
+        ...frameResult,
+        input_sha256: "c".repeat(64),
+      }),
+    ).rejects.toThrow("shape mismatch");
     await expect(
       store.claimFrame({ ...callInput, creationRevision: 2, requestId: "stale-creation" }),
     ).rejects.toThrow("authority superseded");

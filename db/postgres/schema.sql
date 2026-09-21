@@ -9755,6 +9755,35 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_video_safety_provider_call() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.operation_id IS DISTINCT FROM NEW.operation_id
+    OR OLD.submission_id IS DISTINCT FROM NEW.submission_id
+    OR OLD.community_id IS DISTINCT FROM NEW.community_id
+    OR OLD.video_revision IS DISTINCT FROM NEW.video_revision
+    OR OLD.creation_revision IS DISTINCT FROM NEW.creation_revision
+    OR OLD.frame_role IS DISTINCT FROM NEW.frame_role
+    OR OLD.frame_artifact_ref IS DISTINCT FROM NEW.frame_artifact_ref
+    OR OLD.input_sha256 IS DISTINCT FROM NEW.input_sha256
+    OR OLD.timestamp_ms IS DISTINCT FROM NEW.timestamp_ms
+    OR OLD.requested_timestamp_ms IS DISTINCT FROM NEW.requested_timestamp_ms
+    OR OLD.request_id IS DISTINCT FROM NEW.request_id
+    OR OLD.claim_token IS DISTINCT FROM NEW.claim_token
+    OR OLD.claimed_at IS DISTINCT FROM NEW.claimed_at
+    OR OLD.state <> 'sending'
+    OR NEW.state <> 'succeeded'
+    OR OLD.provider_result IS NOT NULL
+    OR NEW.provider_result IS NULL
+    OR OLD.resolved_at IS NOT NULL
+    OR NEW.resolved_at IS NULL
+  THEN
+    RAISE EXCEPTION 'video safety provider call is immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_media_video_song_reference() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -29671,6 +29700,39 @@ CREATE TABLE media_video_rights (
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
 );
 
+CREATE TABLE media_video_safety_provider_calls (
+    operation_id text NOT NULL,
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    creation_revision bigint NOT NULL,
+    frame_role text NOT NULL,
+    frame_artifact_ref text NOT NULL,
+    input_sha256 text NOT NULL,
+    timestamp_ms bigint NOT NULL,
+    requested_timestamp_ms bigint,
+    request_id text NOT NULL,
+    claim_token text NOT NULL,
+    state text NOT NULL,
+    provider_result jsonb,
+    claimed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    resolved_at timestamp with time zone,
+    CONSTRAINT media_video_safety_provider_calls_claim_token_check CHECK ((claim_token ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text)),
+    CONSTRAINT media_video_safety_provider_calls_community_id_check CHECK ((btrim(community_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_video_safety_provider_calls_frame_artifact_ref_check CHECK ((btrim(frame_artifact_ref) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_frame_role_check CHECK ((frame_role = ANY (ARRAY['poster'::text, 'first'::text, 'midpoint'::text]))),
+    CONSTRAINT media_video_safety_provider_calls_input_sha256_check CHECK ((input_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_safety_provider_calls_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_requested_timestamp_ms_check CHECK (((requested_timestamp_ms IS NULL) OR (requested_timestamp_ms >= 0))),
+    CONSTRAINT media_video_safety_provider_calls_result_shape CHECK ((((state = 'sending'::text) AND (provider_result IS NULL) AND (resolved_at IS NULL)) OR ((state = 'succeeded'::text) AND (resolved_at IS NOT NULL) AND (resolved_at >= claimed_at) AND (jsonb_typeof(provider_result) = 'object'::text) AND (octet_length((provider_result)::text) <= 12288) AND (provider_result ?& ARRAY['provider_id'::text, 'requested_model'::text, 'returned_model'::text, 'input_sha256'::text, 'matched_categories'::text, 'evidence'::text]) AND (((((((provider_result - 'provider_id'::text) - 'requested_model'::text) - 'returned_model'::text) - 'input_sha256'::text) - 'matched_categories'::text) - 'evidence'::text) = '{}'::jsonb) AND (jsonb_typeof((provider_result -> 'provider_id'::text)) = 'string'::text) AND (btrim((provider_result ->> 'provider_id'::text)) <> ''::text) AND (jsonb_typeof((provider_result -> 'requested_model'::text)) = 'string'::text) AND (btrim((provider_result ->> 'requested_model'::text)) <> ''::text) AND (jsonb_typeof((provider_result -> 'returned_model'::text)) = 'string'::text) AND (btrim((provider_result ->> 'returned_model'::text)) <> ''::text) AND ((provider_result ->> 'input_sha256'::text) = input_sha256) AND (jsonb_typeof((provider_result -> 'matched_categories'::text)) = 'array'::text) AND (jsonb_typeof((provider_result -> 'evidence'::text)) = 'object'::text) AND ((provider_result -> 'evidence'::text) ?& ARRAY['input_sha256'::text, 'categories'::text, 'scores'::text, 'applied_input_types'::text]) AND ((((((provider_result -> 'evidence'::text) - 'input_sha256'::text) - 'categories'::text) - 'scores'::text) - 'applied_input_types'::text) = '{}'::jsonb) AND (((provider_result -> 'evidence'::text) ->> 'input_sha256'::text) = input_sha256) AND (jsonb_typeof(((provider_result -> 'evidence'::text) -> 'categories'::text)) = 'object'::text) AND (jsonb_typeof(((provider_result -> 'evidence'::text) -> 'scores'::text)) = 'object'::text) AND (jsonb_typeof(((provider_result -> 'evidence'::text) -> 'applied_input_types'::text)) = 'object'::text)))),
+    CONSTRAINT media_video_safety_provider_calls_state_check CHECK ((state = ANY (ARRAY['sending'::text, 'succeeded'::text]))),
+    CONSTRAINT media_video_safety_provider_calls_submission_id_check CHECK ((btrim(submission_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_timestamp_ms_check CHECK ((timestamp_ms >= 0)),
+    CONSTRAINT media_video_safety_provider_calls_video_revision_check CHECK ((video_revision > 0))
+);
+
 CREATE TABLE media_video_source_grants (
     capability_sha256 text NOT NULL,
     request_id text NOT NULL,
@@ -34301,6 +34363,15 @@ ALTER TABLE ONLY media_video_safety_evidence
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_request_id_key UNIQUE (request_id);
 
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_calls_claim_token_key UNIQUE (claim_token);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_calls_pkey PRIMARY KEY (operation_id, video_revision, creation_revision, frame_role);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_calls_request_id_key UNIQUE (request_id);
+
 ALTER TABLE ONLY media_video_song_references
     ADD CONSTRAINT media_video_song_references_master_revision_id_key UNIQUE (master_revision_id);
 
@@ -36427,6 +36498,8 @@ CREATE CONSTRAINT TRIGGER media_video_rights_basis_matches_intent AFTER INSERT O
 
 CREATE TRIGGER media_video_safety_evidence_immutable BEFORE UPDATE ON media_video_safety_evidence FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
+CREATE TRIGGER media_video_safety_provider_call_guard BEFORE UPDATE ON media_video_safety_provider_calls FOR EACH ROW EXECUTE FUNCTION guard_media_video_safety_provider_call();
+
 CREATE TRIGGER media_video_song_reference_guard BEFORE DELETE OR UPDATE ON media_video_song_references FOR EACH ROW EXECUTE FUNCTION guard_media_video_song_reference();
 
 CREATE CONSTRAINT TRIGGER media_video_song_reference_rating_floor AFTER INSERT ON media_video_song_references DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_song_video_rating_floor();
@@ -38455,6 +38528,9 @@ ALTER TABLE ONLY media_video_rights
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_c_community_id_submission_id_o_fkey FOREIGN KEY (community_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_video_song_references
     ADD CONSTRAINT media_video_song_references_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_accepted_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
