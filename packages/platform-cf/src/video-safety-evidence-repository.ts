@@ -247,14 +247,24 @@ export function makeVideoSafetyEvidenceStore(
                   claimToken,
                 ],
               });
-              const row = updated.rows[0] ?? (yield* readFrameClaim(tx, input)).rows[0];
-              if (row === undefined) throw new Error("video safety provider-call claim missing");
+              const row =
+                updated.rows[0] ??
+                (yield* tx.execute<FrameClaimRow>({
+                  label: "video-safety-call.succeed-replay",
+                  readonly: true,
+                  text: `SELECT operation_id,submission_id,community_id,video_revision,
+                        creation_revision,frame_role,frame_artifact_ref,input_sha256,timestamp_ms,
+                        requested_timestamp_ms,request_id,claim_token,state,provider_result
+                      FROM media_video_safety_provider_calls
+                      WHERE operation_id=$1 AND video_revision=$2 AND creation_revision=$3
+                        AND frame_role=$4 AND claim_token=$5 AND state='succeeded'
+                        AND provider_result=$6::jsonb`,
+                  values: [...frameIdentity(input), claimToken, JSON.stringify(result)],
+                })).rows[0];
+              if (row === undefined)
+                throw new Error("video safety provider-call completion mismatch");
               assertFrameIdentity(row, input);
-              if (
-                row.state !== "succeeded" ||
-                row.provider_result === null ||
-                JSON.stringify(row.provider_result) !== JSON.stringify(result)
-              )
+              if (row.state !== "succeeded" || row.provider_result === null)
                 throw new Error("video safety provider-call completion mismatch");
               return row.provider_result;
             }),
