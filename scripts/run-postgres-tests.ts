@@ -76,6 +76,10 @@ const dockerRecoveryTests = [
   "scripts/staging-persona-phased-reset.pg.test.ts",
   "scripts/staging-persona-recovery.pg.test.ts",
 ] as const;
+const hnsRegtestTests = [
+  "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
+  "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",
+] as const;
 
 /** CI's audited runners cannot use Docker. Local general/all partitions
  * still cover every file; CI splits exactly these recovery transport suites
@@ -85,9 +89,17 @@ export function partitionPostgresRecoveryFiles(files: readonly string[]) {
     if (!files.includes(file))
       throw new Error(`tracked PostgreSQL recovery suite is missing ${file}`);
   }
+  for (const file of hnsRegtestTests) {
+    if (!files.includes(file)) throw new Error(`tracked HNS regtest suite is missing ${file}`);
+  }
   return {
     recovery: [...dockerRecoveryTests],
-    audited: files.filter((file) => !dockerRecoveryTests.some((recovery) => recovery === file)),
+    hnsRegtest: [...hnsRegtestTests],
+    audited: files.filter(
+      (file) =>
+        !dockerRecoveryTests.some((recovery) => recovery === file) &&
+        !hnsRegtestTests.some((regtest) => regtest === file),
+    ),
   };
 }
 

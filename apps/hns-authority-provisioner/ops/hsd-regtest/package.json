@@ -1,0 +1,8 @@
+{
+  "name": "api-next-hsd-regtest-fixture",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "hsd": "8.0.0"
+  }
+}

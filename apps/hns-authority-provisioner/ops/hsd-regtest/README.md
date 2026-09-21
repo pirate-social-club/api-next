@@ -8,7 +8,9 @@ work.
 
 ## Pinned environment
 
-- `hsd` 8.0.0, installed from npm in `node:22-bookworm-slim`.
+- `hsd` 8.0.0 and its transitive npm graph are integrity-locked by the local
+  `package-lock.json`. The `node:22-bookworm-slim` base is digest-pinned in the
+  Dockerfile.
 - Host networking. The node RPC listens on `127.0.0.1:14037` and the wallet on
   `127.0.0.1:14039`; the API key is `controlled-progression`.
 - Regtest genesis block hash
@@ -76,3 +78,48 @@ fake answered whichever call the code made and supplied the field name the code
 read. These defects were in the new branch code, not the deployed provisioner;
 the deployment's separate safe-only observation defect remains the incident
 attribution recorded in the task.
+
+## Required CI gate
+
+`bun run test:hns-regtest` is the fail-closed gate for the two maintained live
+service suites: the lifecycle composed path and the provisioner service-loop
+entrypoint. It deliberately does not include PowerDNS, gateway/TLS, browser or
+HSD 6.1.1 transaction-ceremony acceptance.
+
+The command requires a disposable PostgreSQL 17 server with at least 51,200
+lock-table entries, plus the HSD 8.0.0 image above. Both HSD endpoints must be
+plain HTTP on `127.0.0.1`; the runner rejects a different network or the wrong
+fixed regtest genesis before either suite mutates the chain. The API key and
+database password below are fixture-only values, never production credentials.
+Ports may be overridden to isolate concurrent local work:
+
+```sh
+docker run -d --name api-next-hns-regtest-pg --network host \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
+  -e POSTGRES_INITDB_ARGS='--set=max_locks_per_transaction=512 --set=fsync=off' \
+  postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675 \
+  -c port=55447 -c listen_addresses=127.0.0.1
+
+docker run -d --name api-next-hns-regtest-hsd --network host pirate-hsd-regtest:local \
+  node node_modules/hsd/bin/hsd \
+  --network=regtest --http-host=127.0.0.1 --http-port=24047 \
+  --wallet-http-host=127.0.0.1 --wallet-http-port=24049 \
+  --api-key=controlled-progression --index-tx --index-address
+
+CONTROL_PLANE_POSTGRES_TEST_URL='postgres://postgres:postgres@127.0.0.1:55447/postgres?sslmode=disable' \
+HSD_REGTEST_NODE_URL=http://127.0.0.1:24047/ \
+HSD_REGTEST_WALLET_URL=http://127.0.0.1:24049/ \
+HSD_REGTEST_API_KEY=controlled-progression \
+bun run test:hns-regtest
+```
+
+The runner uses a private temporary receipt directory for each invocation,
+runs the two suites sequentially against the shared chain, and removes local
+receipts by default. CI sets `HNS_REGTEST_PRESERVE_RECEIPTS=1`, records the
+source SHA and exact PostgreSQL/HSD image identities, and uploads the two fresh
+suite receipts plus the completed-suite count report. Remove only the named
+containers created for the invocation:
+
+```sh
+docker rm -f api-next-hns-regtest-hsd api-next-hns-regtest-pg
+```
