@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { Client } from "pg";
-import type { MultiParticipantPreflight } from "./megapot-golden-multi-input.ts";
+import type { MultiGoldenInput, MultiParticipantPreflight } from "./megapot-golden-multi-input.ts";
 import { goldenObservationSql } from "./megapot-golden-observation-sql.ts";
 import { GoldenObservation } from "./megapot-golden-reconciliation.ts";
 import { megapotVeryEvidenceCte } from "./megapot-very-preflight-sql.ts";
@@ -46,6 +46,32 @@ export async function observeGoldenDrawing(
   return Schema.decodeUnknownSync(GoldenObservation, { onExcessProperty: "error" })(
     result.rows[0].observation,
   );
+}
+
+/** Includes terminal drawings: never pick the newest/open drawing after a crash. */
+export const goldenDrawingRecoverySql = `SELECT d.drawing_id::text AS drawing_id
+ FROM megapot_pool_drawings d
+ JOIN song_reward_offer_legs l ON l.leg_id=d.pool_leg_id
+ JOIN song_reward_offers o ON o.offer_id=l.offer_id
+ WHERE l.leg_id=$1 AND o.community_id=$2 AND o.post_id=$3
+ AND o.audio_revision=$4 AND l.kind='megapot_pool' AND l.chain_id=84532
+ ORDER BY d.drawing_id LIMIT 2`;
+
+export async function recoverGoldenDrawing(
+  client: Client,
+  input: MultiGoldenInput,
+  legId: string,
+): Promise<string> {
+  const result = await client.query(goldenDrawingRecoverySql, [
+    legId,
+    input.community_id,
+    input.post_id,
+    input.audio_revision,
+  ]);
+  if (result.rows.length !== 1)
+    throw new Error("Exact recovery drawing missing or ambiguous; operator review required.");
+  return Schema.decodeUnknownSync(Schema.Struct({ drawing_id: Schema.String }))(result.rows[0])
+    .drawing_id;
 }
 
 export const goldenIdentitySql = `${megapotVeryEvidenceCte}

@@ -12,6 +12,7 @@ import { prepareGoldenPool } from "./megapot-golden-multi-pool.ts";
 import { collectGoldenPreflight } from "./megapot-golden-preflight-v2.ts";
 import {
   observeGoldenDrawing,
+  recoverGoldenDrawing,
   verifyGoldenIdentity,
   withGoldenReadOnly,
 } from "./megapot-golden-readonly.ts";
@@ -39,6 +40,7 @@ const defaultDependencies = {
   pool: prepareGoldenPool,
   activity: runGoldenActivity,
   observe: observeGoldenDrawing,
+  recoverDrawing: recoverGoldenDrawing,
 };
 
 export async function collectMultiGoldenPreflight(
@@ -169,6 +171,10 @@ export async function runMultiGolden(
       }
     }
     const legId = journal.state.leg_id;
+    if (options.reconcileOnly && legId && !journal.state.drawing_id) {
+      const recovered = await read((client) => dependencies.recoverDrawing(client, input, legId));
+      await journal.save({ ...journal.state, drawing_id: recovered });
+    }
     const drawingId = journal.state.drawing_id;
     if (!legId || !drawingId) throw new Error("Journal has no drawing to reconcile.");
     const settlement = await waitForGoldenSettlement(

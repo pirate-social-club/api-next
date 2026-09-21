@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, readFile, unlink } from "node:fs/promises";
+import { hostname } from "node:os";
 import { Schema } from "effect";
 import type { MultiGoldenInput } from "./megapot-golden-multi-input.ts";
 
@@ -39,6 +40,11 @@ export async function withGoldenJournal<A>(
   const lockPath = `${path}.lock`;
   const lock = await open(lockPath, "wx", 0o600);
   try {
+    // Diagnostic evidence only: age/PID never authorizes automatic lock removal.
+    await lock.writeFile(
+      JSON.stringify({ host: hostname(), pid: process.pid, acquired_at: new Date().toISOString() }),
+    );
+    await lock.sync();
     let state: GoldenJournal = {
       input_digest: digest,
       funding_transaction_hash: input.funding_transaction_hash ?? null,

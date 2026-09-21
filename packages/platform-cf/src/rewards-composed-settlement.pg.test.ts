@@ -10,6 +10,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import {
   goldenContentSql,
+  goldenDrawingRecoverySql,
   goldenIdentitySql,
   observeGoldenDrawing,
 } from "../../../scripts/megapot-golden-readonly.ts";
@@ -401,6 +402,15 @@ suite("Composed current-policy Megapot settlement", () => {
       ).toEqual([{ count: 5 }]);
       expect(chain.custodyBalance).toBe(100000n - 10000n + 901n - 901n);
       const observed = await observeGoldenDrawing(admin, legId, "101");
+      expect(
+        (await admin.query(goldenDrawingRecoverySql, [legId, COMMUNITY_ID, POST_ID, 1])).rows,
+      ).toEqual([{ drawing_id: "101" }]);
+      expect(
+        (await admin.query(goldenDrawingRecoverySql, [legId, COMMUNITY_ID, "wrong-song", 1])).rows,
+      ).toEqual([]);
+      expect(
+        (await admin.query(goldenDrawingRecoverySql, ["wrong-leg", COMMUNITY_ID, POST_ID, 1])).rows,
+      ).toEqual([]);
       expect(observed.shares).toHaveLength(3);
       expect(observed.beneficiaries).toHaveLength(3);
       expect(observed.credits.map((credit) => credit.amount_atomic)).toEqual(["301", "300", "300"]);

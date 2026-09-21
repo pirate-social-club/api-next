@@ -66,6 +66,14 @@ replay. Ordinary server idempotency owns offer/funding replays.
 
 Reconciliation is read-only and can continue without participant credentials:
 
+If funding was confirmed but the drawing id was not journaled before a crash,
+reconcile-only discovers it through a SELECT scoped to the journaled leg,
+community, song, revision and Base Sepolia chain. It includes terminal drawings
+and requires exactly one result; it never chooses the newest drawing. Missing
+or multiple drawings require operator review. Recovery persists the discovered
+id locally but does not repeat funding observations, purchase, or activities.
+Missing activity evidence remains an incomplete rehearsal even if money settles.
+
 ```sh
 bun scripts/megapot-base-sepolia-golden.ts --multi-participant --input /approved/run.json --journal /private/run.jsonl --execute --confirm-base-sepolia --reconcile-only
 ```
@@ -83,3 +91,31 @@ independent chain balances, attestation, deployment readbacks, gas/provider cap
 enforcement, kill-switch exercise or the 24-hour closeout. It cannot choose a
 winner or authorize a waiver. Neither a passed local test nor a JSON approval
 reference supplies owner authority.
+
+## Hard-death lock recovery
+
+A lock surviving SIGKILL or host loss is deliberately not removed automatically.
+Its host, PID and acquisition time are diagnostic hints, not proof of death:
+PIDs can be reused and another host may share the filesystem. Recovery requires
+an operator with custody of the run and its original authorization.
+
+1. Stop launches and automatic restarts for this exact journal on every host
+   that can access it. Confirm the original process exited, or fence the lost
+   host so it cannot resume. If that cannot be proved, do not touch the lock.
+2. Preserve private copies of the exact input, journal and lock, and record
+   their digests, the death/fencing evidence and operator approval in the run
+   record. Never publish credentials or put these files in Git.
+3. With launches still fenced, move only the exact stale lock to a unique
+   evidence filename beside the journal, without overwriting an existing file.
+   Keep the original journal and input unchanged. Do not truncate a torn journal
+   tail, clear pending activity, or substitute another funding hash.
+4. Permit one operator to run the same command with --reconcile-only inside the
+   original reconciliation window. It acquires a new exclusive lock. No sponsor
+   or participant credentials are needed. After the deadline, stop and obtain
+   a separately reviewed recovery plan rather than editing the authorization.
+
+An invalid/torn journal, missing leg, ambiguous drawing or pending activity stays
+fail-closed. Reconciliation can report money settled while activity evidence is
+incomplete; it cannot authorize a second transfer or purchase. The subprocess
+SIGKILL tests in scripts/megapot-golden-recovery.test.ts exercise the lock archive
+and read-only replay both with a known drawing and with a lost drawing id.

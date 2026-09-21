@@ -111,6 +111,9 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
       };
     },
     observe: async () => rehearsalObservation(),
+    recoverDrawing: async () => {
+      throw new Error("Unexpected recovery");
+    },
   };
   const options = {
     execute: true,
