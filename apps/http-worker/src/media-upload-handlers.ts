@@ -32,6 +32,14 @@ type MediaCommunityCommand = Readonly<{
   MediaRequestLifetime;
 
 export type MediaUploadHandlerServices = Readonly<{
+  readonly listActive: (
+    input: Readonly<{
+      communityId: string;
+      actor: MediaHandlerActor;
+      query: Readonly<{ cursor?: string; limit?: string }>;
+    }> &
+      MediaRequestLifetime,
+  ) => unknown | Promise<unknown>;
   readonly preflightSongVideo: (input: MediaCommunityCommand) => unknown | Promise<unknown>;
   readonly reserve: (input: MediaCommunityCommand) => unknown | Promise<unknown>;
   readonly create: (input: MediaCommunityCommand) => unknown | Promise<unknown>;
@@ -50,6 +58,7 @@ export type MediaUploadHandlerServices = Readonly<{
 }>;
 
 export type MediaUploadHandlers = Readonly<{
+  readonly ListActiveSongMediaPostSubmissions: EndpointHandler;
   readonly PreflightSongVideoInterval: EndpointHandler;
   readonly CreateMediaUploadReservation: EndpointHandler;
   readonly CreateMediaPostSubmission: EndpointHandler;
@@ -81,6 +90,15 @@ const requestLifetime = (request: DecodedRequest): MediaRequestLifetime =>
 
 export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): MediaUploadHandlers {
   return {
+    ListActiveSongMediaPostSubmissions: (request) => {
+      const path = request.params as { readonly communityId: string };
+      return services.listActive({
+        communityId: path.communityId,
+        actor: actor(request.principal),
+        query: request.query as Readonly<{ cursor?: string; limit?: string }>,
+        ...requestLifetime(request),
+      });
+    },
     PreflightSongVideoInterval: (request) => {
       const path = request.params as { readonly communityId: string };
       return services.preflightSongVideo({

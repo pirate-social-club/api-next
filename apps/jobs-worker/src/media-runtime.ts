@@ -16,6 +16,7 @@ import {
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeVideoPublicationWakeupStore } from "@pirate/platform-cf/video-publication-wakeup-repository";
 import type { Layer } from "effect";
+import type { MediaProcessingObserver } from "../../../packages/application/src/media/processing-contracts.ts";
 import { dispatchVideoEnrichment } from "../../../packages/application/src/video/enrichment-dispatch.ts";
 import { makeVideoEnrichmentDispatchSource } from "../../../packages/platform-cf/src/video-enrichment-dispatch-source.ts";
 import {
@@ -64,6 +65,25 @@ export type MediaMaintenanceDependencies = Readonly<{
 }>;
 
 type DispatchPart = Readonly<{ selected: number; sent: number; failed: number }>;
+
+export const observeMediaWorkflowRecovery: MediaProcessingObserver = (observation) => {
+  if (
+    observation.event !== "workflow_lookup_failed" &&
+    observation.event !== "workflow_terminal_recovery_failed"
+  )
+    return;
+  console.error(
+    JSON.stringify({
+      event: "song-pipeline.media-workflow-recovery",
+      severity: "high",
+      outcome: "failed",
+      failure_class: observation.event,
+      operation_id: observation.operationId,
+      submission_id: observation.submissionId,
+      workflow_revision: observation.workflowRevision,
+    }),
+  );
+};
 
 export async function isolateMediaMaintenanceAction(
   stage: string,
@@ -204,6 +224,7 @@ export function makeMediaMaintenance(
           failed: song.failed + video.failed + enrichment.failed + sourceRecording.failed,
         });
       },
-      sweep: () => sweepMissingMediaWorkflows({ store, workflow }),
+      sweep: () =>
+        sweepMissingMediaWorkflows({ store, workflow, observe: observeMediaWorkflowRecovery }),
     });
 }

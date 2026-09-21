@@ -261,10 +261,11 @@ class FakeStore implements MediaProcessingStore {
     )
       return "stale";
     this.events.push(`commit:decision:${decision.outcome}`);
+    const referenceRequired = decision.outcome === "reference_required";
     this.current = {
       ...this.current,
-      decision,
-      decisionRevision: decision.decisionRevision,
+      decision: referenceRequired ? null : decision,
+      decisionRevision: referenceRequired ? 0 : decision.decisionRevision,
       status:
         decision.outcome === "manual_review"
           ? "manual_review"
@@ -1169,6 +1170,19 @@ describe("media processing workflow", () => {
         dependencies(store, providers([], { acr: [...acr] })),
       );
       expect(result).toEqual({ outcome: "action_required" });
+      expect(store.current).toMatchObject({
+        status: "action_required",
+        phase: null,
+        decision: null,
+        decisionRevision: 0,
+      });
+      expect(
+        await runWorkflow(
+          workflowPayload(store),
+          "analysis_launch",
+          dependencies(store, providers([], { acr: [...acr] })),
+        ),
+      ).toEqual({ outcome: "action_required" });
       expect(store.publications).toBe(0);
     }
   });
@@ -1352,6 +1366,9 @@ describe("media processing workflow", () => {
     const deps = dependencies(store, null);
     const result = await runWorkflow(workflowPayload(store), "analysis_launch", deps);
     expect(result).toEqual({ outcome: "manual_review" });
+    expect(await runWorkflow(workflowPayload(store), "analysis_launch", deps)).toEqual({
+      outcome: "manual_review",
+    });
     expect(store.providerReviews).toBe(1);
     expect(store.attempts.size).toBe(0);
   });

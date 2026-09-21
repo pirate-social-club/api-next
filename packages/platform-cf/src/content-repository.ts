@@ -20,6 +20,11 @@ import {
 import { Effect, type Layer } from "effect";
 import { publicPersonaFromSql } from "./public-persona-projection";
 import {
+  songPostProjectionJoins,
+  songPostProjectionSelect,
+  songPostStatusProjectionFromRow,
+} from "./song-post-projection";
+import {
   videoPostProjectionFromRow,
   videoPostProjectionJoins,
   videoPostProjectionSelect,
@@ -1012,8 +1017,10 @@ export function makeControlPlaneContentRepository(): ContentRepository {
                           p.content_rating,
                           can_account_view_content_rating_v1($3, p.content_rating) AS rating_view_allowed,
                           p.comments_locked, p.created_at,
+                          ${songPostProjectionSelect},
                           ${videoPostProjectionSelect}
                    FROM posts AS p
+                   ${songPostProjectionJoins}
                    ${videoPostProjectionJoins}
                   WHERE p.community_id = $1 AND p.post_id = $2`,
             values: [communityId, postId, viewerUserId],
@@ -1066,6 +1073,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               next_action: { kind: "verify_minimum_age", minimum_age: 18 },
             } as const;
           }
+          const songPresentation =
+            post.post_type === "song" ? songPostStatusProjectionFromRow(row) : undefined;
           const video = post.post_type === "video" ? videoPostProjectionFromRow(row) : undefined;
           if (post.post_type === "video" && video === null) return yield* invalid("get-post");
           const canonicalBody = post.post_type === "video" ? null : stringValue(row, "body");
@@ -1187,6 +1196,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           }
           return {
             post,
+            ...(songPresentation === undefined ? {} : { song_presentation: songPresentation }),
             ...(video === undefined || video === null ? {} : { video }),
             thread_snapshot: null,
             upvote_count: storedUpvoteCount,

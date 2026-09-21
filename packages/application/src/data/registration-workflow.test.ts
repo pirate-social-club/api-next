@@ -120,6 +120,7 @@ const ATTACHED_LICENSE = {
 };
 
 const reservation = (): ReserveDataRegistrationAttemptInput => ({
+  expectedWorkflowRevision: 1n,
   registrationOperationId: OPERATION_ID,
   submissionAttemptId: ATTEMPT_ID,
   chainId: 1315n,

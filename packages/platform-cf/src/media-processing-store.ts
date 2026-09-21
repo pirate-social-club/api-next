@@ -762,7 +762,7 @@ export function makeMediaProcessingStore(
         const db = yield* ControlPlaneDb;
         return yield* db.execute<Row>({
           label: "media-processing.alignment-current",
-          text: "SELECT status,current_artifact_ref,failure_code FROM media_alignment_projections WHERE submission_id=$1 AND operation_id=$2 AND post_id=$3 AND audio_revision=$4 AND analysis_revision=$5 AND lyrics_revision IS NOT DISTINCT FROM $6",
+          text: "SELECT status,current_artifact_ref,failure_code FROM media_alignment_projections WHERE submission_id=$1 AND operation_id=$2 AND post_id=$3 AND audio_revision=$4 AND analysis_revision=$5 AND lyrics_revision IS NOT DISTINCT FROM $6 AND community_id=$7 AND actor_user_id=$8 AND canonical_audio_sha256=$9",
           values: [
             authority.submissionId,
             authority.operationId,
@@ -770,6 +770,9 @@ export function makeMediaProcessingStore(
             authority.audioRevision,
             authority.analysisRevision,
             authority.publishedLyricsRevision,
+            authority.communityId,
+            authority.actorAccountId,
+            audio.canonicalSha256,
           ],
           readonly: true,
         });
@@ -820,6 +823,8 @@ export function makeMediaProcessingStore(
     try {
       await run(
         submissions.recordAlignment({
+          operationId: authority.operationId,
+          expectedWorkflowRevision: authority.workflowRevision,
           communityId: authority.communityId,
           submissionId: authority.submissionId,
           actorUserId: authority.actorAccountId,
@@ -921,6 +926,60 @@ export function makeMediaProcessingStore(
   const reconcileTerminalWorkflow: MediaProcessingStore["reconcileTerminalWorkflow"] = async (
     authority,
   ) => {
+    if (authority.status === "published") {
+      const recovery = await readAlignmentRecovery(authority);
+      if (recovery.kind === "committed") return "reconciled";
+      if (recovery.kind === "stale") return "stale";
+      if (recovery.kind === "failed") {
+        throw new MediaProcessingStoreError({ operation: "attempt", reason: "unavailable" });
+      }
+      const audio = authority.audio;
+      const lyricsRevision = authority.publishedLyricsRevision;
+      if (audio === null || lyricsRevision === null) return "stale";
+      const stage = recovery.kind === "recovery" ? "alignment_recovery" : "alignment";
+      const attemptBase =
+        recovery.kind === "recovery"
+          ? recovery.attemptId
+          : `media-attempt-${authority.operationId}-a${authority.audioRevision}-n${authority.analysisRevision}-alignment-l${lyricsRevision}`;
+      const persisted = await run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute<Row>({
+            label: "media-processing.terminal-alignment-result",
+            text: "SELECT result FROM media_processing_attempts WHERE community_id=$1 AND actor_user_id=$2 AND author_persona_id=$3 AND submission_id=$4 AND operation_id=$5 AND audio_revision=$6 AND analysis_revision=$7 AND stage=$8 AND input_kind='publication' AND input_revision=$9 AND input_hash=$10 AND adapter_revision='alignment-port-v1' AND attempt_id=$11||'-n'||attempt_number::text AND result IS NOT NULL ORDER BY attempt_number DESC LIMIT 1",
+            values: [
+              authority.communityId,
+              authority.actorAccountId,
+              authority.authorPersonaId,
+              authority.submissionId,
+              authority.operationId,
+              authority.audioRevision,
+              authority.analysisRevision,
+              stage,
+              lyricsRevision,
+              audio.canonicalSha256,
+              attemptBase,
+            ],
+            readonly: true,
+          });
+        }),
+      );
+      const row = persisted.rows[0];
+      const result =
+        row === undefined
+          ? {
+              kind: "alignment" as const,
+              status: "unavailable" as const,
+              failureCode: "provider_unavailable" as const,
+            }
+          : decodeAttemptResult(row.result);
+      if (result.kind !== "alignment") {
+        throw new MediaProcessingStoreError({ operation: "attempt", reason: "invalid-result" });
+      }
+      const committed = await commitAlignment(authority, result);
+      if (committed !== "stale") return "reconciled";
+      return (await readAlignmentRecovery(authority)).kind === "committed" ? "reconciled" : "stale";
+    }
     // A finished Workflow cannot advance, but durable results may already
     // establish the remaining business work. A publish-phase row with a
     // committed decision completes through the existing publication fence with

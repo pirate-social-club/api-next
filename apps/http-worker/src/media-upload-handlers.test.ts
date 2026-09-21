@@ -30,6 +30,7 @@ describe("media upload handlers", () => {
     const none = () => null;
     const handlers = makeMediaUploadHandlers({
       preflightSongVideo: none,
+      listActive: none,
       reserve: (input) => {
         receivedSignal = input.signal;
         return null;
@@ -59,6 +60,7 @@ describe("media upload handlers", () => {
     };
     const services: MediaUploadHandlerServices = {
       preflightSongVideo: call("song-video-preflight"),
+      listActive: call("list-active"),
       reserve: call("reserve"),
       create: call("create"),
       bindTerms: call("terms"),
@@ -88,6 +90,13 @@ describe("media upload handlers", () => {
     await handlers.RetryVideoPostSubmissionPoster(request());
     await handlers.CancelMediaPostSubmission(request());
     await handlers.ModerateMediaPostSubmission(request());
+    const controller = new AbortController();
+    await handlers.ListActiveSongMediaPostSubmissions(
+      request({
+        query: { cursor: "cursor-fixture", limit: "10" },
+        signal: controller.signal,
+      }),
+    );
 
     expect(reserve).toMatchObject({ status: 201, body: { route: "reserve" } });
     expect(create).toMatchObject({ status: 201, body: { route: "create" } });
@@ -104,6 +113,7 @@ describe("media upload handlers", () => {
       "retry-poster",
       "cancel",
       "moderate",
+      "list-active",
     ]);
     expect(observed[0]?.input).toEqual({
       communityId: "community_media",
@@ -113,6 +123,12 @@ describe("media upload handlers", () => {
     expect(observed[6]?.input).toEqual({
       submissionId: "submission_media",
       actor: { kind: "user", userId: "account_media" },
+    });
+    expect(observed[12]?.input).toEqual({
+      communityId: "community_media",
+      actor: { kind: "user", userId: "account_media" },
+      query: { cursor: "cursor-fixture", limit: "10" },
+      signal: controller.signal,
     });
   });
 
@@ -124,6 +140,7 @@ describe("media upload handlers", () => {
     };
     const handlers = makeMediaUploadHandlers({
       preflightSongVideo: unavailable,
+      listActive: unavailable,
       reserve: unavailable,
       create: unavailable,
       bindTerms: unavailable,
@@ -152,6 +169,20 @@ describe("media upload handlers", () => {
       ),
     ).toThrow(AuthError);
     expect(calls).toBe(0);
+    expect(() => handlers.ListActiveSongMediaPostSubmissions(request({ principal: null }))).toThrow(
+      AuthError,
+    );
+    expect(() =>
+      handlers.ListActiveSongMediaPostSubmissions(
+        request({ principal: { kind: "device", subject: "device_media" } }),
+      ),
+    ).toThrow(AuthError);
+    expect(() =>
+      handlers.ListActiveSongMediaPostSubmissions(
+        request({ principal: { kind: "agent", subject: "agent_media" } }),
+      ),
+    ).toThrow(AuthError);
+    expect(calls).toBe(0);
   });
 
   test("forwards a song-video interval preflight with its community and actor", async () => {
@@ -162,6 +193,7 @@ describe("media upload handlers", () => {
         received = input;
         return { state: "measuring" };
       },
+      listActive: none,
       reserve: none,
       create: none,
       bindTerms: none,

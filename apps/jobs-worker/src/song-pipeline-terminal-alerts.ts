@@ -263,7 +263,8 @@ async function workflowCeilingStatus(
         bindings.media,
         isWorkflowInstanceMissingError,
       );
-      return (await workflow.get(row.workflow_instance_id)) === "missing" ? "missing" : null;
+      const status = await workflow.get(row.workflow_instance_id);
+      return status === "missing" || status === "finished" ? status : null;
     }
     if (bindings.data === undefined) return null;
     const workflow = makeCloudflareDataRegistrationWorkflowLauncher(

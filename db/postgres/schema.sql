@@ -16229,6 +16229,40 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_data_workflow_ceiling_audit() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.workflow_revision IS NOT DISTINCT FROM OLD.workflow_revision OR OLD.workflow_revision < 4 THEN
+    RETURN NEW;
+  END IF;
+  -- Existing transaction-bearing recovery only resumes observation.
+  IF EXISTS (
+    SELECT 1 FROM data_operator_resume_actions action
+     WHERE action.registration_operation_id=NEW.registration_operation_id
+       AND action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id
+       AND action.submission_id=NEW.submission_id
+       AND action.expected_workflow_revision=OLD.workflow_revision
+       AND action.resulting_workflow_revision=NEW.workflow_revision
+       AND action.resumed_attempt_id=NEW.current_attempt_id
+       AND action.outbox_id=NEW.registration_operation_id || ':outbox:r' || NEW.workflow_revision::text
+  ) THEN RETURN NEW; END IF;
+  IF OLD.workflow_revision=4 AND NEW.workflow_revision=5
+     AND OLD.state='pending' AND NEW.state='pending'
+     AND OLD.current_attempt_id IS NULL AND NEW.current_attempt_id IS NULL
+     AND EXISTS (
+       SELECT 1 FROM data_operator_additional_workflow_attempt_actions action
+        WHERE action.registration_operation_id=NEW.registration_operation_id
+          AND action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id
+          AND action.submission_id=NEW.submission_id
+          AND action.expected_workflow_revision=OLD.workflow_revision
+          AND action.resulting_workflow_revision=NEW.workflow_revision
+     ) THEN RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'DATA workflow revision ceiling requires an exact operator action';
+END;
+$$;
+
 CREATE FUNCTION require_media_video_reservation_song_plan() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19321,6 +19355,44 @@ BEGIN
   END IF;
   RETURN NULL;
 END
+$$;
+
+CREATE FUNCTION validate_data_additional_workflow_attempt_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM data_registration_operations operation
+      JOIN data_registration_outbox reviewed
+        ON reviewed.outbox_id=NEW.reviewed_outbox_id
+       AND reviewed.registration_operation_id=operation.registration_operation_id
+      JOIN data_registration_outbox replacement
+        ON replacement.outbox_id=NEW.outbox_id
+       AND replacement.registration_operation_id=operation.registration_operation_id
+     WHERE operation.registration_operation_id=NEW.registration_operation_id
+       AND operation.community_id=NEW.community_id AND operation.actor_user_id=NEW.actor_user_id
+       AND operation.submission_id=NEW.submission_id AND operation.state='pending'
+       AND operation.workflow_revision=NEW.resulting_workflow_revision
+       AND operation.workflow_instance_id='data-registration-workflow:' || operation.registration_operation_id || ':r5'
+       AND operation.current_attempt_id IS NULL AND operation.registered_ip_id IS NULL
+       AND operation.confirmed_transaction_hash IS NULL AND operation.confirmed_block_number IS NULL
+       AND operation.confirmed_block_hash IS NULL AND operation.confirmed_log_index IS NULL
+       AND operation.confirmed_at IS NULL AND operation.failure_code IS NULL
+       AND operation.failure_evidence_ref IS NULL
+       AND reviewed.workflow_revision=NEW.expected_workflow_revision
+       AND reviewed.workflow_instance_id='data-registration-workflow:' || operation.registration_operation_id || ':r4'
+       AND reviewed.event_type='workflow_replacement' AND reviewed.state IN ('delivered','exhausted')
+       AND replacement.workflow_revision=NEW.resulting_workflow_revision
+       AND replacement.workflow_instance_id=operation.workflow_instance_id
+       AND replacement.event_type='workflow_replacement' AND replacement.state='pending'
+       AND NOT EXISTS (SELECT 1 FROM data_registration_signing_attempts WHERE registration_operation_id=operation.registration_operation_id)
+       AND NOT EXISTS (SELECT 1 FROM data_registration_attempt_transitions WHERE registration_operation_id=operation.registration_operation_id)
+       AND NOT EXISTS (SELECT 1 FROM data_registration_receipt_observations WHERE registration_operation_id=operation.registration_operation_id)
+  ) THEN
+    RAISE EXCEPTION 'additional DATA workflow attempt lacks its exact no-effect transition or launch';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION validate_data_operator_resume_action() RETURNS trigger
@@ -26602,6 +26674,34 @@ CREATE TABLE dance_upload_reservations (
     CONSTRAINT dance_upload_reservations_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'sealed'::text, 'expired'::text])))
 );
 
+CREATE TABLE data_operator_additional_workflow_attempt_actions (
+    registration_operation_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    operator_principal_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reason_code text NOT NULL,
+    reviewed_workflow_disposition text NOT NULL,
+    evidence_ref text NOT NULL,
+    expected_workflow_revision bigint NOT NULL,
+    resulting_workflow_revision bigint NOT NULL,
+    reviewed_outbox_id text NOT NULL,
+    outbox_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_operator_additional_wor_reviewed_workflow_dispositio_check CHECK ((reviewed_workflow_disposition = ANY (ARRAY['finished'::text, 'missing'::text]))),
+    CONSTRAINT data_operator_additional_work_resulting_workflow_revision_check CHECK ((resulting_workflow_revision = 5)),
+    CONSTRAINT data_operator_additional_workf_expected_workflow_revision_check CHECK ((expected_workflow_revision = 4)),
+    CONSTRAINT data_operator_additional_workflow_a_operator_principal_id_check CHECK ((btrim(operator_principal_id) <> ''::text)),
+    CONSTRAINT data_operator_additional_workflow_attempt_ac_evidence_ref_check CHECK ((btrim(evidence_ref) <> ''::text)),
+    CONSTRAINT data_operator_additional_workflow_attempt_ac_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_operator_additional_workflow_attempt_act_reason_code_check CHECK ((reason_code = 'explicit_additional_workflow_attempt'::text)),
+    CONSTRAINT data_operator_additional_workflow_attempt_actions_check CHECK ((reviewed_outbox_id = (registration_operation_id || ':outbox:r4'::text))),
+    CONSTRAINT data_operator_additional_workflow_attempt_actions_check1 CHECK ((outbox_id = (registration_operation_id || ':outbox:r5'::text))),
+    CONSTRAINT data_operator_additional_workflow_attempt_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text))
+);
+
 CREATE TABLE data_operator_resume_actions (
     registration_operation_id text NOT NULL,
     community_id text NOT NULL,
@@ -33367,6 +33467,15 @@ ALTER TABLE ONLY dance_upload_reservations
 ALTER TABLE ONLY dance_upload_reservations
     ADD CONSTRAINT dance_upload_reservations_session_id_key UNIQUE (session_id);
 
+ALTER TABLE ONLY data_operator_additional_workflow_attempt_actions
+    ADD CONSTRAINT data_operator_additional_workflow_attemp_reviewed_outbox_id_key UNIQUE (reviewed_outbox_id);
+
+ALTER TABLE ONLY data_operator_additional_workflow_attempt_actions
+    ADD CONSTRAINT data_operator_additional_workflow_attempt_actions_outbox_id_key UNIQUE (outbox_id);
+
+ALTER TABLE ONLY data_operator_additional_workflow_attempt_actions
+    ADD CONSTRAINT data_operator_additional_workflow_attempt_actions_pkey PRIMARY KEY (registration_operation_id);
+
 ALTER TABLE ONLY data_operator_resume_actions
     ADD CONSTRAINT data_operator_resume_actions_outbox_id_key UNIQUE (outbox_id);
 
@@ -35309,6 +35418,8 @@ CREATE INDEX learner_audio_artifacts_stored_account_idx ON learner_audio_artifac
 
 CREATE UNIQUE INDEX media_immutable_objects_reservation_operation_key ON media_immutable_objects USING btree (community_id, actor_user_id, operation_id) WHERE (reservation_id IS NOT NULL);
 
+CREATE INDEX media_post_submissions_active_account_recovery ON media_post_submissions USING btree (community_id, actor_user_id, created_at DESC, submission_id COLLATE "C" DESC) WHERE (status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'processing_failed'::text]));
+
 CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (community_id, actor_user_id, updated_at DESC, submission_id);
 
 CREATE UNIQUE INDEX media_post_submissions_localization_identity_uidx ON media_post_submissions USING btree (community_id, actor_user_id, post_id, submission_id);
@@ -35875,9 +35986,13 @@ CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDAT
 
 CREATE TRIGGER dance_upload_reservations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_upload_reservations FOR EACH ROW EXECUTE FUNCTION guard_dance_upload_reservation();
 
+CREATE CONSTRAINT TRIGGER data_additional_workflow_attempt_action_transition AFTER INSERT ON data_operator_additional_workflow_attempt_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_data_additional_workflow_attempt_action();
+
 CREATE TRIGGER data_metadata_artifact_snapshot_guard BEFORE INSERT OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_metadata_artifact_snapshot();
 
 CREATE TRIGGER data_metadata_snapshot_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_metadata_snapshots FOR EACH ROW EXECUTE FUNCTION guard_data_metadata_snapshot();
+
+CREATE TRIGGER data_operator_additional_workflow_attempt_actions_append_only BEFORE DELETE OR UPDATE ON data_operator_additional_workflow_attempt_actions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE CONSTRAINT TRIGGER data_operator_resume_action_transition AFTER INSERT ON data_operator_resume_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_data_operator_resume_action();
 
@@ -35912,6 +36027,8 @@ CREATE TRIGGER data_registration_replays_append_only BEFORE DELETE OR UPDATE ON 
 CREATE TRIGGER data_registration_transitions_append_only BEFORE DELETE OR UPDATE ON data_registration_attempt_transitions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE CONSTRAINT TRIGGER data_registration_video_parent_shape AFTER INSERT ON data_registration_operations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'video'::text)) EXECUTE FUNCTION require_data_registration_video_parent_shape();
+
+CREATE TRIGGER data_registration_workflow_ceiling_guard BEFORE UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION require_data_workflow_ceiling_audit();
 
 CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_records FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -37531,6 +37648,9 @@ ALTER TABLE ONLY dance_song_segments
 
 ALTER TABLE ONLY dance_upload_reservations
     ADD CONSTRAINT dance_upload_reservations_session_id_fkey FOREIGN KEY (session_id) REFERENCES dance_sessions(session_id);
+
+ALTER TABLE ONLY data_operator_additional_workflow_attempt_actions
+    ADD CONSTRAINT data_operator_additional_workflo_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
 
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);

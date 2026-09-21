@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.86.0-song-closeout.1",
+  "sourceBranch": "fix/song-closeout",
+  "sourceBase": "838cca9d723b114d39c3ef36cdfa6f590c3680c1",
+  "wireContract": "Authenticated active-song submission discovery and public alignment/DATA status projection. No local saved drafts or upload credentials in recovery responses.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.86.0-song-closeout.1.tgz",
+    "sha256": "91c727a0309ec6b0ba262954ac737f703a639a2c11e2b79335ecf48b277f0d53"
+  },
+  "validation": {
+    "status": "Local implementation candidate: API check and complete test gate, focused PostgreSQL recovery tests, Solid type/lint/app/SSR/API/build gates and local browser reload/resume/publication passed. Local preservation checkpoint authorized. Not published or deployed.",
+    "operationalBoundary": "No live recovery, provider effects, deployment or release is authorized."
+  }
+}

@@ -14,6 +14,7 @@ import {
   createMediaSubmission,
   finalizeMediaSubmission,
   getMediaSubmission,
+  listActiveMediaSubmissions,
   MediaUploadStoreError,
   moderateMediaSubmission,
   reserveMediaUpload,
@@ -240,6 +241,8 @@ export function makeMediaUploadApplicationCommands(
   return {
     // Song-backed video exists only where it is composed; elsewhere the
     // preflight is refused as an unavailable capability, like the reservation.
+    listActive: (input: Parameters<typeof listActiveMediaSubmissions>[0]) =>
+      listActiveMediaSubmissions(input, services),
     preflightSongVideo: (input: Parameters<typeof preflightSongVideoInterval>[0]) => {
       if (videoServices?.songInterval === undefined) {
         throw new BadRequest({
@@ -548,6 +551,25 @@ export function makeMediaUploadStore(
 
   return {
     replayReservation,
+    listActiveForAccount: async (input) => {
+      const page = await run(repository.listActiveForAccount(input));
+      return {
+        items: page.items.map((item) => {
+          const lyrics: MediaLyricsSnapshot = {
+            current:
+              item.state.lyrics === null
+                ? { status: "not_bound" }
+                : { status: "ready", ...item.state.lyrics },
+          };
+          return {
+            view: { state: item.state, lyrics, updatedAt: item.updatedAt },
+            authorPersona: item.authorPersona,
+            authorDeclaredRating: item.authorDeclaredRating,
+          };
+        }),
+        nextCursor: page.nextCursor,
+      };
+    },
     reserve: (input) => run(repository.reserve(input)),
     replay: (input) => run(repository.replay(input)),
     createSubmission: (input) => run(repository.createSubmission(input)),

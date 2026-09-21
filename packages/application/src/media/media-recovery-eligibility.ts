@@ -27,8 +27,8 @@ const liveStatesSql = `(${MEDIA_LIVE_SUBMISSION_STATES.map((state) => `'${state}
  * Exact-bound pending alignment for a published submission. The projection must
  * match the submission's post, audio and analysis revisions and its published
  * lyrics revision, and carry the submission's current audio hash through the
- * publication lineage; a completed, unavailable or stale alignment is not
- * required work.
+ * publication lineage. Unavailable alignment is required work only when an
+ * exact operator-authorized recovery remains requested.
  */
 export const pendingPublishedAlignmentSql = (submission: string): string => `(
   ${submission}.status='published'
@@ -50,7 +50,20 @@ export const pendingPublishedAlignmentSql = (submission: string): string => `(
        AND alignment.analysis_revision=${submission}.analysis_revision
        AND publication.lyrics_revision IS NOT NULL
        AND alignment.lyrics_revision IS NOT DISTINCT FROM publication.lyrics_revision
-       AND alignment.status='pending'))`;
+       AND alignment.canonical_audio_sha256=publication.canonical_audio_sha256
+       AND (alignment.status='pending' OR (
+         alignment.status='unavailable' AND EXISTS (
+           SELECT 1 FROM media_alignment_recovery_actions recovery
+            WHERE recovery.community_id=alignment.community_id
+              AND recovery.actor_user_id=alignment.actor_user_id
+              AND recovery.submission_id=alignment.submission_id
+              AND recovery.operation_id=alignment.operation_id
+              AND recovery.post_id=alignment.post_id
+              AND recovery.audio_revision=alignment.audio_revision
+              AND recovery.analysis_revision=alignment.analysis_revision
+              AND recovery.lyrics_revision=alignment.lyrics_revision
+              AND recovery.canonical_audio_sha256=alignment.canonical_audio_sha256
+              AND recovery.state='requested')))))`;
 
 /**
  * Required media recovery work: a submission still moving through the media

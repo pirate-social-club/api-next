@@ -269,6 +269,42 @@ describe("song pipeline terminal alert collectors", () => {
     );
   });
 
+  test("alerts when a finished media wait reaches the replacement ceiling", async () => {
+    const logs: PipelineLogFields[] = [];
+    const controlPlane = runtime((statement) =>
+      statement.label === "song-pipeline.terminal.media-workflow-ceiling"
+        ? Effect.succeed({
+            rows: [
+              {
+                operation_id: "media-2",
+                workflow_revision: "4",
+                workflow_instance_id: "media-media-2-r4",
+              },
+            ],
+            rowCount: 1,
+          })
+        : Effect.succeed({ rows: [], rowCount: 0 }),
+    );
+    expect(
+      await Effect.runPromise(
+        alertTick(
+          { log: (_event, fields) => logs.push(fields) },
+          collectSongPipelineTerminalAlerts(
+            controlPlane,
+            { media: true, data: false },
+            { media: mediaWorkflow("errored") },
+          ),
+        ),
+      ),
+    ).toBe(1);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        key: "song-pipeline:media-replacement-limit-reached",
+        failure_class: "workflow_finished_at_replacement_limit",
+      }),
+    );
+  });
+
   test("isolates one failed collector and continues the remaining read-only collectors", async () => {
     const logs: PipelineLogFields[] = [];
     const diagnostics: string[] = [];

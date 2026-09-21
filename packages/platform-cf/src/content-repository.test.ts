@@ -162,18 +162,25 @@ describe("M2 content repository row and lock defenses", () => {
     },
   );
 
-  test("age-locks video before returning playback, thumbnail, or attribution", async () => {
+  test("projects only public song delivery statuses", async () => {
     const fake = fakeDb([
       [resolvedPost],
       [
         {
           ...validPost,
-          post_type: "video",
-          content_rating: "adult_18",
-          rating_view_allowed: false,
-          video_original_sound_id: "must-not-leak",
+          post_type: "song",
+          title: "Public song",
+          body: null,
+          song_media_kind: "song",
+          song_alignment: "pending",
+          song_data_registration: "registered",
+          submission_id: "private-submission",
+          operation_id: "private-operation",
+          failure_evidence: "private-evidence",
         },
       ],
+      validCounts,
+      [],
     ]);
     const result = await runWith(
       makeControlPlaneContentRepository().getPost({
@@ -183,17 +190,84 @@ describe("M2 content repository row and lock defenses", () => {
       }),
       fake.db,
     );
-
     expect(result).toMatchObject({
       _tag: "Success",
       value: {
-        kind: "age_locked",
-        content_rating: "adult_18",
-        next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+        post: { post_type: "song" },
+        song_presentation: { alignment: "pending", data_registration: "registered" },
       },
     });
-    expect(JSON.stringify(result)).not.toContain("must-not-leak");
+    for (const value of ["private-submission", "private-operation", "private-evidence"]) {
+      expect(JSON.stringify(result)).not.toContain(value);
+    }
   });
+
+  test.each([
+    {},
+    { song_media_kind: "song", song_alignment: "unknown", song_data_registration: "pending" },
+    {
+      song_media_kind: "song",
+      song_alignment: "ready",
+      song_data_registration: "registration_pending",
+    },
+  ])("keeps songs visible when delivery status is unavailable", async (projection) => {
+    const fake = fakeDb([
+      [resolvedPost],
+      [{ ...validPost, post_type: "song", title: "Public song", body: null, ...projection }],
+      validCounts,
+      [],
+    ]);
+    const result = await runWith(
+      makeControlPlaneContentRepository().getPost({
+        communityId: "community_1",
+        postId: "post_1",
+        viewerUserId: "usr_alice",
+      }),
+      fake.db,
+    );
+    expect(result).toMatchObject({
+      _tag: "Success",
+      value: { post: { post_type: "song" }, song_presentation: null },
+    });
+  });
+
+  test.each(["video", "song"])(
+    "age-locks %s before returning media or delivery status",
+    async (postType) => {
+      const fake = fakeDb([
+        [resolvedPost],
+        [
+          {
+            ...validPost,
+            post_type: postType,
+            content_rating: "adult_18",
+            rating_view_allowed: false,
+            video_original_sound_id: "must-not-leak",
+            song_media_kind: "song",
+            song_alignment: "must-not-leak",
+          },
+        ],
+      ]);
+      const result = await runWith(
+        makeControlPlaneContentRepository().getPost({
+          communityId: "community_1",
+          postId: "post_1",
+          viewerUserId: "usr_alice",
+        }),
+        fake.db,
+      );
+
+      expect(result).toMatchObject({
+        _tag: "Success",
+        value: {
+          kind: "age_locked",
+          content_rating: "adult_18",
+          next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain("must-not-leak");
+    },
+  );
 
   test.each([
     ["comments_locked", { ...validPost, comments_locked: "false" }, validCounts, []],

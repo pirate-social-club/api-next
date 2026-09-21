@@ -70929,6 +70929,1286 @@
       }
     },
     "/communities/{communityId}/media-post-submissions": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdMediaPostSubmissions",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "maxLength": 1024
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "pattern": "^(?:[1-9]|[1-4][0-9]|50)$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "active_song_media_post_submission_page"
+                      ]
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "object": {
+                            "type": "string",
+                            "enum": [
+                              "active_song_media_post_submission"
+                            ]
+                          },
+                          "community_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              }
+                            ]
+                          },
+                          "title": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 200
+                              }
+                            ]
+                          },
+                          "song_type": {
+                            "type": "string",
+                            "enum": [
+                              "original",
+                              "remix"
+                            ]
+                          },
+                          "author_declared_rating": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "adult_18"
+                            ]
+                          },
+                          "terms_state": {
+                            "type": "object",
+                            "properties": {
+                              "current": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "not_bound"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "status"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "ready"
+                                        ]
+                                      },
+                                      "license_preset": {
+                                        "type": "string",
+                                        "enum": [
+                                          "non-commercial",
+                                          "commercial-use"
+                                        ]
+                                      },
+                                      "royalty_allocations": {
+                                        "$ref": "#/$defs/Arrays_"
+                                      },
+                                      "access_mode": {
+                                        "type": "string",
+                                        "enum": [
+                                          "public"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "status",
+                                      "license_preset",
+                                      "royalty_allocations",
+                                      "access_mode"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "ready"
+                                        ]
+                                      },
+                                      "license_preset": {
+                                        "type": "string",
+                                        "enum": [
+                                          "commercial-remix"
+                                        ]
+                                      },
+                                      "commercial_rev_share_bps": {
+                                        "type": "integer",
+                                        "allOf": [
+                                          {
+                                            "minimum": 0,
+                                            "maximum": 10000
+                                          },
+                                          {
+                                            "default": 1000
+                                          }
+                                        ]
+                                      },
+                                      "royalty_allocations": {
+                                        "$ref": "#/$defs/Arrays_"
+                                      },
+                                      "access_mode": {
+                                        "type": "string",
+                                        "enum": [
+                                          "public"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "status",
+                                      "license_preset",
+                                      "royalty_allocations",
+                                      "access_mode"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "current"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "submission": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "processing"
+                                    ]
+                                  },
+                                  "phase": {
+                                    "type": "string",
+                                    "enum": [
+                                      "reserve",
+                                      "awaiting_upload",
+                                      "finalize",
+                                      "analysis",
+                                      "decision",
+                                      "publish"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "phase"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "action_required"
+                                    ]
+                                  },
+                                  "action": {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "reference_required"
+                                        ]
+                                      },
+                                      "expires_at": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          }
+                                        ]
+                                      },
+                                      "reference_request_ref": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "expires_at",
+                                      "reference_request_ref"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "manual_review"
+                                    ]
+                                  },
+                                  "reason_code": {
+                                    "type": "string",
+                                    "enum": [
+                                      "review_required",
+                                      "moderation_unavailable"
+                                    ]
+                                  },
+                                  "review_ref": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "reason_code",
+                                  "review_ref"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "published"
+                                    ]
+                                  },
+                                  "published_resource": {
+                                    "type": "object",
+                                    "properties": {
+                                      "post_id": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          }
+                                        ]
+                                      },
+                                      "href": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "post_id",
+                                      "href"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "published_resource"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "blocked"
+                                    ]
+                                  },
+                                  "reason_code": {
+                                    "type": "string",
+                                    "enum": [
+                                      "policy_violation"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "reason_code"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "processing_failed"
+                                    ]
+                                  },
+                                  "reason_code": {
+                                    "type": "string",
+                                    "enum": [
+                                      "invalid_media",
+                                      "unsupported_media",
+                                      "probe_failed",
+                                      "hash_failed",
+                                      "transform_failed",
+                                      "publication_failed",
+                                      "workflow_terminal_unconverged",
+                                      "upload_seal_conflict"
+                                    ]
+                                  },
+                                  "retry_count": {
+                                    "type": "number",
+                                    "enum": [
+                                      0,
+                                      1,
+                                      2,
+                                      3
+                                    ]
+                                  },
+                                  "retryable": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "reason_code",
+                                  "retry_count",
+                                  "retryable"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "submission_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "author_persona": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "href": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "track": {
+                                    "type": "string",
+                                    "enum": [
+                                      "song"
+                                    ]
+                                  },
+                                  "creation_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_state": {
+                                    "$ref": "#/$defs/Objects_1"
+                                  },
+                                  "updated_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "abandoned"
+                                    ]
+                                  },
+                                  "reason_code": {
+                                    "type": "string",
+                                    "enum": [
+                                      "upload_reservation_expired",
+                                      "upload_expectation_mismatch",
+                                      "upload_source_changed_before_finalize",
+                                      "reference_window_expired",
+                                      "author_cancelled_before_finalize"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "submission_id",
+                                  "author_persona",
+                                  "href",
+                                  "track",
+                                  "creation_revision",
+                                  "audio_revision",
+                                  "lyrics_state",
+                                  "updated_at",
+                                  "status",
+                                  "reason_code"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "community_id",
+                          "title",
+                          "song_type",
+                          "author_declared_rating",
+                          "terms_state",
+                          "submission"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next_cursor": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "items",
+                    "next_cursor"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Arrays_": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "recipient_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              }
+                            ]
+                          },
+                          "share_bps": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 10000
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "recipient_id",
+                          "share_bps"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "allOf": [
+                        {
+                          "minItems": 1
+                        }
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "current"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "InternalError"
+        ]
+      },
       "post": {
         "operationId": "post_communitiesCommunityIdMediaPostSubmissions",
         "parameters": [
@@ -92344,7 +93624,31 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_1"
+                                  "type": "object",
+                                  "properties": {
+                                    "alignment": {
+                                      "type": "string",
+                                      "enum": [
+                                        "not_applicable",
+                                        "pending",
+                                        "ready",
+                                        "unavailable"
+                                      ]
+                                    },
+                                    "data_registration": {
+                                      "type": "string",
+                                      "enum": [
+                                        "pending",
+                                        "registered",
+                                        "failed"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "alignment",
+                                    "data_registration"
+                                  ],
+                                  "additionalProperties": false
                                 },
                                 {
                                   "type": "null"
@@ -101911,7 +103215,31 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_1"
+                                            "type": "object",
+                                            "properties": {
+                                              "alignment": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "not_applicable",
+                                                  "pending",
+                                                  "ready",
+                                                  "unavailable"
+                                                ]
+                                              },
+                                              "data_registration": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "pending",
+                                                  "registered",
+                                                  "failed"
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "alignment",
+                                              "data_registration"
+                                            ],
+                                            "additionalProperties": false
                                           },
                                           {
                                             "type": "null"
@@ -104665,7 +105993,31 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_1"
+                                        "type": "object",
+                                        "properties": {
+                                          "alignment": {
+                                            "type": "string",
+                                            "enum": [
+                                              "not_applicable",
+                                              "pending",
+                                              "ready",
+                                              "unavailable"
+                                            ]
+                                          },
+                                          "data_registration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "pending",
+                                              "registered",
+                                              "failed"
+                                            ]
+                                          }
+                                        },
+                                        "required": [
+                                          "alignment",
+                                          "data_registration"
+                                        ],
+                                        "additionalProperties": false
                                       },
                                       {
                                         "type": "null"
@@ -108857,7 +110209,31 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_1"
+                                            "type": "object",
+                                            "properties": {
+                                              "alignment": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "not_applicable",
+                                                  "pending",
+                                                  "ready",
+                                                  "unavailable"
+                                                ]
+                                              },
+                                              "data_registration": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "pending",
+                                                  "registered",
+                                                  "failed"
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "alignment",
+                                              "data_registration"
+                                            ],
+                                            "additionalProperties": false
                                           },
                                           {
                                             "type": "null"
@@ -155613,7 +156989,31 @@
                                 {
                                   "anyOf": [
                                     {
-                                      "$ref": "#/$defs/Objects_1"
+                                      "type": "object",
+                                      "properties": {
+                                        "alignment": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_applicable",
+                                            "pending",
+                                            "ready",
+                                            "unavailable"
+                                          ]
+                                        },
+                                        "data_registration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "pending",
+                                            "registered",
+                                            "failed"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "alignment",
+                                        "data_registration"
+                                      ],
+                                      "additionalProperties": false
                                     },
                                     {
                                       "type": "null"
@@ -159074,7 +160474,31 @@
                                 {
                                   "anyOf": [
                                     {
-                                      "$ref": "#/$defs/Objects_1"
+                                      "type": "object",
+                                      "properties": {
+                                        "alignment": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_applicable",
+                                            "pending",
+                                            "ready",
+                                            "unavailable"
+                                          ]
+                                        },
+                                        "data_registration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "pending",
+                                            "registered",
+                                            "failed"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "alignment",
+                                        "data_registration"
+                                      ],
+                                      "additionalProperties": false
                                     },
                                     {
                                       "type": "null"

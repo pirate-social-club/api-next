@@ -657,6 +657,12 @@ export const VideoPostProjectionV1 = Schema.Struct({
 });
 export type VideoPostProjectionV1 = Schema.Schema.Type<typeof VideoPostProjectionV1>;
 
+export const SongPostStatusProjectionV1 = Schema.Struct({
+  alignment: Schema.Literals(["not_applicable", "pending", "ready", "unavailable"]),
+  data_registration: Schema.Literals(["pending", "registered", "failed"]),
+});
+export type SongPostStatusProjectionV1 = Schema.Schema.Type<typeof SongPostStatusProjectionV1>;
+
 export const LocalizedPost = Schema.Struct({
   post: PostDocument,
   /** API-owned canonical detail path; absent for guarded/non-feed projections. */
@@ -667,7 +673,7 @@ export const LocalizedPost = Schema.Struct({
   thread_snapshot: Schema.NullOr(JsonObject),
   market_context: Schema.optional(Schema.NullOr(JsonObject)),
   label: Schema.optional(Schema.NullOr(JsonObject)),
-  song_presentation: Schema.optional(Schema.NullOr(JsonObject)),
+  song_presentation: Schema.optional(Schema.NullOr(SongPostStatusProjectionV1)),
   karaoke_capability: Schema.optional(Schema.NullOr(JsonObject)),
   streak_summary: Schema.optional(Schema.NullOr(JsonObject)),
   asset_story: Schema.optional(Schema.NullOr(JsonObject)),
@@ -2118,6 +2124,62 @@ export const CreateMediaUploadReservation = endpoint({
   ],
 });
 
+export type SongMediaPostSubmissionV1 = Schema.Schema.Type<typeof SongMediaPostSubmissionV1>;
+export const ActiveSongTermsStateV1 = Schema.Struct({
+  current: Schema.Union([
+    Schema.Struct({ status: Schema.Literal("not_bound") }),
+    Schema.Struct({
+      status: Schema.Literal("ready"),
+      license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
+      royalty_allocations: RoyaltyAllocations,
+      access_mode: Schema.Literal("public"),
+    }),
+    Schema.Struct({
+      status: Schema.Literal("ready"),
+      license_preset: Schema.Literal("commercial-remix"),
+      commercial_rev_share_bps: CommercialRevShareBps,
+      royalty_allocations: RoyaltyAllocations,
+      access_mode: Schema.Literal("public"),
+    }),
+  ]),
+});
+export type ActiveSongTermsStateV1 = Schema.Schema.Type<typeof ActiveSongTermsStateV1>;
+
+export const ActiveSongMediaPostSubmissionV1 = Schema.Struct({
+  object: Schema.Literal("active_song_media_post_submission"),
+  community_id: SongAuthorString,
+  title: SongTitle,
+  song_type: Schema.Literals(["original", "remix"]),
+  author_declared_rating: ContentRatingV1,
+  terms_state: ActiveSongTermsStateV1,
+  submission: SongMediaPostSubmissionV1,
+});
+export type ActiveSongMediaPostSubmissionV1 = Schema.Schema.Type<
+  typeof ActiveSongMediaPostSubmissionV1
+>;
+const ActiveSongMediaPostSubmissionQueryV1 = Schema.Struct({
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(1_024))),
+  limit: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[1-9]|[1-4][0-9]|50)$/u))),
+});
+export const ActiveSongMediaPostSubmissionPageV1 = Schema.Struct({
+  object: Schema.Literal("active_song_media_post_submission_page"),
+  items: Schema.Array(ActiveSongMediaPostSubmissionV1),
+  next_cursor: Schema.NullOr(Schema.String),
+});
+export type ActiveSongMediaPostSubmissionPageV1 = Schema.Schema.Type<
+  typeof ActiveSongMediaPostSubmissionPageV1
+>;
+
+export const ListActiveSongMediaPostSubmissions = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/media-post-submissions",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathCommunity, query: ActiveSongMediaPostSubmissionQueryV1 },
+  response: ActiveSongMediaPostSubmissionPageV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, InternalError],
+});
+
 export const CreateMediaPostSubmission = endpoint({
   method: "POST",
   path: "/communities/:communityId/media-post-submissions",
@@ -2415,6 +2477,7 @@ export const v1Registry = {
   CreatePost,
   PreflightSongVideoInterval,
   CreateMediaUploadReservation,
+  ListActiveSongMediaPostSubmissions,
   CreateMediaPostSubmission,
   BindMediaPostSubmissionTerms,
   BindMediaPostSubmissionLyrics,

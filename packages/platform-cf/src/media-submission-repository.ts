@@ -14,7 +14,7 @@ import {
   createOpaquePostSlugCandidate,
   createPostSlugCandidate,
 } from "@pirate/application/post-slug";
-import { SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
+import { type PublicPersonaV1, SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
 import { Data, Effect } from "effect";
 import {
   type BoundReference,
@@ -33,7 +33,9 @@ import {
   type TrustedSongAnalysis,
   transitionMediaSubmission,
 } from "../../domain/src/media-submission.ts";
+import { decodeActiveSongCursor, encodeActiveSongCursor } from "./active-song-cursor.ts";
 import { materializeAcceptedLyricLineCatalog } from "./lyric-line-catalog.ts";
+import { publicPersonaFromSql } from "./public-persona-projection.ts";
 import {
   ensurePostSlugAliasInTransaction,
   PublicPostSlugRepositoryError,
@@ -107,6 +109,7 @@ export type MediaSubmissionRepositoryOperation =
   | "create"
   | "replay"
   | "get"
+  | "list"
   | "terms"
   | "lyrics"
   | "begin-finalize"
@@ -364,6 +367,8 @@ export type PublishInput = CommandInput &
     outbox?: OutboxWrite;
   }>;
 export type AlignmentInput = Readonly<{
+  operationId: string;
+  expectedWorkflowRevision: number;
   communityId: string;
   submissionId: string;
   actorUserId: string;
@@ -519,7 +524,22 @@ export type ProcessingAttemptLookupInput = Readonly<{
   adapterRevision: string;
 }>;
 
+type ActiveSongSubmissionPage = Readonly<{
+  items: readonly Readonly<{
+    state: MediaSubmissionState;
+    updatedAt: string;
+    authorDeclaredRating: "general" | "adult_18";
+    authorPersona: PublicPersonaV1;
+  }>[];
+  nextCursor: string | null;
+}>;
+
 export type MediaSubmissionStore = {
+  listActiveForAccount(input: {
+    communityId: string;
+    actorUserId: string;
+    query: Readonly<{ cursor?: string; limit?: string }>;
+  }): Effect.Effect<ActiveSongSubmissionPage, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   reserve(
     input: ReservationInput,
   ): Effect.Effect<ReservationOutcome, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
@@ -1552,6 +1572,82 @@ export function makeControlPlaneMediaSubmissionRepository(
           } as const;
         }),
       );
+    });
+
+  const listActiveForAccount: MediaSubmissionStore["listActiveForAccount"] = (input) =>
+    Effect.gen(function* () {
+      const limitText = input.query.limit ?? "20";
+      if (
+        !validId(input.communityId) ||
+        !validId(input.actorUserId) ||
+        !/^(?:[1-9]|[1-4][0-9]|50)$/u.test(limitText)
+      )
+        return yield* Effect.fail(fail("list", "invalid-input"));
+      const limit = Number(limitText);
+      const cursor = yield* Effect.try({
+        try: () => decodeActiveSongCursor(input.query.cursor, input.actorUserId, input.communityId),
+        catch: () => fail("list", "invalid-input"),
+      });
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "media-submission.list-active-account",
+        text: `WITH hydrated AS (
+          ${stateSelect}
+          WHERE s.community_id=$1 AND s.actor_user_id=$2
+            AND s.status IN ('processing','action_required','manual_review','processing_failed')
+            AND active_owned_community_persona($2,s.author_persona_id,$1)
+            AND ($3::timestamptz IS NULL OR s.created_at<$3::timestamptz
+              OR (s.created_at=$3::timestamptz AND s.submission_id COLLATE "C"<$4::text COLLATE "C"))
+        ) SELECT hydrated.*,
+          to_char(hydrated.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at,
+          to_char(hydrated.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS list_updated_at,
+          public_persona_projection(hydrated.author_persona_id) AS list_author_persona
+          FROM hydrated ORDER BY created_at DESC, submission_id COLLATE "C" DESC LIMIT $5`,
+        values: [
+          input.communityId,
+          input.actorUserId,
+          cursor?.createdAt ?? null,
+          cursor?.submissionId ?? null,
+          limit + 1,
+        ],
+        readonly: true,
+      });
+      return yield* Effect.try({
+        try: (): ActiveSongSubmissionPage => {
+          const decoded = result.rows.map(
+            (row): ActiveSongSubmissionPage["items"][number] & { cursor: string } => {
+              const state = decodeState(row, "list");
+              const authorPersona = publicPersonaFromSql(row.list_author_persona);
+              if (
+                typeof row.cursor_created_at !== "string" ||
+                typeof row.list_updated_at !== "string" ||
+                (row.author_declared_rating !== "general" &&
+                  row.author_declared_rating !== "adult_18") ||
+                authorPersona === null ||
+                authorPersona === undefined
+              )
+                throw fail("list", "invalid-row");
+              return {
+                state,
+                updatedAt: row.list_updated_at,
+                authorDeclaredRating: row.author_declared_rating,
+                authorPersona,
+                cursor: encodeActiveSongCursor(input.actorUserId, input.communityId, {
+                  createdAt: row.cursor_created_at,
+                  submissionId: state.submissionId,
+                }),
+              };
+            },
+          );
+          const selected = decoded.slice(0, limit);
+          return {
+            items: selected.map(({ cursor: _, ...item }) => item),
+            nextCursor: result.rows.length > limit ? (selected.at(-1)?.cursor ?? null) : null,
+          };
+        },
+        catch: (error) =>
+          error instanceof MediaSubmissionRepositoryError ? error : fail("list", "invalid-row"),
+      });
     });
 
   const getForAuthor: MediaSubmissionStore["getForAuthor"] = (input) =>
@@ -3415,7 +3511,9 @@ export function makeControlPlaneMediaSubmissionRepository(
               input.artifact.artifactSha256)) ||
         (input.outcome === "unavailable" &&
           (input.failureCode === undefined || input.artifact !== undefined)) ||
-        (input.recoveryActionId !== undefined && !validId(input.recoveryActionId))
+        (input.recoveryActionId !== undefined && !validId(input.recoveryActionId)) ||
+        !validRevision(input.expectedWorkflowRevision, 1) ||
+        !validId(input.operationId)
       )
         return yield* Effect.fail(
           fail("alignment", "invalid-input", { submissionId: input.submissionId }),
@@ -3424,6 +3522,47 @@ export function makeControlPlaneMediaSubmissionRepository(
       const db = yield* ControlPlaneDb;
       yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          const authority = yield* tx.execute({
+            label: "media-alignment.workflow-fence",
+            text: "SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND author_persona_id=$4 AND post_id=$5 AND workflow_revision=$6 AND operation_id=$7 AND audio_revision=$8 AND analysis_revision=$9 AND current_lyrics_revision IS NOT DISTINCT FROM $10 AND status='published' FOR UPDATE",
+            values: [
+              input.communityId,
+              input.actorUserId,
+              input.submissionId,
+              input.personaId,
+              input.postId,
+              input.expectedWorkflowRevision,
+              input.operationId,
+              input.audioRevision,
+              input.analysisRevision,
+              input.lyricsRevision,
+            ],
+            readonly: false,
+          });
+          if (authority.rowCount !== 1)
+            return yield* Effect.fail(
+              fail("alignment", "stale-revision", { submissionId: input.submissionId }),
+            );
+          const locked = yield* tx.execute({
+            label: "media-alignment.lock",
+            text: "SELECT submission_id FROM media_alignment_projections WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND post_id=$4 AND audio_revision=$5 AND analysis_revision=$6 AND canonical_audio_sha256=$7 AND lyrics_revision IS NOT DISTINCT FROM $8 AND status=CASE WHEN $9::text IS NULL THEN 'pending' ELSE 'unavailable' END FOR UPDATE",
+            values: [
+              input.communityId,
+              input.actorUserId,
+              input.submissionId,
+              input.postId,
+              input.audioRevision,
+              input.analysisRevision,
+              input.canonicalAudioSha256,
+              input.lyricsRevision,
+              input.recoveryActionId ?? null,
+            ],
+            readonly: false,
+          });
+          if (locked.rowCount !== 1)
+            return yield* Effect.fail(
+              fail("alignment", "stale-revision", { submissionId: input.submissionId }),
+            );
           if (input.outcome === "ready") {
             if (input.artifact === undefined)
               return yield* Effect.fail(
@@ -3459,7 +3598,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           }
           const updated = yield* tx.execute({
             label: "media-alignment.project",
-            text: "UPDATE media_alignment_projections SET status=$1,current_artifact_ref=$2,current_artifact_revision=$3,alignment_revision=alignment_revision+1,failure_code=$4,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND post_id=$8 AND audio_revision=$9 AND analysis_revision=$10 AND canonical_audio_sha256=$11 AND lyrics_revision IS NOT DISTINCT FROM $12",
+            text: "UPDATE media_alignment_projections SET status=$1,current_artifact_ref=$2,current_artifact_revision=$3,alignment_revision=alignment_revision+1,failure_code=$4,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND post_id=$8 AND audio_revision=$9 AND analysis_revision=$10 AND canonical_audio_sha256=$11 AND lyrics_revision IS NOT DISTINCT FROM $12 AND status=CASE WHEN $13::text IS NULL THEN 'pending' ELSE 'unavailable' END",
             values: [
               input.outcome,
               input.artifact?.artifactRef ?? null,
@@ -3473,6 +3612,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               input.analysisRevision,
               input.canonicalAudioSha256,
               input.lyricsRevision,
+              input.recoveryActionId ?? null,
             ],
             readonly: false,
           });
@@ -3502,13 +3642,22 @@ export function makeControlPlaneMediaSubmissionRepository(
           if (input.recoveryActionId !== undefined) {
             const completed = yield* tx.execute({
               label: "media-alignment.recovery-complete",
-              text: "UPDATE media_alignment_recovery_actions SET state='completed',result_kind=$2,artifact_ref=$3,artifact_sha256=$4,failure_code=$5,completed_at=clock_timestamp() WHERE recovery_action_id=$1 AND state='requested'",
+              text: "UPDATE media_alignment_recovery_actions SET state='completed',result_kind=$2,artifact_ref=$3,artifact_sha256=$4,failure_code=$5,completed_at=clock_timestamp() WHERE recovery_action_id=$1 AND state='requested' AND community_id=$6 AND actor_user_id=$7 AND submission_id=$8 AND operation_id=$9 AND post_id=$10 AND audio_revision=$11 AND analysis_revision=$12 AND lyrics_revision=$13 AND canonical_audio_sha256=$14",
               values: [
                 input.recoveryActionId,
                 input.outcome,
                 input.artifact?.artifactRef ?? null,
                 input.artifact?.artifactSha256 ?? null,
                 input.failureCode ?? null,
+                input.communityId,
+                input.actorUserId,
+                input.submissionId,
+                input.operationId,
+                input.postId,
+                input.audioRevision,
+                input.analysisRevision,
+                input.lyricsRevision,
+                input.canonicalAudioSha256,
               ],
               readonly: false,
             });
@@ -4076,6 +4225,7 @@ export function makeControlPlaneMediaSubmissionRepository(
     createSubmission,
     replay,
     getForAuthor,
+    listActiveForAccount,
     getLyricsForAuthor,
     bindTerms,
     bindLyrics,
