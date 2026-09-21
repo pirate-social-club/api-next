@@ -169,7 +169,6 @@ export const CommunityCreationNextActionV2 = Schema.Union([
     ceremony_intent_id: Schema.NonEmptyString,
     generation: PositiveInteger,
   }),
-  Schema.Struct({ kind: Schema.Literal("activate_profile"), persona_id: Schema.NonEmptyString }),
   Schema.Struct({ kind: Schema.Literal("commit") }),
   Schema.Struct({
     kind: Schema.Literal("wait"),
@@ -393,9 +392,7 @@ export const CommunityCreationIntentV2 = Schema.Struct({
       return "Verification-required intents require a typed verification action";
     }
     if (intent.status === "commit_ready") {
-      return intent.next_action.kind === "commit" ||
-        (intent.draft.persona.kind === "create_new" &&
-          intent.next_action.kind === "activate_profile")
+      return intent.next_action.kind === "commit"
         ? undefined
         : "Commit-ready intents require a commit action";
     }

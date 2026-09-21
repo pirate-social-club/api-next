@@ -961,35 +961,6 @@ export function makeControlPlaneCommunityCreationRepository(
         });
         creatorPersonaId = reserved.personaId;
         mintedPersonaId = reserved.personaId;
-        if (
-          reserved.status === "pending_wallet" ||
-          document.persona_role_presentation?.persona.persona_id !== reserved.personaId
-        ) {
-          yield* transaction.execute({
-            label: "community.creation.commit-v2.reserve-owner",
-            text: `UPDATE community_creation_intents SET minted_persona_id=$3,
-                     revision=revision+1, updated_at=clock_timestamp()
-                    WHERE intent_id=$1 AND actor_id=$2 AND revision=$4`,
-            values: [input.intentId, input.actor.userId, reserved.personaId, document.revision],
-            readonly: false,
-          });
-          const pendingRow = yield* loadLockedIntent(
-            transaction,
-            input.actor.userId,
-            input.intentId,
-            "commit",
-          );
-          const pending = pendingRow === null ? null : documentFromRow(pendingRow);
-          if (pending === null) return yield* Effect.fail(failure("commit", "invalid-row"));
-          yield* insertRevision(transaction, {
-            intent: pending,
-            actorId: input.actor.userId,
-            operation: "commit",
-            idempotencyKey: body.idempotency_key,
-            requestHash: input.requestHash,
-          });
-          return { document: pending, outcome: "fresh_not_created" as const };
-        }
       } else {
         creatorPersonaId = document.draft.persona.persona_id;
       }
