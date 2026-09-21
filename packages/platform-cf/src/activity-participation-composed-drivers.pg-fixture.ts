@@ -1,3 +1,4 @@
+import { expect } from "bun:test";
 import {
   aggregateKaraokeSession,
   buildKaraokeScoringDiagnostics,
