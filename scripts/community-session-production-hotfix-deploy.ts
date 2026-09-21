@@ -1,6 +1,10 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type HotfixClaimRunner,
+  withDurableHotfixClaim,
+} from "./community-session-production-hotfix-claim.ts";
+import {
   findDeployedVersion,
   parseWorkerVersions,
   type WorkerVersion,
@@ -14,12 +18,16 @@ const RELEASE_BRANCH = "release/community-session-production-compatibility";
 const CONFIG_PATH = "apps/http-worker/wrangler.jsonc";
 const ENVIRONMENT = "production";
 const ALLOWED_CHANGED_PATHS = new Set([
+  "apps/http-worker/package.json",
+  "bun.lock",
+  "package.json",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.ts",
   "packages/platform-cf/src/community-owner-reservation.pg.test.ts",
   "packages/platform-cf/src/community-owner-reservation.ts",
   "scripts/community-session-production-hotfix-deploy.test.ts",
   "scripts/community-session-production-hotfix-deploy.ts",
+  "scripts/community-session-production-hotfix-claim.ts",
   "scripts/community-session-sufficiency-hotfix-sql.ts",
   "scripts/community-session-sufficiency-hotfix.pg.test.ts",
   "scripts/community-session-sufficiency-hotfix.test.ts",
@@ -31,6 +39,7 @@ export type HotfixDeploymentInput = Readonly<{
   sourceSha: string;
   captureDirectory: string;
   captureManifestSha256: string;
+  claimDirectory: string;
 }>;
 
 type CommandResult = Readonly<{ exitCode: number; stdout: string; stderr: string }>;
@@ -82,10 +91,11 @@ function optionValue(args: readonly string[], index: number): string {
 }
 
 export function parseHotfixDeploymentArgs(args: readonly string[]): HotfixDeploymentInput {
-  if (args.length !== 8) throw new Error("invalid hotfix deployment arguments");
+  if (args.length !== 10) throw new Error("invalid hotfix deployment arguments");
   let sourceSha: string | null = null;
   let captureDirectory: string | null = null;
   let captureManifestSha256: string | null = null;
+  let claimDirectory: string | null = null;
   let confirmation: string | null = null;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -99,6 +109,9 @@ export function parseHotfixDeploymentArgs(args: readonly string[]): HotfixDeploy
         break;
       case "--capture-manifest-sha256":
         captureManifestSha256 = value;
+        break;
+      case "--claim-directory":
+        claimDirectory = value;
         break;
       case "--confirm":
         confirmation = value;
@@ -115,16 +128,20 @@ export function parseHotfixDeploymentArgs(args: readonly string[]): HotfixDeploy
   if (captureManifestSha256 === null || !SHA256.test(captureManifestSha256)) {
     throw new Error("invalid capture manifest SHA-256");
   }
-  if (confirmation !== `upload-community-session-hotfix:${sourceSha}`) {
+  if (claimDirectory === null || !isAbsolute(claimDirectory)) {
+    throw new Error("claim directory must be absolute");
+  }
+  if (confirmation !== `upload-community-session-hotfix:${sourceSha}:${captureManifestSha256}`) {
     throw new Error("hotfix upload confirmation mismatch");
   }
-  return { sourceSha, captureDirectory, captureManifestSha256 };
+  return { sourceSha, captureDirectory, captureManifestSha256, claimDirectory };
 }
 
 function parsedBaseInput(values: Readonly<Record<string, string>>): HotfixDeploymentInput {
   const sourceSha = values.sourceSha;
   const captureDirectory = values.captureDirectory;
   const captureManifestSha256 = values.captureManifestSha256;
+  const claimDirectory = values.claimDirectory;
   if (sourceSha === undefined || !FULL_SHA.test(sourceSha)) throw new Error("invalid source SHA");
   if (captureDirectory === undefined || !isAbsolute(captureDirectory)) {
     throw new Error("capture directory must be absolute");
@@ -132,7 +149,10 @@ function parsedBaseInput(values: Readonly<Record<string, string>>): HotfixDeploy
   if (captureManifestSha256 === undefined || !SHA256.test(captureManifestSha256)) {
     throw new Error("invalid capture manifest SHA-256");
   }
-  return { sourceSha, captureDirectory, captureManifestSha256 };
+  if (claimDirectory === undefined || !isAbsolute(claimDirectory)) {
+    throw new Error("claim directory must be absolute");
+  }
+  return { sourceSha, captureDirectory, captureManifestSha256, claimDirectory };
 }
 
 function promotionValues(args: readonly string[]): Readonly<Record<string, string>> {
@@ -147,15 +167,17 @@ function promotionValues(args: readonly string[]): Readonly<Record<string, strin
           ? "captureDirectory"
           : argument === "--capture-manifest-sha256"
             ? "captureManifestSha256"
-            : argument === "--previous-version-id"
-              ? "previousVersionId"
-              : argument === "--uploaded-version-id"
-                ? "uploadedVersionId"
-                : argument === "--percentage"
-                  ? "percentage"
-                  : argument === "--confirm"
-                    ? "confirmation"
-                    : null;
+            : argument === "--claim-directory"
+              ? "claimDirectory"
+              : argument === "--previous-version-id"
+                ? "previousVersionId"
+                : argument === "--uploaded-version-id"
+                  ? "uploadedVersionId"
+                  : argument === "--percentage"
+                    ? "percentage"
+                    : argument === "--confirm"
+                      ? "confirmation"
+                      : null;
     if (key === null || values[key] !== undefined) {
       throw new Error(`unknown or repeated rollout argument: ${argument ?? ""}`);
     }
@@ -165,7 +187,7 @@ function promotionValues(args: readonly string[]): Readonly<Record<string, strin
 }
 
 export function parseHotfixPromotionArgs(args: readonly string[]): HotfixPromotionInput {
-  if (args.length !== 14) throw new Error("invalid hotfix promotion arguments");
+  if (args.length !== 16) throw new Error("invalid hotfix promotion arguments");
   const values = promotionValues(args);
   const base = parsedBaseInput(values);
   const previousVersionId = values.previousVersionId;
@@ -181,7 +203,10 @@ export function parseHotfixPromotionArgs(args: readonly string[]): HotfixPromoti
   ) {
     throw new Error("invalid hotfix promotion identity");
   }
-  if (values.confirmation !== `promote-community-session-hotfix:${base.sourceSha}:${percentage}`) {
+  if (
+    values.confirmation !==
+    `promote-community-session-hotfix:${base.sourceSha}:${base.captureManifestSha256}:${previousVersionId}:${uploadedVersionId}:${percentage}`
+  ) {
     throw new Error("hotfix promotion confirmation mismatch");
   }
   return { ...base, previousVersionId, uploadedVersionId, percentage };
@@ -190,7 +215,7 @@ export function parseHotfixPromotionArgs(args: readonly string[]): HotfixPromoti
 export function parseHotfixRollbackArgs(
   args: readonly string[],
 ): Omit<HotfixPromotionInput, "percentage"> {
-  if (args.length !== 12) throw new Error("invalid hotfix rollback arguments");
+  if (args.length !== 14) throw new Error("invalid hotfix rollback arguments");
   const values = promotionValues(args);
   const base = parsedBaseInput(values);
   const previousVersionId = values.previousVersionId;
@@ -204,7 +229,10 @@ export function parseHotfixRollbackArgs(
   ) {
     throw new Error("invalid hotfix rollback identity");
   }
-  if (values.confirmation !== `rollback-community-session-hotfix:${base.sourceSha}`) {
+  if (
+    values.confirmation !==
+    `rollback-community-session-hotfix:${base.sourceSha}:${base.captureManifestSha256}:${previousVersionId}:${uploadedVersionId}`
+  ) {
     throw new Error("hotfix rollback confirmation mismatch");
   }
   return { ...base, previousVersionId, uploadedVersionId };
@@ -310,9 +338,24 @@ function assertVersionProvenance(
   versionId: string,
   expectedMessage: string,
 ): void {
-  const matching = versions.filter(({ id }) => id === versionId);
-  if (matching.length !== 1 || matching[0]?.message !== expectedMessage) {
-    throw new Error("serving Worker provenance does not match the approved source");
+  const matchingId = versions.filter(({ id }) => id === versionId);
+  const matchingMessage = versions.filter(({ message }) => message === expectedMessage);
+  if (
+    matchingId.length !== 1 ||
+    matchingId[0]?.message !== expectedMessage ||
+    matchingMessage.length !== 1 ||
+    matchingMessage[0]?.id !== versionId
+  ) {
+    throw new Error("Worker version provenance is not unique for the approved source");
+  }
+}
+
+function assertNoCandidateVersion(
+  versions: readonly WorkerVersion[],
+  expectedMessage: string,
+): void {
+  if (versions.some(({ message }) => message === expectedMessage)) {
+    throw new Error("candidate Worker version already exists; reconcile before another upload");
   }
 }
 
@@ -445,85 +488,95 @@ export async function deployCommunitySessionProductionHotfix(
   repositoryRoot: string,
   input: HotfixDeploymentInput,
   runner: HotfixCommandRunner = runCommand,
+  claimRunner: HotfixClaimRunner = withDurableHotfixClaim,
 ): Promise<HotfixUploadReceipt> {
-  await verifyHotfixDeploymentSource(repositoryRoot, input, runner);
-  const beforeVersions = parseWorkerVersions(
-    await requiredOutput(runner, versionsCommand(), repositoryRoot, "pre-upload version listing"),
-  );
-  const beforeDistribution = parseCurrentDeployment(
+  return claimRunner(input.claimDirectory, `upload:${input.sourceSha}`, async () => {
+    await verifyHotfixDeploymentSource(repositoryRoot, input, runner);
+    const beforeVersions = parseWorkerVersions(
+      await requiredOutput(runner, versionsCommand(), repositoryRoot, "pre-upload version listing"),
+    );
+    const beforeDistribution = parseCurrentDeployment(
+      await requiredOutput(
+        runner,
+        deploymentsCommand(),
+        repositoryRoot,
+        "pre-upload traffic readback",
+      ),
+    );
+    if (beforeDistribution.length !== 1) {
+      throw new Error("hotfix upload requires one prior version at 100 percent");
+    }
+    const previousVersionId = beforeDistribution[0]?.versionId;
+    if (previousVersionId === undefined) throw new Error("prior Worker version is missing");
+    assertVersionProvenance(beforeVersions, previousVersionId, `git:${DEPLOYED_BASE_SHA}`);
+
+    const message = `git:${input.sourceSha}`;
+    assertNoCandidateVersion(beforeVersions, message);
     await requiredOutput(
       runner,
-      deploymentsCommand(),
+      [
+        "bunx",
+        "wrangler",
+        "versions",
+        "upload",
+        "--dry-run",
+        "--env",
+        ENVIRONMENT,
+        "--config",
+        CONFIG_PATH,
+      ],
       repositoryRoot,
-      "pre-upload traffic readback",
-    ),
-  );
-  if (beforeDistribution.length !== 1) {
-    throw new Error("hotfix upload requires one prior version at 100 percent");
-  }
-  const previousVersionId = beforeDistribution[0]?.versionId;
-  if (previousVersionId === undefined) throw new Error("prior Worker version is missing");
-  assertVersionProvenance(beforeVersions, previousVersionId, `git:${DEPLOYED_BASE_SHA}`);
-
-  await requiredOutput(
-    runner,
-    [
-      "bunx",
-      "wrangler",
-      "versions",
-      "upload",
-      "--dry-run",
-      "--env",
-      ENVIRONMENT,
-      "--config",
-      CONFIG_PATH,
-    ],
-    repositoryRoot,
-    "production Worker upload dry run",
-  );
-  const message = `git:${input.sourceSha}`;
-  const upload = await runner(
-    [
-      "bunx",
-      "wrangler",
-      "versions",
-      "upload",
-      "--strict",
-      "--env",
-      ENVIRONMENT,
-      "--config",
-      CONFIG_PATH,
-      "--message",
-      message,
-    ],
-    repositoryRoot,
-  );
-  if (upload.exitCode !== 0) throw new Error(`wrangler upload failed (exit ${upload.exitCode})`);
-
-  const afterVersions = parseWorkerVersions(
-    await requiredOutput(runner, versionsCommand(), repositoryRoot, "post-upload version listing"),
-  );
-  const version = findDeployedVersion(beforeVersions, afterVersions, message);
-  const afterDistribution = parseCurrentDeployment(
-    await requiredOutput(
-      runner,
-      deploymentsCommand(),
+      "production Worker upload dry run",
+    );
+    const upload = await runner(
+      [
+        "bunx",
+        "wrangler",
+        "versions",
+        "upload",
+        "--strict",
+        "--env",
+        ENVIRONMENT,
+        "--config",
+        CONFIG_PATH,
+        "--message",
+        message,
+      ],
       repositoryRoot,
-      "post-upload traffic readback",
-    ),
-  );
-  assertDistribution(afterDistribution, beforeDistribution);
-  return {
-    schema_version: 1,
-    operation: "upload",
-    source_sha: input.sourceSha,
-    deployed_base_sha: DEPLOYED_BASE_SHA,
-    previous_worker_version_id: previousVersionId,
-    uploaded_worker_version_id: version.id,
-    environment: ENVIRONMENT,
-    config_path: CONFIG_PATH,
-    capture_manifest_sha256: input.captureManifestSha256,
-  };
+    );
+    if (upload.exitCode !== 0) throw new Error(`wrangler upload failed (exit ${upload.exitCode})`);
+
+    const afterVersions = parseWorkerVersions(
+      await requiredOutput(
+        runner,
+        versionsCommand(),
+        repositoryRoot,
+        "post-upload version listing",
+      ),
+    );
+    const version = findDeployedVersion(beforeVersions, afterVersions, message);
+    assertVersionProvenance(afterVersions, version.id, message);
+    const afterDistribution = parseCurrentDeployment(
+      await requiredOutput(
+        runner,
+        deploymentsCommand(),
+        repositoryRoot,
+        "post-upload traffic readback",
+      ),
+    );
+    assertDistribution(afterDistribution, beforeDistribution);
+    return {
+      schema_version: 1,
+      operation: "upload",
+      source_sha: input.sourceSha,
+      deployed_base_sha: DEPLOYED_BASE_SHA,
+      previous_worker_version_id: previousVersionId,
+      uploaded_worker_version_id: version.id,
+      environment: ENVIRONMENT,
+      config_path: CONFIG_PATH,
+      capture_manifest_sha256: input.captureManifestSha256,
+    };
+  });
 }
 
 function rolloutCommand(
@@ -574,94 +627,102 @@ export async function promoteCommunitySessionProductionHotfix(
   repositoryRoot: string,
   input: HotfixPromotionInput,
   runner: HotfixCommandRunner = runCommand,
+  claimRunner: HotfixClaimRunner = withDurableHotfixClaim,
 ): Promise<HotfixPromotionReceipt> {
-  const current = await verifiedRolloutContext(repositoryRoot, input, runner);
-  const priorPercentage = input.percentage === 10 ? 0 : input.percentage === 50 ? 10 : 50;
-  assertDistribution(
-    current,
-    expectedDistribution(input.previousVersionId, input.uploadedVersionId, priorPercentage),
-  );
-  const promoted = await runner(
-    rolloutCommand(
-      input.previousVersionId,
-      input.uploadedVersionId,
-      input.percentage,
-      `rollout:git:${input.sourceSha}:${input.percentage}`,
-    ),
-    repositoryRoot,
-  );
-  if (promoted.exitCode !== 0) {
-    throw new Error(`wrangler rollout failed (exit ${promoted.exitCode})`);
-  }
-  const distribution = parseCurrentDeployment(
-    await requiredOutput(
-      runner,
-      deploymentsCommand(),
+  const identity = `promote:${input.sourceSha}:${input.previousVersionId}:${input.uploadedVersionId}:${input.percentage}`;
+  return claimRunner(input.claimDirectory, identity, async () => {
+    const current = await verifiedRolloutContext(repositoryRoot, input, runner);
+    const priorPercentage = input.percentage === 10 ? 0 : input.percentage === 50 ? 10 : 50;
+    assertDistribution(
+      current,
+      expectedDistribution(input.previousVersionId, input.uploadedVersionId, priorPercentage),
+    );
+    const promoted = await runner(
+      rolloutCommand(
+        input.previousVersionId,
+        input.uploadedVersionId,
+        input.percentage,
+        `rollout:git:${input.sourceSha}:${input.percentage}`,
+      ),
       repositoryRoot,
-      "post-rollout traffic readback",
-    ),
-  );
-  assertDistribution(
-    distribution,
-    expectedDistribution(input.previousVersionId, input.uploadedVersionId, input.percentage),
-  );
-  return {
-    schema_version: 1,
-    operation: "promote",
-    source_sha: input.sourceSha,
-    previous_worker_version_id: input.previousVersionId,
-    uploaded_worker_version_id: input.uploadedVersionId,
-    distribution,
-  };
+    );
+    if (promoted.exitCode !== 0) {
+      throw new Error(`wrangler rollout failed (exit ${promoted.exitCode})`);
+    }
+    const distribution = parseCurrentDeployment(
+      await requiredOutput(
+        runner,
+        deploymentsCommand(),
+        repositoryRoot,
+        "post-rollout traffic readback",
+      ),
+    );
+    assertDistribution(
+      distribution,
+      expectedDistribution(input.previousVersionId, input.uploadedVersionId, input.percentage),
+    );
+    return {
+      schema_version: 1,
+      operation: "promote",
+      source_sha: input.sourceSha,
+      previous_worker_version_id: input.previousVersionId,
+      uploaded_worker_version_id: input.uploadedVersionId,
+      distribution,
+    };
+  });
 }
 
 export async function rollbackCommunitySessionProductionHotfix(
   repositoryRoot: string,
   input: Omit<HotfixPromotionInput, "percentage">,
   runner: HotfixCommandRunner = runCommand,
+  claimRunner: HotfixClaimRunner = withDurableHotfixClaim,
 ): Promise<HotfixPromotionReceipt> {
-  const current = await verifiedRolloutContext(repositoryRoot, input, runner);
-  if (
-    current.some(
-      ({ versionId }) =>
-        versionId !== input.previousVersionId && versionId !== input.uploadedVersionId,
-    ) ||
-    !current.some(({ versionId }) => versionId === input.uploadedVersionId)
-  ) {
-    throw new Error("rollback refuses an unrelated or already-restored distribution");
-  }
-  const rollback = await runner(
-    rolloutCommand(
-      input.previousVersionId,
-      input.uploadedVersionId,
-      0,
-      `rollback:git:${input.sourceSha}:to:${DEPLOYED_BASE_SHA}`,
-    ),
-    repositoryRoot,
-  );
-  if (rollback.exitCode !== 0) {
-    throw new Error(`wrangler rollback failed (exit ${rollback.exitCode})`);
-  }
-  const distribution = parseCurrentDeployment(
-    await requiredOutput(
-      runner,
-      deploymentsCommand(),
+  const identity = `rollback:${input.sourceSha}:${input.previousVersionId}:${input.uploadedVersionId}`;
+  return claimRunner(input.claimDirectory, identity, async () => {
+    const current = await verifiedRolloutContext(repositoryRoot, input, runner);
+    if (
+      current.some(
+        ({ versionId }) =>
+          versionId !== input.previousVersionId && versionId !== input.uploadedVersionId,
+      ) ||
+      !current.some(({ versionId }) => versionId === input.uploadedVersionId)
+    ) {
+      throw new Error("rollback refuses an unrelated or already-restored distribution");
+    }
+    const rollback = await runner(
+      rolloutCommand(
+        input.previousVersionId,
+        input.uploadedVersionId,
+        0,
+        `rollback:git:${input.sourceSha}:to:${DEPLOYED_BASE_SHA}`,
+      ),
       repositoryRoot,
-      "post-rollback traffic readback",
-    ),
-  );
-  assertDistribution(
-    distribution,
-    expectedDistribution(input.previousVersionId, input.uploadedVersionId, 0),
-  );
-  return {
-    schema_version: 1,
-    operation: "rollback",
-    source_sha: input.sourceSha,
-    previous_worker_version_id: input.previousVersionId,
-    uploaded_worker_version_id: input.uploadedVersionId,
-    distribution,
-  };
+    );
+    if (rollback.exitCode !== 0) {
+      throw new Error(`wrangler rollback failed (exit ${rollback.exitCode})`);
+    }
+    const distribution = parseCurrentDeployment(
+      await requiredOutput(
+        runner,
+        deploymentsCommand(),
+        repositoryRoot,
+        "post-rollback traffic readback",
+      ),
+    );
+    assertDistribution(
+      distribution,
+      expectedDistribution(input.previousVersionId, input.uploadedVersionId, 0),
+    );
+    return {
+      schema_version: 1,
+      operation: "rollback",
+      source_sha: input.sourceSha,
+      previous_worker_version_id: input.previousVersionId,
+      uploaded_worker_version_id: input.uploadedVersionId,
+      distribution,
+    };
+  });
 }
 
 export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {

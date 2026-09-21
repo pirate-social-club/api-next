@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { withDurableHotfixClaim } from "./community-session-production-hotfix-claim.ts";
 import {
   deployCommunitySessionProductionHotfix,
   type HotfixCommandRunner,
@@ -20,12 +24,16 @@ const previousVersionId = "11111111-1111-4111-8111-111111111111";
 const uploadedVersionId = "22222222-2222-4222-8222-222222222222";
 const unrelatedVersionId = "33333333-3333-4333-8333-333333333333";
 const allowedPaths = [
+  "apps/http-worker/package.json",
+  "bun.lock",
+  "package.json",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.ts",
   "packages/platform-cf/src/community-owner-reservation.pg.test.ts",
   "packages/platform-cf/src/community-owner-reservation.ts",
   "scripts/community-session-production-hotfix-deploy.test.ts",
   "scripts/community-session-production-hotfix-deploy.ts",
+  "scripts/community-session-production-hotfix-claim.ts",
   "scripts/community-session-sufficiency-hotfix-sql.ts",
   "scripts/community-session-sufficiency-hotfix.pg.test.ts",
   "scripts/community-session-sufficiency-hotfix.test.ts",
@@ -101,12 +109,20 @@ function deployment(
 }
 
 function baseInput() {
-  return { sourceSha, captureDirectory, captureManifestSha256: manifestSha } as const;
+  return {
+    sourceSha,
+    captureDirectory,
+    captureManifestSha256: manifestSha,
+    claimDirectory: "/claims",
+  } as const;
 }
 
 function rolloutInput(percentage: 10 | 50 | 100) {
   return { ...baseInput(), previousVersionId, uploadedVersionId, percentage } as const;
 }
+
+const passClaim = async <T>(_: string, __: string, action: () => Promise<T>): Promise<T> =>
+  action();
 
 describe("community session production hotfix deployment", () => {
   test("requires exact upload, promotion, and rollback confirmations", () => {
@@ -118,8 +134,10 @@ describe("community session production hotfix deployment", () => {
         captureDirectory,
         "--capture-manifest-sha256",
         manifestSha,
+        "--claim-directory",
+        "/claims",
         "--confirm",
-        `upload-community-session-hotfix:${sourceSha}`,
+        `upload-community-session-hotfix:${sourceSha}:${manifestSha}`,
       ]),
     ).toEqual(baseInput());
 
@@ -131,6 +149,8 @@ describe("community session production hotfix deployment", () => {
         captureDirectory,
         "--capture-manifest-sha256",
         manifestSha,
+        "--claim-directory",
+        "/claims",
         "--previous-version-id",
         previousVersionId,
         "--uploaded-version-id",
@@ -138,7 +158,7 @@ describe("community session production hotfix deployment", () => {
         "--percentage",
         "10",
         "--confirm",
-        `promote-community-session-hotfix:${sourceSha}:10`,
+        `promote-community-session-hotfix:${sourceSha}:${manifestSha}:${previousVersionId}:${uploadedVersionId}:10`,
       ]),
     ).toEqual(rolloutInput(10));
 
@@ -150,12 +170,14 @@ describe("community session production hotfix deployment", () => {
         captureDirectory,
         "--capture-manifest-sha256",
         manifestSha,
+        "--claim-directory",
+        "/claims",
         "--previous-version-id",
         previousVersionId,
         "--uploaded-version-id",
         uploadedVersionId,
         "--confirm",
-        `rollback-community-session-hotfix:${sourceSha}`,
+        `rollback-community-session-hotfix:${sourceSha}:${manifestSha}:${previousVersionId}:${uploadedVersionId}`,
       ]),
     ).toEqual({ ...baseInput(), previousVersionId, uploadedVersionId });
 
@@ -167,6 +189,8 @@ describe("community session production hotfix deployment", () => {
         captureDirectory,
         "--capture-manifest-sha256",
         manifestSha,
+        "--claim-directory",
+        "/claims",
         "--previous-version-id",
         previousVersionId,
         "--uploaded-version-id",
@@ -174,7 +198,7 @@ describe("community session production hotfix deployment", () => {
         "--percentage",
         "25",
         "--confirm",
-        `promote-community-session-hotfix:${sourceSha}:25`,
+        `promote-community-session-hotfix:${sourceSha}:${manifestSha}:${previousVersionId}:${uploadedVersionId}:25`,
       ]),
     ).toThrow("promotion identity");
   });
@@ -222,8 +246,20 @@ describe("community session production hotfix deployment", () => {
       { exitCode: 0, stdout: deployment(0) },
     ]);
     await expect(
-      deployCommunitySessionProductionHotfix("/repo", baseInput(), runner),
-    ).rejects.toThrow("provenance does not match");
+      deployCommunitySessionProductionHotfix("/repo", baseInput(), runner, passClaim),
+    ).rejects.toThrow("provenance is not unique");
+    expect(commands.some((command) => command.includes("upload"))).toBe(false);
+  });
+
+  test("refuses to repeat an ambiguous or already completed upload", async () => {
+    const { runner, commands } = queueRunner([
+      ...verificationResults(),
+      { exitCode: 0, stdout: versions() },
+      { exitCode: 0, stdout: deployment(0) },
+    ]);
+    await expect(
+      deployCommunitySessionProductionHotfix("/repo", baseInput(), runner, passClaim),
+    ).rejects.toThrow("already exists");
     expect(commands.some((command) => command.includes("upload"))).toBe(false);
   });
 
@@ -238,7 +274,7 @@ describe("community session production hotfix deployment", () => {
       { exitCode: 0, stdout: deployment(0) },
     ]);
     await expect(
-      deployCommunitySessionProductionHotfix("/repo", baseInput(), runner),
+      deployCommunitySessionProductionHotfix("/repo", baseInput(), runner, passClaim),
     ).resolves.toEqual({
       schema_version: 1,
       operation: "upload",
@@ -268,7 +304,7 @@ describe("community session production hotfix deployment", () => {
       { exitCode: 0, stdout: deployment(10) },
     ]);
     await expect(
-      promoteCommunitySessionProductionHotfix("/repo", rolloutInput(10), runner),
+      promoteCommunitySessionProductionHotfix("/repo", rolloutInput(10), runner, passClaim),
     ).resolves.toMatchObject({
       operation: "promote",
       distribution: [
@@ -289,7 +325,7 @@ describe("community session production hotfix deployment", () => {
       { exitCode: 0, stdout: deployment(0) },
     ]);
     await expect(
-      promoteCommunitySessionProductionHotfix("/repo", rolloutInput(50), drift.runner),
+      promoteCommunitySessionProductionHotfix("/repo", rolloutInput(50), drift.runner, passClaim),
     ).rejects.toThrow("approved rollout stage");
     expect(drift.commands.some((command) => command[3] === "deploy")).toBe(false);
   });
@@ -307,7 +343,12 @@ describe("community session production hotfix deployment", () => {
         { exitCode: 0, stdout: deployment(percentage) },
       ]);
       await expect(
-        promoteCommunitySessionProductionHotfix("/repo", rolloutInput(percentage), runner),
+        promoteCommunitySessionProductionHotfix(
+          "/repo",
+          rolloutInput(percentage),
+          runner,
+          passClaim,
+        ),
       ).resolves.toMatchObject({
         operation: "promote",
         distribution: parseCurrentDeployment(deployment(percentage)),
@@ -328,6 +369,7 @@ describe("community session production hotfix deployment", () => {
         "/repo",
         { ...baseInput(), previousVersionId, uploadedVersionId },
         runner,
+        passClaim,
       ),
     ).resolves.toMatchObject({ operation: "rollback" });
 
@@ -341,7 +383,45 @@ describe("community session production hotfix deployment", () => {
         "/repo",
         { ...baseInput(), previousVersionId, uploadedVersionId },
         unrelated.runner,
+        passClaim,
       ),
     ).rejects.toThrow("unrelated");
+  });
+
+  test("durably excludes concurrent calls and refuses a crash-retained claim", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "community-session-hotfix-"));
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const claimed = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    try {
+      const first = withDurableHotfixClaim(directory, "first", async () => {
+        entered?.();
+        await held;
+        return "done";
+      });
+      await claimed;
+      await expect(
+        withDurableHotfixClaim(directory, "second", async () => "unexpected"),
+      ).rejects.toThrow("claim already exists");
+      release?.();
+      await expect(first).resolves.toBe("done");
+
+      await writeFile(
+        join(directory, "community-session-production-hotfix.claim"),
+        '{"crash":"retained"}\n',
+        { mode: 0o600 },
+      );
+      await expect(
+        withDurableHotfixClaim(directory, "after-restart", async () => "unexpected"),
+      ).rejects.toThrow("reconcile it before proceeding");
+    } finally {
+      release?.();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
