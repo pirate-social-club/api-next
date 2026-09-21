@@ -16,6 +16,7 @@ import {
 import {
   makeVideoSafetyProvider,
   type VideoSafetyEvidence,
+  type VideoSafetyFrameProviderFailure,
   type VideoSafetyFrameProviderResult,
   type VideoSafetyInput,
   VideoSafetyModerationUnresolvedError,
@@ -29,6 +30,8 @@ async function fixture(
     | "adult"
     | "adult-review"
     | "unavailable"
+    | "non-success"
+    | "rate-limit"
     | "bad-digest"
     | "disabled"
     | "oversized-evidence" = "clean",
@@ -60,6 +63,7 @@ async function fixture(
   let saved: VideoSafetyEvidence | undefined;
   let retained: VideoSafetyFact | null = null;
   let failFrameCompletion = false;
+  let failFrameFailureCompletion = false;
   let failEvidenceSave = false;
   let pauseFirstProviderCall = false;
   let pauseFirstClaimAcquisition = false;
@@ -85,6 +89,7 @@ async function fixture(
     string,
     | { status: "sending"; claimToken: string }
     | { status: "succeeded"; result: VideoSafetyFrameProviderResult }
+    | { status: "failed"; failure: VideoSafetyFrameProviderFailure }
   >();
   const cleanFrameResult = (): VideoSafetyFrameProviderResult => ({
     provider_id: "openai",
@@ -126,6 +131,8 @@ async function fixture(
         });
       }
       if (mode === "unavailable") throw new Error("private transport failure");
+      if (mode === "non-success" || mode === "rate-limit")
+        return new Response(null, { status: mode === "rate-limit" ? 429 : 503 });
       const category =
         mode === "minors"
           ? "sexual/minors"
@@ -193,6 +200,8 @@ async function fixture(
             throw new VideoSafetyModerationUnresolvedError(unavailableFrame.requestId);
           if (claim?.status === "succeeded")
             throw new Error("video safety succeeded frame result requires replay");
+          if (claim?.status === "failed" && claim.failure.status < 300)
+            throw new Error("video safety provider-call failure invalid");
         }
         saved = evidence;
         retained = evidence.fact;
@@ -202,6 +211,7 @@ async function fixture(
         const previous = frameClaims.get(claim.requestId);
         if (previous?.status === "succeeded")
           return { status: "succeeded", result: previous.result };
+        if (previous?.status === "failed") return { status: "failed", failure: previous.failure };
         if (previous?.status === "sending") return { status: "unresolved" };
         return { status: "absent" };
       },
@@ -216,6 +226,7 @@ async function fixture(
         const previous = frameClaims.get(claim.requestId);
         if (previous?.status === "succeeded")
           return { status: "succeeded", result: previous.result };
+        if (previous?.status === "failed") return { status: "failed", failure: previous.failure };
         if (previous?.status === "sending") return { status: "unresolved" };
         const claimToken = `claim-${claim.frameRole}`;
         frameClaims.set(claim.requestId, { status: "sending", claimToken });
@@ -229,6 +240,19 @@ async function fixture(
         frameClaims.set(claim.requestId, { status: "succeeded", result });
         return result;
       },
+      failFrame: async (claim, claimToken, failure) => {
+        const previous = frameClaims.get(claim.requestId);
+        if (previous?.status === "failed") {
+          if (JSON.stringify(previous.failure) !== JSON.stringify(failure))
+            throw new Error("claim failure mismatch");
+          return previous.failure;
+        }
+        if (previous?.status !== "sending" || previous.claimToken !== claimToken)
+          throw new Error("claim failure mismatch");
+        if (failFrameFailureCompletion) throw new Error("claim failure persistence failed");
+        frameClaims.set(claim.requestId, { status: "failed", failure });
+        return failure;
+      },
     },
   });
   return {
@@ -239,6 +263,9 @@ async function fixture(
     evidence: () => saved,
     failFrameCompletion: () => {
       failFrameCompletion = true;
+    },
+    failFrameFailureCompletion: () => {
+      failFrameFailureCompletion = true;
     },
     failEvidenceSave: () => {
       failEvidenceSave = true;
@@ -271,6 +298,18 @@ async function fixture(
     seedSucceededFrames: (...roles: ("poster" | "first" | "midpoint")[]) => {
       for (const role of roles)
         frameClaims.set(requestIdFor(role), { status: "succeeded", result: cleanFrameResult() });
+    },
+    seedFailedFrames: (...roles: ("poster" | "first" | "midpoint")[]) => {
+      for (const role of roles)
+        frameClaims.set(requestIdFor(role), {
+          status: "failed",
+          failure: {
+            provider_id: "openai",
+            outcome: "non_success",
+            reason: "unavailable",
+            status: 503,
+          },
+        });
     },
   };
 }
@@ -323,6 +362,63 @@ test("an ambiguous provider response remains unresolved and is never dispatched 
   const f = await fixture("unavailable");
   await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
   expect(f.calls).toEqual(["image"]);
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+});
+
+test.each([
+  ["non-success", 503],
+  ["rate-limit", 429],
+] as const)(
+  "a completely received %s response is retained and routes to manual review",
+  async (mode, status) => {
+    const f = await fixture(mode);
+    const fact = await f.moderate(f.input);
+    expect(f.calls).toEqual(["image"]);
+    expect(fact).toMatchObject({
+      mediaSafety: "review_required",
+      adapterRevision: "safety-unavailable",
+    });
+    expect(f.evidence()?.inputs).toEqual([
+      {
+        role: "poster",
+        sha256: f.input.frames[0]?.sha256,
+        outcome: "provider_failed",
+        provider: {
+          provider_id: "openai",
+          outcome: "non_success",
+          reason: "unavailable",
+          status,
+        },
+      },
+    ]);
+    expect(await f.moderate(f.input)).toEqual(fact);
+    expect(f.calls).toEqual(["image"]);
+  },
+);
+
+test.each(["bad-digest", "disabled"] as const)(
+  "a retained provider failure replays through %s without a read or redispatch",
+  async (mode) => {
+    const f = await fixture(mode);
+    f.seedFailedFrames("poster");
+    const fact = await f.moderate(f.input);
+    expect(f.reads).toEqual([]);
+    expect(f.calls).toEqual([]);
+    expect(fact).toMatchObject({
+      mediaSafety: "review_required",
+      adapterRevision: "safety-unavailable",
+    });
+    expect(f.evidence()?.inputs).toHaveLength(1);
+  },
+);
+
+test("failure-classification persistence uncertainty stays unresolved and is not redispatched", async () => {
+  const f = await fixture("non-success");
+  f.failFrameFailureCompletion();
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+  expect(f.evidence()).toBeUndefined();
   await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
   expect(f.calls).toEqual(["image"]);
 });

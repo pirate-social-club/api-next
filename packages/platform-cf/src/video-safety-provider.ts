@@ -7,6 +7,7 @@ import {
 import { Effect } from "effect";
 import type { ImageModerationProviderServiceV1 } from "../../application/src/media/processing-contracts.ts";
 import { mediaSha256Bytes } from "../../application/src/media/submission-service.ts";
+import { TextModerationProviderError } from "../../application/src/ports.ts";
 import type {
   TextModerationPolicySnapshotV2,
   TextModerationProviderServiceV1,
@@ -38,13 +39,20 @@ export type VideoSafetyFrameClaimInput = Readonly<{
   requestedTimestampMs: number | null;
   requestId: string;
 }>;
+export type VideoSafetyFrameProviderFailure = Readonly<{
+  provider_id: "openai";
+  outcome: "non_success";
+  reason: "unavailable";
+  status: number;
+}>;
 export type VideoSafetyFrameClaim =
   | Readonly<{ status: "dispatch"; claimToken: string }>
   | Readonly<{ status: "succeeded"; result: VideoSafetyFrameProviderResult }>
+  | Readonly<{ status: "failed"; failure: VideoSafetyFrameProviderFailure }>
   | Readonly<{ status: "unresolved" }>;
 export type VideoSafetyFrameClaimInspection =
   | Readonly<{ status: "absent" }>
-  | Extract<VideoSafetyFrameClaim, { status: "succeeded" | "unresolved" }>;
+  | Extract<VideoSafetyFrameClaim, { status: "succeeded" | "failed" | "unresolved" }>;
 export type VideoSafetyEvidence = Readonly<{
   ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
   requestId: string;
@@ -68,6 +76,11 @@ export type VideoSafetyEvidenceStore = Readonly<{
     claimToken: string,
     result: VideoSafetyFrameProviderResult,
   ) => Promise<VideoSafetyFrameProviderResult>;
+  failFrame: (
+    input: VideoSafetyFrameClaimInput,
+    claimToken: string,
+    failure: VideoSafetyFrameProviderFailure,
+  ) => Promise<VideoSafetyFrameProviderFailure>;
 }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -139,6 +152,24 @@ export function validateVideoSafetyFrameProviderResult(
       throw new Error("video safety provider category evidence mismatch");
   }
   return value as VideoSafetyFrameProviderResult;
+}
+
+export function validateVideoSafetyFrameProviderFailure(
+  value: unknown,
+): VideoSafetyFrameProviderFailure {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["provider_id", "outcome", "reason", "status"]) ||
+    value.provider_id !== "openai" ||
+    value.outcome !== "non_success" ||
+    value.reason !== "unavailable" ||
+    typeof value.status !== "number" ||
+    !Number.isInteger(value.status) ||
+    value.status < 300 ||
+    value.status > 599
+  )
+    throw new Error("video safety provider failure shape mismatch");
+  return value as VideoSafetyFrameProviderFailure;
 }
 
 /** OpenAI is a signal provider; without the separate visual gate media allow is unreachable. */
@@ -224,6 +255,19 @@ export function makeVideoSafetyProvider(
       if (retainedClaim.status === "unresolved") {
         throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
       }
+      if (retainedClaim.status === "failed") {
+        unavailable = true;
+        unavailableFrames.push(claimInput);
+        inputs.push({
+          role: frame.role,
+          sha256: frame.sha256,
+          outcome: "provider_failed",
+          provider: retainedClaim.failure,
+        });
+        // Manual review is already required. Do not spend more provider calls on
+        // later frames, and replay the same bounded failure evidence.
+        break;
+      }
       let result: VideoSafetyFrameProviderResult;
       if (retainedClaim.status === "succeeded") {
         result = retainedClaim.result;
@@ -248,6 +292,17 @@ export function makeVideoSafetyProvider(
         if (claim.status === "unresolved") {
           throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
         }
+        if (claim.status === "failed") {
+          unavailable = true;
+          unavailableFrames.push(claimInput);
+          inputs.push({
+            role: frame.role,
+            sha256: frame.sha256,
+            outcome: "provider_failed",
+            provider: claim.failure,
+          });
+          break;
+        }
         if (claim.status === "succeeded") {
           result = claim.result;
         } else {
@@ -264,6 +319,38 @@ export function makeVideoSafetyProvider(
             );
             result = await options.evidence.succeedFrame(claimInput, claim.claimToken, result);
           } catch (cause) {
+            if (
+              cause instanceof TextModerationProviderError &&
+              cause.reason === "unavailable" &&
+              cause.responseStatus !== undefined
+            ) {
+              let failure: VideoSafetyFrameProviderFailure;
+              try {
+                failure = await options.evidence.failFrame(
+                  claimInput,
+                  claim.claimToken,
+                  validateVideoSafetyFrameProviderFailure({
+                    provider_id: "openai",
+                    outcome: "non_success",
+                    reason: cause.reason,
+                    status: cause.responseStatus,
+                  }),
+                );
+              } catch (persistenceCause) {
+                throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, {
+                  cause: persistenceCause,
+                });
+              }
+              unavailable = true;
+              unavailableFrames.push(claimInput);
+              inputs.push({
+                role: frame.role,
+                sha256: frame.sha256,
+                outcome: "provider_failed",
+                provider: failure,
+              });
+              break;
+            }
             throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, { cause });
           }
         }

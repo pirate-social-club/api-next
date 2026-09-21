@@ -75,7 +75,7 @@ afterEach(async () => {
 
 function harness(
   durableGrants = false,
-  safety?: "clean" | "minors" | "caption" | "unavailable",
+  safety?: "clean" | "minors" | "caption" | "unavailable" | "non_success",
   recognition?: "no_match" | "alternate_match" | "throttled",
 ) {
   const recognitionCalls: string[] = [];
@@ -269,7 +269,8 @@ function harness(
                 ? "image"
                 : "text";
           moderationCalls.push(type);
-          if (safety === "unavailable") return new Response(null, { status: 503 });
+          if (safety === "unavailable") throw new Error("fixture transport outcome unknown");
+          if (safety === "non_success") return new Response(null, { status: 503 });
           const category =
             safety === "minors" && type === "image"
               ? "sexual/minors"
@@ -1071,6 +1072,49 @@ test("composed ambiguous moderation dispatch stays unresolved and cannot publish
       )
     ).rows,
   ).toEqual([{ frame_role: "poster", state: "sending", provider_result: null }]);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+});
+
+test("composed confirmed provider failure is retained for manual review without redispatch", async () => {
+  const h = harness(false, "non_success");
+  const event = await h.launch();
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  expect(h.moderationCalls).toEqual(["image"]);
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state,provider_result,provider_failure FROM media_video_safety_provider_calls",
+      )
+    ).rows,
+  ).toEqual([
+    {
+      frame_role: "poster",
+      state: "failed",
+      provider_result: null,
+      provider_failure: {
+        provider_id: "openai",
+        outcome: "non_success",
+        reason: "unavailable",
+        status: 503,
+      },
+    },
+  ]);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+  ).toBe(1);
+  expect(
+    (
+      await admin.query(
+        "SELECT count(*)::int AS n FROM media_video_stage_facts WHERE stage='safety'",
+      )
+    ).rows[0].n,
+  ).toBe(1);
+  const record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(record?.state.status).toBe("manual_review");
+  if (record?.state.status !== "manual_review") throw new Error("missing manual review state");
+  expect(record.state.reconciliationRequired).toBe(false);
+  expect(record.state.reviewReasons).toContain("safety_adapter_unavailable");
   expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
 });
 

@@ -312,6 +312,8 @@ export class StudyItemSource extends Context.Service<StudyItemSource, StudyItemS
  */
 export class TextModerationProviderError extends Data.TaggedError("TextModerationProviderError")<{
   readonly reason: "unavailable" | "timeout" | "invalid";
+  /** Present only when the adapter received a complete non-success HTTP response. */
+  readonly responseStatus?: number;
 }> {}
 
 // --- Identity persistence (coordinator amendment 2026-08-16, wave-2

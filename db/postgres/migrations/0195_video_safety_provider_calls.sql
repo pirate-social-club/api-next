@@ -14,18 +14,20 @@ CREATE TABLE media_video_safety_provider_calls (
   claim_token TEXT NOT NULL UNIQUE CHECK (
     claim_token ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
-  state TEXT NOT NULL CHECK (state IN ('sending', 'succeeded')),
+  state TEXT NOT NULL CHECK (state IN ('sending', 'succeeded', 'failed')),
   provider_result JSONB,
+  provider_failure JSONB,
   claimed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   resolved_at TIMESTAMPTZ,
   PRIMARY KEY (operation_id, video_revision, creation_revision, frame_role),
   FOREIGN KEY (community_id, submission_id, operation_id)
     REFERENCES media_post_submissions (community_id, submission_id, operation_id),
   CONSTRAINT media_video_safety_provider_calls_result_shape CHECK (
-    (state = 'sending' AND provider_result IS NULL AND resolved_at IS NULL)
+    (state = 'sending' AND provider_result IS NULL AND provider_failure IS NULL AND resolved_at IS NULL)
     OR COALESCE((
       state = 'succeeded'
       AND provider_result IS NOT NULL
+      AND provider_failure IS NULL
       AND resolved_at IS NOT NULL
       AND resolved_at >= claimed_at
       AND jsonb_typeof(provider_result) = 'object'
@@ -55,6 +57,23 @@ CREATE TABLE media_video_safety_provider_calls (
       AND jsonb_typeof(provider_result->'evidence'->'scores') = 'object'
       AND jsonb_typeof(provider_result->'evidence'->'applied_input_types') = 'object'
     ), FALSE)
+    OR COALESCE((
+      state = 'failed'
+      AND provider_result IS NULL
+      AND provider_failure IS NOT NULL
+      AND resolved_at IS NOT NULL
+      AND resolved_at >= claimed_at
+      AND jsonb_typeof(provider_failure) = 'object'
+      AND octet_length(provider_failure::text) <= 512
+      AND provider_failure ?& ARRAY['provider_id', 'outcome', 'reason', 'status']
+      AND provider_failure - 'provider_id' - 'outcome' - 'reason' - 'status' = '{}'::jsonb
+      AND provider_failure->>'provider_id' = 'openai'
+      AND provider_failure->>'outcome' = 'non_success'
+      AND provider_failure->>'reason' = 'unavailable'
+      AND jsonb_typeof(provider_failure->'status') = 'number'
+      AND provider_failure->>'status' ~ '^[0-9]{3}$'
+      AND (provider_failure->>'status')::integer BETWEEN 300 AND 599
+    ), FALSE)
   )
 );
 
@@ -74,8 +93,9 @@ BEGIN
     OR OLD.claim_token IS DISTINCT FROM NEW.claim_token
     OR OLD.claimed_at IS DISTINCT FROM NEW.claimed_at
     OR OLD.state <> 'sending'
-    OR NEW.state <> 'succeeded'
+    OR NEW.state NOT IN ('succeeded', 'failed')
     OR OLD.provider_result IS NOT NULL
+    OR OLD.provider_failure IS NOT NULL
     OR OLD.resolved_at IS NOT NULL
   THEN
     RAISE EXCEPTION 'video safety provider call is immutable';

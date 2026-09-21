@@ -13,6 +13,7 @@ import type {
 } from "./video-safety-provider.ts";
 import {
   VideoSafetyModerationUnresolvedError,
+  validateVideoSafetyFrameProviderFailure,
   validateVideoSafetyFrameProviderResult,
 } from "./video-safety-provider.ts";
 
@@ -30,8 +31,9 @@ type FrameClaimRow = {
   requested_timestamp_ms: string | null;
   request_id: string;
   claim_token: string;
-  state: "sending" | "succeeded";
+  state: "sending" | "succeeded" | "failed";
   provider_result: unknown;
+  provider_failure: unknown;
 };
 export function makeVideoSafetyEvidenceStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -83,7 +85,7 @@ export function makeVideoSafetyEvidenceStore(
       readonly: true,
       text: `SELECT operation_id,submission_id,community_id,video_revision,creation_revision,
           frame_role,frame_artifact_ref,input_sha256,timestamp_ms,requested_timestamp_ms,
-          request_id,claim_token,state,provider_result
+          request_id,claim_token,state,provider_result,provider_failure
         FROM media_video_safety_provider_calls
         WHERE operation_id=$1 AND video_revision=$2 AND creation_revision=$3 AND frame_role=$4`,
       values: frameIdentity(input),
@@ -152,7 +154,11 @@ export function makeVideoSafetyEvidenceStore(
                 assertFrameIdentity(claim, unavailableFrame);
                 if (claim.state === "sending")
                   throw new VideoSafetyModerationUnresolvedError(claim.request_id);
-                throw new Error("video safety succeeded frame result requires replay");
+                if (claim.state === "succeeded")
+                  throw new Error("video safety succeeded frame result requires replay");
+                if (claim.provider_failure === null)
+                  throw new Error("video safety provider-call failure missing");
+                validateVideoSafetyFrameProviderFailure(claim.provider_failure);
               }
               yield* tx.execute({
                 label: "video-safety.insert",
@@ -197,6 +203,14 @@ export function makeVideoSafetyEvidenceStore(
                 existing.provider_result,
                 input.frameSha256,
               ),
+            } as const;
+          }
+          if (existing.state === "failed") {
+            if (existing.provider_failure === null)
+              throw new Error("video safety provider-call failure missing");
+            return {
+              status: "failed",
+              failure: validateVideoSafetyFrameProviderFailure(existing.provider_failure),
             } as const;
           }
           return { status: "unresolved" } as const;
@@ -262,6 +276,14 @@ export function makeVideoSafetyEvidenceStore(
                   ),
                 } as const;
               }
+              if (existing.state === "failed") {
+                if (existing.provider_failure === null)
+                  throw new Error("video safety provider-call failure missing");
+                return {
+                  status: "failed",
+                  failure: validateVideoSafetyFrameProviderFailure(existing.provider_failure),
+                } as const;
+              }
               return { status: "unresolved" } as const;
             }),
           );
@@ -289,7 +311,7 @@ export function makeVideoSafetyEvidenceStore(
                     AND request_id=$12 AND claim_token=$13 AND state='sending'
                   RETURNING operation_id,submission_id,community_id,video_revision,creation_revision,
                     frame_role,frame_artifact_ref,input_sha256,timestamp_ms,requested_timestamp_ms,
-                    request_id,claim_token,state,provider_result`,
+                    request_id,claim_token,state,provider_result,provider_failure`,
                 values: [
                   JSON.stringify(validatedResult),
                   ...frameIdentity(input),
@@ -310,7 +332,7 @@ export function makeVideoSafetyEvidenceStore(
                   readonly: true,
                   text: `SELECT operation_id,submission_id,community_id,video_revision,
                         creation_revision,frame_role,frame_artifact_ref,input_sha256,timestamp_ms,
-                        requested_timestamp_ms,request_id,claim_token,state,provider_result
+                        requested_timestamp_ms,request_id,claim_token,state,provider_result,provider_failure
                       FROM media_video_safety_provider_calls
                       WHERE operation_id=$1 AND video_revision=$2 AND creation_revision=$3
                         AND frame_role=$4 AND claim_token=$5 AND state='succeeded'
@@ -323,6 +345,65 @@ export function makeVideoSafetyEvidenceStore(
               if (row.state !== "succeeded" || row.provider_result === null)
                 throw new Error("video safety provider-call completion mismatch");
               return validateVideoSafetyFrameProviderResult(row.provider_result, input.frameSha256);
+            }),
+          );
+        }),
+      ),
+    failFrame: (input, claimToken, failure) =>
+      run(
+        Effect.gen(function* () {
+          const validatedFailure = validateVideoSafetyFrameProviderFailure(failure);
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((tx) =>
+            Effect.gen(function* () {
+              const authority = yield* lockAuthority(tx, input);
+              if (authority.rowCount !== 1)
+                throw new Error("video safety provider-call authority superseded");
+              const updated = yield* tx.execute<FrameClaimRow>({
+                label: "video-safety-call.fail",
+                readonly: false,
+                text: `UPDATE media_video_safety_provider_calls
+                  SET state='failed',provider_failure=$1::jsonb,resolved_at=clock_timestamp()
+                  WHERE operation_id=$2 AND video_revision=$3 AND creation_revision=$4
+                    AND frame_role=$5 AND submission_id=$6 AND community_id=$7
+                    AND frame_artifact_ref=$8 AND input_sha256=$9 AND timestamp_ms=$10
+                    AND requested_timestamp_ms IS NOT DISTINCT FROM $11::bigint
+                    AND request_id=$12 AND claim_token=$13 AND state='sending'
+                  RETURNING operation_id,submission_id,community_id,video_revision,creation_revision,
+                    frame_role,frame_artifact_ref,input_sha256,timestamp_ms,requested_timestamp_ms,
+                    request_id,claim_token,state,provider_result,provider_failure`,
+                values: [
+                  JSON.stringify(validatedFailure),
+                  ...frameIdentity(input),
+                  input.submissionId,
+                  input.communityId,
+                  input.frameArtifactRef,
+                  input.frameSha256,
+                  input.timestampMs,
+                  input.requestedTimestampMs,
+                  input.requestId,
+                  claimToken,
+                ],
+              });
+              const row =
+                updated.rows[0] ??
+                (yield* tx.execute<FrameClaimRow>({
+                  label: "video-safety-call.fail-replay",
+                  readonly: true,
+                  text: `SELECT operation_id,submission_id,community_id,video_revision,
+                        creation_revision,frame_role,frame_artifact_ref,input_sha256,timestamp_ms,
+                        requested_timestamp_ms,request_id,claim_token,state,provider_result,provider_failure
+                      FROM media_video_safety_provider_calls
+                      WHERE operation_id=$1 AND video_revision=$2 AND creation_revision=$3
+                        AND frame_role=$4 AND claim_token=$5 AND state='failed'
+                        AND provider_failure=$6::jsonb`,
+                  values: [...frameIdentity(input), claimToken, JSON.stringify(validatedFailure)],
+                })).rows[0];
+              if (row === undefined) throw new Error("video safety provider-call failure mismatch");
+              assertFrameIdentity(row, input);
+              if (row.state !== "failed" || row.provider_failure === null)
+                throw new Error("video safety provider-call failure mismatch");
+              return validateVideoSafetyFrameProviderFailure(row.provider_failure);
             }),
           );
         }),
