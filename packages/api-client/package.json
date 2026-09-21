@@ -1,6 +1,6 @@
 {
   "name": "@pirate/api-client",
-  "version": "0.86.0-song-closeout.1",
+  "version": "0.86.0",
   "type": "module",
   "exports": {
     ".": {

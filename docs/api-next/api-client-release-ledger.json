@@ -523,6 +523,12 @@
       "artifact": "artifacts/api-client/pirate-api-client-0.86.0-song-closeout.1.tgz",
       "artifactSha256": "91c727a0309ec6b0ba262954ac737f703a639a2c11e2b79335ecf48b277f0d53",
       "handoff": "docs/api-next/api-client-v0-86-0-song-closeout-1-handoff.json"
+    },
+    {
+      "version": "0.86.0",
+      "artifact": "artifacts/api-client/pirate-api-client-0.86.0.tgz",
+      "artifactSha256": "3d07b86f9ba561d5fb7bc2da0930aafbaaf318eb6fa862268762c66ca0774520",
+      "handoff": "docs/api-next/api-client-v0-86-0-handoff.json"
     }
   ]
 }
