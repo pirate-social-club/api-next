@@ -63,16 +63,23 @@ async function fixture(
   let failEvidenceSave = false;
   let pauseFirstProviderCall = false;
   let pauseFirstClaimAcquisition = false;
+  let pauseFirstFrameReadWithFailure = false;
   let claimAcquisitionPaused = false;
+  let frameReadPaused = false;
   let releaseFirstProviderCall: (() => void) | undefined;
   let releaseFirstClaimAcquisition: (() => void) | undefined;
+  let releaseFirstFrameRead: (() => void) | undefined;
   let providerCallStarted: (() => void) | undefined;
   let claimAcquisitionStarted: (() => void) | undefined;
+  let frameReadStarted: (() => void) | undefined;
   const firstProviderCallStarted = new Promise<void>((resolve) => {
     providerCallStarted = resolve;
   });
   const firstClaimAcquisitionStarted = new Promise<void>((resolve) => {
     claimAcquisitionStarted = resolve;
+  });
+  const firstFrameReadStarted = new Promise<void>((resolve) => {
+    frameReadStarted = resolve;
   });
   const frameClaims = new Map<
     string,
@@ -155,6 +162,14 @@ async function fixture(
     text: port,
     readFrame: async (reference) => {
       reads.push(reference);
+      if (pauseFirstFrameReadWithFailure && !frameReadPaused) {
+        frameReadPaused = true;
+        frameReadStarted?.();
+        await new Promise<void>((resolve) => {
+          releaseFirstFrameRead = resolve;
+        });
+        return new Uint8Array([0]);
+      }
       return mode === "bad-digest" ? new Uint8Array([0]) : bytes;
     },
     readPolicy: async () => ({
@@ -170,8 +185,15 @@ async function fixture(
     }),
     evidence: {
       load: async () => retained,
-      save: async (_input, evidence) => {
+      save: async (_input, evidence, unavailableFrames = []) => {
         if (failEvidenceSave) throw new Error("evidence write failed");
+        for (const unavailableFrame of unavailableFrames) {
+          const claim = frameClaims.get(unavailableFrame.requestId);
+          if (claim?.status === "sending")
+            throw new VideoSafetyModerationUnresolvedError(unavailableFrame.requestId);
+          if (claim?.status === "succeeded")
+            throw new Error("video safety succeeded frame result requires replay");
+        }
         saved = evidence;
         retained = evidence.fact;
         return evidence.fact;
@@ -227,13 +249,20 @@ async function fixture(
     pauseFirstClaimAcquisition: () => {
       pauseFirstClaimAcquisition = true;
     },
+    pauseFirstFrameReadWithFailure: () => {
+      pauseFirstFrameReadWithFailure = true;
+    },
     waitForFirstProviderCall: () => firstProviderCallStarted,
     waitForFirstClaimAcquisition: () => firstClaimAcquisitionStarted,
+    waitForFirstFrameRead: () => firstFrameReadStarted,
     releaseClaimAcquisition: () => {
       releaseFirstClaimAcquisition?.();
     },
     releaseProviderCall: () => {
       releaseFirstProviderCall?.();
+    },
+    releaseFrameRead: () => {
+      releaseFirstFrameRead?.();
     },
     seedUnresolvedFrames: (...roles: ("poster" | "first" | "midpoint")[]) => {
       for (const role of roles)
@@ -369,6 +398,23 @@ test("an atomic acquisition resolves a claim created after absent inspection wit
   const result = await winner;
   expect(f.calls).toEqual(["image", "image", "image"]);
   expect(await f.moderate(f.input)).toEqual(result);
+  expect(f.calls).toEqual(["image", "image", "image"]);
+});
+
+test("a claim acquired after absent inspection fences a later frame-read failure", async () => {
+  const f = await fixture();
+  f.pauseFirstFrameReadWithFailure();
+  f.pauseFirstProviderCall();
+  const failingReader = f.moderate(f.input);
+  await f.waitForFirstFrameRead();
+  const dispatchOwner = f.moderate(f.input);
+  await f.waitForFirstProviderCall();
+  f.releaseFrameRead();
+  await expect(failingReader).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.evidence()).toBeUndefined();
+  expect(f.calls).toEqual(["image", "image", "image"]);
+  f.releaseProviderCall();
+  await dispatchOwner;
   expect(f.calls).toEqual(["image", "image", "image"]);
 });
 

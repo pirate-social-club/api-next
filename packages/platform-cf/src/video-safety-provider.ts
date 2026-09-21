@@ -53,7 +53,11 @@ export type VideoSafetyEvidence = Readonly<{
 }>;
 export type VideoSafetyEvidenceStore = Readonly<{
   load: (input: VideoSafetyInput, inputDigest: string) => Promise<VideoSafetyFact | null>;
-  save: (input: VideoSafetyInput, evidence: VideoSafetyEvidence) => Promise<VideoSafetyFact>;
+  save: (
+    input: VideoSafetyInput,
+    evidence: VideoSafetyEvidence,
+    unavailableFrames?: readonly VideoSafetyFrameClaimInput[],
+  ) => Promise<VideoSafetyFact>;
   inspectFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaimInspection>;
   claimFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaim>;
   succeedFrame: (
@@ -194,6 +198,7 @@ export function makeVideoSafetyProvider(
     let platformHeld = false;
     let automatedRating: VideoSafetyFact["automatedRating"] = "general";
     const inputs: unknown[] = [];
+    const unavailableFrames: VideoSafetyFrameClaimInput[] = [];
     let mediaSafety: VideoSafetyFact["mediaSafety"] = "review_required";
     let captionSafety: VideoSafetyFact["captionSafety"] =
       caption === null ? "not_applicable" : "review_required";
@@ -244,6 +249,7 @@ export function makeVideoSafetyProvider(
             throw new Error("video safety digest mismatch");
         } catch {
           unavailable = true;
+          unavailableFrames.push(claimInput);
           inputs.push({ role: frame.role, sha256: frame.sha256, outcome: "unavailable" });
           continue;
         }
@@ -364,14 +370,18 @@ export function makeVideoSafetyProvider(
       adapterRevision: unavailable ? "safety-unavailable" : "video-openai-safety-v2",
     };
     // Database failures propagate as infrastructure failures; they never fabricate accepted evidence.
-    return options.evidence.save(input, {
-      ratingRuleRevision: MODERATION_RATING_RULE_V2,
-      requestId,
-      inputDigest,
-      fact,
-      platformHeld,
-      policy,
-      inputs,
-    });
+    return options.evidence.save(
+      input,
+      {
+        ratingRuleRevision: MODERATION_RATING_RULE_V2,
+        requestId,
+        inputDigest,
+        fact,
+        platformHeld,
+        policy,
+        inputs,
+      },
+      unavailableFrames,
+    );
   };
 }

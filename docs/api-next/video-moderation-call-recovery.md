@@ -29,6 +29,20 @@ new frame call, the runtime validates the frame bytes before it attempts the
 atomic claim. It rechecks the claim during acquisition so a concurrent winner
 still prevents a second dispatch.
 
+Claim acquisition and aggregate-evidence persistence serialize through the
+same submission authority row. Before aggregate unavailable evidence commits,
+the persistence boundary rechecks every frame whose bytes could not be read or
+validated. A concurrent `sending` claim keeps the submission unresolved, and a
+concurrent `succeeded` claim must be replayed; neither state may be overwritten
+by aggregate unavailable evidence. Conversely, once aggregate evidence is
+durable, a late frame claim is rejected. These checks close the race between an
+initial claim inspection and a later frame-read failure without creating a
+claim before the frame bytes have passed validation.
+
+The database independently requires a `succeeded` claim to contain a complete,
+well-shaped provider result. SQL `NULL`, JSON `null`, and malformed results do
+not satisfy that invariant, including through direct inserts or updates.
+
 An unresolved row has no automatic recovery path. It leaves the safety stage
 fact absent and publication remains unreachable. Investigation must preserve
 the row and correlate its request identity, timestamps and provider-side

@@ -11,7 +11,10 @@ import type {
   VideoSafetyFrameClaimInput,
   VideoSafetyInput,
 } from "./video-safety-provider.ts";
-import { validateVideoSafetyFrameProviderResult } from "./video-safety-provider.ts";
+import {
+  VideoSafetyModerationUnresolvedError,
+  validateVideoSafetyFrameProviderResult,
+} from "./video-safety-provider.ts";
 
 type Row = { input_sha256: string; evidence_snapshot: VideoSafetyEvidence };
 type FrameClaimRow = {
@@ -114,7 +117,7 @@ export function makeVideoSafetyEvidenceStore(
           return result.rows[0] === undefined ? null : decode(result.rows[0], digest);
         }),
       ),
-    save: (input, evidence) =>
+    save: (input, evidence, unavailableFrames = []) =>
       run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
@@ -135,6 +138,22 @@ export function makeVideoSafetyEvidenceStore(
                 ],
               });
               if (authority.rowCount !== 1) throw new Error("video safety authority superseded");
+              for (const unavailableFrame of unavailableFrames) {
+                if (
+                  unavailableFrame.operationId !== input.operationId ||
+                  unavailableFrame.submissionId !== input.submissionId ||
+                  unavailableFrame.communityId !== input.communityId ||
+                  unavailableFrame.videoRevision !== input.videoRevision ||
+                  unavailableFrame.creationRevision !== input.creationRevision
+                )
+                  throw new Error("video safety unavailable-frame identity mismatch");
+                const claim = (yield* readFrameClaim(tx, unavailableFrame)).rows[0];
+                if (claim === undefined) continue;
+                assertFrameIdentity(claim, unavailableFrame);
+                if (claim.state === "sending")
+                  throw new VideoSafetyModerationUnresolvedError(claim.request_id);
+                throw new Error("video safety succeeded frame result requires replay");
+              }
               yield* tx.execute({
                 label: "video-safety.insert",
                 readonly: false,
@@ -192,6 +211,15 @@ export function makeVideoSafetyEvidenceStore(
               const authority = yield* lockAuthority(tx, input);
               if (authority.rowCount !== 1)
                 throw new Error("video safety provider-call authority superseded");
+              const aggregate = yield* tx.execute({
+                label: "video-safety-call.aggregate",
+                readonly: true,
+                text: `SELECT 1 FROM media_video_safety_evidence
+                  WHERE submission_id=$1 AND video_revision=$2 AND creation_revision=$3`,
+                values: [input.submissionId, input.videoRevision, input.creationRevision],
+              });
+              if (aggregate.rowCount !== 0)
+                throw new Error("video safety aggregate evidence already exists");
               const claimToken = crypto.randomUUID();
               const inserted = yield* tx.execute<{ claim_token: string }>({
                 label: "video-safety-call.claim",

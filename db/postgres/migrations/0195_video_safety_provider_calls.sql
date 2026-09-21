@@ -23,8 +23,9 @@ CREATE TABLE media_video_safety_provider_calls (
     REFERENCES media_post_submissions (community_id, submission_id, operation_id),
   CONSTRAINT media_video_safety_provider_calls_result_shape CHECK (
     (state = 'sending' AND provider_result IS NULL AND resolved_at IS NULL)
-    OR (
+    OR COALESCE((
       state = 'succeeded'
+      AND provider_result IS NOT NULL
       AND resolved_at IS NOT NULL
       AND resolved_at >= claimed_at
       AND jsonb_typeof(provider_result) = 'object'
@@ -53,7 +54,7 @@ CREATE TABLE media_video_safety_provider_calls (
       AND jsonb_typeof(provider_result->'evidence'->'categories') = 'object'
       AND jsonb_typeof(provider_result->'evidence'->'scores') = 'object'
       AND jsonb_typeof(provider_result->'evidence'->'applied_input_types') = 'object'
-    )
+    ), FALSE)
   )
 );
 
@@ -75,9 +76,7 @@ BEGIN
     OR OLD.state <> 'sending'
     OR NEW.state <> 'succeeded'
     OR OLD.provider_result IS NOT NULL
-    OR NEW.provider_result IS NULL
     OR OLD.resolved_at IS NOT NULL
-    OR NEW.resolved_at IS NULL
   THEN
     RAISE EXCEPTION 'video safety provider call is immutable';
   END IF;

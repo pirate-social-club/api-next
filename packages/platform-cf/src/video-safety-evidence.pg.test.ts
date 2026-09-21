@@ -20,6 +20,7 @@ import type {
   VideoSafetyFrameProviderResult,
   VideoSafetyInput,
 } from "./video-safety-provider.ts";
+import { VideoSafetyModerationUnresolvedError } from "./video-safety-provider.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -166,6 +167,56 @@ suite("private video safety evidence PostgreSQL fences", () => {
       ).rejects.toThrow();
   });
 
+  test("direct writes reject null and malformed succeeded provider results", async () => {
+    const insertSucceeded = (role: "poster" | "first", result: unknown, token: string) =>
+      admin.query(
+        `INSERT INTO media_video_safety_provider_calls
+          (operation_id,submission_id,community_id,video_revision,creation_revision,
+           frame_role,frame_artifact_ref,input_sha256,timestamp_ms,requested_timestamp_ms,
+           request_id,claim_token,state,provider_result,resolved_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'succeeded',$13::jsonb,clock_timestamp())`,
+        [
+          callInput.operationId,
+          callInput.submissionId,
+          callInput.communityId,
+          callInput.videoRevision,
+          callInput.creationRevision,
+          role,
+          `media://derived/${role}.jpg`,
+          callInput.frameSha256,
+          callInput.timestampMs,
+          callInput.requestedTimestampMs,
+          `${callInput.requestId}:${role}`,
+          token,
+          result === null ? null : JSON.stringify(result),
+        ],
+      );
+    await expect(
+      insertSucceeded("poster", null, "00000000-0000-4000-8000-000000000001"),
+    ).rejects.toThrow("result_shape");
+    await expect(
+      insertSucceeded("first", {}, "00000000-0000-4000-8000-000000000002"),
+    ).rejects.toThrow("result_shape");
+
+    const owner = await store.claimFrame(callInput);
+    if (owner.status !== "dispatch") throw new Error("missing dispatch owner");
+    for (const result of [null, {}])
+      await expect(
+        admin.query(
+          `UPDATE media_video_safety_provider_calls
+             SET state='succeeded',provider_result=$1::jsonb,resolved_at=clock_timestamp()
+           WHERE operation_id=$2 AND video_revision=$3 AND creation_revision=$4 AND frame_role=$5`,
+          [
+            result === null ? null : JSON.stringify(result),
+            callInput.operationId,
+            callInput.videoRevision,
+            callInput.creationRevision,
+            callInput.frameRole,
+          ],
+        ),
+      ).rejects.toThrow("result_shape");
+  });
+
   test("concurrent claims admit one dispatch and persisted success replays", async () => {
     expect(await store.inspectFrame(callInput)).toEqual({ status: "absent" });
     const claims = await Promise.all([store.claimFrame(callInput), store.claimFrame(callInput)]);
@@ -189,6 +240,26 @@ suite("private video safety evidence PostgreSQL fences", () => {
     expect(await store.claimFrame(callInput)).toMatchObject({ status: "dispatch" });
     expect(await store.claimFrame(callInput)).toEqual({ status: "unresolved" });
     expect(await store.claimFrame(callInput)).toEqual({ status: "unresolved" });
+  });
+
+  test("a claim acquired after inspection atomically fences unavailable aggregate evidence", async () => {
+    expect(await store.inspectFrame(callInput)).toEqual({ status: "absent" });
+    expect(await store.claimFrame(callInput)).toMatchObject({ status: "dispatch" });
+    await expect(store.save(input, evidence(), [callInput])).rejects.toBeInstanceOf(
+      VideoSafetyModerationUnresolvedError,
+    );
+    expect(
+      (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+    ).toBe(0);
+  });
+
+  test("aggregate evidence atomically fences a late provider-call claim", async () => {
+    await store.save(input, evidence());
+    await expect(store.claimFrame(callInput)).rejects.toThrow("aggregate evidence already exists");
+    expect(
+      (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_provider_calls"))
+        .rows[0].n,
+    ).toBe(0);
   });
 
   test("stale and mismatched provider-call identities are rejected", async () => {
