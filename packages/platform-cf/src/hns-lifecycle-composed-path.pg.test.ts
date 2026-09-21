@@ -22,6 +22,7 @@ import {
   hsdRegtestConnectionString as connectionString,
   hsdRegtestHeight as height,
   hsdRegtestReachable,
+  markHnsRegtestSuiteComplete,
   hsdRegtestNode as node,
   hsdRegtestNodeUrl as nodeUrl,
   hsdRegtestWallet as wallet,
@@ -224,6 +225,10 @@ suite("HNS lifecycle composed path against regtest and PostgreSQL", () => {
           plan_digest: planDigest.slice(0, 16),
           final_phase: advanced?.phase,
         }),
+      );
+      await markHnsRegtestSuiteComplete(
+        "HNS_REGTEST_COMPOSED_PATH_SENTINEL",
+        "api-next-hns-regtest-composed-path-suite-complete",
       );
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`).catch(() => undefined);

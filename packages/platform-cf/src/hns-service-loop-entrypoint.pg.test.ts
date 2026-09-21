@@ -40,6 +40,7 @@ import {
   hsdRegtestAuthorization as authorization,
   hsdRegtestConnectionString as baseConnectionString,
   hsdRegtestReachable,
+  markHnsRegtestSuiteComplete,
   hsdRegtestNode as node,
   hsdRegtestNodeUrl as nodeUrl,
   hsdRegtestWallet as wallet,
@@ -401,6 +402,10 @@ suite("the HNS provisioner entrypoint drives the lifecycle composition", () => {
           final_phases: names.map((name) => final.get(`session-${name}`)?.phase),
           reclaimed_fence: Number(reclaimed.rows[0]?.lease_fence),
         }),
+      );
+      await markHnsRegtestSuiteComplete(
+        "HNS_REGTEST_SERVICE_LOOP_SENTINEL",
+        "api-next-hns-regtest-service-loop-suite-complete",
       );
     } finally {
       await stopService();

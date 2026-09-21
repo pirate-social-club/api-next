@@ -26,6 +26,7 @@
     "scripts/remove-avatar.ts",
     "scripts/remove-avatar.test.ts",
     "scripts/review-study-translation-corpus-dual-ai.ts",
+    "scripts/run-hns-regtest-tests.ts",
     "scripts/run-postgres-tests.ts",
     "scripts/secret-boundary-check.ts",
     "scripts/seed-gates-v2-age18.ts",

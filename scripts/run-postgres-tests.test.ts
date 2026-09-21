@@ -147,10 +147,15 @@ describe("PostgreSQL test discovery", () => {
       "scripts/staging-persona-phased-reset.pg.test.ts",
       "scripts/staging-persona-recovery.pg.test.ts",
     ]);
-    expect([...partition.isolated, ...ci.recovery, ...ci.audited].sort()).toEqual(
+    expect(ci.hnsRegtest).toEqual([
+      "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
+      "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",
+    ]);
+    expect([...partition.isolated, ...ci.recovery, ...ci.hnsRegtest, ...ci.audited].sort()).toEqual(
       [...files].sort(),
     );
     expect(ci.recovery.some((file) => ci.audited.includes(file))).toBe(false);
+    expect(ci.hnsRegtest.some((file) => ci.audited.includes(file))).toBe(false);
     expect(() => partitionPostgresRecoveryFiles(ci.audited)).toThrow("recovery suite is missing");
     expect(partition.general).toContain("scripts/hns-continuity/promotion.pg.test.ts");
     expect(partition.general).toContain(

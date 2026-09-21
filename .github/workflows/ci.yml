@@ -239,6 +239,90 @@ jobs:
           CONTROL_PLANE_POSTGRES_RECOVERY_TEST_CONTAINER: ${{ job.services.postgres.id }}
         run: bun run test:postgres
 
+  hns-regtest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+          POSTGRES_INITDB_ARGS: --set=max_locks_per_transaction=512 --set=fsync=off
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: Build and start the HSD 8.0.0 regtest fixture
+        run: |
+          set -euo pipefail
+          container="api-next-hns-regtest-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          image="api-next-hsd-regtest:${GITHUB_SHA}"
+          docker build --pull -t "$image" apps/hns-authority-provisioner/ops/hsd-regtest
+          image_id="$(docker image inspect "$image" --format '{{.Id}}')"
+          echo "HNS_REGTEST_CONTAINER_NAME=$container" >> "$GITHUB_ENV"
+          echo "HSD_REGTEST_IMAGE=$image_id" >> "$GITHUB_ENV"
+          docker run -d --name "$container" --network host "$image" \
+            node node_modules/hsd/bin/hsd \
+            --network=regtest --http-host=127.0.0.1 --http-port=24037 \
+            --wallet-http-host=127.0.0.1 --wallet-http-port=24039 \
+            --api-key=controlled-progression --index-tx --index-address
+          authorization="Basic $(printf 'x:controlled-progression' | base64 -w0)"
+          for attempt in $(seq 1 60); do
+            node_ready="$({ curl -fsS --max-time 2 \
+              -H "Authorization: $authorization" -H 'Content-Type: application/json' \
+              --data '{"method":"getblockchaininfo","params":[]}' \
+              http://127.0.0.1:24037/ || true; } | jq -r '.result.chain // empty')"
+            wallet_ready="$({ curl -fsS --max-time 2 \
+              -H "Authorization: $authorization" -H 'Content-Type: application/json' \
+              --data '{"method":"getwalletinfo","params":[]}' \
+              http://127.0.0.1:24039/ || true; } | jq -r 'if (.result | type) == "object" then "ready" else empty end')"
+            if [[ "$node_ready" == "regtest" && "$wallet_ready" == "ready" ]]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container" 2>&1 | tail -200
+          exit 1
+      - name: Run required HNS regtest suites
+        env:
+          CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES_IMAGE: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+          HSD_REGTEST_NODE_URL: http://127.0.0.1:24037/
+          HSD_REGTEST_WALLET_URL: http://127.0.0.1:24039/
+          HSD_REGTEST_API_KEY: controlled-progression
+          HNS_REGTEST_REPORT_PATH: /tmp/api-next-hns-regtest-report.json
+          HNS_REGTEST_PRESERVE_RECEIPTS: "1"
+        run: bun run test:hns-regtest
+      - name: Upload HNS regtest receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hns-regtest-receipts
+          path: |
+            /tmp/api-next-hns-regtest-run-*/composed-path-suite-complete
+            /tmp/api-next-hns-regtest-run-*/service-loop-suite-complete
+            /tmp/api-next-hns-regtest-report.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Show sanitized HSD diagnostics
+        if: failure() && env.HNS_REGTEST_CONTAINER_NAME != ''
+        run: docker logs "$HNS_REGTEST_CONTAINER_NAME" 2>&1 | tail -200
+      - name: Remove the job-owned HSD fixture
+        if: always() && env.HNS_REGTEST_CONTAINER_NAME != ''
+        run: docker rm -f "$HNS_REGTEST_CONTAINER_NAME"
+
   postgres17-general:
     name: postgres17-general-${{ matrix.shard }}
     runs-on: ubuntu-latest
