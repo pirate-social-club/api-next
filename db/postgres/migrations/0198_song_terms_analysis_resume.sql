@@ -1,5 +1,4 @@
 -- Resume completed analysis when terms arrive, preserving every other guard.
--- 0198 and 0199 remain reserved by the video moderation lane.
 DO $migration$
 DECLARE
   body text;
