@@ -13120,7 +13120,7 @@ CREATE TABLE media_post_submissions (
     poster_timestamp_ms bigint,
     video_state_snapshot jsonb,
     failure_evidence_ref text,
-    CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
+    CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text, 'author_abandoned_unresolved_provider'::text])))),
     CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
     CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),
     CONSTRAINT media_post_submissions_audio_revision_check CHECK ((audio_revision >= 0)),

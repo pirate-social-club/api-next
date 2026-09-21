@@ -49,6 +49,23 @@ export type VideoSafetyFact = Readonly<{
   adapterRevision: string;
 }>;
 
+/**
+ * The image-moderation dispatch may have crossed the provider boundary, but
+ * no normalized result is durable. Callers must persist a non-retryable
+ * reconciliation disposition and must not invoke the provider again.
+ */
+export class VideoSafetyModerationUnresolvedError extends Error {
+  readonly code = "video_safety_moderation_unresolved";
+
+  constructor(
+    readonly requestId: string,
+    options?: ErrorOptions,
+  ) {
+    super("video safety moderation dispatch is unresolved", options);
+    this.name = "VideoSafetyModerationUnresolvedError";
+  }
+}
+
 /** Non-transform providers return only trusted server facts. Media transforms use MediaTransform. */
 export type VideoAnalysisProviders = Readonly<{
   identifySoundtrack: (

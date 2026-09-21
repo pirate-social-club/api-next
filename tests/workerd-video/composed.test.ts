@@ -16,7 +16,10 @@ import type {
   VideoSafetyFact,
   VideoSoundtrackFact,
 } from "../../packages/application/src/video/analysis.ts";
-import { moderateVideoSubmission } from "../../packages/application/src/video/publication.ts";
+import {
+  moderateVideoSubmission,
+  projectVideoSubmission,
+} from "../../packages/application/src/video/publication.ts";
 import { dispatchVideoPublicationWakeups } from "../../packages/application/src/video/publication-wakeup.ts";
 import { recoverVideoWorkflowLaunches } from "../../packages/application/src/video/workflow-recovery.ts";
 import { OPENAI_MODERATION_MODEL } from "../../packages/platform-cf/src/openai-text-moderation.ts";
@@ -988,8 +991,8 @@ for (const mode of ["clean", "minors", "caption"] as const) {
 test("composed ambiguous moderation dispatch stays unresolved and cannot publish or redispatch", async () => {
   const h = harness(false, "unavailable");
   const event = await h.launch();
-  await expect(h.run(event)).rejects.toThrow("video safety moderation dispatch is unresolved");
-  await expect(h.run(event)).rejects.toThrow("video safety moderation dispatch is unresolved");
+  await expect(h.run(event)).resolves.toEqual({ status: "reconciliation_required" });
+  await expect(h.run(event)).resolves.toEqual({ status: "reconciliation_required" });
   expect(h.moderationCalls).toEqual(["image"]);
   expect(
     (
@@ -1009,9 +1012,66 @@ test("composed ambiguous moderation dispatch stays unresolved and cannot publish
     ).rows[0].n,
   ).toBe(0);
   expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+  const unresolved = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(unresolved?.state).toMatchObject({
+    status: "processing_failed",
+    phase: null,
+    failureCode: "provider_submission_unconfirmed",
+    reconciliationRequired: true,
+  });
+  if (unresolved === null) throw new Error("missing unresolved submission");
+  expect(projectVideoSubmission(unresolved)).toMatchObject({
+    status: "processing_failed",
+    reason_code: "provider_submission_unconfirmed",
+    retryable: false,
+  });
+  expect(
+    (
+      await admin.query(
+        "SELECT failure_code,retryable,failure_evidence_ref FROM media_post_submissions WHERE submission_id=$1",
+        [submissionId],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      failure_code: "provider_submission_unconfirmed",
+      retryable: false,
+      failure_evidence_ref:
+        "video-safety:video-safety-media-operation-video-publication-c1:v1:poster:unconfirmed",
+    },
+  ]);
+
+  const abandonment = {
+    submission: unresolved.state,
+    expectedCreationRevision: unresolved.state.creationRevision,
+    endpointTemplate: "/media-post-submissions/:submissionId/cancel",
+    idempotencyKey: "abandon-unresolved-moderation",
+    requestHash: "9".repeat(64),
+    responseBytes,
+    responseSha256,
+  };
+  expect(await fixture.store.cancel(abandonment)).toEqual({ kind: "none" });
+  const replay = await fixture.store.cancel(abandonment);
+  expect(replay).toMatchObject({ kind: "replay", entityId: submissionId });
+  if (replay.kind !== "replay") throw new Error("missing abandonment replay");
+  expect([...replay.bytes]).toEqual([...responseBytes]);
   expect(
     (await fixture.store.getSubmissionByOperation({ submissionId, operationId }))?.state,
-  ).toMatchObject({ status: "processing", phase: "analysis" });
+  ).toMatchObject({
+    status: "abandoned",
+    phase: null,
+    failureCode: null,
+    reconciliationRequired: false,
+    abandonmentReason: "author_abandoned_unresolved_provider",
+  });
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state,provider_result FROM media_video_safety_provider_calls",
+      )
+    ).rows,
+  ).toEqual([{ frame_role: "poster", state: "sending", provider_result: null }]);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
 });
 
 test("composed evidence-write failure replays persisted frame results without provider calls", async () => {

@@ -90,6 +90,71 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
 }
 
 suite("video publication PostgreSQL", () => {
+  test("unresolved moderation abandonment is fenced, concurrent, and idempotent", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await store.recordProcessingFailure({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        failureCode: "provider_submission_unconfirmed",
+        evidenceRef: "video-safety:request-unconfirmed",
+        reconciliationRequired: true,
+      });
+      const unresolved = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (unresolved === null) throw new Error("missing unresolved submission");
+      const command = {
+        submission: unresolved.state,
+        expectedCreationRevision: unresolved.state.creationRevision,
+        endpointTemplate: "/media-post-submissions/:submissionId/cancel",
+        idempotencyKey: "abandon-unresolved-moderation",
+        requestHash: "9".repeat(64),
+        responseBytes,
+        responseSha256,
+      };
+
+      await expect(
+        store.cancel({
+          ...command,
+          expectedCreationRevision: command.expectedCreationRevision + 1,
+          idempotencyKey: "stale-abandonment",
+        }),
+      ).rejects.toThrow("video cancel rejected");
+
+      const concurrent = await Promise.all([store.cancel(command), store.cancel(command)]);
+      expect(concurrent.filter((result) => result.kind === "none")).toHaveLength(1);
+      expect(concurrent.filter((result) => result.kind === "replay")).toHaveLength(1);
+      expect(await store.cancel({ ...command, requestHash: "8".repeat(64) })).toEqual({
+        kind: "conflict",
+        entityId: submissionId,
+      });
+
+      expect(
+        (await store.getSubmissionByOperation({ submissionId, operationId }))?.state,
+      ).toMatchObject({
+        status: "abandoned",
+        failureCode: null,
+        reconciliationRequired: false,
+        abandonmentReason: "author_abandoned_unresolved_provider",
+      });
+      expect(
+        (
+          await admin.query(
+            `SELECT abandonment_reason,retention_disposition,failure_code,retryable
+             FROM media_post_submissions WHERE submission_id=$1`,
+            [submissionId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          abandonment_reason: "author_abandoned_unresolved_provider",
+          retention_disposition: "retain_for_reconciliation",
+          failure_code: null,
+          retryable: null,
+        },
+      ]);
+    });
+  });
+
   test("drill 5: membership loss retains analysis, refuses ineligible retry, and publishes after rejoin", async () => {
     await fixture(async (admin, connection) => {
       const { store } = await finalizedFixture(connection);

@@ -15,8 +15,11 @@ import {
   canonicalVideoCaptionSha256,
   type VideoAnalysisProviders,
   type VideoSafetyFact,
+  VideoSafetyModerationUnresolvedError,
 } from "../../application/src/video/analysis.ts";
 import { VIDEO_POSTER_POLICY_V1 } from "../../domain/src/video-submission.ts";
+
+export { VideoSafetyModerationUnresolvedError } from "../../application/src/video/analysis.ts";
 
 export type VideoSafetyInput = Parameters<VideoAnalysisProviders["moderate"]>[0];
 export type VideoSafetyFrameProviderResult = Effect.Success<
@@ -66,18 +69,6 @@ export type VideoSafetyEvidenceStore = Readonly<{
     result: VideoSafetyFrameProviderResult,
   ) => Promise<VideoSafetyFrameProviderResult>;
 }>;
-
-export class VideoSafetyModerationUnresolvedError extends Error {
-  readonly code = "video_safety_moderation_unresolved";
-
-  constructor(
-    readonly requestId: string,
-    options?: ErrorOptions,
-  ) {
-    super("video safety moderation dispatch is unresolved", options);
-    this.name = "VideoSafetyModerationUnresolvedError";
-  }
-}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
