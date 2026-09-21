@@ -62,16 +62,44 @@ async function fixture(
   let failFrameCompletion = false;
   let failEvidenceSave = false;
   let pauseFirstProviderCall = false;
+  let pauseFirstClaimAcquisition = false;
+  let claimAcquisitionPaused = false;
   let releaseFirstProviderCall: (() => void) | undefined;
+  let releaseFirstClaimAcquisition: (() => void) | undefined;
   let providerCallStarted: (() => void) | undefined;
+  let claimAcquisitionStarted: (() => void) | undefined;
   const firstProviderCallStarted = new Promise<void>((resolve) => {
     providerCallStarted = resolve;
+  });
+  const firstClaimAcquisitionStarted = new Promise<void>((resolve) => {
+    claimAcquisitionStarted = resolve;
   });
   const frameClaims = new Map<
     string,
     | { status: "sending"; claimToken: string }
     | { status: "succeeded"; result: VideoSafetyFrameProviderResult }
   >();
+  const cleanFrameResult = (): VideoSafetyFrameProviderResult => ({
+    provider_id: "openai",
+    requested_model: OPENAI_MODERATION_MODEL,
+    returned_model: OPENAI_MODERATION_MODEL,
+    input_sha256: sha256,
+    matched_categories: [],
+    evidence: {
+      input_sha256: sha256,
+      categories: Object.fromEntries(
+        MODERATION_POLICY_CATEGORIES_V1.map((c) => [c, false]),
+      ) as VideoSafetyFrameProviderResult["evidence"]["categories"],
+      scores: Object.fromEntries(
+        MODERATION_POLICY_CATEGORIES_V1.map((c) => [c, 0.01]),
+      ) as VideoSafetyFrameProviderResult["evidence"]["scores"],
+      applied_input_types: Object.fromEntries(
+        MODERATION_POLICY_CATEGORIES_V1.map((c) => [c, ["image"]]),
+      ) as unknown as VideoSafetyFrameProviderResult["evidence"]["applied_input_types"],
+    },
+  });
+  const requestIdFor = (role: "poster" | "first" | "midpoint") =>
+    `video-safety-${input.operationId}-c${input.creationRevision}:v${input.videoRevision}:${role}`;
   const port = makeOpenAiTextModerationProvider({
     apiKey: "fixture",
     reportDiagnostic: () => {},
@@ -148,7 +176,21 @@ async function fixture(
         retained = evidence.fact;
         return evidence.fact;
       },
+      inspectFrame: async (claim) => {
+        const previous = frameClaims.get(claim.requestId);
+        if (previous?.status === "succeeded")
+          return { status: "succeeded", result: previous.result };
+        if (previous?.status === "sending") return { status: "unresolved" };
+        return { status: "absent" };
+      },
       claimFrame: async (claim) => {
+        if (pauseFirstClaimAcquisition && !claimAcquisitionPaused) {
+          claimAcquisitionPaused = true;
+          claimAcquisitionStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseFirstClaimAcquisition = resolve;
+          });
+        }
         const previous = frameClaims.get(claim.requestId);
         if (previous?.status === "succeeded")
           return { status: "succeeded", result: previous.result };
@@ -182,9 +224,24 @@ async function fixture(
     pauseFirstProviderCall: () => {
       pauseFirstProviderCall = true;
     },
+    pauseFirstClaimAcquisition: () => {
+      pauseFirstClaimAcquisition = true;
+    },
     waitForFirstProviderCall: () => firstProviderCallStarted,
+    waitForFirstClaimAcquisition: () => firstClaimAcquisitionStarted,
+    releaseClaimAcquisition: () => {
+      releaseFirstClaimAcquisition?.();
+    },
     releaseProviderCall: () => {
       releaseFirstProviderCall?.();
+    },
+    seedUnresolvedFrames: (...roles: ("poster" | "first" | "midpoint")[]) => {
+      for (const role of roles)
+        frameClaims.set(requestIdFor(role), { status: "sending", claimToken: `claim-${role}` });
+    },
+    seedSucceededFrames: (...roles: ("poster" | "first" | "midpoint")[]) => {
+      for (const role of roles)
+        frameClaims.set(requestIdFor(role), { status: "succeeded", result: cleanFrameResult() });
     },
   };
 }
@@ -267,6 +324,49 @@ test("concurrent moderation admits one provider dispatch for the same frame iden
   expect(f.calls).toEqual(["image"]);
   f.releaseProviderCall();
   const result = await owner;
+  expect(f.calls).toEqual(["image", "image", "image"]);
+  expect(await f.moderate(f.input)).toEqual(result);
+  expect(f.calls).toEqual(["image", "image", "image"]);
+});
+
+test.each(["bad-digest", "disabled"] as const)(
+  "an unresolved frame claim survives %s without a read, redispatch, or aggregate evidence",
+  async (mode) => {
+    const f = await fixture(mode);
+    f.seedUnresolvedFrames("poster");
+    await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+    expect(f.reads).toEqual([]);
+    expect(f.calls).toEqual([]);
+    expect(f.evidence()).toBeUndefined();
+  },
+);
+
+test.each(["bad-digest", "disabled"] as const)(
+  "succeeded frame claims replay through %s without frame reads or provider calls",
+  async (mode) => {
+    const f = await fixture(mode);
+    f.seedSucceededFrames("poster", "first", "midpoint");
+    const fact = await f.moderate(f.input);
+    expect(f.reads).toEqual([]);
+    expect(f.calls).toEqual([]);
+    expect(fact.adapterRevision).toBe("video-openai-safety-v2");
+    expect(f.evidence()?.inputs).toHaveLength(3);
+  },
+);
+
+test("an atomic acquisition resolves a claim created after absent inspection without redispatch", async () => {
+  const f = await fixture();
+  f.pauseFirstClaimAcquisition();
+  f.pauseFirstProviderCall();
+  const earlierInspector = f.moderate(f.input);
+  await f.waitForFirstClaimAcquisition();
+  const winner = f.moderate(f.input);
+  await f.waitForFirstProviderCall();
+  f.releaseClaimAcquisition();
+  await expect(earlierInspector).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+  f.releaseProviderCall();
+  const result = await winner;
   expect(f.calls).toEqual(["image", "image", "image"]);
   expect(await f.moderate(f.input)).toEqual(result);
   expect(f.calls).toEqual(["image", "image", "image"]);

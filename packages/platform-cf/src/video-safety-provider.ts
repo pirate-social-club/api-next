@@ -38,6 +38,9 @@ export type VideoSafetyFrameClaim =
   | Readonly<{ status: "dispatch"; claimToken: string }>
   | Readonly<{ status: "succeeded"; result: VideoSafetyFrameProviderResult }>
   | Readonly<{ status: "unresolved" }>;
+export type VideoSafetyFrameClaimInspection =
+  | Readonly<{ status: "absent" }>
+  | Extract<VideoSafetyFrameClaim, { status: "succeeded" | "unresolved" }>;
 export type VideoSafetyEvidence = Readonly<{
   ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
   requestId: string;
@@ -50,6 +53,7 @@ export type VideoSafetyEvidence = Readonly<{
 export type VideoSafetyEvidenceStore = Readonly<{
   load: (input: VideoSafetyInput, inputDigest: string) => Promise<VideoSafetyFact | null>;
   save: (input: VideoSafetyInput, evidence: VideoSafetyEvidence) => Promise<VideoSafetyFact>;
+  inspectFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaimInspection>;
   claimFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaim>;
   succeedFrame: (
     input: VideoSafetyFrameClaimInput,
@@ -135,21 +139,6 @@ export function makeVideoSafetyProvider(
       return result;
     };
     for (const [index, frame] of input.frames.entries()) {
-      let bytes: Uint8Array;
-      try {
-        if (frame.role !== VIDEO_POSTER_POLICY_V1.roles[index] || options.image === null)
-          throw new Error("video safety input unavailable");
-        bytes = await options.readFrame(frame.artifactRef, frame.sha256);
-        if (
-          bytes.byteLength > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
-          (await mediaSha256Bytes(bytes)) !== frame.sha256
-        )
-          throw new Error("video safety digest mismatch");
-      } catch {
-        unavailable = true;
-        inputs.push({ role: frame.role, sha256: frame.sha256, outcome: "unavailable" });
-        continue;
-      }
       const claimInput: VideoSafetyFrameClaimInput = {
         operationId: input.operationId,
         submissionId: input.submissionId,
@@ -163,24 +152,48 @@ export function makeVideoSafetyProvider(
         requestedTimestampMs: frame.requestedTimestampMs,
         requestId: `${requestId}:v${input.videoRevision}:${frame.role}`,
       };
-      const claim = await options.evidence.claimFrame(claimInput);
-      if (claim.status === "unresolved") {
+      const retainedClaim = await options.evidence.inspectFrame(claimInput);
+      if (retainedClaim.status === "unresolved") {
         throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
       }
       let result: VideoSafetyFrameProviderResult;
-      if (claim.status === "succeeded") {
-        result = claim.result;
+      if (retainedClaim.status === "succeeded") {
+        result = retainedClaim.result;
       } else {
+        let bytes: Uint8Array;
         try {
-          result = await Effect.runPromise(
-            options.image.evaluateImage({ bytes, mediaType: "image/jpeg", sha256: frame.sha256 }),
-          );
-          if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 12_288)
-            throw new Error("video safety evidence exceeds bound");
-          if (result.input_sha256 !== frame.sha256) throw new Error("video safety input mismatch");
-          result = await options.evidence.succeedFrame(claimInput, claim.claimToken, result);
-        } catch (cause) {
-          throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, { cause });
+          if (frame.role !== VIDEO_POSTER_POLICY_V1.roles[index] || options.image === null)
+            throw new Error("video safety input unavailable");
+          bytes = await options.readFrame(frame.artifactRef, frame.sha256);
+          if (
+            bytes.byteLength > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
+            (await mediaSha256Bytes(bytes)) !== frame.sha256
+          )
+            throw new Error("video safety digest mismatch");
+        } catch {
+          unavailable = true;
+          inputs.push({ role: frame.role, sha256: frame.sha256, outcome: "unavailable" });
+          continue;
+        }
+        const claim = await options.evidence.claimFrame(claimInput);
+        if (claim.status === "unresolved") {
+          throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
+        }
+        if (claim.status === "succeeded") {
+          result = claim.result;
+        } else {
+          try {
+            result = await Effect.runPromise(
+              options.image.evaluateImage({ bytes, mediaType: "image/jpeg", sha256: frame.sha256 }),
+            );
+            if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 12_288)
+              throw new Error("video safety evidence exceeds bound");
+            if (result.input_sha256 !== frame.sha256)
+              throw new Error("video safety input mismatch");
+            result = await options.evidence.succeedFrame(claimInput, claim.claimToken, result);
+          } catch (cause) {
+            throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, { cause });
+          }
         }
       }
       const resolution = resolve(result.matched_categories);

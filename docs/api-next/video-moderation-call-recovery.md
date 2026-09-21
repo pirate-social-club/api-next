@@ -5,6 +5,9 @@ revision, video revision and frame role. The claim also binds the submission,
 community, derived-frame reference, frame digest and deterministic moderation
 request identity.
 
+This mechanism covers per-frame image moderation only. Caption moderation is
+outside this claim boundary.
+
 `sending` means only that the database committed the claim before the provider
 boundary. It does not prove that the provider received the request. A process
 may stop immediately before dispatch, during transport, after the provider
@@ -17,6 +20,14 @@ This is at-most-one automatic dispatch, not exactly-once provider execution.
 uses that result without another provider call. The aggregate safety evidence
 and safety stage fact remain separate writes; if either fails, their replay is
 derived from the persisted frame results.
+
+Replay inspects the retained frame claim before it requires provider
+configuration or reads the derived frame. A retained `sending` claim therefore
+cannot be hidden by a later frame-storage failure, and a retained `succeeded`
+result remains usable while its source frame is temporarily unavailable. For a
+new frame call, the runtime validates the frame bytes before it attempts the
+atomic claim. It rechecks the claim during acquisition so a concurrent winner
+still prevents a second dispatch.
 
 An unresolved row has no automatic recovery path. It leaves the safety stage
 fact absent and publication remains unreachable. Investigation must preserve

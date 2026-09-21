@@ -162,6 +162,21 @@ export function makeVideoSafetyEvidenceStore(
           );
         }),
       ),
+    inspectFrame: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const existing = (yield* readFrameClaim(db, input)).rows[0];
+          if (existing === undefined) return { status: "absent" } as const;
+          assertFrameIdentity(existing, input);
+          if (existing.state === "succeeded") {
+            if (existing.provider_result === null)
+              throw new Error("video safety provider-call result missing");
+            return { status: "succeeded", result: existing.provider_result } as const;
+          }
+          return { status: "unresolved" } as const;
+        }),
+      ),
     claimFrame: (input) =>
       run(
         Effect.gen(function* () {
