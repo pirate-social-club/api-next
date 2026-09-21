@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   executeCommunitySessionHotfix,
   observeCommunitySessionHotfix,
@@ -62,7 +62,7 @@ suite("community session sufficiency production compatibility operator", () => {
     await withReusablePostgresTestSchema({
       baseConnectionString: connectionString,
       schemaName: "community_session_sufficiency_hotfix_pg_test",
-      use: async ({ admin }) => {
+      use: async ({ admin, connectionString: scopedConnectionString }) => {
         const migrations = await loadPostgresMigrations();
         await admin.query(
           `INSERT INTO schema_migrations(version,checksum)
@@ -83,14 +83,26 @@ suite("community session sufficiency production compatibility operator", () => {
           ledgerTip: "0136_hns_existing_name_attachment.sql",
           state: "after",
         });
-        let restored = before;
+        await expect(
+          transitionToActiveWithPendingWallet(admin, "accepted"),
+        ).resolves.toBeUndefined();
+        await expect(executeCommunitySessionHotfix(admin, "restore")).rejects.toThrow(
+          "community_session_hotfix_restore_data_precondition_failed",
+        );
+        await admin.query("BEGIN");
         try {
-          await expect(
-            transitionToActiveWithPendingWallet(admin, "accepted"),
-          ).resolves.toBeUndefined();
-        } finally {
-          restored = await executeCommunitySessionHotfix(admin, "restore");
+          await admin.query(
+            `UPDATE persona_wallet_assignments
+                SET status='active',address=$2,assigned_at=clock_timestamp(),updated_at=clock_timestamp()
+              WHERE persona_id=$1`,
+            ["hotfix-persona-accepted", "0x1111111111111111111111111111111111111111"],
+          );
+          await admin.query("COMMIT");
+        } catch (error) {
+          await admin.query("ROLLBACK").catch(() => undefined);
+          throw error;
         }
+        const restored = await executeCommunitySessionHotfix(admin, "restore");
         expect(restored).toMatchObject({
           ledgerCount: 136,
           ledgerTip: "0136_hns_existing_name_attachment.sql",
@@ -100,6 +112,33 @@ suite("community session sufficiency production compatibility operator", () => {
           "public persona requires one confirmed wallet and profile",
         );
         await expect(observeCommunitySessionHotfix(admin, "before")).resolves.toEqual(restored);
+
+        await admin.query("ALTER FUNCTION validate_persona_wallet_activation() STRICT");
+        await expect(observeCommunitySessionHotfix(admin, "before")).rejects.toThrow(
+          "community_session_hotfix_before_function_mismatch",
+        );
+        await admin.query(
+          "ALTER FUNCTION validate_persona_wallet_activation() CALLED ON NULL INPUT",
+        );
+
+        const concurrent = new Client({ connectionString: scopedConnectionString });
+        await concurrent.connect();
+        try {
+          let attempted = false;
+          await executeCommunitySessionHotfix(admin, "apply", async () => {
+            attempted = true;
+            await concurrent.query("SET lock_timeout='100ms'");
+            await expect(
+              concurrent.query(
+                "INSERT INTO schema_migrations(version,checksum) VALUES('9999_concurrent.sql','blocked')",
+              ),
+            ).rejects.toThrow(/lock timeout|canceling statement due to lock timeout/u);
+          });
+          expect(attempted).toBe(true);
+        } finally {
+          await concurrent.end();
+          await executeCommunitySessionHotfix(admin, "restore");
+        }
       },
     });
   }, 30_000);

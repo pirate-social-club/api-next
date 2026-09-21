@@ -91,7 +91,13 @@ END
 
 function replaceFunction(body: string): string {
   return `CREATE OR REPLACE FUNCTION validate_persona_wallet_activation() RETURNS trigger
-LANGUAGE plpgsql AS $function$
+LANGUAGE plpgsql
+VOLATILE
+CALLED ON NULL INPUT
+SECURITY INVOKER
+PARALLEL UNSAFE
+COST 100
+AS $function$
 ${body}
 $function$`;
 }

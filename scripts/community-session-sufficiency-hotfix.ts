@@ -16,10 +16,22 @@ const LOCK_KEY = "api-next:community-session-sufficiency-hotfix:v1";
 type QueryClient = Pick<Client, "query">;
 type LedgerRow = Readonly<{ version: string; checksum: string }>;
 type FunctionRow = Readonly<{
+  schema_name: string;
+  owner_name: string;
+  acl: string | null;
   body: string;
   language: string;
   volatility: string;
+  strict: boolean;
   security_definer: boolean;
+  leakproof: boolean;
+  parallel_safety: string;
+  cost: string;
+  rows: string;
+  configuration: string | null;
+  support_function: string;
+  returns_set: boolean;
+  kind: string;
   result_type: string;
   arguments: string;
 }>;
@@ -41,14 +53,27 @@ function expectedBody(state: HotfixState): string {
 }
 
 async function readFunction(client: QueryClient): Promise<FunctionRow> {
-  const result = (await client.query(`SELECT procedure.prosrc AS body,
+  const result = (await client.query(`SELECT namespace.nspname AS schema_name,
+       pg_catalog.pg_get_userbyid(procedure.proowner) AS owner_name,
+       procedure.proacl::text AS acl,
+       procedure.prosrc AS body,
        language.lanname AS language,
        procedure.provolatile AS volatility,
+       procedure.proisstrict AS strict,
        procedure.prosecdef AS security_definer,
+       procedure.proleakproof AS leakproof,
+       procedure.proparallel AS parallel_safety,
+       procedure.procost::text AS cost,
+       procedure.prorows::text AS rows,
+       procedure.proconfig::text AS configuration,
+       procedure.prosupport::pg_catalog.regproc::text AS support_function,
+       procedure.proretset AS returns_set,
+       procedure.prokind AS kind,
        pg_catalog.pg_get_function_result(procedure.oid) AS result_type,
        pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
   FROM pg_catalog.pg_proc AS procedure
   JOIN pg_catalog.pg_language AS language ON language.oid=procedure.prolang
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid=procedure.pronamespace
  WHERE procedure.oid=pg_catalog.to_regprocedure('validate_persona_wallet_activation()')
    AND procedure.pronamespace=pg_catalog.current_schema()::pg_catalog.regnamespace`)) as QueryResult<FunctionRow>;
   const row = result.rows[0];
@@ -60,14 +85,42 @@ async function readFunction(client: QueryClient): Promise<FunctionRow> {
 
 function assertFunction(row: FunctionRow, state: HotfixState): void {
   if (
+    row.schema_name.length === 0 ||
+    row.owner_name.length === 0 ||
+    row.acl !== null ||
     row.body.trim() !== expectedBody(state) ||
     row.language !== "plpgsql" ||
     row.volatility !== "v" ||
+    row.strict !== false ||
     row.security_definer !== false ||
+    row.leakproof !== false ||
+    row.parallel_safety !== "u" ||
+    row.cost !== "100" ||
+    row.rows !== "0" ||
+    row.configuration !== null ||
+    row.support_function !== "-" ||
+    row.returns_set !== false ||
+    row.kind !== "f" ||
     row.result_type !== "trigger" ||
     row.arguments !== ""
   ) {
     throw new Error(`community_session_hotfix_${state}_function_mismatch`);
+  }
+}
+
+async function assertFunctionOwnerAndSchema(client: QueryClient, row: FunctionRow): Promise<void> {
+  const identity = (await client.query(
+    `SELECT pg_catalog.current_schema() AS schema_name,
+            current_user AS owner_name`,
+  )) as QueryResult<Readonly<{ schema_name: string; owner_name: string }>>;
+  const expected = identity.rows[0];
+  if (
+    expected === undefined ||
+    identity.rows.length !== 1 ||
+    row.schema_name !== expected.schema_name ||
+    row.owner_name !== expected.owner_name
+  ) {
+    throw new Error("community_session_hotfix_function_identity_mismatch");
   }
 }
 
@@ -103,6 +156,7 @@ export async function observeCommunitySessionHotfix(
   const ledger = await assertLedger(client);
   const functionRow = await readFunction(client);
   assertFunction(functionRow, expectedState);
+  await assertFunctionOwnerAndSchema(client, functionRow);
   return {
     ledgerCount: ledger.length,
     ledgerTip: ledger.at(-1)?.version ?? "",
@@ -111,9 +165,34 @@ export async function observeCommunitySessionHotfix(
   };
 }
 
+async function assertNoHotfixOnlyRows(client: QueryClient): Promise<void> {
+  const result = (await client.query(`SELECT count(*)::text AS count
+  FROM personas AS persona
+ WHERE persona.status='active'
+   AND (SELECT count(*) FROM persona_wallet_assignments AS wallet
+         WHERE wallet.persona_id=persona.persona_id
+           AND wallet.chain_account_kind='evm' AND wallet.status='active')=0
+   AND (SELECT count(*) FROM persona_wallet_assignments AS wallet
+         WHERE wallet.persona_id=persona.persona_id
+           AND wallet.chain_account_kind='evm' AND wallet.status='pending')=1
+   AND (SELECT count(*) FROM persona_wallet_assignments AS wallet
+         WHERE wallet.persona_id=persona.persona_id
+           AND wallet.chain_account_kind='evm' AND wallet.status='tombstoned')=0
+   AND (SELECT count(*) FROM persona_profiles AS profile
+         WHERE profile.persona_id=persona.persona_id)=1
+   AND (SELECT count(*) FROM persona_pending_profiles AS profile
+         WHERE profile.persona_id=persona.persona_id)=0`)) as QueryResult<
+    Readonly<{ count: string }>
+  >;
+  if (result.rows.length !== 1 || result.rows[0]?.count !== "0") {
+    throw new Error("community_session_hotfix_restore_data_precondition_failed");
+  }
+}
+
 export async function executeCommunitySessionHotfix(
   client: QueryClient,
   operation: "apply" | "restore",
+  afterLedgerLock: () => Promise<void> = async () => undefined,
 ): Promise<HotfixObservation> {
   const before: HotfixState = operation === "apply" ? "before" : "after";
   const after: HotfixState = operation === "apply" ? "after" : "before";
@@ -125,7 +204,15 @@ export async function executeCommunitySessionHotfix(
       "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))",
       [LOCK_KEY],
     );
+    await client.query("LOCK TABLE schema_migrations IN SHARE MODE");
     await observeCommunitySessionHotfix(client, before);
+    await afterLedgerLock();
+    if (operation === "restore") {
+      await client.query(
+        "LOCK TABLE personas,persona_wallet_assignments,persona_profiles,persona_pending_profiles IN SHARE MODE",
+      );
+      await assertNoHotfixOnlyRows(client);
+    }
     await client.query(operation === "apply" ? APPLY_SQL : RESTORE_SQL);
     const observation = await observeCommunitySessionHotfix(client, after);
     await client.query("COMMIT");
