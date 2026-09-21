@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type {
   MediaProcessingAuthority,
   MediaProcessingStore,
@@ -6,6 +6,7 @@ import type {
 import type { MediaProcessingQueueDependencies } from "../../../packages/application/src/media/processing-queue.ts";
 import type { MediaProcessingWorkflowDependencies } from "../../../packages/application/src/media/processing-workflow.ts";
 import { MediaProcessingInvariantError } from "../../../packages/application/src/media/processing-workflow.ts";
+import { MediaSubmissionRepositoryError } from "../../../packages/platform-cf/src/media-submission-repository-error.ts";
 import { type MediaProcessingWorkflowStep, makeMediaProcessingWorkflowRunner } from "./index.ts";
 
 class TestNonRetryableError extends Error {}
@@ -13,6 +14,53 @@ class TestNonRetryableError extends Error {}
 const nonRetryableError = (message: string): Error => new TestNonRetryableError(message);
 
 describe("media workflow Effect boundary", () => {
+  test.each([
+    "invalid-input",
+    "constraint",
+    "invalid-row",
+    "transition-rejected",
+    "stale-revision",
+  ] as const)("logs repository fields and classifies %s at the step boundary", async (reason) => {
+    const error = new MediaSubmissionRepositoryError({ operation: "decision", reason });
+    const log = spyOn(console, "error").mockImplementation(() => undefined);
+    const runner = makeMediaProcessingWorkflowRunner(() => {
+      throw error;
+    }, nonRetryableError);
+    const step = {
+      do: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) => callback(),
+      waitForEvent: async () => {
+        throw new Error("must not wait after rejection");
+      },
+      sleep: async () => undefined,
+    } as MediaProcessingWorkflowStep;
+    try {
+      const result = runner(
+        {},
+        {
+          instanceId: "media-operation-1-r1",
+          payload: {
+            outboxId: "outbox-1",
+            submissionId: "submission-1",
+            operationId: "operation-1",
+            workflowRevision: 1,
+          },
+        },
+        step,
+      );
+      if (reason === "stale-revision") await expect(result).rejects.toBe(error);
+      else
+        await expect(result).rejects.toEqual(
+          new TestNonRetryableError(`MediaSubmissionRepositoryError: decision/${reason}`),
+        );
+      expect(log).toHaveBeenCalledWith("media_workflow_repository_rejection", {
+        operation: "decision",
+        reason,
+        submissionId: "submission-1",
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
   test("resolves provider composition inside the durable step", async () => {
     const compositionError = new Error("secret unavailable");
     let insideStep = false;

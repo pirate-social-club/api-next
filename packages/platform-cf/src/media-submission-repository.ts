@@ -15,7 +15,7 @@ import {
   createPostSlugCandidate,
 } from "@pirate/application/post-slug";
 import { type PublicPersonaV1, SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
-import { Data, Effect } from "effect";
+import { Effect } from "effect";
 import {
   type BoundReference,
   deterministicMediaWorkflowInstanceId,
@@ -35,6 +35,7 @@ import {
 } from "../../domain/src/media-submission.ts";
 import { decodeActiveSongCursor, encodeActiveSongCursor } from "./active-song-cursor.ts";
 import { materializeAcceptedLyricLineCatalog } from "./lyric-line-catalog.ts";
+import { MediaSubmissionRepositoryError } from "./media-submission-repository-error";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
 import {
   ensurePostSlugAliasInTransaction,
@@ -104,50 +105,10 @@ const publicationDecisionSnapshot = (decision: PublicationDecision): unknown => 
 export const RESERVATION_ENDPOINT = "/communities/:communityId/media-upload-reservations";
 export const SUBMISSION_ENDPOINT = "/communities/:communityId/media-post-submissions";
 
-export type MediaSubmissionRepositoryOperation =
-  | "reserve"
-  | "create"
-  | "replay"
-  | "get"
-  | "list"
-  | "terms"
-  | "lyrics"
-  | "begin-finalize"
-  | "finalize"
-  | "analysis"
-  | "decision"
-  | "reference"
-  | "review"
-  | "moderation"
-  | "publish"
-  | "retry"
-  | "alignment"
-  | "attempt"
-  | "failure"
-  | "workflow"
-  | "abandon";
-export type MediaSubmissionRepositoryReason =
-  | "invalid-input"
-  | "not-found"
-  | "membership-required"
-  | "idempotency-conflict"
-  | "stale-revision"
-  | "reservation-conflict"
-  | "immutable-object-conflict"
-  | "transition-rejected"
-  | "constraint"
-  | "invalid-row"
-  | "stale-fence"
-  | "post-ownership"
-  | "closed-payload";
-export class MediaSubmissionRepositoryError extends Data.TaggedError(
-  "MediaSubmissionRepositoryError",
-)<{
-  readonly operation: MediaSubmissionRepositoryOperation;
-  readonly reason: MediaSubmissionRepositoryReason;
-  readonly submissionId?: string;
-  readonly reservationId?: string;
-}> {}
+export { MediaSubmissionRepositoryError } from "./media-submission-repository-error";
+
+type MediaSubmissionRepositoryOperation = MediaSubmissionRepositoryError["operation"];
+type MediaSubmissionRepositoryReason = MediaSubmissionRepositoryError["reason"];
 export type MediaSubmissionRepositoryFailure = MediaSubmissionRepositoryError | ControlPlaneError;
 
 export type ReplayOutcome =

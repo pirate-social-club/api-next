@@ -52,6 +52,7 @@ import { reprocessMediaSubmission } from "./media-operator-reprocess-repository.
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeMediaReferenceResolver } from "./media-reference-resolver";
+import { songInterpreterProviders } from "./media-song-interpreter.pg-fixture";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
 import { makeMediaUploadApplicationCommands, makeMediaUploadStore } from "./media-upload-store";
 import { makeControlPlanePersonaStore } from "./persona-repository";
@@ -1790,7 +1791,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
 
-  test("binds lyrics after sealed finalization before independent terms", async () => {
+  test("publishes through the interpreter with lyrics before independent terms", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const authorReviewedLyrics = "Author reviewed lyrics ".repeat(30);
       expect(
@@ -1896,6 +1897,52 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).toEqual({ kind: "committed", submissionId: submission });
       expect(authorReviewedLyrics.length).toBeGreaterThan(512);
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      const interpret = (eventType: "analysis_launch" | "decision_wakeup") =>
+        Effect.runPromise(
+          runMediaProcessingWorkflow(
+            {
+              outboxId:
+                eventType === "analysis_launch"
+                  ? "media_pg_analysis_outbox"
+                  : "media_pg_terms_outbox",
+              submissionId: submission,
+              operationId: operation,
+              workflowRevision: 1,
+            },
+            eventType,
+            {
+              store: processing,
+              providers: songInterpreterProviders,
+              options: {
+                enabled: true,
+                workerId: "song-regression",
+                now: Date.now,
+                policyRevision: "fixture-v1",
+                transformAdapterRevision: "fixture-v1",
+                metadataAdapterRevision: "fixture-v1",
+                classifierTimeoutMs: 10000,
+                transformRuntimeMs: 60000,
+                maximumSampleBytes: 1000000,
+              },
+            },
+          ),
+        );
+      expect(await interpret("analysis_launch")).toEqual({ outcome: "waiting_for_terms" });
+      expect(
+        (
+          await admin.query(
+            "SELECT stage,state,attempt_number FROM media_processing_attempts WHERE submission_id=$1 ORDER BY stage",
+            [submission],
+          )
+        ).rows,
+      ).toEqual(
+        ["acr_primary", "classifier", "metadata", "probe", "sample_primary"].map((stage) => ({
+          stage,
+          state: "succeeded",
+          attempt_number: 1,
+        })),
+      );
       expect(
         await run(connection, (store) =>
           store.getForAuthor({
@@ -2035,6 +2082,20 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows,
       ).toEqual([{ creation_revision: "3" }]);
+      expect(await interpret("decision_wakeup")).toMatchObject({ outcome: "published" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,analysis_revision,current_lyrics_revision,resulting_content_rating FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "published",
+        analysis_revision: "1",
+        current_lyrics_revision: "1",
+        resulting_content_rating: "general",
+      });
     });
     completedTestCount += 1;
   }, 40_000);
@@ -3828,7 +3889,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ],
       );
       await admin.query(
-        "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+        "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,decision_revision=0,current_decision_revision=NULL,status='processing',phase='decision',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
         [submission],
       );
       await expect(admin.query("COMMIT")).rejects.toThrow();

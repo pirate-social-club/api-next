@@ -9469,7 +9469,7 @@ BEGIN
       AND NEW.workflow_revision = 0 AND NEW.current_terms_revision IS NULL AND NEW.current_immutable_ref IS NULL
       AND NEW.current_analysis_revision IS NULL AND NEW.current_decision_revision IS NULL AND NEW.post_id IS NULL)
     OR ((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL))
-      AND NEW.status = 'processing' AND NEW.phase = CASE WHEN OLD.audio_revision = 0 THEN 'awaiting_upload' ELSE 'analysis' END
+      AND NEW.status = 'processing' AND NEW.phase = CASE WHEN OLD.audio_revision = 0 THEN 'awaiting_upload' WHEN OLD.current_analysis_revision IS NULL THEN 'analysis' ELSE 'decision' END
       AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
       AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.current_terms_revision = NEW.creation_revision
       AND NEW.workflow_revision = OLD.workflow_revision AND NEW.post_id IS NULL

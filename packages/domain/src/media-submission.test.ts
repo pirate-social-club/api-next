@@ -244,6 +244,22 @@ describe("song media Spec 013 machine", () => {
     ).toMatchObject({ ok: false, rejection: { _tag: "analysis_evidence_stale" } });
   });
 
+  test("late terms reuse completed analysis and advance to decision", () => {
+    const completed = { ...analyzed(), terms: null, phase: "analysis" as const };
+    const resumed = ok(
+      transitionMediaSubmission(completed, {
+        event: "song_terms_bound",
+        actorId,
+        expectedCreationRevision: completed.creationRevision,
+        terms,
+      }),
+    );
+    expect(resumed.phase).toBe("decision");
+    expect(resumed.analysis).toBe(completed.analysis);
+    expect(resumed.analysisRevision).toBe(completed.analysisRevision);
+    expect(resumed.decision).toBeNull();
+  });
+
   test("fences lyrics analysis, decisions, and publication to the accepted lyrics revision", () => {
     const withTerms = ok(
       transitionMediaSubmission(issued, {
@@ -822,7 +838,7 @@ describe("song media Spec 013 machine", () => {
     expect(replaced).toMatchObject({
       creationRevision: 3,
       status: "processing",
-      phase: "analysis",
+      phase: "decision",
       review: null,
       action: null,
     });
