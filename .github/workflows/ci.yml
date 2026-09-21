@@ -469,23 +469,40 @@ jobs:
           path: /tmp/api-next-control-plane-postgres-*-suite-complete
           if-no-files-found: ignore
           retention-days: 1
-      # The song-video media suites' owning shards are computed from the
-      # manifest weights; run-postgres-tests.test.ts asserts these pins match.
+      # Suite weights can move either marker between shards. Only the shard
+      # that produced a valid marker uploads its unique, immutable artifact.
+      - name: Detect song-video completion sentinels
+        id: song-video-sentinels
+        env:
+          SENTINEL_DIRECTORY: /tmp
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          for suite in composed-flow render-host; do
+            marker="api-next-control-plane-postgres-song-video-${suite}-suite-complete"
+            if [[ -f "$SENTINEL_DIRECTORY/$marker" ]]; then
+              [[ "$(cat "$SENTINEL_DIRECTORY/$marker")" == "$marker" ]]
+              echo "${suite//-/_}=true" >> "$GITHUB_OUTPUT"
+              echo "song-video ${suite} sentinel: shard ${SHARD_INDEX}"
+            fi
+          done
       - name: Upload song-video composed flow sentinel
-        if: matrix.shard == 0
+        if: steps.song-video-sentinels.outputs.composed_flow == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: postgres17-sentinels-song-video-composed-flow
           path: /tmp/api-next-control-plane-postgres-song-video-composed-flow-suite-complete
           if-no-files-found: error
+          overwrite: false
           retention-days: 1
       - name: Upload song-video render host sentinel
-        if: matrix.shard == 1
+        if: steps.song-video-sentinels.outputs.render_host == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: postgres17-sentinels-song-video-render-host
           path: /tmp/api-next-control-plane-postgres-song-video-render-host-suite-complete
           if-no-files-found: error
+          overwrite: false
           retention-days: 1
       - name: Show egress audit summary
         if: always()
@@ -574,3 +591,15 @@ jobs:
           merge-multiple: true
       - name: Verify Postgres 17 completion sentinels
         run: bun run verify:postgres-sentinels
+      # Named downloads require both dedicated artifacts, independently of
+      # the general bundle. Duplicate upload names fail with overwrite off.
+      - name: Require song-video composed flow artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: postgres17-sentinels-song-video-composed-flow
+          path: /tmp/song-video-artifacts/composed-flow
+      - name: Require song-video render host artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: postgres17-sentinels-song-video-render-host
+          path: /tmp/song-video-artifacts/render-host

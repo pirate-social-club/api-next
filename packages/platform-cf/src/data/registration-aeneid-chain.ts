@@ -759,6 +759,7 @@ export function makeDataRegistrationAeneidChain(
       const calldataHash = await sha256(planned.calldata);
       return {
         reservation: {
+          expectedWorkflowRevision: operation.workflowRevision,
           registrationOperationId: operation.registrationOperationId,
           submissionAttemptId: attemptId,
           chainId: 1315n,

@@ -47,6 +47,91 @@ const candidate = (
 });
 
 describe("media Workflow missing-instance sweep", () => {
+  test.each(["action_required", "manual_review"] as const)(
+    "restores the event target for a finished %s wait",
+    async (status) => {
+      const current = candidate({ status, phase: null });
+      let replacements = 0;
+      const result = await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [current],
+          loadAuthority: async () => current,
+          reconcileTerminalWorkflow: async () => {
+            throw new Error("must preserve durable wait");
+          },
+          replaceMissingWorkflow: async (expected) => {
+            expect(expected).toEqual(current);
+            replacements += 1;
+            return "committed";
+          },
+        },
+        workflow: { get: async () => "finished" },
+      });
+      expect(result).toMatchObject({ finished: 1, replaced: 1, recoveryFailed: 0 });
+      expect(replacements).toBe(1);
+    },
+  );
+
+  test.each(["action_required", "manual_review"] as const)(
+    "preserves a finished %s wait at the replacement ceiling",
+    async (status) => {
+      const current = candidate({ status, phase: null, replacementSequence: 3 });
+      const result = await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [current],
+          loadAuthority: async () => current,
+          reconcileTerminalWorkflow: async () => {
+            throw new Error("must preserve durable wait");
+          },
+          replaceMissingWorkflow: async () => {
+            throw new Error("must preserve replacement ceiling");
+          },
+        },
+        workflow: { get: async () => "finished" },
+      });
+      expect(result).toMatchObject({
+        finished: 1,
+        replaced: 0,
+        limitReached: 1,
+        recoveryFailed: 0,
+      });
+    },
+  );
+
+  test("observes failed wait recovery without leaking the cause and continues the sweep", async () => {
+    const first = candidate({ status: "action_required", phase: null });
+    const second = candidate({
+      operationId: "operation-2",
+      submissionId: "submission-2",
+      status: "manual_review",
+      phase: null,
+    });
+    const observations: unknown[] = [];
+    const result = await sweepMissingMediaWorkflows({
+      store: {
+        listWorkflowCandidates: async () => [first, second],
+        loadAuthority: async (id) => (id === first.submissionId ? first : second),
+        reconcileTerminalWorkflow: async () => {
+          throw new Error("must preserve wait");
+        },
+        replaceMissingWorkflow: async (authority) => {
+          if (authority === first) throw new Error("private-provider-response");
+          return "committed";
+        },
+      },
+      workflow: { get: async () => "finished" },
+      observe: (observation) => observations.push(observation),
+    });
+    expect(result).toMatchObject({ recoveryFailed: 1, replaced: 1 });
+    expect(observations[0]).toEqual({
+      event: "workflow_terminal_recovery_failed",
+      operationId: first.operationId,
+      submissionId: first.submissionId,
+      workflowRevision: 1,
+    });
+    expect(JSON.stringify(observations)).not.toContain("private-provider-response");
+  });
+
   test("dispatches a committed replacement through the consumer into its new Workflow", async () => {
     let current = candidate();
     let replacement: MediaProcessingOutboxRecord | null = null;

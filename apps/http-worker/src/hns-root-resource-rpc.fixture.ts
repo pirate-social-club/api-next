@@ -40,6 +40,9 @@ export function startHnsRootResourceRpcFixture(options?: {
   let failure: "ok" | "transport" | "malformed" | "resource_absent" | "resourceless" = "ok";
   let network = "regtest";
   const calls: string[] = [];
+  // These hashes identify fixed blocks. Their timestamps must not change
+  // when consecutive RPC reads cross a wall-clock second boundary.
+  const blockTimeSeconds = Math.floor(Date.now() / 1_000);
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -54,7 +57,6 @@ export function startHnsRootResourceRpcFixture(options?: {
       if (failure === "transport") {
         return new Response("provider unavailable", { status: 503 });
       }
-      const nowSeconds = Math.floor(Date.now() / 1_000);
       const result = (value: unknown): Response =>
         Response.json({ result: value, error: null, id: null });
       const params = Array.isArray(requestBody?.params) ? requestBody.params : [];
@@ -64,7 +66,7 @@ export function startHnsRootResourceRpcFixture(options?: {
             chain: network,
             blocks: TIP_HEIGHT,
             headers: TIP_HEIGHT,
-            mediantime: nowSeconds,
+            mediantime: blockTimeSeconds,
             bestblockhash: TIP_HASH,
           });
         case "getblockheader":
@@ -72,8 +74,8 @@ export function startHnsRootResourceRpcFixture(options?: {
             ? result({
                 hash: COMMITMENT_HASH,
                 height: COMMITMENT_HEIGHT,
-                mediantime: nowSeconds,
-                time: nowSeconds,
+                mediantime: blockTimeSeconds,
+                time: blockTimeSeconds,
                 confirmations: SAFE_CONFIRMATIONS,
                 // hsd spells this `treeroot`; the observer accepts it.
                 treeroot: COMMITMENT_TREE_ROOT,
@@ -81,8 +83,8 @@ export function startHnsRootResourceRpcFixture(options?: {
             : result({
                 hash: TIP_HASH,
                 height: TIP_HEIGHT,
-                mediantime: nowSeconds,
-                time: nowSeconds,
+                mediantime: blockTimeSeconds,
+                time: blockTimeSeconds,
                 confirmations: 1,
               });
         case "getblockbyheight":

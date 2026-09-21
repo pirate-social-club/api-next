@@ -1,3 +1,5 @@
+import { DATA_REGISTRATION_AUTOMATIC_WORKFLOW_REVISION_CEILING } from "@pirate/application/data/registration-persistence";
+
 /** At most three replacement launches per submission. */
 export const SONG_WORKFLOW_MAX_REPLACEMENTS = 3;
 
@@ -6,7 +8,9 @@ export const SONG_WORKFLOW_MAX_REPLACEMENTS = 3;
  * separate replacement budget; its revisions are not shared with song
  * publication and alignment phase changes.
  */
-export const DATA_WORKFLOW_MAX_REVISION = 4;
+export const DATA_WORKFLOW_MAX_REVISION = Number(
+  DATA_REGISTRATION_AUTOMATIC_WORKFLOW_REVISION_CEILING,
+);
 
 /**
  * Normal publication and alignment phase changes advance the workflow revision

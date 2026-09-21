@@ -1282,6 +1282,15 @@ function resumeCommittedDecision(
   authority: MediaProcessingAuthority,
   dependencies: MediaProcessingWorkflowDependencies,
 ): WorkflowEffect<MediaProcessingWorkflowResult> {
+  // Reference requests deliberately clear the transient decision. Their
+  // persisted disposition must still suspend for the author's wakeup.
+  if (authority.status === "action_required") {
+    return Effect.succeed({ outcome: "action_required" });
+  }
+  // Provider-unavailable reviews intentionally have no publication decision.
+  if (authority.status === "manual_review") {
+    return Effect.succeed({ outcome: "manual_review" });
+  }
   if (authority.decision === null) return Effect.fail(new DeferredAttempt("stale_fence"));
   if (authority.decision.outcome === "manual_review") {
     return Effect.succeed({ outcome: "manual_review" });
@@ -1349,7 +1358,13 @@ function runMediaProcessingWorkflowOnce(
       } as const;
     }
 
-    if (authority.decision !== null) return yield* resumeCommittedDecision(authority, dependencies);
+    if (
+      authority.status === "action_required" ||
+      authority.status === "manual_review" ||
+      authority.decision !== null
+    ) {
+      return yield* resumeCommittedDecision(authority, dependencies);
+    }
 
     if (!dependencies.options.enabled || dependencies.providers === null) {
       yield* storeWrite(() =>

@@ -814,6 +814,7 @@ export async function advanceDataRegistrationWorkflow(
     );
     if (
       plan.reservation.registrationOperationId !== operation.registrationOperationId ||
+      plan.reservation.expectedWorkflowRevision !== operation.workflowRevision ||
       plan.reservation.submissionAttemptId !== expectedAttemptId ||
       plan.reservation.signingIntentId !==
         deterministicDataRegistrationSigningIntentId(expectedAttemptId)

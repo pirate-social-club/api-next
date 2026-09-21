@@ -551,7 +551,8 @@ export type MediaProcessingObservation = Readonly<{
     | "attempt_completed"
     | "attempt_failed"
     | "workflow_replaced"
-    | "workflow_lookup_failed";
+    | "workflow_lookup_failed"
+    | "workflow_terminal_recovery_failed";
   readonly operationId?: string;
   readonly submissionId?: string;
   readonly outboxId?: string;

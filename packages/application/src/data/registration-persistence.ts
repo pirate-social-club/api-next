@@ -311,6 +311,7 @@ export type CreateDataRegistrationOperationInput = Readonly<{
 
 export type ReserveDataRegistrationAttemptInput = Readonly<{
   registrationOperationId: string;
+  expectedWorkflowRevision: bigint;
   submissionAttemptId: string;
   chainId: bigint;
   attemptNumber: number;
@@ -327,6 +328,23 @@ export type ReserveDataRegistrationAttemptInput = Readonly<{
   maxPriorityFeePerGas: bigint;
   supersedesSubmissionAttemptId: string | null;
   evidenceRef: string;
+}>;
+
+export const DATA_REGISTRATION_AUTOMATIC_WORKFLOW_REVISION_CEILING = 4n;
+export type RequestAdditionalDataWorkflowAttemptInput = Readonly<{
+  registrationOperationId: string;
+  operatorPrincipalId: string;
+  idempotencyKey: string;
+  evidenceRef: string;
+  reasonCode: "explicit_additional_workflow_attempt";
+  reviewedWorkflowDisposition: "finished" | "missing";
+  expectedWorkflowRevision: bigint;
+}>;
+export type DataRegistrationAdditionalWorkflowAttemptResult = Readonly<{
+  kind: "requested" | "replay";
+  registrationOperationId: string;
+  workflowRevision: bigint;
+  outbox: DataRegistrationOutbox;
 }>;
 
 export type DataRegistrationReceiptInput = Omit<
@@ -463,6 +481,9 @@ export interface DataRegistrationStore {
   readonly resumeReconciliation: (
     input: ResumeDataRegistrationReconciliationInput,
   ) => Promise<DataRegistrationResumeResult>;
+  readonly requestAdditionalWorkflowAttempt: (
+    input: RequestAdditionalDataWorkflowAttemptInput,
+  ) => Promise<DataRegistrationAdditionalWorkflowAttemptResult>;
   readonly getOutbox: (outboxId: string) => Promise<DataRegistrationOutbox | null>;
   readonly listEligibleOutbox: (limit: number) => Promise<readonly DataRegistrationOutbox[]>;
   readonly claimOutbox: (

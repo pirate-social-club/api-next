@@ -95,6 +95,7 @@ const unused = async (): Promise<never> => {
 function storeWith(overrides: Partial<MediaUploadStore>): MediaUploadStore {
   return {
     replayReservation: unused,
+    listActiveForAccount: unused,
     reserve: unused,
     replay: unused,
     createSubmission: unused,

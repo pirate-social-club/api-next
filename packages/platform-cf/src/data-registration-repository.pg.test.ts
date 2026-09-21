@@ -16,6 +16,7 @@ import { consumeDataRegistrationQueueMessage } from "@pirate/application/data/re
 import { Effect } from "effect";
 import { Client } from "pg";
 import { makeDataRegistrationMaintenance } from "../../../apps/jobs-worker/src/data-registration-runtime.ts";
+import { runDataOperatorAdditionalAttempt } from "../../../scripts/data-registration-operator-additional-attempt.ts";
 import { runDataOperatorResume } from "../../../scripts/data-registration-operator-resume.ts";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -484,6 +485,7 @@ async function seedReconcilableSong(
   }
   const submissionAttemptId = deterministicDataRegistrationAttemptId(registrationOperationId, 1);
   await store.reserveSigningAttempt({
+    expectedWorkflowRevision: workflowRevision,
     registrationOperationId,
     submissionAttemptId,
     chainId,
@@ -550,6 +552,302 @@ async function seedLegacyEscalatedSong(
 }
 
 suite("DATA registration persistence", () => {
+  test("audited additional attempt serializes replay and preserves the automatic ceiling", async () => {
+    await withSchema(async (admin, connection) => {
+      const media = await seedPublishedSong(admin, connection, true);
+      const store = makeDataRegistrationStore(makeDirectPostgresControlPlaneLayer(connection));
+      const registrationOperationId = deterministicDataRegistrationOperationId(
+        1315n,
+        media.postId,
+        1n,
+      );
+      for (const revision of [1n, 2n, 3n])
+        await store.replaceMissingWorkflow(registrationOperationId, revision);
+      const outboxId = deterministicDataRegistrationOutboxId(registrationOperationId, 4n);
+      const request = {
+        registrationOperationId,
+        operatorPrincipalId: "fixture-operator",
+        idempotencyKey: "additional-1",
+        evidenceRef: "fixture-review:r4:finished",
+        reasonCode: "explicit_additional_workflow_attempt" as const,
+        reviewedWorkflowDisposition: "finished" as const,
+        expectedWorkflowRevision: 4n,
+      };
+      await expect(store.requestAdditionalWorkflowAttempt(request)).rejects.toMatchObject({
+        reason: "stale-state",
+      });
+      await expect(
+        admin.query(
+          `UPDATE data_registration_operations SET workflow_revision=5,
+        workflow_instance_id=$2,updated_at=clock_timestamp() WHERE registration_operation_id=$1`,
+          [
+            registrationOperationId,
+            deterministicDataRegistrationWorkflowId(registrationOperationId, 5n),
+          ],
+        ),
+      ).rejects.toThrow("DATA workflow revision ceiling requires an exact operator action");
+      const claim = await store.claimOutbox(outboxId, "ceiling-fixture", 60);
+      if (claim === null) throw new Error("r4 outbox was not claimable");
+      expect(await store.completeOutbox(outboxId, "ceiling-fixture", claim.claimFence)).toBe(true);
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO data_operator_additional_workflow_attempt_actions
+        (registration_operation_id,community_id,actor_user_id,submission_id,operator_principal_id,
+         idempotency_key,request_hash,reason_code,reviewed_workflow_disposition,evidence_ref,
+         expected_workflow_revision,resulting_workflow_revision,reviewed_outbox_id,outbox_id)
+        SELECT registration_operation_id,community_id,actor_user_id,submission_id,
+          'fixture-operator','orphan-additional',$2,'explicit_additional_workflow_attempt','finished',
+          'evidence://orphan',4,5,$3,$4 FROM data_registration_operations WHERE registration_operation_id=$1`,
+        [
+          registrationOperationId,
+          hash("9"),
+          outboxId,
+          deterministicDataRegistrationOutboxId(registrationOperationId, 5n),
+        ],
+      );
+      await expect(admin.query("COMMIT")).rejects.toThrow(
+        "additional DATA workflow attempt lacks its exact no-effect transition or launch",
+      );
+      await admin.query("ROLLBACK");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM data_operator_additional_workflow_attempt_actions",
+          )
+        ).rows[0],
+      ).toEqual({ count: 0 });
+      const results = await Promise.all([
+        store.requestAdditionalWorkflowAttempt(request),
+        store.requestAdditionalWorkflowAttempt(request),
+      ]);
+      expect(results.map((result) => result.kind).sort()).toEqual(["replay", "requested"]);
+      expect((await store.requestAdditionalWorkflowAttempt(request)).kind).toBe("replay");
+      await expect(
+        store.requestAdditionalWorkflowAttempt({ ...request, evidenceRef: "changed" }),
+      ).rejects.toMatchObject({ reason: "identity-conflict" });
+      await expect(
+        store.requestAdditionalWorkflowAttempt({ ...request, idempotencyKey: "another" }),
+      ).rejects.toMatchObject({ reason: "identity-conflict" });
+      expect(await store.getOperation(registrationOperationId)).toMatchObject({
+        state: "pending",
+        workflowRevision: 5n,
+        currentAttemptId: null,
+      });
+      const staleAttemptId = deterministicDataRegistrationAttemptId(registrationOperationId, 1);
+      await expect(
+        store.reserveSigningAttempt({
+          registrationOperationId,
+          expectedWorkflowRevision: 4n,
+          submissionAttemptId: staleAttemptId,
+          chainId: 1315n,
+          attemptNumber: 1,
+          signerNamespace: "data_registration",
+          signerAddress: address("1"),
+          signingIntentId: deterministicDataRegistrationSigningIntentId(staleAttemptId),
+          targetAddress: address("2"),
+          methodSelector: "0x12345678",
+          calldataHash: hash("3"),
+          signingDeadline: "2030-09-21T00:00:00.000Z",
+          valueWei: 0n,
+          gasLimit: 1_500_000n,
+          maxFeePerGas: 5_000_000_000n,
+          maxPriorityFeePerGas: 2_000_000_000n,
+          supersedesSubmissionAttemptId: null,
+          evidenceRef: "evidence://stale-r4-attempt",
+        }),
+      ).rejects.toMatchObject({ reason: "stale-state" });
+      for (const revision of [4n, 5n])
+        await expect(
+          store.replaceMissingWorkflow(registrationOperationId, revision),
+        ).rejects.toMatchObject({ reason: "stale-state" });
+      expect(
+        (
+          await admin.query(`SELECT operator_principal_id,evidence_ref,expected_workflow_revision,resulting_workflow_revision
+        FROM data_operator_additional_workflow_attempt_actions`)
+        ).rows,
+      ).toEqual([
+        {
+          operator_principal_id: "fixture-operator",
+          evidence_ref: request.evidenceRef,
+          expected_workflow_revision: "4",
+          resulting_workflow_revision: "5",
+        },
+      ]);
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM data_registration_signing_attempts"))
+          .rows[0],
+      ).toEqual({ count: 0 });
+      await expect(
+        admin.query(
+          "UPDATE data_operator_additional_workflow_attempt_actions SET evidence_ref='tampered'",
+        ),
+      ).rejects.toThrow();
+      await expect(
+        admin.query("DELETE FROM data_operator_additional_workflow_attempt_actions"),
+      ).rejects.toThrow();
+      await expect(
+        admin.query(
+          `UPDATE data_registration_operations SET workflow_revision=6,
+        workflow_instance_id=$2,updated_at=clock_timestamp() WHERE registration_operation_id=$1`,
+          [
+            registrationOperationId,
+            deterministicDataRegistrationWorkflowId(registrationOperationId, 6n),
+          ],
+        ),
+      ).rejects.toThrow("DATA workflow revision ceiling requires an exact operator action");
+    });
+  }, 40_000);
+
+  test("additional attempt refuses historical transaction evidence after pointer loss", async () => {
+    await withSchema(async (admin, connection) => {
+      const media = await seedPublishedSong(admin, connection);
+      const store = makeDataRegistrationStore(makeDirectPostgresControlPlaneLayer(connection));
+      const fixture = await seedReconcilableSong(store, media, 99n);
+      await store.recordReceipt({
+        receiptObservationId: deterministicDataRegistrationReceiptId(
+          fixture.submissionAttemptId,
+          1n,
+        ),
+        registrationOperationId: fixture.registrationOperationId,
+        submissionAttemptId: fixture.submissionAttemptId,
+        observationSequence: 1n,
+        transactionHash: fixture.transactionHash,
+        outcome: "pending",
+        blockNumber: null,
+        blockHash: null,
+        logIndex: null,
+        confirmations: 0,
+        registeredIpId: null,
+        ipMetadataUri: null,
+        ipMetadataHash: null,
+        nftMetadataUri: null,
+        nftMetadataHash: null,
+        attachedLicense: null,
+        evidenceRef: "evidence://historical-pending-receipt",
+        observedAt: "2026-09-21T00:00:00.000Z",
+      });
+      for (const revision of [1n, 2n, 3n])
+        await store.replaceMissingWorkflow(fixture.registrationOperationId, revision);
+      const outboxId = deterministicDataRegistrationOutboxId(fixture.registrationOperationId, 4n);
+      const claim = await store.claimOutbox(outboxId, "historical-fixture", 60);
+      if (claim === null) throw new Error("r4 outbox was not claimable");
+      await store.completeOutbox(outboxId, "historical-fixture", claim.claimFence);
+      // Model a historical damaged pointer only inside this disposable schema.
+      // Immutable attempts and observations still forbid a new signing path.
+      await admin.query("SET session_replication_role=replica");
+      try {
+        await admin.query(
+          "UPDATE data_registration_operations SET state='pending',current_attempt_id=NULL,updated_at=clock_timestamp() WHERE registration_operation_id=$1",
+          [fixture.registrationOperationId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role=origin");
+      }
+      await expect(
+        store.requestAdditionalWorkflowAttempt({
+          registrationOperationId: fixture.registrationOperationId,
+          operatorPrincipalId: "fixture-operator",
+          idempotencyKey: "historical-denied",
+          evidenceRef: "evidence://historical-pointer-loss",
+          reasonCode: "explicit_additional_workflow_attempt",
+          reviewedWorkflowDisposition: "finished",
+          expectedWorkflowRevision: 4n,
+        }),
+      ).rejects.toMatchObject({ reason: "stale-state" });
+      expect(
+        (
+          await admin.query(`SELECT
+        (SELECT count(*)::int FROM data_operator_additional_workflow_attempt_actions) AS actions,
+        (SELECT count(*)::int FROM data_registration_signing_attempts) AS attempts,
+        (SELECT count(*)::int FROM data_registration_receipt_observations) AS receipts`)
+        ).rows[0],
+      ).toEqual({ actions: 0, attempts: 1, receipts: 1 });
+      expect(await store.getOperation(fixture.registrationOperationId)).toMatchObject({
+        workflowRevision: 4n,
+      });
+    });
+  }, 40_000);
+
+  test("additional-attempt command previews without writes and requires database administrator authority", async () => {
+    await withSchema(async (admin, connection) => {
+      const media = await seedPublishedSong(admin, connection, true);
+      const store = makeDataRegistrationStore(makeDirectPostgresControlPlaneLayer(connection));
+      const registrationOperationId = deterministicDataRegistrationOperationId(
+        1315n,
+        media.postId,
+        1n,
+      );
+      for (const revision of [1n, 2n, 3n])
+        await store.replaceMissingWorkflow(registrationOperationId, revision);
+      const outboxId = deterministicDataRegistrationOutboxId(registrationOperationId, 4n);
+      const claim = await store.claimOutbox(outboxId, "ceiling-cli", 60);
+      if (claim === null) throw new Error("r4 outbox was not claimable");
+      await store.completeOutbox(outboxId, "ceiling-cli", claim.claimFence);
+      const path = `/tmp/data-additional-attempt-${randomUUID()}.json`;
+      const role = `data_additional_denied_${randomUUID().replaceAll("-", "")}`;
+      await writeFile(
+        path,
+        JSON.stringify({
+          registrationOperationId,
+          idempotencyKey: "additional-cli",
+          evidenceRef: "fixture-review:r4:missing",
+          reasonCode: "explicit_additional_workflow_attempt",
+          reviewedWorkflowDisposition: "missing",
+          expectedWorkflowRevision: 4,
+        }),
+        { mode: 0o600 },
+      );
+      await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD 'local_operator_test'`);
+      try {
+        expect(
+          await runDataOperatorAdditionalAttempt(["--request", path], connection),
+        ).toMatchObject({
+          execute: false,
+          current: {
+            state: "pending",
+            workflow_revision: "4",
+            current_outbox_state: "delivered",
+            attempt_count: 0,
+            transition_count: 0,
+            receipt_count: 0,
+          },
+        });
+        const denied = new URL(connection);
+        denied.username = role;
+        denied.password = "local_operator_test";
+        const args = ["--request", path, "--execute", "--assert-reviewed-terminal"];
+        await expect(runDataOperatorAdditionalAttempt(args, denied.toString())).rejects.toThrow(
+          "database_operator_required",
+        );
+        expect(
+          (
+            await admin.query(
+              "SELECT count(*)::int AS count FROM data_operator_additional_workflow_attempt_actions",
+            )
+          ).rows[0],
+        ).toEqual({ count: 0 });
+        expect(await runDataOperatorAdditionalAttempt(args, connection)).toMatchObject({
+          execute: true,
+          result: { kind: "requested" },
+        });
+        expect(await runDataOperatorAdditionalAttempt(args, connection)).toMatchObject({
+          execute: true,
+          result: { kind: "replay" },
+        });
+        expect(
+          (
+            await admin.query(
+              "SELECT operator_principal_id='postgres:' || session_user AS exact FROM data_operator_additional_workflow_attempt_actions",
+            )
+          ).rows[0],
+        ).toEqual({ exact: true });
+      } finally {
+        await rm(path, { force: true });
+        await admin.query(`DROP ROLE ${role}`);
+      }
+    });
+  }, 40_000);
+
   test("upgrades a populated pre-DATA foundation without changing the published song", async () => {
     const dataPersistenceIndex = migrations.findIndex(
       (migration) => migration.version === "0057_data_registration_persistence.sql",
@@ -718,6 +1016,7 @@ suite("DATA registration persistence", () => {
 
       const firstAttemptId = deterministicDataRegistrationAttemptId(registrationOperationId, 1);
       const firstAttemptInput = {
+        expectedWorkflowRevision: 2n,
         registrationOperationId,
         submissionAttemptId: firstAttemptId,
         chainId,
@@ -819,7 +1118,13 @@ suite("DATA registration persistence", () => {
       }
       expect(await store.pinsReady(registrationOperationId)).toBe(true);
 
+      await expect(
+        store.reserveSigningAttempt({ ...firstAttemptInput, expectedWorkflowRevision: 1n }),
+      ).rejects.toMatchObject({ reason: "stale-state" });
       expect((await store.reserveSigningAttempt(firstAttemptInput)).kind).toBe("created");
+      await expect(
+        store.reserveSigningAttempt({ ...firstAttemptInput, expectedWorkflowRevision: 1n }),
+      ).rejects.toMatchObject({ reason: "stale-state" });
       expect((await store.reserveSigningAttempt(firstAttemptInput)).kind).toBe("replay");
       await store.reserveNonce(firstAttemptId, 7n, "evidence://nonce/1");
       await expect(
@@ -1185,6 +1490,7 @@ suite("DATA registration persistence", () => {
         1,
       );
       await store.reserveSigningAttempt({
+        expectedWorkflowRevision: 1n,
         registrationOperationId,
         submissionAttemptId,
         chainId,
@@ -1600,6 +1906,7 @@ suite("DATA registration persistence", () => {
       }
       const submissionAttemptId = deterministicDataRegistrationAttemptId(videoOperationId, 1);
       await store.reserveSigningAttempt({
+        expectedWorkflowRevision: 1n,
         registrationOperationId: videoOperationId,
         submissionAttemptId,
         chainId: 1315n,
@@ -2105,6 +2412,7 @@ suite("DATA registration persistence", () => {
       const attemptFor = (child: string) => {
         const submissionAttemptId = deterministicDataRegistrationAttemptId(child, 1);
         return {
+          expectedWorkflowRevision: 1n,
           registrationOperationId: child,
           submissionAttemptId,
           chainId: 1315n,

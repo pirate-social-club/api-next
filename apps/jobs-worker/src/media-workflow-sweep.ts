@@ -58,6 +58,31 @@ export async function sweepMissingMediaWorkflows(
     lookupFailed: 0,
     recoveryFailed: 0,
   };
+  const replace = async (authority: MediaProcessingAuthority) => {
+    if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
+      result.limitReached += 1;
+      return;
+    }
+    const committed = await dependencies.store.replaceMissingWorkflow(authority);
+    if (committed === "committed") {
+      result.replaced += 1;
+      dependencies.observe?.({
+        event: "workflow_replaced",
+        operationId: authority.operationId,
+        submissionId: authority.submissionId,
+        workflowRevision: authority.workflowRevision + 1,
+      });
+    } else result.stale += 1;
+  };
+  const recoveryFailed = (authority: MediaProcessingAuthority) => {
+    result.recoveryFailed += 1;
+    dependencies.observe?.({
+      event: "workflow_terminal_recovery_failed",
+      operationId: authority.operationId,
+      submissionId: authority.submissionId,
+      workflowRevision: authority.workflowRevision,
+    });
+  };
   for (const candidate of candidates) {
     if (candidate.workflowRevision < 1 || isMediaTerminalSubmissionStatus(candidate.status))
       continue;
@@ -85,10 +110,8 @@ export async function sweepMissingMediaWorkflows(
       result.indeterminate += 1;
       continue;
     }
-    // A finished instance is not proof of success and never grounds for a
-    // blind replacement. The persisted operation row stays authoritative: the
-    // normal convergence path reconciles it from persisted state, and this
-    // sweep only reports the unreconciled row.
+    // A finished instance is not proof of success. Durable waits need a fresh
+    // event target; other states converge through their persisted authority.
     if (workflowStatus === "finished") {
       result.finished += 1;
       try {
@@ -104,6 +127,10 @@ export async function sweepMissingMediaWorkflows(
           result.stale += 1;
           continue;
         }
+        if (authority.status === "action_required" || authority.status === "manual_review") {
+          await replace(authority);
+          continue;
+        }
         const disposition = await dependencies.store.reconcileTerminalWorkflow(authority);
         if (disposition === "reconciled") result.reconciled += 1;
         else if (disposition === "escalated") result.escalated += 1;
@@ -115,7 +142,7 @@ export async function sweepMissingMediaWorkflows(
           workflowRevision: authority.workflowRevision,
         });
       } catch {
-        result.recoveryFailed += 1;
+        recoveryFailed(candidate);
       }
       continue;
     }
@@ -133,26 +160,9 @@ export async function sweepMissingMediaWorkflows(
         result.stale += 1;
         continue;
       }
-      // The ceiling limits replacement writes, not terminal reconciliation or
-      // escalation. A spent budget must still reach its operator resolution.
-      if (songWorkflowReplacementLimitReached(authority.replacementSequence)) {
-        result.limitReached += 1;
-        continue;
-      }
-      const committed = await dependencies.store.replaceMissingWorkflow(authority);
-      if (committed === "committed") {
-        result.replaced += 1;
-        dependencies.observe?.({
-          event: "workflow_replaced",
-          operationId: authority.operationId,
-          submissionId: authority.submissionId,
-          workflowRevision: authority.workflowRevision + 1,
-        });
-      } else {
-        result.stale += 1;
-      }
+      await replace(authority);
     } catch {
-      result.recoveryFailed += 1;
+      recoveryFailed(candidate);
     }
   }
   return result;

@@ -5,6 +5,7 @@ import {
 } from "@pirate/application";
 import {
   type ConfirmDataRegistrationInput,
+  DATA_REGISTRATION_AUTOMATIC_WORKFLOW_REVISION_CEILING,
   type DataAttachedLicense,
   type DataLicensePreset,
   type DataParentReference,
@@ -1187,6 +1188,7 @@ export function makeDataRegistrationStore(
       !validHash(input.calldataHash) ||
       !validInstant(input.signingDeadline) ||
       !positive(input.chainId) ||
+      input.expectedWorkflowRevision < 1n ||
       input.valueWei < 0n ||
       !positive(input.gasLimit) ||
       !positive(input.maxFeePerGas) ||
@@ -1202,7 +1204,25 @@ export function makeDataRegistrationStore(
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            const existing = yield* readAttempt(transaction, input.submissionAttemptId, true);
+            let existing = yield* readAttempt(transaction, input.submissionAttemptId, true);
+            const authority = yield* readOperation(
+              transaction,
+              input.registrationOperationId,
+              true,
+            );
+            if (authority === null)
+              return yield* Effect.fail(
+                fail("attempt", "not-found", input.registrationOperationId),
+              );
+            if (authority.workflowRevision !== input.expectedWorkflowRevision) {
+              return yield* Effect.fail(
+                fail("attempt", "stale-state", input.registrationOperationId),
+              );
+            }
+            // Preserve attempt-before-operation locking for existing attempts.
+            // An absent attempt may have appeared while waiting for authority.
+            if (existing === null)
+              existing = yield* readAttempt(transaction, input.submissionAttemptId);
             if (existing !== null) {
               if (!attemptIdentityMatches(existing, input)) {
                 return yield* Effect.fail(
@@ -1260,8 +1280,12 @@ export function makeDataRegistrationStore(
             );
             const operation = yield* transaction.execute({
               label: "data-registration.attempt.operation",
-              text: "UPDATE data_registration_operations SET state='signing',current_attempt_id=$1,updated_at=clock_timestamp() WHERE registration_operation_id=$2 AND state IN ('pending','broadcast','confirming','reconciliation_required')",
-              values: [input.submissionAttemptId, input.registrationOperationId],
+              text: "UPDATE data_registration_operations SET state='signing',current_attempt_id=$1,updated_at=clock_timestamp() WHERE registration_operation_id=$2 AND workflow_revision=$3 AND state IN ('pending','broadcast','confirming','reconciliation_required')",
+              values: [
+                input.submissionAttemptId,
+                input.registrationOperationId,
+                input.expectedWorkflowRevision.toString(),
+              ],
               readonly: false,
             });
             if (operation.rowCount !== 1) {
@@ -2070,6 +2094,193 @@ export function makeDataRegistrationStore(
     );
   };
 
+  const requestAdditionalWorkflowAttempt: DataRegistrationStore["requestAdditionalWorkflowAttempt"] =
+    (input) => {
+      if (
+        ![
+          input.registrationOperationId,
+          input.operatorPrincipalId,
+          input.idempotencyKey,
+          input.evidenceRef,
+        ].every((value) => validId(value)) ||
+        input.reasonCode !== "explicit_additional_workflow_attempt" ||
+        !["finished", "missing"].includes(input.reviewedWorkflowDisposition) ||
+        input.expectedWorkflowRevision !== DATA_REGISTRATION_AUTOMATIC_WORKFLOW_REVISION_CEILING
+      ) {
+        return Promise.reject(fail("read", "invalid-input", input.registrationOperationId));
+      }
+      return run(
+        Effect.gen(function* () {
+          const requestHash = yield* Effect.promise(() =>
+            sha256Hex(
+              new TextEncoder().encode(
+                JSON.stringify([
+                  "data-registration-additional-workflow-attempt-v1",
+                  input.registrationOperationId,
+                  input.operatorPrincipalId,
+                  input.idempotencyKey,
+                  input.evidenceRef,
+                  input.reasonCode,
+                  input.reviewedWorkflowDisposition,
+                  input.expectedWorkflowRevision.toString(),
+                ]),
+              ),
+            ),
+          );
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              const operation = yield* readOperation(
+                transaction,
+                input.registrationOperationId,
+                true,
+              );
+              if (operation === null)
+                return yield* Effect.fail(fail("read", "not-found", input.registrationOperationId));
+              const prior = yield* transaction.execute<Row>({
+                label: "data-registration.additional-workflow-attempt.replay",
+                text: "SELECT idempotency_key,request_hash,resulting_workflow_revision,outbox_id FROM data_operator_additional_workflow_attempt_actions WHERE registration_operation_id=$1",
+                values: [input.registrationOperationId],
+                readonly: true,
+              });
+              const action = prior.rows[0];
+              if (action !== undefined) {
+                if (
+                  action.idempotency_key !== input.idempotencyKey ||
+                  action.request_hash !== requestHash
+                ) {
+                  return yield* Effect.fail(
+                    fail("read", "identity-conflict", input.registrationOperationId),
+                  );
+                }
+                return {
+                  kind: "replay" as const,
+                  registrationOperationId: input.registrationOperationId,
+                  workflowRevision: bigint(action, "resulting_workflow_revision"),
+                  outbox: yield* readOutboxIn(transaction, text(action, "outbox_id")),
+                };
+              }
+              if (
+                operation.workflowRevision !== input.expectedWorkflowRevision ||
+                operation.state !== "pending" ||
+                operation.currentAttemptId !== null ||
+                operation.failureCode !== null ||
+                operation.failureEvidenceRef !== null
+              ) {
+                return yield* Effect.fail(
+                  fail("read", "stale-state", input.registrationOperationId),
+                );
+              }
+              const reviewedOutboxId = deterministicDataRegistrationOutboxId(
+                operation.registrationOperationId,
+                operation.workflowRevision,
+              );
+              const reviewed = yield* readOutboxIn(transaction, reviewedOutboxId);
+              if (
+                reviewed.workflowRevision !== operation.workflowRevision ||
+                reviewed.workflowInstanceId !== operation.workflowInstanceId ||
+                (reviewed.state !== "delivered" && reviewed.state !== "exhausted")
+              ) {
+                return yield* Effect.fail(
+                  fail("read", "stale-state", input.registrationOperationId),
+                );
+              }
+              const effects = yield* transaction.execute<Row>({
+                label: "data-registration.additional-workflow-attempt.effect-fence",
+                text: `SELECT EXISTS (SELECT 1 FROM data_registration_signing_attempts WHERE registration_operation_id=$1) AS attempts,
+            EXISTS (SELECT 1 FROM data_registration_attempt_transitions WHERE registration_operation_id=$1) AS transitions,
+            EXISTS (SELECT 1 FROM data_registration_receipt_observations WHERE registration_operation_id=$1) AS receipts`,
+                values: [operation.registrationOperationId],
+                readonly: true,
+              });
+              const effect = effects.rows[0];
+              if (
+                effects.rows.length !== 1 ||
+                effect?.attempts !== false ||
+                effect.transitions !== false ||
+                effect.receipts !== false
+              ) {
+                return yield* Effect.fail(
+                  fail("read", "stale-state", input.registrationOperationId),
+                );
+              }
+              const workflowRevision = operation.workflowRevision + 1n;
+              const workflowInstanceId = deterministicDataRegistrationWorkflowId(
+                operation.registrationOperationId,
+                workflowRevision,
+              );
+              const outboxId = deterministicDataRegistrationOutboxId(
+                operation.registrationOperationId,
+                workflowRevision,
+              );
+              yield* transaction.execute({
+                label: "data-registration.additional-workflow-attempt.audit",
+                text: `INSERT INTO data_operator_additional_workflow_attempt_actions
+            (registration_operation_id,community_id,actor_user_id,submission_id,operator_principal_id,idempotency_key,
+             request_hash,reason_code,reviewed_workflow_disposition,evidence_ref,expected_workflow_revision,
+             resulting_workflow_revision,reviewed_outbox_id,outbox_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+                values: [
+                  operation.registrationOperationId,
+                  operation.communityId,
+                  operation.actorUserId,
+                  operation.submissionId,
+                  input.operatorPrincipalId,
+                  input.idempotencyKey,
+                  requestHash,
+                  input.reasonCode,
+                  input.reviewedWorkflowDisposition,
+                  input.evidenceRef,
+                  operation.workflowRevision.toString(),
+                  workflowRevision.toString(),
+                  reviewedOutboxId,
+                  outboxId,
+                ],
+                readonly: false,
+              });
+              const bumped = yield* transaction.execute({
+                label: "data-registration.additional-workflow-attempt.revision",
+                text: "UPDATE data_registration_operations SET workflow_revision=$2,workflow_instance_id=$3,updated_at=clock_timestamp() WHERE registration_operation_id=$1 AND workflow_revision=$4 AND state='pending' AND current_attempt_id IS NULL",
+                values: [
+                  operation.registrationOperationId,
+                  workflowRevision.toString(),
+                  workflowInstanceId,
+                  operation.workflowRevision.toString(),
+                ],
+                readonly: false,
+              });
+              if (bumped.rowCount !== 1)
+                return yield* Effect.fail(
+                  fail("read", "stale-state", input.registrationOperationId),
+                );
+              yield* transaction.execute({
+                label: "data-registration.additional-workflow-attempt.outbox",
+                text: "INSERT INTO data_registration_outbox (outbox_id,registration_operation_id,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,'workflow_replacement',$5,$6::jsonb)",
+                values: [
+                  outboxId,
+                  operation.registrationOperationId,
+                  workflowRevision.toString(),
+                  workflowInstanceId,
+                  `data-registration-workflow-replacement:${operation.registrationOperationId}:r${workflowRevision}`,
+                  JSON.stringify({
+                    operation_id: operation.registrationOperationId,
+                    outbox_id: outboxId,
+                  }),
+                ],
+                readonly: false,
+              });
+              return {
+                kind: "requested" as const,
+                registrationOperationId: operation.registrationOperationId,
+                workflowRevision,
+                outbox: yield* readOutboxIn(transaction, outboxId),
+              };
+            }),
+          );
+        }),
+      );
+    };
+
   const resumeReconciliation: DataRegistrationStore["resumeReconciliation"] = (input) => {
     if (
       !validId(input.registrationOperationId) ||
@@ -2272,6 +2483,9 @@ export function makeDataRegistrationStore(
   ) => {
     if (!validId(registrationOperationId) || expectedWorkflowRevision < 1n) {
       return Promise.reject(fail("outbox", "invalid-input", registrationOperationId));
+    }
+    if (expectedWorkflowRevision >= DATA_REGISTRATION_AUTOMATIC_WORKFLOW_REVISION_CEILING) {
+      return Promise.reject(fail("outbox", "stale-state", registrationOperationId));
     }
     return run(
       Effect.gen(function* () {
@@ -2771,6 +2985,7 @@ export function makeDataRegistrationStore(
     replaceMissingWorkflow,
     reconcileTerminalWorkflow,
     resumeReconciliation,
+    requestAdditionalWorkflowAttempt,
     getOutbox,
     listEligibleOutbox,
     claimOutbox,

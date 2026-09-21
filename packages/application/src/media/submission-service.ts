@@ -1,4 +1,5 @@
 import {
+  type ActiveSongMediaPostSubmissionPageV1,
   BadRequest,
   BindSongLyricsV1,
   BindSongReferenceV1,
@@ -12,9 +13,11 @@ import {
   MembershipRequired,
   ModerateSongSubmissionV1,
   NotFound,
+  type PublicPersonaV1,
   ReserveSongAudioV1,
   RetryOrCancelSongSubmissionV1,
   SongAudioReservationV1,
+  type SongMediaPostSubmissionV1,
   toErrorBody,
   UploadObjectMissing,
 } from "@pirate/contracts";
@@ -46,6 +49,7 @@ import {
 } from "./submission-sealing.ts";
 
 export const MEDIA_SUBMISSION_ENDPOINTS = {
+  list: "/communities/:communityId/media-post-submissions",
   reserve: "/communities/:communityId/media-upload-reservations",
   create: "/communities/:communityId/media-post-submissions",
   terms: "/media-post-submissions/:submissionId/terms",
@@ -174,7 +178,21 @@ export class MediaUploadStoreError extends Error {
   }
 }
 
+export type ActiveSongSubmissionStorePage = Readonly<{
+  items: readonly Readonly<{
+    view: MediaSubmissionView;
+    authorPersona: PublicPersonaV1;
+    authorDeclaredRating: "general" | "adult_18";
+  }>[];
+  nextCursor: string | null;
+}>;
+
 export interface MediaUploadStore {
+  readonly listActiveForAccount: (input: {
+    readonly communityId: string;
+    readonly actorUserId: string;
+    readonly query: Readonly<{ cursor?: string; limit?: string }>;
+  }) => Promise<ActiveSongSubmissionStorePage>;
   readonly replayReservation: (input: {
     readonly communityId: string;
     readonly actorUserId: string;
@@ -528,7 +546,7 @@ function publicPersona(
 export function projectMediaSubmission(
   view: Readonly<{ state: MediaSubmissionState; lyrics: MediaLyricsSnapshot; updatedAt: string }>,
   persona: PersonaRecord | MediaPostSubmissionV1["author_persona"],
-): MediaPostSubmissionV1 {
+): SongMediaPostSubmissionV1 {
   const { state } = view;
   const common = {
     submission_id: state.submissionId,
@@ -884,6 +902,70 @@ export async function createMediaSubmission(
   if (outcome.kind === "replay") return decodeMediaReplay(outcome.bytes);
   if (outcome.kind === "conflict") throw idempotencyConflict(outcome.submissionId);
   return response.document;
+}
+
+function activeSongTermsState(
+  state: MediaSubmissionState,
+): ActiveSongMediaPostSubmissionPageV1["items"][number]["terms_state"] {
+  const terms = state.terms;
+  if (terms === null) return { current: { status: "not_bound" } };
+  const royalty_allocations = terms.royaltyAllocations.map((allocation) => ({
+    recipient_id: allocation.recipientId,
+    share_bps: allocation.shareBps,
+  }));
+  return terms.licensePreset === "commercial-remix"
+    ? {
+        current: {
+          status: "ready",
+          license_preset: terms.licensePreset,
+          commercial_rev_share_bps: terms.commercialRemixShareBps,
+          royalty_allocations,
+          access_mode: terms.accessMode,
+        },
+      }
+    : {
+        current: {
+          status: "ready",
+          license_preset: terms.licensePreset,
+          royalty_allocations,
+          access_mode: terms.accessMode,
+        },
+      };
+}
+
+export async function listActiveMediaSubmissions(
+  input: Readonly<{
+    communityId: string;
+    actor: M2Actor;
+    query: Readonly<{ cursor?: string; limit?: string }>;
+  }> &
+    MediaRequestLifetime,
+  services: MediaSubmissionServices,
+): Promise<ActiveSongMediaPostSubmissionPageV1> {
+  requireMediaHumanActor(input.actor);
+  let page: ActiveSongSubmissionStorePage;
+  try {
+    page = await services.store.listActiveForAccount({
+      communityId: input.communityId,
+      actorUserId: input.actor.userId,
+      query: input.query,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  return {
+    object: "active_song_media_post_submission_page",
+    items: page.items.map(({ view, authorPersona, authorDeclaredRating }) => ({
+      object: "active_song_media_post_submission",
+      community_id: view.state.communityId,
+      title: view.state.title,
+      song_type: view.state.songType,
+      author_declared_rating: authorDeclaredRating,
+      terms_state: activeSongTermsState(view.state),
+      submission: projectMediaSubmission(view, authorPersona),
+    })),
+    next_cursor: page.nextCursor,
+  };
 }
 
 export async function getMediaSubmission(

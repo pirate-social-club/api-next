@@ -2,10 +2,49 @@ import { describe, expect, test } from "bun:test";
 import {
   isolateMediaMaintenanceAction,
   isolateMediaMaintenanceDispatch,
+  observeMediaWorkflowRecovery,
   runMediaMaintenance,
 } from "./media-runtime.ts";
 
 describe("media scheduled maintenance", () => {
+  test("logs only allowlisted recovery failure fields", () => {
+    const logs: string[] = [];
+    const original = console.error;
+    console.error = (message) => logs.push(String(message));
+    try {
+      for (const event of [
+        "workflow_lookup_failed",
+        "workflow_terminal_recovery_failed",
+      ] as const) {
+        observeMediaWorkflowRecovery({
+          event,
+          operationId: "operation",
+          submissionId: "submission",
+          workflowRevision: 4,
+        });
+      }
+      observeMediaWorkflowRecovery({
+        event: "workflow_replaced",
+        operationId: "operation",
+        submissionId: "submission",
+        workflowRevision: 5,
+      });
+    } finally {
+      console.error = original;
+    }
+    expect(logs.map((value) => JSON.parse(value))).toEqual(
+      ["workflow_lookup_failed", "workflow_terminal_recovery_failed"].map((failure_class) => ({
+        event: "song-pipeline.media-workflow-recovery",
+        severity: "high",
+        outcome: "failed",
+        failure_class,
+        operation_id: "operation",
+        submission_id: "submission",
+        workflow_revision: 4,
+      })),
+    );
+  });
+
   test("dispatches durable outbox identities before checking retained Workflows", async () => {
     const events: string[] = [];
     const result = await runMediaMaintenance({
