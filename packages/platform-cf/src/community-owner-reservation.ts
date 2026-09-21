@@ -7,6 +7,39 @@ const OwnerRow = Schema.Struct({
   status: Schema.Literals(["pending_wallet", "active"]),
 });
 
+const activatePendingCommunityOwner = Effect.fn("activatePendingCommunityOwner")(function* (
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{ accountId: string; personaId: string }>,
+) {
+  const profile = yield* transaction.execute({
+    label: "community.owner.reserve.activate-profile",
+    text: `INSERT INTO persona_profiles (
+             persona_id,revision,display_name,avatar_ref,cover_ref,bio,
+             preferred_locale,created_at,updated_at
+           ) SELECT persona_id,1,display_name,avatar_ref,cover_ref,bio,
+                    preferred_locale,created_at,clock_timestamp()
+               FROM persona_pending_profiles WHERE persona_id=$1`,
+    values: [input.personaId],
+    readonly: false,
+  });
+  if (profile.rowCount !== 1)
+    return yield* new CommunityOwnerSetupError("Your profile could not be prepared");
+  const activated = yield* transaction.execute({
+    label: "community.owner.reserve.activate-persona",
+    text: "UPDATE personas SET status='active' WHERE persona_id=$1 AND account_id=$2 AND status='pending_wallet'",
+    values: [input.personaId, input.accountId],
+    readonly: false,
+  });
+  if (activated.rowCount !== 1)
+    return yield* new CommunityOwnerSetupError("Your profile could not be prepared");
+  yield* transaction.execute({
+    label: "community.owner.reserve.clear-profile-draft",
+    text: "DELETE FROM persona_pending_profiles WHERE persona_id=$1",
+    values: [input.personaId],
+    readonly: false,
+  });
+});
+
 /** Caller holds the active account row before its creation intent row. */
 export const reserveCommunityOwner = Effect.fn("reserveCommunityOwner")(function* (
   transaction: ControlPlaneTransaction,
@@ -92,7 +125,13 @@ export const reserveCommunityOwner = Effect.fn("reserveCommunityOwner")(function
       if (renamed.rowCount !== 1)
         return yield* new CommunityOwnerSetupError("Your profile could not be prepared");
     }
-    return { personaId: persona.persona_id, status: persona.status };
+    if (persona.status === "pending_wallet") {
+      yield* activatePendingCommunityOwner(transaction, {
+        accountId: input.accountId,
+        personaId: persona.persona_id,
+      });
+    }
+    return { personaId: persona.persona_id, status: "active" as const };
   }
   if (currentId !== null)
     return yield* new CommunityOwnerSetupError(
@@ -163,5 +202,9 @@ export const reserveCommunityOwner = Effect.fn("reserveCommunityOwner")(function
     ],
     readonly: false,
   });
-  return { personaId, status: "pending_wallet" as const };
+  yield* activatePendingCommunityOwner(transaction, {
+    accountId: input.accountId,
+    personaId,
+  });
+  return { personaId, status: "active" as const };
 });
