@@ -16,7 +16,9 @@ import {
 import {
   makeVideoSafetyProvider,
   type VideoSafetyEvidence,
+  type VideoSafetyFrameProviderResult,
   type VideoSafetyInput,
+  VideoSafetyModerationUnresolvedError,
 } from "./video-safety-provider.ts";
 
 async function fixture(
@@ -57,6 +59,19 @@ async function fixture(
   const reads: string[] = [];
   let saved: VideoSafetyEvidence | undefined;
   let retained: VideoSafetyFact | null = null;
+  let failFrameCompletion = false;
+  let failEvidenceSave = false;
+  let pauseFirstProviderCall = false;
+  let releaseFirstProviderCall: (() => void) | undefined;
+  let providerCallStarted: (() => void) | undefined;
+  const firstProviderCallStarted = new Promise<void>((resolve) => {
+    providerCallStarted = resolve;
+  });
+  const frameClaims = new Map<
+    string,
+    | { status: "sending"; claimToken: string }
+    | { status: "succeeded"; result: VideoSafetyFrameProviderResult }
+  >();
   const port = makeOpenAiTextModerationProvider({
     apiKey: "fixture",
     reportDiagnostic: () => {},
@@ -69,6 +84,12 @@ async function fixture(
             ? "image"
             : "text";
       calls.push(type);
+      if (pauseFirstProviderCall && calls.length === 1) {
+        providerCallStarted?.();
+        await new Promise<void>((resolve) => {
+          releaseFirstProviderCall = resolve;
+        });
+      }
       if (mode === "unavailable") throw new Error("private transport failure");
       const category =
         mode === "minors"
@@ -122,13 +143,50 @@ async function fixture(
     evidence: {
       load: async () => retained,
       save: async (_input, evidence) => {
+        if (failEvidenceSave) throw new Error("evidence write failed");
         saved = evidence;
         retained = evidence.fact;
         return evidence.fact;
       },
+      claimFrame: async (claim) => {
+        const previous = frameClaims.get(claim.requestId);
+        if (previous?.status === "succeeded")
+          return { status: "succeeded", result: previous.result };
+        if (previous?.status === "sending") return { status: "unresolved" };
+        const claimToken = `claim-${claim.frameRole}`;
+        frameClaims.set(claim.requestId, { status: "sending", claimToken });
+        return { status: "dispatch", claimToken };
+      },
+      succeedFrame: async (claim, claimToken, result) => {
+        const previous = frameClaims.get(claim.requestId);
+        if (previous?.status !== "sending" || previous.claimToken !== claimToken)
+          throw new Error("claim completion mismatch");
+        if (failFrameCompletion) throw new Error("claim completion failed");
+        frameClaims.set(claim.requestId, { status: "succeeded", result });
+        return result;
+      },
     },
   });
-  return { input, moderate, calls, reads, evidence: () => saved };
+  return {
+    input,
+    moderate,
+    calls,
+    reads,
+    evidence: () => saved,
+    failFrameCompletion: () => {
+      failFrameCompletion = true;
+    },
+    failEvidenceSave: () => {
+      failEvidenceSave = true;
+    },
+    pauseFirstProviderCall: () => {
+      pauseFirstProviderCall = true;
+    },
+    waitForFirstProviderCall: () => firstProviderCallStarted,
+    releaseProviderCall: () => {
+      releaseFirstProviderCall?.();
+    },
+  };
 }
 test("clean frames stay in review, ordered inputs share one retained request and replay makes no provider calls", async () => {
   const f = await fixture();
@@ -149,34 +207,76 @@ test("clean frames stay in review, ordered inputs share one retained request and
   expect(f.calls).toHaveLength(3);
   expect(f.evidence()?.inputs).toHaveLength(3);
 });
-test.each([
-  "minors",
-  "caption",
-  "adult",
-  "adult-review",
-  "unavailable",
-  "bad-digest",
-  "disabled",
-  "oversized-evidence",
-] as const)("video safety policy and unavailable mapping: %s", async (mode) => {
-  const f = await fixture(mode);
-  const fact = await f.moderate(f.input);
-  expect(fact.mediaSafety).not.toBe("allow");
-  expect(fact.minorSafetyEvidenceRef).toBeNull();
-  if (mode === "minors") {
-    expect(fact.mediaSafety).toBe("blocked");
-    expect(f.evidence()?.platformHeld).toBe(true);
-  }
-  if (mode === "caption") {
-    expect(fact.captionSafety).toBe("review_required");
-    expect(f.calls).toEqual(["image", "image", "image", "text"]);
-  }
-  if (mode === "adult" || mode === "adult-review") {
-    expect(fact.automatedRating).toBe("adult_18");
-    expect(f.evidence()?.ratingRuleRevision).toBe("accepted-adult-signals-v2");
-  }
-  if (mode === "adult-review") expect(fact.captionSafety).toBe("review_required");
-  if (["unavailable", "bad-digest", "disabled", "oversized-evidence"].includes(mode))
-    expect(fact.adapterRevision).toBe("safety-unavailable");
-  if (mode === "bad-digest" || mode === "disabled") expect(f.calls).toHaveLength(0);
+test.each(["minors", "caption", "adult", "adult-review", "bad-digest", "disabled"] as const)(
+  "video safety policy and unavailable mapping: %s",
+  async (mode) => {
+    const f = await fixture(mode);
+    const fact = await f.moderate(f.input);
+    expect(fact.mediaSafety).not.toBe("allow");
+    expect(fact.minorSafetyEvidenceRef).toBeNull();
+    if (mode === "minors") {
+      expect(fact.mediaSafety).toBe("blocked");
+      expect(f.evidence()?.platformHeld).toBe(true);
+    }
+    if (mode === "caption") {
+      expect(fact.captionSafety).toBe("review_required");
+      expect(f.calls).toEqual(["image", "image", "image", "text"]);
+    }
+    if (mode === "adult" || mode === "adult-review") {
+      expect(fact.automatedRating).toBe("adult_18");
+      expect(f.evidence()?.ratingRuleRevision).toBe("accepted-adult-signals-v2");
+    }
+    if (mode === "adult-review") expect(fact.captionSafety).toBe("review_required");
+    if (["bad-digest", "disabled"].includes(mode))
+      expect(fact.adapterRevision).toBe("safety-unavailable");
+    if (mode === "bad-digest" || mode === "disabled") expect(f.calls).toHaveLength(0);
+  },
+);
+
+test("an ambiguous provider response remains unresolved and is never dispatched again", async () => {
+  const f = await fixture("unavailable");
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+});
+
+test("invalid provider evidence remains unresolved and is never dispatched again", async () => {
+  const f = await fixture("oversized-evidence");
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+});
+
+test("provider success followed by claim-result persistence failure is not redispatched", async () => {
+  const f = await fixture();
+  f.failFrameCompletion();
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+});
+
+test("concurrent moderation admits one provider dispatch for the same frame identity", async () => {
+  const f = await fixture();
+  f.pauseFirstProviderCall();
+  const owner = f.moderate(f.input);
+  await f.waitForFirstProviderCall();
+  await expect(f.moderate(f.input)).rejects.toBeInstanceOf(VideoSafetyModerationUnresolvedError);
+  expect(f.calls).toEqual(["image"]);
+  f.releaseProviderCall();
+  const result = await owner;
+  expect(f.calls).toEqual(["image", "image", "image"]);
+  expect(await f.moderate(f.input)).toEqual(result);
+  expect(f.calls).toEqual(["image", "image", "image"]);
+});
+
+test("persisted frame results replay after aggregate evidence persistence fails", async () => {
+  const f = await fixture();
+  f.failEvidenceSave();
+  await expect(f.moderate(f.input)).rejects.toThrow("evidence write failed");
+  expect(f.calls).toEqual(["image", "image", "image"]);
+  await expect(f.moderate(f.input)).rejects.toThrow("evidence write failed");
+  expect(f.calls).toEqual(["image", "image", "image"]);
 });

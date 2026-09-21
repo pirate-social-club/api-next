@@ -959,7 +959,7 @@ test("durable source grant composition: submit replay preserves one grant and st
   }
 });
 
-for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
+for (const mode of ["clean", "minors", "caption"] as const) {
   test(`composed safety ${mode}: real moderation composition retains evidence and fails closed`, async () => {
     const h = harness(false, mode);
     const event = await h.launch();
@@ -970,8 +970,6 @@ for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
     if (mode === "clean") expect(record?.state.reviewReasons).toContain("media_review_required");
     if (mode === "caption")
       expect(record?.state.reviewReasons).toContain("caption_review_required");
-    if (mode === "unavailable")
-      expect(record?.state.reviewReasons).toContain("safety_adapter_unavailable");
     const rows = (
       await admin.query("SELECT platform_held,evidence_snapshot FROM media_video_safety_evidence")
     ).rows;
@@ -986,6 +984,69 @@ for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
     expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
   });
 }
+
+test("composed ambiguous moderation dispatch stays unresolved and cannot publish or redispatch", async () => {
+  const h = harness(false, "unavailable");
+  const event = await h.launch();
+  await expect(h.run(event)).rejects.toThrow("video safety moderation dispatch is unresolved");
+  await expect(h.run(event)).rejects.toThrow("video safety moderation dispatch is unresolved");
+  expect(h.moderationCalls).toEqual(["image"]);
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state,provider_result FROM media_video_safety_provider_calls",
+      )
+    ).rows,
+  ).toEqual([{ frame_role: "poster", state: "sending", provider_result: null }]);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+  ).toBe(0);
+  expect(
+    (
+      await admin.query(
+        "SELECT count(*)::int AS n FROM media_video_stage_facts WHERE stage='safety'",
+      )
+    ).rows[0].n,
+  ).toBe(0);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+  expect(
+    (await fixture.store.getSubmissionByOperation({ submissionId, operationId }))?.state,
+  ).toMatchObject({ status: "processing", phase: "analysis" });
+});
+
+test("composed evidence-write failure replays persisted frame results without provider calls", async () => {
+  const h = harness(false, "clean");
+  await admin.query(`CREATE FUNCTION reject_video_safety_evidence_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'injected safety evidence write failure'; END $$;
+    CREATE TRIGGER reject_video_safety_evidence_fixture BEFORE INSERT ON media_video_safety_evidence
+      FOR EACH ROW EXECUTE FUNCTION reject_video_safety_evidence_fixture()`);
+  const event = await h.launch();
+  try {
+    await expect(h.run(event)).rejects.toThrow("injected safety evidence write failure");
+  } finally {
+    await admin.query(
+      "DROP TRIGGER IF EXISTS reject_video_safety_evidence_fixture ON media_video_safety_evidence; DROP FUNCTION IF EXISTS reject_video_safety_evidence_fixture()",
+    );
+  }
+  expect(h.moderationCalls).toEqual(["image", "image", "image"]);
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state FROM media_video_safety_provider_calls ORDER BY frame_role",
+      )
+    ).rows,
+  ).toEqual([
+    { frame_role: "first", state: "succeeded" },
+    { frame_role: "midpoint", state: "succeeded" },
+    { frame_role: "poster", state: "succeeded" },
+  ]);
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  expect(h.moderationCalls).toEqual(["image", "image", "image"]);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+  ).toBe(1);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+});
 
 test("recognition: both MP3 clips no-match publish after safety approval through the moderation endpoint", async () => {
   const h = harness(false, "clean", "no_match");

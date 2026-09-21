@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  MODERATION_POLICY_CATEGORIES_V1,
+  type ModerationPolicyCategoryV1,
+} from "@pirate/contracts";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -10,7 +14,12 @@ import {
   submissionId,
 } from "./video-publication.pg-fixture.ts";
 import { makeVideoSafetyEvidenceStore } from "./video-safety-evidence-repository.ts";
-import type { VideoSafetyEvidence, VideoSafetyInput } from "./video-safety-provider.ts";
+import type {
+  VideoSafetyEvidence,
+  VideoSafetyFrameClaimInput,
+  VideoSafetyFrameProviderResult,
+  VideoSafetyInput,
+} from "./video-safety-provider.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -59,6 +68,41 @@ suite("private video safety evidence PostgreSQL fences", () => {
       adapterRevision: "video-openai-safety-v1",
     },
   });
+  const callInput: VideoSafetyFrameClaimInput = {
+    operationId,
+    submissionId,
+    communityId: community,
+    videoRevision: 1,
+    creationRevision: 1,
+    frameRole: "poster",
+    frameArtifactRef: "media://derived/poster.jpg",
+    frameSha256: "a".repeat(64),
+    timestampMs: 1000,
+    requestedTimestampMs: null,
+    requestId: "video-safety-operation-1-c1:v1:poster",
+  };
+  const categories = Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, false]),
+  ) as Record<ModerationPolicyCategoryV1, boolean>;
+  const scores = Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, 0.01]),
+  ) as Record<ModerationPolicyCategoryV1, number>;
+  const appliedInputTypes = Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, ["image"] as const]),
+  ) as Record<ModerationPolicyCategoryV1, readonly ["image"]>;
+  const frameResult: VideoSafetyFrameProviderResult = {
+    provider_id: "openai",
+    requested_model: "fixture-model",
+    returned_model: "fixture-model",
+    input_sha256: callInput.frameSha256,
+    matched_categories: [],
+    evidence: {
+      input_sha256: callInput.frameSha256,
+      categories,
+      scores,
+      applied_input_types: appliedInputTypes,
+    },
+  };
   beforeAll(async () => {
     await admin.connect();
     await admin.query(`CREATE SCHEMA "${schema}"`);
@@ -68,6 +112,7 @@ suite("private video safety evidence PostgreSQL fences", () => {
     await finalizedFixture(scoped.toString());
   }, 120_000);
   beforeEach(async () => {
+    await admin.query("DELETE FROM media_video_safety_provider_calls");
     await admin.query("DELETE FROM media_video_safety_evidence");
   });
   afterAll(async () => {
@@ -119,5 +164,41 @@ suite("private video safety evidence PostgreSQL fences", () => {
           [submissionId, "a".repeat(64), `evidence_${"b".repeat(64)}`, JSON.stringify(snapshot)],
         ),
       ).rejects.toThrow();
+  });
+
+  test("concurrent claims admit one dispatch and persisted success replays", async () => {
+    const claims = await Promise.all([store.claimFrame(callInput), store.claimFrame(callInput)]);
+    expect(claims.map((claim) => claim.status).sort()).toEqual(["dispatch", "unresolved"]);
+    const owner = claims.find((claim) => claim.status === "dispatch");
+    if (owner?.status !== "dispatch") throw new Error("missing dispatch owner");
+    expect(await store.succeedFrame(callInput, owner.claimToken, frameResult)).toEqual(frameResult);
+    expect(await store.claimFrame(callInput)).toEqual({ status: "succeeded", result: frameResult });
+    expect(
+      (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_provider_calls"))
+        .rows[0].n,
+    ).toBe(1);
+  });
+
+  test("a crash before or after dispatch leaves an unresolved claim without redispatch", async () => {
+    expect(await store.claimFrame(callInput)).toMatchObject({ status: "dispatch" });
+    expect(await store.claimFrame(callInput)).toEqual({ status: "unresolved" });
+    expect(await store.claimFrame(callInput)).toEqual({ status: "unresolved" });
+  });
+
+  test("stale and mismatched provider-call identities are rejected", async () => {
+    const owner = await store.claimFrame(callInput);
+    if (owner.status !== "dispatch") throw new Error("missing dispatch owner");
+    await expect(
+      store.claimFrame({ ...callInput, requestId: `${callInput.requestId}:stale` }),
+    ).rejects.toThrow("identity mismatch");
+    await expect(store.claimFrame({ ...callInput, frameSha256: "c".repeat(64) })).rejects.toThrow(
+      "identity mismatch",
+    );
+    await expect(store.succeedFrame(callInput, "wrong-claim-token", frameResult)).rejects.toThrow(
+      "completion mismatch",
+    );
+    await expect(
+      store.claimFrame({ ...callInput, creationRevision: 2, requestId: "stale-creation" }),
+    ).rejects.toThrow("authority superseded");
   });
 });

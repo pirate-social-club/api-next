@@ -18,6 +18,26 @@ import {
 import { VIDEO_POSTER_POLICY_V1 } from "../../domain/src/video-submission.ts";
 
 export type VideoSafetyInput = Parameters<VideoAnalysisProviders["moderate"]>[0];
+export type VideoSafetyFrameProviderResult = Effect.Success<
+  ReturnType<ImageModerationProviderServiceV1["evaluateImage"]>
+>;
+export type VideoSafetyFrameClaimInput = Readonly<{
+  operationId: string;
+  submissionId: string;
+  communityId: string;
+  videoRevision: number;
+  creationRevision: number;
+  frameRole: (typeof VIDEO_POSTER_POLICY_V1.roles)[number];
+  frameArtifactRef: string;
+  frameSha256: string;
+  timestampMs: number;
+  requestedTimestampMs: number | null;
+  requestId: string;
+}>;
+export type VideoSafetyFrameClaim =
+  | Readonly<{ status: "dispatch"; claimToken: string }>
+  | Readonly<{ status: "succeeded"; result: VideoSafetyFrameProviderResult }>
+  | Readonly<{ status: "unresolved" }>;
 export type VideoSafetyEvidence = Readonly<{
   ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
   requestId: string;
@@ -30,7 +50,25 @@ export type VideoSafetyEvidence = Readonly<{
 export type VideoSafetyEvidenceStore = Readonly<{
   load: (input: VideoSafetyInput, inputDigest: string) => Promise<VideoSafetyFact | null>;
   save: (input: VideoSafetyInput, evidence: VideoSafetyEvidence) => Promise<VideoSafetyFact>;
+  claimFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaim>;
+  succeedFrame: (
+    input: VideoSafetyFrameClaimInput,
+    claimToken: string,
+    result: VideoSafetyFrameProviderResult,
+  ) => Promise<VideoSafetyFrameProviderResult>;
 }>;
+
+export class VideoSafetyModerationUnresolvedError extends Error {
+  readonly code = "video_safety_moderation_unresolved";
+
+  constructor(
+    readonly requestId: string,
+    options?: ErrorOptions,
+  ) {
+    super("video safety moderation dispatch is unresolved", options);
+    this.name = "VideoSafetyModerationUnresolvedError";
+  }
+}
 
 /** OpenAI is a signal provider; without the separate visual gate media allow is unreachable. */
 export function makeVideoSafetyProvider(
@@ -97,38 +135,67 @@ export function makeVideoSafetyProvider(
       return result;
     };
     for (const [index, frame] of input.frames.entries()) {
+      let bytes: Uint8Array;
       try {
         if (frame.role !== VIDEO_POSTER_POLICY_V1.roles[index] || options.image === null)
           throw new Error("video safety input unavailable");
-        const bytes = await options.readFrame(frame.artifactRef, frame.sha256);
+        bytes = await options.readFrame(frame.artifactRef, frame.sha256);
         if (
           bytes.byteLength > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
           (await mediaSha256Bytes(bytes)) !== frame.sha256
         )
           throw new Error("video safety digest mismatch");
-        const result = await Effect.runPromise(
-          options.image.evaluateImage({ bytes, mediaType: "image/jpeg", sha256: frame.sha256 }),
-        );
-        if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 12_288)
-          throw new Error("video safety evidence exceeds bound");
-        if (result.input_sha256 !== frame.sha256) throw new Error("video safety input mismatch");
-        const resolution = resolve(result.matched_categories);
-        if (
-          resolution.effective_policy_decision === "block" ||
-          result.matched_categories.includes("sexual/minors")
-        )
-          mediaSafety = "blocked";
-        inputs.push({
-          role: frame.role,
-          sha256: frame.sha256,
-          outcome: "evaluated",
-          provider: result,
-          resolution,
-        });
       } catch {
         unavailable = true;
         inputs.push({ role: frame.role, sha256: frame.sha256, outcome: "unavailable" });
+        continue;
       }
+      const claimInput: VideoSafetyFrameClaimInput = {
+        operationId: input.operationId,
+        submissionId: input.submissionId,
+        communityId: input.communityId,
+        videoRevision: input.videoRevision,
+        creationRevision: input.creationRevision,
+        frameRole: frame.role,
+        frameArtifactRef: frame.artifactRef,
+        frameSha256: frame.sha256,
+        timestampMs: frame.timestampMs,
+        requestedTimestampMs: frame.requestedTimestampMs,
+        requestId: `${requestId}:v${input.videoRevision}:${frame.role}`,
+      };
+      const claim = await options.evidence.claimFrame(claimInput);
+      if (claim.status === "unresolved") {
+        throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
+      }
+      let result: VideoSafetyFrameProviderResult;
+      if (claim.status === "succeeded") {
+        result = claim.result;
+      } else {
+        try {
+          result = await Effect.runPromise(
+            options.image.evaluateImage({ bytes, mediaType: "image/jpeg", sha256: frame.sha256 }),
+          );
+          if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 12_288)
+            throw new Error("video safety evidence exceeds bound");
+          if (result.input_sha256 !== frame.sha256) throw new Error("video safety input mismatch");
+          result = await options.evidence.succeedFrame(claimInput, claim.claimToken, result);
+        } catch (cause) {
+          throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, { cause });
+        }
+      }
+      const resolution = resolve(result.matched_categories);
+      if (
+        resolution.effective_policy_decision === "block" ||
+        result.matched_categories.includes("sexual/minors")
+      )
+        mediaSafety = "blocked";
+      inputs.push({
+        role: frame.role,
+        sha256: frame.sha256,
+        outcome: "evaluated",
+        provider: result,
+        resolution,
+      });
     }
     if (caption !== null) {
       try {
