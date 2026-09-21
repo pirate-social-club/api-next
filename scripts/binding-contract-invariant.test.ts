@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
 import type { DataRegistrationRuntimeEnv } from "../apps/data-registration-worker/src/composition.ts";
-import type { HttpWorkerBindings } from "../apps/http-worker/src/composition.ts";
 import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
 import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config.ts";
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
+import { HTTP_AVATAR_REQUIRED, HTTP_BINDING_KINDS } from "./http-binding-contract.ts";
 import { MEDIA_BINDING_KINDS } from "./media-binding-contract.ts";
 import { TELEGRAM_BINDING_KINDS } from "./telegram-binding-contract.ts";
 
@@ -13,144 +13,14 @@ type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 
 // `satisfies` requires every source binding to be classified. The runtime audit
 // checks that these classifications agree with both Wrangler configs.
-const HTTP_BINDING_KINDS = {
-  ...TELEGRAM_BINDING_KINDS,
-  SONG_PLAYBACK_ENABLED: "var",
-  SONG_PLAYBACK_R2_ACCOUNT_ID: "var",
-  SONG_PLAYBACK_R2_BUCKET: "var",
-  SONG_PLAYBACK_R2_ACCESS_KEY_ID: "secret",
-  SONG_PLAYBACK_R2_SECRET_ACCESS_KEY: "secret",
-  SONG_PLAYBACK_SOURCE_HMAC_BASE64: "secret",
-  SONG_PLAYBACK_RATE_LIMITER: "platform",
-  VIDEO_DELIVERY_ENABLED: "var",
-  VIDEO_STREAM_CUSTOMER_HOST: "var",
-  VIDEO_STREAM_SIGNING_KEY_ID: "var",
-  VIDEO_STREAM_SIGNING_JWK_BASE64: "secret",
-  VIDEO_PLAYBACK_SOURCE_HMAC_BASE64: "secret",
-  VIDEO_PLAYBACK_RATE_LIMITER: "platform",
-  MEDIA_DERIVED: "platform",
-  CF_VERSION_METADATA: "platform",
-  CONTROL_PLANE: "platform",
-  HNS_OWNER_VERIFIER: "platform",
-  REGISTRATION_IP_LIMITER: "platform",
-  REGISTRATION_APPLICATION_LIMITER: "platform",
-  API_NEXT_ENV: "var",
-  CORS_ORIGIN: "var",
-  PIRATE_API_PUBLIC_ORIGIN: "var",
-  SELF_PASS_ENABLED: "var",
-  SELF_PASS_APP_NAME: "var",
-  SELF_PASS_MOCK_PASSPORT: "var",
-  ZKPASSPORT_ENABLED: "var",
-  ZKPASSPORT_DOMAIN: "var",
-  ZKPASSPORT_NAME: "var",
-  ZKPASSPORT_LOGO: "var",
-  ZKPASSPORT_VERIFIER_URL: "var",
-  ZKPASSPORT_VERIFIER_SHARED_SECRET: "secret",
-  ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET: "secret",
-  ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID: "var",
-  ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET: "secret",
-  ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID: "var",
-  ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL: "var",
-  ZKPASSPORT_DEV_MODE: "var",
-  NATIONALITY_AUTHORING_ENABLED: "var",
-  NATIONALITY_AUTHORING_POLICY_REVISION: "var",
-  NATIONALITY_AUTHORING_EVIDENCE_LIFETIME_SECONDS: "var",
-  VERY_OAUTH_ENABLED: "var",
-  VERY_OAUTH_AUTHORIZATION_ENDPOINT: "var",
-  VERY_OAUTH_TOKEN_ENDPOINT: "var",
-  VERY_OAUTH_USERINFO_ENDPOINT: "var",
-  VERY_OAUTH_ISSUER: "var",
-  VERY_OAUTH_JWKS_URL: "var",
-  VERY_OAUTH_CLIENT_ID: "var",
-  VERY_OAUTH_CLIENT_SECRET: "secret",
-  VERY_OAUTH_REDIRECT_URI: "var",
-  VERY_OAUTH_SEALING_KEY: "secret",
-  VERY_WEB_ENABLED: "var",
-  VERY_WEB_APP_ID: "var",
-  VERY_WEB_API_URL: "var",
-  VERY_WEB_VERIFY_URL: "var",
-  VERY_WEB_BRIDGE_API_URL: "var",
-  VERY_WEB_SEALING_KEY: "secret",
-  HNS_OWNERSHIP_ENABLED: "var",
-  HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "var",
-  HNS_OWNERSHIP_CONFIGURATION_VERSION: "var",
-  HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "var",
-  HNS_AUTHORITY_HSD: "platform",
-  HNS_AUTHORITY_HSD_RPC_URL: "var",
-  HNS_AUTHORITY_HSD_AUTHORIZATION: "secret",
-  HNS_AUTHORITY_CHAIN_NETWORK: "var",
-  HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH: "var",
-  HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "var",
-  HNS_AUTHORITY_SAFE_CONFIRMATIONS: "var",
-  HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "var",
-  HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "var",
-  HNS_COMMUNITY_APP_API_REPLAY: "platform",
-  KARAOKE_ATTEMPT: "platform",
-  HNS_COMMUNITY_APP_API_ENABLED: "var",
-  HNS_HANDLE_HOST_API_ENABLED: "var",
-  HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: "var",
-  HNS_COMMUNITY_APP_API_ACCESS_ISSUER: "var",
-  HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: "var",
-  HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE: "var",
-  HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE: "var",
-  HNS_FORWARDER_V3_KEY_REGISTRY_VERSION: "var",
-  HNS_FORWARDER_V3_HMAC_KEY_REGISTRY: "secret",
-  HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: "var",
-  HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: "var",
-  HNS_EDGE_ALERT_TOKEN: "secret",
-  HNS_EDGE_STATUS: "platform",
-  HNS_EDGE_STATUS_ENABLED: "var",
-  HNS_EDGE_STATUS_ACCESS_ISSUER: "var",
-  HNS_EDGE_STATUS_ACCESS_JWKS_URL: "var",
-  HNS_EDGE_STATUS_ACCESS_AUDIENCE: "var",
-  OPENAI_MODERATION_ENABLED: "var",
-  OPENAI_API_KEY: "secret",
-  OPENAI_MODERATION_MODEL: "var",
-  OPENAI_MODERATION_BASE_URL: "var",
-  OPENAI_MODERATION_TIMEOUT_MS: "var",
-  KARAOKE_FINALIZATION_RECOVERY_ENABLED: "var",
-  ELEVENLABS_API_KEY: "secret",
-  STUDY_GENERATION_ENABLED: "var",
-  STUDY_GENERATION_OPENROUTER_MODEL: "var",
-  OPENROUTER_API_KEY: "secret",
-  STUDY_GENERATION_WORKFLOW: "platform",
-  VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: "var",
-  PIRATE_APP_JWT_PRIVATE_KEY: "secret",
-  PIRATE_APP_JWT_PUBLIC_KEY: "var",
-  PIRATE_APP_JWT_ISSUER: "var",
-  PIRATE_APP_JWT_AUDIENCE: "var",
-  PIRATE_APP_JWT_SCOPE: "var",
-  PIRATE_APP_JWT_TTL_SECONDS: "var",
-  PRIVY_APP_ID: "var",
-  PRIVY_APP_SECRET: "secret",
-  PRIVY_API_URL: "var",
-  PRIVY_JWKS_URL: "var",
-  PRIVY_JWT_ISSUER: "var",
-  PRIVY_JWT_AUDIENCE: "var",
-  COMMUNITY_PURCHASE_FUNDING_RPC_URL: "secret",
-  HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: "secret",
-  HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: "secret",
-  MEGAPOT_REWARDS_ENABLED: "var",
-  MEGAPOT_CHAIN_ID: "var",
-  MEGAPOT_V2_RPC_URL: "secret",
-  MEGAPOT_ATTESTATION_ID: "var",
-  MEGAPOT_REQUIRED_CONFIRMATIONS: "var",
-  MEDIA_UPLOADS_ENABLED: "var",
-  VIDEO_SONG_REFERENCE_ENABLED: "var",
-  MEDIA_INGRESS_R2_ACCOUNT_ID: "var",
-  MEDIA_INGRESS_R2_BUCKET_NAME: "var",
-  MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "secret",
-  MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "secret",
-  MEDIA_INGRESS: "platform",
-  MEDIA_IMMUTABLE_ORIGINALS: "platform",
-  LEARNER_AUDIO: "platform",
-} as const satisfies BindingManifest<HttpWorkerBindings>;
-
 const ALERT_BINDING_KINDS = {
   API_NEXT_ENV: "var",
 } as const satisfies BindingManifest<AlertSinkBindings>;
 
 const JOBS_BINDING_KINDS = {
+  AVATAR_CLEANUP_ENABLED: "var",
+  AVATAR_INGRESS: "platform",
+  AVATAR_SEALED: "platform",
   ...TELEGRAM_BINDING_KINDS,
   CF_VERSION_METADATA: "platform",
   CRON_LOCK: "platform",
@@ -531,6 +401,8 @@ const requiredNamesFor = (
   }
   if (worker === "jobs") {
     const required: string[] = [...JOBS_ALWAYS_REQUIRED];
+    if (environment.vars.AVATAR_CLEANUP_ENABLED === "true")
+      required.push("AVATAR_INGRESS", "AVATAR_SEALED");
     if (environment.vars.HNS_OWNERSHIP_ENABLED === "true") required.push(...JOBS_HNS_REQUIRED);
     if (environment.vars.MEGAPOT_REWARDS_ENABLED === "true") {
       required.push(...JOBS_MEGAPOT_REQUIRED);
@@ -542,6 +414,7 @@ const requiredNamesFor = (
   }
 
   const required: string[] = [...HTTP_ALWAYS_REQUIRED, ...HTTP_REGISTRATION_REQUIRED];
+  if (environment.vars.AVATAR_AUTHORING_ENABLED === "true") required.push(...HTTP_AVATAR_REQUIRED);
   if (environment.vars.ZKPASSPORT_ENABLED === "true") {
     required.push(...HTTP_ZKPASSPORT_REQUIRED);
   }

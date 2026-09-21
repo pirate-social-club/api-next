@@ -26,6 +26,10 @@ describe("HTTP worker authentication policy boundary", () => {
   });
 
   test("classifies the supported declarations without changing user semantics", () => {
+    expect(supportedAuthPolicy(Auth.admin("avatars:moderate").policy)).toEqual({
+      kind: "admin",
+      scope: "avatars:moderate",
+    });
     expect(supportedAuthPolicy(Auth.public().policy)).toEqual({ kind: "public" });
     expect(supportedAuthPolicy(Auth.user().policy)).toEqual({ kind: "user" });
     expect(supportedAuthPolicy(Auth.userOrAdmin().policy)).toEqual({ kind: "userOrAdmin" });

@@ -5,6 +5,23 @@ import { unstable_readConfig } from "wrangler";
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/avatars/ports": new URL(
+    "../../packages/application/src/avatars/ports.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/use-cases/avatars": new URL(
+    "../../packages/application/src/use-cases/avatars.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/avatar-store": new URL(
+    "../../packages/platform-cf/src/avatar-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/avatar-storage": new URL(
+    "../../packages/platform-cf/src/avatar-storage.ts",
+    import.meta.url,
+  ).pathname,
+
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,
@@ -175,6 +192,8 @@ export default defineConfig({
       wrangler: { configPath: "./apps/jobs-worker/wrangler.jsonc" },
       miniflare: {
         alias,
+        images: { binding: "AVATAR_TEST_IMAGES" },
+        r2Buckets: ["AVATAR_TEST_INGRESS", "AVATAR_TEST_SEALED"],
         bindings: { PRODUCTION_JOBS_CONFIGURATION: JSON.stringify(productionJobsConfiguration) },
         workers: [
           {

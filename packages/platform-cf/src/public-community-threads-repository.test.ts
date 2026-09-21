@@ -14,6 +14,7 @@ const community = (overrides: Row = {}): Row => ({
   community_id: "community-a",
   status: "active",
   display_name: "Alpha Community",
+  avatar_ref: "/api/avatars/avatar-11111111-1111-4111-8111-111111111111",
   route_slug: "alpha-community",
   membership_mode: "open",
   human_verification_lane: null,
@@ -189,6 +190,9 @@ describe("public community threads Postgres repository", () => {
     expect(Exit.isSuccess(result)).toBe(true);
     if (Exit.isSuccess(result)) {
       expect(result.value?.community.id).toBe("community-a");
+      expect(result.value?.community.avatar_ref).toBe(
+        "/api/avatars/avatar-11111111-1111-4111-8111-111111111111",
+      );
       expect(result.value?.items[0]).toMatchObject({
         resolved_locale: "ka",
         translation_state: "policy_blocked",

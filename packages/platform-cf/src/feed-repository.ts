@@ -268,6 +268,9 @@ const feedItemFromRow = (
     id: communityId,
     object: "home_feed_community_summary" as const,
     display_name: displayName,
+    ...(typeof row.community_avatar_ref === "string"
+      ? { avatar_ref: row.community_avatar_ref }
+      : {}),
     member_count: memberCount,
     follower_count: followerCount,
   };
@@ -353,6 +356,7 @@ const homeFeedStatement = (input: {
                   p.comments_locked,
                   p.created_at,
                   c.display_name,
+                  c.avatar_ref AS community_avatar_ref,
                   (SELECT COUNT(*)
                      FROM community_memberships AS membership_count
                     WHERE membership_count.community_id = c.community_id

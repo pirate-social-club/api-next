@@ -1200,6 +1200,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertion_bindings",
         "assertion_revalidation_events",
         "assertions",
+        "avatar_assets",
         "comment_moderation_actions",
         "comment_moderation_cases",
         "comment_publication_projection",
@@ -1941,6 +1942,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         { column_name: "description", ordinal_position: 10 },
         { column_name: "canonical_route_binding_id", ordinal_position: 11 },
         { column_name: "route_authority_version", ordinal_position: 12 },
+        { column_name: "avatar_ref", ordinal_position: 13 },
       ]);
     });
     completedTestCount += 1;

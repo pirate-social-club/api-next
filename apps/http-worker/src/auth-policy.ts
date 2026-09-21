@@ -4,6 +4,7 @@ const SUPPORTED_SHARED_SECRET_POLICIES = ["hns-edge-alert", "hns-edge-status"] a
 
 type SupportedAuthPolicy =
   | { readonly kind: "public" }
+  | { readonly kind: "admin"; readonly scope: "avatars:moderate" }
   | { readonly kind: "user" | "userOrAdmin" }
   | {
       readonly kind: "sharedSecret";
@@ -16,6 +17,9 @@ export function supportedAuthPolicy(policy: AuthPolicy): SupportedAuthPolicy {
     case "user":
     case "userOrAdmin":
       return policy;
+    case "admin":
+      if (policy.scope === "avatars:moderate") return { kind: "admin", scope: "avatars:moderate" };
+      break;
     case "sharedSecret":
       if (SUPPORTED_SHARED_SECRET_POLICIES.some((name) => name === policy.name)) {
         return policy as SupportedAuthPolicy;

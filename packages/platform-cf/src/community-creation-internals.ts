@@ -394,6 +394,9 @@ export function documentFromRow(row: Row): CommunityCreationIntentDocument | nul
       ? { persona_role_presentation: personaRolePresentation }
       : {}),
     committed_resource: committedResource,
+    ...(contractVersion === "optional_route_v2" && row.avatar_outcomes != null
+      ? { avatar_outcomes: jsonValue(row.avatar_outcomes) }
+      : {}),
   };
   const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)(publicIntent);
   return Option.isSome(decoded) ? decoded.value : null;
@@ -407,7 +410,7 @@ function rowColumns(prefix = ""): string {
           ${column("verification_provider_id")}, ${column("provider_configuration_kind")},
           ${column("provider_configuration_ref")}, ${column("provider_configuration_version")},
           ${column("expires_at")}, ${column("committed_community_id")}, ${column("committed_resource_href")},
-          ${column("minted_persona_id")},
+          ${column("minted_persona_id")}, ${column("avatar_outcomes")},
           ${column("creation_contract_version")}`;
 }
 

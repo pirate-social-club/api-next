@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import { AvatarAssetId, AvatarAttachmentOutcomes } from "./avatars.ts";
 import {
   CommunityCreationRequirementsV1,
   CommunityCreationRequirementsV2,
@@ -104,6 +105,8 @@ export const CommunityCreationDraftV2 = Schema.Struct({
    */
   persona: PersonaCommunityChoiceV1,
   public_name: Schema.optional(CommunityOwnerPublicName),
+  community_avatar_ref: Schema.optional(AvatarAssetId),
+  persona_avatar_ref: Schema.optional(AvatarAssetId),
   name: Schema.NonEmptyString,
   description: Schema.NullOr(Schema.String),
   policy: CompiledGatePolicy,
@@ -342,6 +345,7 @@ export const CommunityCreationIntentV2 = Schema.Struct({
   /** Null while a create_new choice waits for its server-minted persona. */
   persona_role_presentation: Schema.NullOr(CommunityPersonaRolePresentationV1),
   committed_resource: Schema.NullOr(CommittedCommunityResourceV2),
+  avatar_outcomes: Schema.optional(AvatarAttachmentOutcomes),
 }).check(
   Schema.makeFilter((intent) => {
     if (intent.draft.persona.kind === "existing") {

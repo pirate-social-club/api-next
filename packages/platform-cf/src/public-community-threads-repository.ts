@@ -22,6 +22,7 @@ type CommunityRow = Readonly<{
   readonly community_id: unknown;
   readonly status: unknown;
   readonly display_name: unknown;
+  readonly avatar_ref?: unknown;
   readonly route_slug: unknown;
   readonly membership_mode: unknown;
   readonly human_verification_lane: unknown;
@@ -195,6 +196,7 @@ const resolveExactCommunity = {
   text: `SELECT c.community_id,
                 c.status,
                 c.display_name,
+                c.avatar_ref,
                 c.route_slug,
                 c.membership_mode,
                 c.human_verification_lane,
@@ -313,6 +315,7 @@ const communityPreviewFromRow = (
     object: "community_preview",
     route_slug: routeSlug,
     display_name: displayName,
+    ...(typeof row.avatar_ref === "string" ? { avatar_ref: row.avatar_ref } : {}),
     membership_mode: mode,
     human_verification_lane: verification,
     member_count: memberCount,

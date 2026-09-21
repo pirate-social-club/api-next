@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
 import { CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
@@ -119,6 +120,10 @@ import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
 
 export const registry = {
+  ReserveAvatarUpload,
+  FinalizeAvatarUpload,
+  GetAvatar,
+  RemoveAvatar,
   ...telegramRegistry,
   Health,
   CreateVideoPlaybackAccess,
