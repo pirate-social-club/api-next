@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.87.0",
+  "sourceBranch": "fix/community-creation-session-sufficiency",
+  "sourceBase": "60d4850bd793061edb68f45b154fa805d9c58408",
+  "validatedSourceCommit": "741ab9e99eee37c45b4b56d777fe2a13b3507888",
+  "pullRequest": null,
+  "wireContract": "Community creation commits a fresh named owner and community from the authenticated Pirate session without an activate_profile continuation or second Privy ceremony. Wallet authority remains unavailable while the retained EVM assignment is pending.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.87.0.tgz",
+    "sha256": "936afde6bfb4e77007b60cbe5232093f750884c85d0b87b90e30925624eede86"
+  },
+  "validation": {
+    "status": "Local candidate; paired Solid adoption and integration rebase remain pending",
+    "passed": [
+      "Contract generation",
+      "15 focused contract tests with 58 assertions",
+      "Community-owner PostgreSQL 17 suite: 5 tests with 26 assertions",
+      "Community-creation PostgreSQL 17 suite: 9 tests with 56 assertions",
+      "Generated PostgreSQL baseline freshness"
+    ],
+    "remaining": [
+      "Complete repository check and test gates",
+      "Paired Solid 0.87.0 adoption and removal of the repeat identity surface",
+      "Rebase after the reserved 0.86.0 client and migrations 0195-0196 land",
+      "Independent review and hosted required checks"
+    ],
+    "operationalBoundary": "No client publication, migration execution, deployment, provider call, credential use or production mutation occurred."
+  }
+}
