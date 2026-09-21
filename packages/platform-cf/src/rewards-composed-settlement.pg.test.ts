@@ -8,6 +8,11 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
+import {
+  goldenContentSql,
+  goldenIdentitySql,
+  observeGoldenDrawing,
+} from "../../../scripts/megapot-golden-readonly.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   AUTHOR_ID,
@@ -395,6 +400,20 @@ suite("Composed current-policy Megapot settlement", () => {
         (await admin.query("SELECT count(*)::int AS count FROM reward_chain_effects")).rows,
       ).toEqual([{ count: 5 }]);
       expect(chain.custodyBalance).toBe(100000n - 10000n + 901n - 901n);
+      const observed = await observeGoldenDrawing(admin, legId, "101");
+      expect(observed.shares).toHaveLength(3);
+      expect(observed.beneficiaries).toHaveLength(3);
+      expect(observed.credits.map((credit) => credit.amount_atomic)).toEqual(["301", "300", "300"]);
+      expect(observed.credits.every((credit) => credit.receipt_confirmed)).toBe(true);
+      expect(observed.unresolved_effect_count).toBe(0);
+      expect(observed.refunded_atomic).toBe("0");
+      expect(observed.qualifications.filter((q) => q.account_id === "winner-both")).toHaveLength(2);
+      const witness = await admin.query(goldenIdentitySql, ["winner-study", personas.get("study")]);
+      expect(witness.rows).toHaveLength(1);
+      expect(witness.rows[0]?.evidence).toHaveLength(1);
+      const content = await admin.query(goldenContentSql, [COMMUNITY_ID, POST_ID]);
+      expect(content.rows).toHaveLength(1);
+      expect(content.rows[0]?.study_exercise_count).toBeGreaterThanOrEqual(4);
       // Remaining 90,000 atoms are sponsor funds, not an unexplained delta.
       // Offer expiry/refund and live receipt decoding are separate coverage.
     } finally {
