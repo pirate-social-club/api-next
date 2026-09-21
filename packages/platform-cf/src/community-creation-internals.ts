@@ -232,13 +232,6 @@ function nextActionFromRequirements(
     return { kind: "wait", requirement: null, reason_code: "reconciliation_pending" } as const;
   }
   if (input.status === "commit_ready") {
-    if (
-      input.contractVersion === "optional_route_v2" &&
-      typeof row.minted_persona_id === "string" &&
-      row.creator_persona_status !== "active"
-    ) {
-      return { kind: "activate_profile", persona_id: row.minted_persona_id } as const;
-    }
     return { kind: "commit" } as const;
   }
   if (input.status === "quota_exceeded" || input.status === "gate_unsupported") {

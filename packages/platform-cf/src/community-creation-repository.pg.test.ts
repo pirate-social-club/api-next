@@ -259,7 +259,7 @@ suite("Postgres 17 community creation repository", () => {
     completedTestCount += 1;
   }, 30_000);
 
-  test("reserves a named owner privately and publishes only after confirmed activation", async () => {
+  test("publishes a named owner while its exact wallet reservation remains pending", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
@@ -293,62 +293,12 @@ suite("Postgres 17 community creation repository", () => {
         next_action: { kind: "commit" },
       });
 
-      const reserved = await Effect.runPromise(
+      const committed = await Effect.runPromise(
         creationStore.commit({
           actor,
           intentId: created.document.intent_id,
           requestHash: "5".repeat(64),
           body: { idempotency_key: "create-new-commit", expected_revision: 1 },
-        }),
-      );
-      expect(reserved.outcome).toBe("fresh_not_created");
-      expect(reserved.document.committed_resource).toBeNull();
-      expect(reserved.document.next_action.kind).toBe("activate_profile");
-      if (reserved.document.next_action.kind !== "activate_profile")
-        throw new Error("missing activation");
-      const pendingId = reserved.document.next_action.persona_id;
-      expect(
-        (
-          await admin.query(
-            "SELECT count(*)::int AS count FROM communities WHERE created_by_user_id=$1",
-            [actor.userId],
-          )
-        ).rows[0].count,
-      ).toBe(0);
-      expect(
-        (await admin.query("SELECT public_persona_projection($1) AS profile", [pendingId])).rows[0]
-          .profile,
-      ).toBeNull();
-      // Exercise the real confirmation repository, with a deterministic provider
-      // attestation supplied by the test. Proof validation is covered separately.
-      const wallets = makeControlPlanePersonaWalletStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
-      const preparation = await Effect.runPromise(
-        wallets.getEvmPreparation({ accountId: actor.userId, personaId: pendingId }),
-      );
-      if (preparation === null) throw new Error("missing reservation");
-      await Effect.runPromise(
-        wallets.confirmEvm({
-          accountId: actor.userId,
-          personaId: pendingId,
-          attestation: {
-            sourceUserId: actor.userId,
-            privyWalletId: "test-owner-wallet",
-            hdWalletIndex: preparation.hd_wallet_index,
-            address: "0x1234567890123456789012345678901234567890",
-          },
-        }),
-      );
-      const committed = await Effect.runPromise(
-        creationStore.commit({
-          actor,
-          intentId: created.document.intent_id,
-          requestHash: "4".repeat(64),
-          body: {
-            idempotency_key: "publish-active-owner",
-            expected_revision: reserved.document.revision,
-          },
         }),
       );
       expect(committed.outcome).toBe("fresh_created");
@@ -409,7 +359,7 @@ suite("Postgres 17 community creation repository", () => {
       expect(minted.rows).toEqual([
         {
           status: "active",
-          wallet_status: "active",
+          wallet_status: "pending",
           bound_community: resource.community_id,
           binding_source: "community_creation",
           role_persona: mintedId,
@@ -426,6 +376,44 @@ suite("Postgres 17 community creation repository", () => {
         throw new Error("expected an optional-route document on reread");
       }
       expect(reread.persona_role_presentation?.persona.persona_id).toBe(mintedId);
+
+      // Ordinary sign-in recovery can confirm the same reserved index later;
+      // wallet completion is not a publication prerequisite.
+      const wallets = makeControlPlanePersonaWalletStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const preparation = await Effect.runPromise(
+        wallets.getEvmPreparation({ accountId: actor.userId, personaId: mintedId }),
+      );
+      if (preparation === null) throw new Error("missing reservation");
+      await Effect.runPromise(
+        wallets.confirmEvm({
+          accountId: actor.userId,
+          personaId: mintedId,
+          attestation: {
+            sourceUserId: actor.userId,
+            privyWalletId: "test-owner-wallet",
+            hdWalletIndex: preparation.hd_wallet_index,
+            address: "0x1234567890123456789012345678901234567890",
+          },
+        }),
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT status FROM persona_wallet_assignments WHERE persona_id=$1 AND chain_account_kind='evm'",
+            [mintedId],
+          )
+        ).rows,
+      ).toEqual([{ status: "active" }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM communities WHERE community_id=$1",
+            [resource.community_id],
+          )
+        ).rows[0].count,
+      ).toBe(1);
     });
     completedTestCount += 1;
   }, 30_000);

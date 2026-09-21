@@ -22862,9 +22862,18 @@ BEGIN
   SELECT count(*) INTO pending_profiles
     FROM persona_pending_profiles WHERE persona_id = target_persona_id;
 
-  IF target_status IN ('active', 'suspended')
-     AND (active_wallets <> 1 OR profiles <> 1 OR pending_profiles <> 0) THEN
-    RAISE EXCEPTION 'public persona requires one confirmed wallet and profile'
+  IF target_status = 'active'
+     AND (profiles <> 1 OR pending_profiles <> 0 OR tombstoned_wallets <> 0
+       OR NOT (
+         (active_wallets = 1 AND pending_wallets = 0)
+         OR (active_wallets = 0 AND pending_wallets = 1)
+       )) THEN
+    RAISE EXCEPTION 'public persona requires one reserved or confirmed wallet and profile'
+      USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
+  END IF;
+  IF target_status = 'suspended'
+     AND (active_wallets <> 1 OR pending_wallets <> 0 OR profiles <> 1 OR pending_profiles <> 0) THEN
+    RAISE EXCEPTION 'suspended persona requires one confirmed wallet and profile'
       USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
   END IF;
   IF target_status = 'pending_wallet'

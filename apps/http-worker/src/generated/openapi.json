@@ -11309,30 +11309,6 @@
                             "kind": {
                               "type": "string",
                               "enum": [
-                                "activate_profile"
-                              ]
-                            },
-                            "persona_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "persona_id"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
                                 "commit"
                               ]
                             }
@@ -12195,30 +12171,6 @@
                             "kind": {
                               "type": "string",
                               "enum": [
-                                "activate_profile"
-                              ]
-                            },
-                            "persona_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "persona_id"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
                                 "commit"
                               ]
                             }
@@ -13015,30 +12967,6 @@
                                 "creation_intent_id",
                                 "ceremony_intent_id",
                                 "generation"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "activate_profile"
-                                  ]
-                                },
-                                "persona_id": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "persona_id"
                               ],
                               "additionalProperties": false
                             },
@@ -15282,30 +15210,6 @@
                             "kind": {
                               "type": "string",
                               "enum": [
-                                "activate_profile"
-                              ]
-                            },
-                            "persona_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "persona_id"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
                                 "commit"
                               ]
                             }
@@ -16184,30 +16088,6 @@
                                 "creation_intent_id",
                                 "ceremony_intent_id",
                                 "generation"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "activate_profile"
-                                  ]
-                                },
-                                "persona_id": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "persona_id"
                               ],
                               "additionalProperties": false
                             },
@@ -17524,30 +17404,6 @@
                                 "creation_intent_id",
                                 "ceremony_intent_id",
                                 "generation"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "activate_profile"
-                                  ]
-                                },
-                                "persona_id": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "persona_id"
                               ],
                               "additionalProperties": false
                             },
