@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.86.0",
+  "sourceBranch": "release/api-client-0.86.0",
+  "sourceBase": "2ca3c4a119483faa8ad2c4693614fb502c6812f3",
+  "validatedSourceCommit": "d715254d422549c2753f20bdc36e433f4fb874d1",
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/384",
+  "wireContract": "Stable release of the merged song closeout contract: authenticated active-song submission recovery and public alignment/DATA status. Identical OpenAPI and generated client source to 0.86.0-song-closeout.1.",
+  "openapiSha256": "378f7f421776a1f54b725be19deef14da9feb5f870760028091ec656c9426ab8",
+  "clientSha256": "1839a8658e9c25181e8700b80bf7079f50c27f5ac47205b385e895847fabb9e7",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.86.0.tgz",
+    "sha256": "3d07b86f9ba561d5fb7bc2da0930aafbaaf318eb6fa862268762c66ca0774520"
+  },
+  "validation": {
+    "status": "Source contract passed all hosted required checks in merged PR #384. Release metadata and artifact must pass the release PR checks before merge.",
+    "operationalBoundary": "Package release only. No deployment, live recovery, provider operation or Solid publication."
+  }
+}

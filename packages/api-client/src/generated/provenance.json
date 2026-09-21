@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "package": "@pirate/api-client",
-  "version": "0.86.0-song-closeout.1",
+  "version": "0.86.0",
   "sourceIdentifier": "api-next-contracts@378f7f421776a1f54b725be19deef14da9feb5f870760028091ec656c9426ab8",
   "openapiSha256": "378f7f421776a1f54b725be19deef14da9feb5f870760028091ec656c9426ab8",
   "clientSha256": "1839a8658e9c25181e8700b80bf7079f50c27f5ac47205b385e895847fabb9e7"
