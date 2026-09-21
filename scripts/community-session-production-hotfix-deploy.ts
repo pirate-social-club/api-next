@@ -7,6 +7,7 @@ import {
 } from "./deploy-worker-with-provenance.ts";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 const DEPLOYED_BASE_SHA = "4335629e1d123bd7a83c86a4d41e263c7f5ef356";
 const RELEASE_BRANCH = "release/community-session-production-compatibility";
 const CONFIG_PATH = "apps/http-worker/wrangler.jsonc";
@@ -91,7 +92,7 @@ export function parseHotfixDeploymentArgs(args: readonly string[]): HotfixDeploy
   if (captureDirectory === null || !isAbsolute(captureDirectory)) {
     throw new Error("capture directory must be absolute");
   }
-  if (captureManifestSha256 === null || !FULL_SHA.test(captureManifestSha256)) {
+  if (captureManifestSha256 === null || !SHA256.test(captureManifestSha256)) {
     throw new Error("invalid capture manifest SHA-256");
   }
   if (confirmation !== `deploy-community-session-hotfix:${sourceSha}`) {
@@ -131,7 +132,7 @@ function repositoryPath(repositoryRoot: string, inputPath: string): string {
 
 function parseDigest(output: string, label: string): string {
   const digest = output.trim().split(/\s+/, 1)[0];
-  if (digest === undefined || !FULL_SHA.test(digest)) throw new Error(`${label} is invalid`);
+  if (digest === undefined || !SHA256.test(digest)) throw new Error(`${label} is invalid`);
   return digest;
 }
 

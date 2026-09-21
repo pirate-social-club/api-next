@@ -8,7 +8,7 @@ import {
 } from "./community-session-production-hotfix-deploy.ts";
 
 const sourceSha = "a".repeat(40);
-const manifestSha = "b".repeat(40);
+const manifestSha = "b".repeat(64);
 const baseSha = "4335629e1d123bd7a83c86a4d41e263c7f5ef356";
 const branch = "release/community-session-production-compatibility";
 const captureDirectory = "/capture";
