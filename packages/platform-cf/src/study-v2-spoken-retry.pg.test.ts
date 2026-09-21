@@ -262,6 +262,26 @@ function makeDriver(runtime: Runtime, study: StudyRepository) {
           timezone: "UTC",
         }),
       ),
+    startRaw: (input: {
+      readonly sessionId: string;
+      readonly idempotencyKey: string;
+      readonly requestHash: string;
+    }) =>
+      run(
+        study.startSession({
+          accountId: "study-account",
+          communityId: "study-community",
+          createdAt: "2026-09-12T12:00:00.000Z",
+          idempotencyKey: input.idempotencyKey,
+          learnerBand: null,
+          personaId: "study-persona",
+          postId: "study-post",
+          requestHash: input.requestHash,
+          sessionId: input.sessionId,
+          targetLanguage: null,
+          timezone: "UTC",
+        }),
+      ),
     getSession: (sessionId: string) =>
       run(
         study.getSession({
@@ -760,6 +780,116 @@ suite("Study v2 spoken reservation reclaim", () => {
         ...identicalPayload,
       });
       expect(await attemptRows(admin, item(1))).toHaveLength(1);
+    });
+  }, 60_000);
+});
+
+suite("Study v2 session start concurrency", () => {
+  test("identical concurrent starts return one committed session", async () => {
+    await withSchema("start-race", async ({ admin, driver }) => {
+      const identical = {
+        idempotencyKey: "session-race-identical",
+        requestHash: hex("session-race-identical"),
+      };
+      const [first, second] = await Promise.all([
+        driver.startRaw({ ...identical, sessionId: "study-session-race-a" }),
+        driver.startRaw({ ...identical, sessionId: "study-session-race-b" }),
+      ]);
+      expect(first.session_id).toBe(second.session_id);
+      const stored = await admin.query(
+        `SELECT count(*)::int AS n, min(session_id) AS session_id FROM study_sessions_v2
+          WHERE account_id='study-account' AND post_id='study-post' AND idempotency_key=$1`,
+        [identical.idempotencyKey],
+      );
+      const row = stored.rows[0] as { n: number; session_id: string };
+      expect(row.n).toBe(1);
+      expect(row.session_id).toBe(first.session_id);
+      const replay = await driver.startRaw({ ...identical, sessionId: "study-session-race-c" });
+      expect(replay.session_id).toBe(first.session_id);
+    });
+  }, 60_000);
+
+  test("a distinct key while the schedule is not due is refused without a session", async () => {
+    await withSchema("start-not-due", async ({ admin, driver }) => {
+      const first = await driver.startRaw({
+        idempotencyKey: "session-not-due-1",
+        requestHash: hex("session-not-due-1"),
+        sessionId: "study-session-not-due-1",
+      });
+      expect(first.session_id).toBe("study-session-not-due-1");
+      // A start creates the account's card schedule; while those items are not
+      // due, a different key cannot start another lesson and must not persist
+      // a second session. This is the server-side state behind the start
+      // conflicts the browser suite saw when a concurrent consumer had already
+      // started the account.
+      await expect(
+        driver.startRaw({
+          idempotencyKey: "session-not-due-2",
+          requestHash: hex("session-not-due-2"),
+          sessionId: "study-session-not-due-2",
+        }),
+      ).rejects.toMatchObject({ reason: "insufficient-exercises" });
+      const stored = await admin.query(
+        `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
+      );
+      expect((stored.rows[0] as { n: number }).n).toBe(1);
+    });
+  }, 60_000);
+
+  test("a distinct key creates a later session once the schedule is due again", async () => {
+    await withSchema("start-later", async ({ admin, driver }) => {
+      const first = await driver.startRaw({
+        idempotencyKey: "session-later-1",
+        requestHash: hex("session-later-1"),
+        sessionId: "study-session-later-1",
+      });
+      expect(first.session_id).toBe("study-session-later-1");
+      // A later lesson is legitimate only after the first session is terminal
+      // and the review schedule is due again; both are authoritative server
+      // state, not a client key-rotation heuristic.
+      await admin.query(
+        `UPDATE study_sessions_v2
+            SET status='completed', completed_at=clock_timestamp(),
+                completion_reason='all_resolved', current_session_item_id=NULL,
+                current_presented_at=NULL
+          WHERE session_id=$1`,
+        [first.session_id],
+      );
+      await admin.query(
+        `UPDATE study_review_items SET due_at=clock_timestamp() - interval '1 hour'
+          WHERE account_id='study-account'`,
+      );
+      const second = await driver.startRaw({
+        idempotencyKey: "session-later-2",
+        requestHash: hex("session-later-2"),
+        sessionId: "study-session-later-2",
+      });
+      expect(second.session_id).toBe("study-session-later-2");
+      const stored = await admin.query(
+        `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
+      );
+      expect((stored.rows[0] as { n: number }).n).toBe(2);
+    });
+  }, 60_000);
+
+  test("the same key with different inputs stays an idempotency conflict", async () => {
+    await withSchema("start-conflict", async ({ driver }) => {
+      await driver.startRaw({
+        idempotencyKey: "session-conflict",
+        requestHash: hex("session-conflict-a"),
+        sessionId: "study-session-conflict-a",
+      });
+      const conflict = await driver
+        .startRaw({
+          idempotencyKey: "session-conflict",
+          requestHash: hex("session-conflict-b"),
+          sessionId: "study-session-conflict-b",
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(conflict).toMatchObject({ reason: "idempotency-conflict" });
     });
   }, 60_000);
 });
