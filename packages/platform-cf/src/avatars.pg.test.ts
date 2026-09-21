@@ -10,7 +10,6 @@ import { makeAvatarStore } from "./avatar-store.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
 import { makeControlPlaneIdentityRepository } from "./identity-repository.ts";
-import { makeControlPlanePersonaWalletStore } from "./persona-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -206,8 +205,8 @@ suite("creation avatar lifecycle", () => {
       expect((await admin.query("SELECT state FROM avatar_assets")).rows[0]?.state).toBe("removed");
     }));
 
-  test("a new persona receives its image only after wallet activation", async () =>
-    fixture(async ({ admin, runtime, avatars, creation, draft }) => {
+  test("a new persona receives its image on the authenticated creation commit", async () =>
+    fixture(async ({ admin, avatars, creation, draft }) => {
       const asset = await reserve(avatars, "persona");
       await Effect.runPromise(
         avatars.finalize(actor.userId, asset.assetId, () => Effect.succeed(image)),
@@ -218,41 +217,25 @@ suite("creation avatar lifecycle", () => {
         public_name: "Community owner",
         persona_avatar_ref: asset.assetId,
       });
-      const pending = await commit(creation, intent.document.intent_id);
-      expect(pending.document.status).toBe("commit_ready");
-      expect((await admin.query("SELECT state FROM avatar_assets")).rows[0]?.state).toBe("ready");
-      const reservation = (
-        await admin.query<{ persona_id: string; hd_wallet_index: string }>(
-          "SELECT p.persona_id, w.hd_wallet_index FROM personas p JOIN persona_wallet_assignments w USING(persona_id) WHERE p.account_id=$1 AND p.status='pending_wallet'",
-          [actor.userId],
-        )
-      ).rows[0];
-      if (!reservation) throw new Error("Missing pending owner wallet");
-      await Effect.runPromise(
-        makeControlPlanePersonaWalletStore(runtime).confirmEvm({
-          accountId: actor.userId,
-          personaId: reservation.persona_id,
-          attestation: {
-            sourceUserId: "avatar-wallet-source",
-            privyWalletId: "avatar-wallet",
-            hdWalletIndex: Number(reservation.hd_wallet_index),
-            address: "0x5555555555555555555555555555555555555555",
-          },
-        }),
-      );
-      const committed = await Effect.runPromise(
-        creation.commit({
-          actor,
-          intentId: intent.document.intent_id,
-          requestHash: "4".repeat(64),
-          body: { idempotency_key: "terminal", expected_revision: pending.document.revision },
-        }),
-      );
+      const committed = await commit(creation, intent.document.intent_id);
       expect(committed.document).toMatchObject({
         status: "committed",
         avatar_outcomes: { persona: "attached" },
         persona_role_presentation: { persona: { avatar_ref: `/api/avatars/${asset.assetId}` } },
       });
+      if (!("creation_contract_version" in committed.document)) {
+        throw new Error("Expected optional-route creation document");
+      }
+      const personaId = committed.document.persona_role_presentation?.persona.persona_id;
+      if (personaId === undefined) throw new Error("Missing published owner persona");
+      expect(
+        (
+          await admin.query(
+            "SELECT p.status,w.status AS wallet_status FROM personas p JOIN persona_wallet_assignments w USING(persona_id) WHERE p.persona_id=$1",
+            [personaId],
+          )
+        ).rows,
+      ).toEqual([{ status: "active", wallet_status: "pending" }]);
     }));
   test("identity sync preserves accepted image and preview exposes its controlled URL", async () =>
     fixture(async ({ runtime, avatars, creation, draft }) => {

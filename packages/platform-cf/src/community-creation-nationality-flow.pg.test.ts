@@ -285,7 +285,7 @@ suite("Postgres 17 community creation nationality authoring without creator proo
     completedTestCount += 1;
   }, 45_000);
 
-  test("new owners activate their profile before the terminal creation commit", async () => {
+  test("new owners publish from the authenticated terminal creation commit", async () => {
     await withSeededSchema(async ({ connection, admin }) => {
       const store = storeFor(connection);
       const created = await Effect.runPromise(
@@ -302,7 +302,7 @@ suite("Postgres 17 community creation nationality authoring without creator proo
           },
         }),
       );
-      const pending = await Effect.runPromise(
+      const committed = await Effect.runPromise(
         store.commit({
           actor,
           intentId: created.document.intent_id,
@@ -310,18 +310,21 @@ suite("Postgres 17 community creation nationality authoring without creator proo
           body: { idempotency_key: "reserve", expected_revision: 1 },
         }),
       );
-      expect(pending.outcome).toBe("fresh_not_created");
-      await activatePendingPersonaFixtures(admin);
-      const committed = await Effect.runPromise(
-        store.commit({
-          actor,
-          intentId: created.document.intent_id,
-          requestHash: "6".repeat(64),
-          body: { idempotency_key: "commit", expected_revision: pending.document.revision },
-        }),
-      );
       expect(committed.outcome).toBe("fresh_created");
       expect(committed.document.requirements).toEqual({});
+      if (!("creation_contract_version" in committed.document)) {
+        throw new Error("expected optional-route creation document");
+      }
+      const personaId = committed.document.persona_role_presentation?.persona.persona_id;
+      if (personaId === undefined) throw new Error("missing published owner persona");
+      expect(
+        (
+          await admin.query(
+            "SELECT p.status,w.status AS wallet_status FROM personas p JOIN persona_wallet_assignments w USING(persona_id) WHERE p.persona_id=$1",
+            [personaId],
+          )
+        ).rows,
+      ).toEqual([{ status: "active", wallet_status: "pending" }]);
     });
     completedTestCount += 1;
   }, 45_000);
