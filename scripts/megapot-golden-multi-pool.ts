@@ -4,7 +4,11 @@ import {
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "@pirate/contracts";
-import { type GoldenHttpOptions, requestJson } from "./megapot-golden-http.ts";
+import {
+  type GoldenHttpDependencies,
+  type GoldenHttpOptions,
+  requestJson,
+} from "./megapot-golden-http.ts";
 import type { GoldenJournalPort } from "./megapot-golden-journal.ts";
 import type { MultiGoldenInput } from "./megapot-golden-multi-input.ts";
 
@@ -13,8 +17,8 @@ export async function prepareGoldenPool(
   input: MultiGoldenInput,
   options: GoldenHttpOptions,
   journal: GoldenJournalPort,
+  deps: GoldenHttpDependencies = { fetcher: fetch },
 ) {
-  const deps = { fetcher: fetch };
   const guard = () => {
     if (
       !input.authorization ||

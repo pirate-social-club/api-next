@@ -64,6 +64,23 @@ before an operator resolves it. Never delete a lock merely to retry. The runner
 refuses to repeat an ambiguous activity. Completed activities are skipped on
 replay. Ordinary server idempotency owns offer/funding replays.
 
+The PostgreSQL HTTP test `apps/http-worker/src/rewards-golden-retry.pg.test.ts`
+kills a subprocess executing journaled pool preparation after accepted offer,
+leg and funding responses,
+archives each proven-dead lock, and replays the original journal. Real transport,
+application services, repositories and funding coordination must retain one
+offer, leg, funding action and credited amount. Transport authentication,
+authorization and the transfer
+receipt are fixtures; no ticket scheduler or live chain participates in this test.
+
+The Karaoke endpoint replays an unchanged request for the same account, persona
+and idempotency key. Nevertheless, a reservation accepted before `recordAttempt`
+leaves `pending_activity` set, and the runner refuses execution before making
+another request. The consumed cap remains consumed. Operator inspection must
+recover the exact reservation from server evidence; do not clear pending state,
+increase caps or create a replacement attempt to make a rehearsal pass. The
+orchestration test covers this fail-closed boundary, not automatic attempt recovery.
+
 Reconciliation is read-only and can continue without participant credentials:
 
 If funding was confirmed but the drawing id was not journaled before a crash,

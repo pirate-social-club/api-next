@@ -157,6 +157,29 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
       state: "reconciled_no_win",
     });
     expect(calls.filter((call) => call.startsWith("activity:"))).toHaveLength(3);
+    const interruptedOptions = { ...options, journalPath: join(directory, "lost-attempt.jsonl") };
+    let reservations = 0;
+    const interrupted = {
+      ...deps,
+      activity: async (...args: Parameters<typeof deps.activity>) => {
+        const participant = args[1];
+        if (participant.key !== "karaoke") return deps.activity(...args);
+        const journal = args[5];
+        await journal.save({
+          ...journal.state,
+          karaoke_attempts: journal.state.karaoke_attempts + 1,
+        });
+        reservations++;
+        throw new Error("Reservation accepted; response lost before recordAttempt");
+      },
+    };
+    await expect(runMultiGolden(input, interruptedOptions, interrupted)).rejects.toThrow(
+      "response lost",
+    );
+    await expect(runMultiGolden(input, interruptedOptions, interrupted)).rejects.toThrow(
+      "Prior activity outcome is ambiguous",
+    );
+    expect(reservations).toBe(1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

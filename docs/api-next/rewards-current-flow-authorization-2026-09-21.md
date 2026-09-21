@@ -5,6 +5,13 @@ does not authorize ceremonies, credentialed live reads, paid providers,
 bootstrap, flags, deployment, funding, signing, execution or a waiver.
 The automated PostgreSQL proof merged at df44b806 is not live evidence.
 
+Disposition: retain this dated file as a non-authorizing review draft only.
+The completed, run-specific package and its approval must be attached to
+control-plane task `tasks/records/rewards-current-flow-live-acceptance.md` in
+pirate-workspace, not filled into this repository document. Use role identifiers
+and account ids only there; keep credentials, biometric payloads and raw proofs
+out of both repositories. This draft is not a permanent approval or live status.
+
 ## Inputs the owner must supply
 
 Identify at least two distinct current staging accounts with community-bound

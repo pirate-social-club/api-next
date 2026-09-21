@@ -1,5 +1,12 @@
 # Offline preparation handoff
 
+This dated document is an archived, non-authorizing preparation draft. The
+paragraphs below describe the initial September 21 handoff, not current Git,
+test or release state. Current lifecycle and approvals belong to control-plane
+task `tasks/records/rewards-current-flow-live-acceptance.md` in pirate-workspace
+and draft PR #391. Do not fill live participant details or execution approvals
+into this historical document.
+
 The rewards preparation coordinator implemented the multi-participant golden
 runner in the isolated `rewards-current-flow-live-acceptance` worktree on
 `ops/rewards-current-flow-live-acceptance`, based on df44b806. This is local,
