@@ -13,15 +13,18 @@
     "sha256": "b4c54d4334d6b05034dd287dae17eb0c2278d3e3de9d14bcba9fbe9754efc393"
   },
   "validation": {
-    "status": "Rebased local candidate; required repository and hosted gates pending",
+    "status": "Rebased local candidate passed required local repository and affected PostgreSQL gates; hosted review and paired Solid adoption pending",
     "passed": [
       "Contract generation",
       "PostgreSQL baseline regeneration",
       "Migration sequence integration after current main through 0198",
-      "Immutable package creation from the generated 0.88.0 client"
+      "Immutable package creation from the generated 0.88.0 client",
+      "Repository check and complete unit, Node and Workerd test graph",
+      "Maintained four-shard discovery and dynamic song-video sentinel upload detection",
+      "Required PostgreSQL 17 general shards 0, 1 and 3 with 51,200-lock capacity",
+      "Required FFmpeg 6.1.1 composed-flow and render-host suites with exact completion sentinels"
     ],
     "remaining": [
-      "Required local repository and PostgreSQL gates",
       "Hosted required checks on the exact pull-request head",
       "Paired Solid 0.88.0 adoption and local browser qualification"
     ],
