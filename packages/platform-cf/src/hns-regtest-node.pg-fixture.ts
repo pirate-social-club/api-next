@@ -9,7 +9,8 @@
 
 export const hsdRegtestConnectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 export const hsdRegtestNodeUrl = process.env.HSD_REGTEST_NODE_URL ?? "http://127.0.0.1:14037/";
-const walletUrl = process.env.HSD_REGTEST_WALLET_URL ?? "http://127.0.0.1:14039/";
+export const hsdRegtestWalletUrl = process.env.HSD_REGTEST_WALLET_URL ?? "http://127.0.0.1:14039/";
+const walletUrl = hsdRegtestWalletUrl;
 const apiKey = process.env.HSD_REGTEST_API_KEY ?? "controlled-progression";
 export const hsdRegtestAuthorization = `Basic ${Buffer.from(`x:${apiKey}`).toString("base64")}`;
 export const hsdRegtestGenesis = "ae3895cf597eff05b19e02a70ceeeecb9dc72dbfe6504a50e9343a72f06a87c5";
@@ -67,6 +68,10 @@ export async function requireHsdRegtest(request: HsdRpc = rpc): Promise<void> {
   if (hsdRegtestConnectionString === undefined || hsdRegtestConnectionString.trim() === "") {
     throw new Error("required HNS regtest PostgreSQL fixture is missing");
   }
+  await requireHsdRegtestChain(request);
+}
+
+export async function requireHsdRegtestChain(request: HsdRpc = rpc): Promise<void> {
   assertLoopbackEndpoint("HSD regtest node", hsdRegtestNodeUrl);
   assertLoopbackEndpoint("HSD regtest wallet", walletUrl);
   const failure = hsdRegtestIdentityError(await probeHsdRegtestIdentity(request));
@@ -91,6 +96,7 @@ export async function hsdRegtestReachable(): Promise<boolean> {
 async function rpc(url: string, method: string, params: readonly unknown[]): Promise<unknown> {
   const response = await fetch(url, {
     method: "POST",
+    redirect: "error",
     headers: { authorization: hsdRegtestAuthorization, "content-type": "application/json" },
     body: JSON.stringify({ method, params }),
     signal: AbortSignal.timeout(30_000),

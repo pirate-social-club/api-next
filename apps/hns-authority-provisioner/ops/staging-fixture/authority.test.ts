@@ -15,6 +15,7 @@ test("local fixture requires its exact execution flag and rejects remote configu
     expect(() => requireLocalFixtureExecution(args)).toThrow();
   }
   expect(() => requireLocalFixtureExecution(["--execute-local"])).not.toThrow();
+  expect(() => requireLocalFixtureExecution(["--execute-local", "--with-chain"])).not.toThrow();
 });
 
 test("authorities are loopback-only and image is digest-pinned", () => {
