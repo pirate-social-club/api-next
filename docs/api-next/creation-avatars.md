@@ -62,9 +62,18 @@ users, not admins, so this HTTP moderation route is not yet operator-accessible.
 Until scoped admin issuance exists, operators use
 `bun scripts/remove-avatar.ts --database-url-env CONTROL_PLANE_POSTGRES_ADMIN_URL --asset-id avatar-UUID`
 to preview one asset, then repeat with `--apply` after reviewing the target.
-The command requires a database owner or superuser and reports the connected
-database and operator role. Retain preview and apply output with the incident
-record; this tranche does not add a separate moderation audit table.
+The command requires a direct managed-operator session with schema usage,
+SELECT and UPDATE on `avatar_assets`, and SELECT and INSERT on the migration
+ledger. The ledger capability distinguishes the approved migration operator
+from the runtime credential, which has avatar-table DML but cannot write the
+ledger. These are effective privileges, including grants inherited from roles
+or `PUBLIC`; verify the runtime's effective ledger INSERT remains denied. The
+command pins every session to `api_next,pg_catalog` before checking authority
+or changing data. `--schema` exists only for isolated test schemas. Preview
+reports the connected database, schema, operator role, owner,
+purpose, intent, attached target, state and moderation status. Retain preview
+and apply output with the incident record; this tranche does not add a separate
+moderation audit table.
 The command uses the same repository removal operation; it never accepts a
 database URL on the command line or prints driver errors. Production execution
 requires the usual operator authorization.

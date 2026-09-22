@@ -7,7 +7,11 @@ test("avatar removal requires an exact asset and explicit apply", () => {
   expect(parseAvatarRemoval(args)).toEqual({
     variable: "AVATAR_OPERATOR_DATABASE",
     assetId: id,
+    schema: "api_next",
     apply: false,
+  });
+  expect(parseAvatarRemoval([...args, "--schema", "avatar_test"])).toMatchObject({
+    schema: "avatar_test",
   });
   expect(parseAvatarRemoval([...args, "--apply"]).apply).toBe(true);
   for (const invalid of [
@@ -17,6 +21,7 @@ test("avatar removal requires an exact asset and explicit apply", () => {
     [...args, "--force"],
     ["--database-url-env", "postgres://secret", "--asset-id", id],
     ["--database-url-env", "DB", "--asset-id", "*"],
+    [...args, "--schema", "Api-Next"],
   ]) {
     expect(() => parseAvatarRemoval(invalid)).toThrow();
   }
