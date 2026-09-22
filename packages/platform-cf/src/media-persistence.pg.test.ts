@@ -35,6 +35,7 @@ import { runMediaProcessingWorkflow } from "../../application/src/media/processi
 import {
   bindMediaReference,
   type MediaSubmissionServices,
+  projectMediaSubmission,
 } from "../../application/src/media/submission-service.ts";
 import type {
   MediaTransformProbeInput,
@@ -61,6 +62,7 @@ import {
   createActivePersonaFixture,
 } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository";
 import { authorizeSongPlayback } from "./song-playback-authority.ts";
 import { makeSongSourceRecordingRepository } from "./song-source-recording-repository";
 
@@ -2096,6 +2098,52 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         current_lyrics_revision: "1",
         resulting_content_rating: "general",
       });
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const uploads = makeMediaUploadStore(runtime);
+      const context = await uploads.getAuthorContext({
+        submissionId: submission,
+        actorUserId: actor,
+      });
+      if (context === null) throw new Error("published author context missing");
+      const document = projectMediaSubmission(context.view, {
+        persona_id: context.personaId,
+        object: "persona",
+        display_name: "Song author",
+        avatar_ref: null,
+        primary_public_handle: null,
+      });
+      if (document.status !== "published") throw new Error("publication snapshot missing");
+      const href = document.published_resource.href;
+      expect(href).not.toBe(`/posts/${document.published_resource.post_id}`);
+      const routes = makeControlPlanePublicPostSlugStore(runtime);
+      const resolved = await Effect.runPromise(
+        routes.getBySlug({
+          slug: decodeURIComponent(href.slice("/posts/".length)),
+          viewerUserId: actor,
+        }),
+      );
+      expect(resolved).toMatchObject({
+        post: { postId: document.published_resource.post_id },
+        canonicalPath: href,
+        viewer: { canRead: true },
+      });
+      expect(
+        await uploads.getAuthorContext({ submissionId: submission, actorUserId: "other-account" }),
+      ).toBeNull();
+      // Author navigation must not depend on eligibility for public SEO links.
+      await admin.query("UPDATE posts SET visibility='members_only' WHERE post_id=$1", [
+        document.published_resource.post_id,
+      ]);
+      expect(
+        await uploads.getAuthorContext({ submissionId: submission, actorUserId: actor }),
+      ).toMatchObject({ view: { publishedHref: href } });
+      expect(
+        await Effect.runPromise(
+          routes.getBySlug({
+            slug: decodeURIComponent(href.slice("/posts/".length)),
+          }),
+        ),
+      ).toMatchObject({ canonicalPath: null, viewer: { canRead: false } });
     });
     completedTestCount += 1;
   }, 40_000);

@@ -35,6 +35,7 @@ import {
 
 export type { VideoPublicationServices } from "@pirate/application/video/publication";
 
+import { postSlugCanonicalPath } from "@pirate/application/post-slug";
 import { preflightSongVideoInterval } from "@pirate/application/video/song-interval";
 import { BadRequest } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
@@ -43,6 +44,7 @@ import {
   makeControlPlaneMediaSubmissionRepository,
 } from "./media-submission-repository.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
+import { makeControlPlanePublicPostSlugRepository } from "./public-post-slug-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -311,6 +313,7 @@ export function makeMediaUploadStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): MediaUploadStore {
   const repository = makeControlPlaneMediaSubmissionRepository();
+  const postRoutes = makeControlPlanePublicPostSlugRepository();
   const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>): Promise<A> =>
     Effect.runPromise(
       Effect.provide(runtime)(effect).pipe(Effect.mapError((error) => mapFailure(error))),
@@ -343,7 +346,38 @@ export function makeMediaUploadStore(
     if (state === null || lyrics === null) {
       throw new MediaUploadStoreError({ reason: "invalid-row" });
     }
-    return { state, lyrics: lyrics as MediaLyricsSnapshot, updatedAt: locator.updatedAt };
+    let publishedHref: string | undefined;
+    if (state.status === "published") {
+      const route =
+        state.postId === null
+          ? null
+          : await run(
+              postRoutes.getCanonicalRouteByPostId({
+                postId: state.postId,
+                viewerUserId: input.actorUserId,
+              }),
+            );
+      // This is an author-owned navigation link, not a public SEO projection.
+      // Guarded posts also have aliases; the destination retains its live guards.
+      const path = route === null ? null : postSlugCanonicalPath(route.alias.slug);
+      if (
+        path === null ||
+        route?.post.postId !== state.postId ||
+        route?.post.communityId !== state.communityId
+      ) {
+        throw new MediaUploadStoreError({
+          reason: "invalid-row",
+          submissionId: state.submissionId,
+        });
+      }
+      publishedHref = path;
+    }
+    return {
+      state,
+      lyrics: lyrics as MediaLyricsSnapshot,
+      updatedAt: locator.updatedAt,
+      ...(publishedHref === undefined ? {} : { publishedHref }),
+    };
   };
 
   const replayReservation: MediaUploadStore["replayReservation"] = (input) =>
