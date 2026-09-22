@@ -75,7 +75,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 73;
+const testCount = 75;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -2794,6 +2794,159 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  for (const rejectedStage of ["probe", "sample"] as const) {
+    test(`author retry recovers a rejected ${rejectedStage} without replaying the rejection`, async () => {
+      await withCurrentSchema(async (admin, connection) => {
+        await createThroughDecision(connection, decision, analysis, true, undefined, true);
+        let rejected = true;
+        let probeCalls = 0;
+        let sampleCalls = 0;
+        const providers: MediaProcessingProviders = {
+          ...songInterpreterProviders,
+          transform: {
+            ...songInterpreterProviders.transform,
+            probe: ((input: MediaTransformProbeInput) => {
+              probeCalls += 1;
+              return rejected && rejectedStage === "probe"
+                ? Effect.succeed({
+                    status: "rejected" as const,
+                    reason: "inconsistent_media_facts" as const,
+                    attempt: input.attempt,
+                  })
+                : songInterpreterProviders.transform.probe(input);
+            }) as MediaTransformService["probe"],
+            extractAudioSample: (input) => {
+              sampleCalls += 1;
+              return rejected && rejectedStage === "sample"
+                ? Effect.succeed({
+                    status: "rejected" as const,
+                    reason: "inconsistent_media_facts" as const,
+                    attempt: input.attempt,
+                  })
+                : songInterpreterProviders.transform.extractAudioSample(input);
+            },
+          },
+        };
+        let retryWorkflowRevision = 1;
+        let retryOutboxId = "media_pg_analysis_outbox";
+        const interpret = () =>
+          Effect.runPromise(
+            runMediaProcessingWorkflow(
+              {
+                outboxId: retryOutboxId,
+                submissionId: submission,
+                operationId: operation,
+                workflowRevision: retryWorkflowRevision,
+              },
+              "analysis_launch",
+              {
+                store: makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection)),
+                providers,
+                options: {
+                  enabled: true,
+                  workerId: "song-retry-regression",
+                  now: Date.now,
+                  policyRevision: "fixture-v1",
+                  transformAdapterRevision: "fixture-v1",
+                  metadataAdapterRevision: "fixture-v1",
+                  classifierTimeoutMs: 10000,
+                  transformRuntimeMs: 60000,
+                  maximumSampleBytes: 1000000,
+                },
+              },
+            ),
+          );
+        expect(await interpret()).toEqual({ outcome: "processing_failed" });
+        expect(probeCalls).toBe(1);
+        expect(
+          await run(connection, (store) =>
+            store.getForAuthor({
+              communityId: community,
+              submissionId: submission,
+              actorUserId: actor,
+              personaId: personaFor(connection),
+            }),
+          ),
+        ).toMatchObject({
+          status: "processing_failed",
+          failure: {
+            code: rejectedStage === "probe" ? "probe_failed" : "transform_failed",
+            retryable: true,
+          },
+        });
+        rejected = false;
+        expect(
+          await run(connection, (store) =>
+            store.retry({
+              ...command(connection, "/media-post-submissions/:submissionId/retry", "retry-probe"),
+              expectedCreationRevision: 2,
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+        // Replayed browser commands must not allocate a second Workflow.
+        await run(connection, (store) =>
+          store.retry({
+            ...command(connection, "/media-post-submissions/:submissionId/retry", "retry-probe"),
+            expectedCreationRevision: 2,
+          }),
+        );
+        const launches = await admin.query(
+          "SELECT outbox_event_id,workflow_revision,workflow_instance_id FROM media_submission_outbox WHERE submission_id=$1 AND creation_revision=3 AND event_type='analysis_launch'",
+          [submission],
+        );
+        expect(launches.rows).toEqual([
+          {
+            outbox_event_id: `media-author-retry-${operation}-r2`,
+            workflow_revision: "2",
+            workflow_instance_id: `media-${operation}-r2`,
+          },
+        ]);
+        retryWorkflowRevision = 2;
+        retryOutboxId = launches.rows[0].outbox_event_id;
+        expect(await interpret()).toMatchObject({ outcome: "published_without_alignment" });
+        expect(probeCalls).toBe(rejectedStage === "probe" ? 2 : 1);
+        expect(sampleCalls).toBe(rejectedStage === "sample" ? 2 : 1);
+        expect(await interpret()).toMatchObject({ outcome: "inert" });
+        expect(probeCalls).toBe(rejectedStage === "probe" ? 2 : 1);
+        expect(sampleCalls).toBe(rejectedStage === "sample" ? 2 : 1);
+        expect(
+          (
+            await admin.query(
+              "SELECT count(*)::int AS count FROM media_publication_projections WHERE submission_id=$1",
+              [submission],
+            )
+          ).rows,
+        ).toEqual([{ count: 1 }]);
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            "UPDATE media_processing_attempts SET author_retry_count=3 WHERE submission_id=$1 AND stage='probe'",
+            [submission],
+          ),
+        ).rejects.toThrow("media processing attempt author retry is immutable");
+        await admin.query("ROLLBACK");
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            `INSERT INTO media_processing_attempts (
+               attempt_id, submission_id, community_id, actor_user_id, operation_id,
+               audio_revision, analysis_revision, stage, attempt_number, input_hash,
+               provider_idempotency_key, input_kind, input_revision, policy_revision,
+               adapter_revision, state, author_persona_id, author_retry_count)
+             SELECT 'forged-retry', submission_id, community_id, actor_user_id, operation_id,
+               audio_revision, analysis_revision, stage, 1, input_hash,
+               'forged-retry', input_kind, input_revision, policy_revision,
+               adapter_revision, 'pending', author_persona_id, 2
+             FROM media_processing_attempts attempt
+             WHERE submission_id=$1 AND stage='probe' LIMIT 1`,
+            [submission],
+          ),
+        ).rejects.toThrow("media processing attempt author retry is not authorized");
+        await admin.query("ROLLBACK");
+      });
+      completedTestCount += 1;
+    }, 40_000);
+  }
   test("records bounded typed failure retries and exact abandonment reasons", async () => {
     await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection);

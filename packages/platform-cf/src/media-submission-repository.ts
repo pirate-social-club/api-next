@@ -411,6 +411,7 @@ export type ProcessingAttemptStage =
   | "alignment"
   | "alignment_recovery";
 export type ProcessingAttemptInput = Readonly<{
+  authorRetryCount?: number;
   attemptId: string;
   communityId: string;
   submissionId: string;
@@ -463,6 +464,7 @@ export type MediaProcessingAttemptFailureCode =
   | "provider_timeout"
   | "provider_invalid";
 export type ProcessingAttemptRecord = Readonly<{
+  authorRetryCount: number;
   attemptId: string;
   stage: ProcessingAttemptStage;
   attemptNumber: number;
@@ -2504,10 +2506,14 @@ export function makeControlPlaneMediaSubmissionRepository(
             projection.referenceWakeup === undefined
           )
             return yield* Effect.fail(fail(operation, "invalid-input"));
-          // Binding advances creation, while the accepted terms pointer stays immutable.
-          if (projection.event === "reference_bound" && current.terms !== null)
+          // Reference binding and author retry advance creation while retaining
+          // the accepted terms. Decision rows need that creation's snapshot.
+          if (
+            (projection.event === "reference_bound" || projection.event === "retry_authorized") &&
+            current.terms !== null
+          )
             yield* tx.execute({
-              label: "media-reference.creation-snapshot",
+              label: `media-${operation}.creation-snapshot`,
               text: "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11)",
               values: [
                 current.submissionId,
@@ -2606,6 +2612,22 @@ export function makeControlPlaneMediaSubmissionRepository(
             )
               return yield* Effect.fail(fail(operation, "invalid-input"));
             yield* insertOutbox(tx, next, "decision_wakeup", projection.referenceWakeup);
+          }
+          if (projection.event === "retry_authorized" && next.audioRevision > 0) {
+            const retryLaunchId = `media-author-retry-${next.operationId}-r${next.workflowRevision}`;
+            yield* insertOutbox(tx, next, "analysis_launch", {
+              outboxEventId: retryLaunchId,
+              effectIdentity: retryLaunchId,
+              payload: {
+                kind: "analysis_launch",
+                submission_id: next.submissionId,
+                operation_id: next.operationId,
+                audio_revision: next.audioRevision,
+                analysis_revision: next.analysisRevision,
+                workflow_revision: next.workflowRevision,
+                workflow_instance_id: `media-${next.operationId}-r${next.workflowRevision}`,
+              },
+            });
           }
           yield* insertEvent(tx, next, sequence, projection.event, {});
           yield* insertReplay(tx, input, current.operationId);
@@ -2940,7 +2962,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       }),
       (next, current) => ({
         event: "retry_authorized",
-        text: "UPDATE media_post_submissions SET creation_revision=$1,retry_count=retry_count+1,status='processing',phase=$2,decision_revision=0,current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND status='processing_failed'",
+        text: "UPDATE media_post_submissions SET creation_revision=$1,retry_count=retry_count+1,workflow_revision=workflow_revision+CASE WHEN audio_revision>0 THEN 1 ELSE 0 END,status='processing',phase=$2,decision_revision=0,current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND status='processing_failed'",
         values: [
           next.creationRevision,
           next.phase,
@@ -3653,13 +3675,15 @@ export function makeControlPlaneMediaSubmissionRepository(
         !validId(input.adapterRevision) ||
         !validId(providerIdempotencyKey) ||
         !validRevision(input.attemptNumber ?? 1, 1) ||
-        (input.attemptNumber ?? 1) > 3
+        (input.attemptNumber ?? 1) > 3 ||
+        !validRevision(input.authorRetryCount ?? 0, 0) ||
+        (input.authorRetryCount ?? 0) > 3
       )
         return yield* Effect.fail(fail("attempt", "invalid-input"));
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-attempt.insert",
-        text: "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (attempt_id) DO NOTHING",
+        text: "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state,author_persona_id,author_retry_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (attempt_id) DO NOTHING",
         values: [
           input.attemptId,
           input.submissionId,
@@ -3678,6 +3702,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           input.adapterRevision,
           "pending",
           input.personaId,
+          input.authorRetryCount ?? 0,
         ],
         readonly: false,
       });
@@ -3699,6 +3724,7 @@ export function makeControlPlaneMediaSubmissionRepository(
         integer(row.analysis_revision) !== input.analysisRevision ||
         row.stage !== input.stage ||
         integer(row.attempt_number) !== (input.attemptNumber ?? 1) ||
+        integer(row.author_retry_count) !== (input.authorRetryCount ?? 0) ||
         row.input_hash !== input.inputHash ||
         row.provider_idempotency_key !== providerIdempotencyKey ||
         row.input_kind !== input.inputKind ||
@@ -3724,7 +3750,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-attempt.list",
-        text: "SELECT attempt_id,stage,attempt_number,state,claim_owner,claim_fence,next_eligible_at,evidence_ref,result FROM media_processing_attempts WHERE submission_id=$1 AND operation_id=$2 AND audio_revision=$3 AND analysis_revision=$4 AND stage=$5 AND input_revision=$6 AND input_hash=$7 AND policy_revision=$8 AND adapter_revision=$9 ORDER BY attempt_number",
+        text: "SELECT attempt_id,stage,attempt_number,author_retry_count,state,claim_owner,claim_fence,next_eligible_at,evidence_ref,result FROM media_processing_attempts WHERE submission_id=$1 AND operation_id=$2 AND audio_revision=$3 AND analysis_revision=$4 AND stage=$5 AND input_revision=$6 AND input_hash=$7 AND policy_revision=$8 AND adapter_revision=$9 ORDER BY author_retry_count,attempt_number",
         values: [
           input.submissionId,
           input.operationId,
@@ -3740,6 +3766,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       });
       const attempts: ProcessingAttemptRecord[] = [];
       for (const row of result.rows) {
+        const authorRetryCount = integer(row.author_retry_count);
         const attemptNumber = integer(row.attempt_number);
         const claimFence = integer(row.claim_fence);
         const state = row.state;
@@ -3756,6 +3783,9 @@ export function makeControlPlaneMediaSubmissionRepository(
           attemptNumber === null ||
           attemptNumber < 1 ||
           attemptNumber > 3 ||
+          authorRetryCount === null ||
+          authorRetryCount < 0 ||
+          authorRetryCount > 3 ||
           claimFence === null ||
           ![
             "pending",
@@ -3774,6 +3804,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           return yield* Effect.fail(fail("attempt", "invalid-row"));
         }
         attempts.push({
+          authorRetryCount,
           attemptId: row.attempt_id,
           stage: input.stage,
           attemptNumber,
