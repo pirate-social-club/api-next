@@ -45,7 +45,12 @@ bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-lo
 The additional mode checks the node network and genesis and the existing
 wallet's regtest receive-address prefix before any wallet mutation. It funds
 only a regtest wallet, auctions a generated name, registers an empty R0, then
-publishes an actual UPDATE from the maintained complete-resource plan builder.
+publishes an actual UPDATE from the maintained provision-root operation's
+returned plan. That operation reads and rechecks the live current resource and
+uses the real PowerDNS provisioner. Before publication, the returned resource
+is checked against an independently built expected plan and its wire digest.
+The receipt includes the provisioner's plan-document digest. This does not yet
+exercise authenticated admission or the database-backed provision-job queue.
 The maintained observer must see matching current records before matching safe
 records. DNSSEC anchors are extracted from that safe-chain resource; whole-wire
 resource equality and the maintained commitment selection are required. The

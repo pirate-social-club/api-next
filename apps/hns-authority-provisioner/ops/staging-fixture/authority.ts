@@ -4,6 +4,7 @@ import {
   makePowerDnsRootProvisioner,
   makePowerDnsRootTeardown,
 } from "../../src/powerdns.ts";
+import { provisionHnsAuthorityRootV1 } from "../../src/provision-root.ts";
 import { publishFixtureResource } from "./chain.ts";
 import { validateFixtureDnssec } from "./dnssec.ts";
 import { acquireAuthorityFixtureLease } from "./lease.ts";
@@ -217,7 +218,22 @@ export async function runLocalAuthorityFixture(
     if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
       throw new Error("Managed resource readback drift");
     if (withChain) {
-      const observed = await publishFixtureResource(root, challenge, result.ds_records);
+      const observed = await publishFixtureResource(root, challenge, result.ds_records, (observe) =>
+        provisionHnsAuthorityRootV1(
+          {
+            version: "pirate-hns-authority-provision-request-v1",
+            root_import_session_id: `import-${run}`,
+            namespace_session_id: `namespace-${run}`,
+            root_label: root,
+            challenge_txt_value: challenge,
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+          {
+            observe_current_resource: observe,
+            ensure_zone: provision,
+          },
+        ),
+      );
       chainReceipt = observed.receipt;
       await validateFixtureDnssec(root, observed.ds);
     } else {
