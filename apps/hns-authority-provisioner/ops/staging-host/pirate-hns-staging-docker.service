@@ -1,0 +1,22 @@
+[Unit]
+Description=Private host-network-only HNS staging container runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+Slice=pirate-hns-staging.slice
+RuntimeDirectory=pirate-hns-staging
+RuntimeDirectoryMode=0700
+StateDirectory=pirate-hns-staging
+StateDirectoryMode=0700
+ExecStart=/usr/bin/dockerd --config-file=/etc/pirate-hns-staging/docker.json --host=unix:///run/pirate-hns-staging/docker.sock --group=root --data-root=/var/lib/pirate-hns-staging/docker --exec-root=/run/pirate-hns-staging/docker --pidfile=/run/pirate-hns-staging/docker.pid --bridge=none --iptables=false --ip6tables=false --ip-forward=false --ip-masq=false --exec-opt=native.cgroupdriver=systemd --cgroup-parent=pirate-hns-staging.slice --log-driver=local --log-opt=max-size=10m --log-opt=max-file=2
+Delegate=yes
+KillMode=process
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=90
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target
