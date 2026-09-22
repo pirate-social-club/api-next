@@ -16,6 +16,38 @@ import {
 const signature = btoa("\u0001".repeat(64));
 
 describe("HNS root-import name proof", () => {
+  test("explicit chain proofs bind network and genesis for both import paths", () => {
+    const input = {
+      actor_id: "actor-1",
+      creation_intent_id: "intent-1",
+      ceremony_intent_id: "ceremony-1",
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      namespace_session_id: "namespace-1",
+      root_label: "fixture",
+      challenge_txt_value: "pirate-verification=namespace-1",
+      environment: "staging",
+      expires_at: "2026-09-23T00:00:00.000Z",
+      chain: { network: "regtest", genesis_block_hash: "a".repeat(64) },
+    } as const;
+    for (const build of [hnsRootImportNameProofMessage, hnsCommunityRootImportNameProofMessage]) {
+      const message = build(input);
+      const fields = JSON.parse(message);
+      expect(fields[0]).toEndWith("-v2");
+      expect(fields.slice(7, 10)).toEqual(["regtest", "a".repeat(64), "staging"]);
+      expect(build({ ...input, chain: { ...input.chain, network: "main" } })).not.toBe(message);
+      expect(
+        build({ ...input, chain: { ...input.chain, genesis_block_hash: "b".repeat(64) } }),
+      ).not.toBe(message);
+      expect(() => build({ ...input, environment: "production" })).toThrow();
+      expect(() => build({ ...input, environment: "unknown" })).toThrow();
+      expect(() =>
+        build({ ...input, chain: { ...input.chain, genesis_block_hash: "A".repeat(64) } }),
+      ).toThrow();
+    }
+  });
+
   test("binds the wallet message to every import authority field", () => {
     const input = {
       actor_id: "actor-1",

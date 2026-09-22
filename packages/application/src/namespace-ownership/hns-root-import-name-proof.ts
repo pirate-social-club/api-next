@@ -17,6 +17,29 @@ const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Z
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const exactParseOptions = { onExcessProperty: "error" } as const;
 
+const NameProofChain = Schema.Struct({
+  network: Schema.Literals(["main", "regtest"]),
+  genesis_block_hash: Schema.String.check(
+    Schema.makeFilter((value) =>
+      sha256Pattern.test(value) ? undefined : "Expected a canonical genesis block hash",
+    ),
+  ),
+});
+
+type HnsNameProofChain = Schema.Schema.Type<typeof NameProofChain>;
+
+function messageChainFields(chain: HnsNameProofChain | undefined, environment: string) {
+  if (chain === undefined) return [HNS_ROOT_IMPORT_NAME_PROOF_NETWORK] as const;
+  const decoded = Schema.decodeUnknownOption(NameProofChain, exactParseOptions)(chain);
+  if (
+    Option.isNone(decoded) ||
+    (decoded.value.network === "regtest" && environment !== "staging" && environment !== "test")
+  ) {
+    throw new TypeError("HNS name-proof chain configuration is invalid");
+  }
+  return [decoded.value.network, decoded.value.genesis_block_hash] as const;
+}
+
 function canonicalCompactSignature(value: string): boolean {
   try {
     const decoded = atob(value);
@@ -82,6 +105,7 @@ export type HnsRootImportNameProofResultV1 = Schema.Schema.Type<
 >;
 
 export type HnsRootImportNameProofMessageInput = Readonly<{
+  chain?: HnsNameProofChain;
   actor_id: string;
   creation_intent_id: string;
   ceremony_intent_id: string;
@@ -98,14 +122,16 @@ export function hnsRootImportNameProofMessage(input: HnsRootImportNameProofMessa
     throw new TypeError("HNS name-proof root is invalid");
   }
   const message = canonicalJson([
-    HNS_ROOT_IMPORT_NAME_PROOF_VERSION,
+    input.chain === undefined
+      ? HNS_ROOT_IMPORT_NAME_PROOF_VERSION
+      : "pirate-hns-root-import-name-proof-v2",
     input.actor_id,
     input.creation_intent_id,
     input.ceremony_intent_id,
     input.root_import_session_id,
     input.namespace_session_id,
     input.root_label,
-    HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
+    ...messageChainFields(input.chain, input.environment),
     input.environment,
     input.expires_at,
     input.challenge_txt_value,
@@ -121,6 +147,7 @@ export function hnsRootImportNameProofMessage(input: HnsRootImportNameProofMessa
 }
 
 export type HnsCommunityRootImportNameProofMessageInput = Readonly<{
+  chain?: HnsNameProofChain;
   actor_id: string;
   community_id: string;
   attachment_intent_id: string;
@@ -139,14 +166,16 @@ export function hnsCommunityRootImportNameProofMessage(
     throw new TypeError("HNS community name-proof root is invalid");
   }
   const message = canonicalJson([
-    HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION,
+    input.chain === undefined
+      ? HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION
+      : "pirate-hns-community-root-import-name-proof-v2",
     input.actor_id,
     input.community_id,
     input.attachment_intent_id,
     input.root_import_session_id,
     input.namespace_session_id,
     input.root_label,
-    HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
+    ...messageChainFields(input.chain, input.environment),
     input.environment,
     input.expires_at,
     input.challenge_txt_value,
