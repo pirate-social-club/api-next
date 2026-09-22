@@ -20,8 +20,9 @@ Install these two unit files without overwriting existing targets, verify them
 with systemd-analyze, then start only pirate-hns-staging-docker.service.
 The private socket is /run/pirate-hns-staging/docker.sock and is root-only.
 All container operations must explicitly use that socket. The daemon disables
-bridge creation, firewall management, forwarding and masquerading; use only
-host networking with explicit loopback listeners. No public Docker API exists.
+the default bridge, firewall management, forwarding and masquerading. HSD and
+DNS use host networking with explicit loopback listeners. The isolated TLS
+network described below is the only approved named bridge. No public Docker API exists.
 Container scopes belong to pirate-hns-staging.slice, rather than escaping the
 resource budget. Before and after startup compare listeners, forwarding state
 and firewall rules and check the pre-existing services remain active.
@@ -52,3 +53,23 @@ anchor comes directly from provisioning, and its TLSA is a placeholder; this is
 authority installation acceptance, not chain, gateway or browser acceptance.
 The explicit secondary cleanup here does not implement cleanup for persistent
 product imports; that lifecycle integration remains separate work.
+
+## Private TLS placement
+
+The existing CI Caddy owns wildcard port 443 and must not be reconfigured.
+The named `pirate-hns-staging-tls` internal bridge gives the new TLS container
+its own port 443 at `172.31.254.2`, reachable from host-side readiness checks
+without publishing a host port. Reserve `172.31.254.0/28`, gateway
+`172.31.254.1`, only after comparing every existing host route for overlap.
+Creation uses the private daemon, label `pirate.hns.environment=staging`,
+`--internal`, bridge name `phnsstage0`, and
+`com.docker.network.bridge.enable_ip_masquerade=false`. Do not turn on
+forwarding, modify firewall policy, publish ports, or attach unrelated
+containers. Compare normalized IPv4 and IPv6 firewall rules before and after.
+
+A port-only probe on this topology reached container port 443 while existing
+services stayed active; its container was removed. This is not TLS acceptance.
+The TLS terminator, certificate and maintained gateway upstream still need
+composition. The TLS container has no Internet egress; the host-side gateway
+must retain its separately approved staging origin access. This network is not
+a public staging authority or authorization for a mainnet ceremony.

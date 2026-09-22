@@ -1,5 +1,5 @@
 [Unit]
-Description=Private host-network-only HNS staging container runtime
+Description=Private bounded HNS staging container runtime
 After=network-online.target
 Wants=network-online.target
 
