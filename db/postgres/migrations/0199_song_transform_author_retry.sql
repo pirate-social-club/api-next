@@ -39,3 +39,49 @@ $$;
 CREATE TRIGGER media_attempt_author_retry_guard
   BEFORE INSERT OR UPDATE ON media_processing_attempts
   FOR EACH ROW EXECUTE FUNCTION guard_media_attempt_author_retry();
+
+-- A terminal Workflow cannot receive a retry. Advance its identity atomically
+-- with the authorized retry, retaining all other transition fences.
+DO $migration$
+DECLARE
+  function_name TEXT;
+  definition TEXT;
+  old_predicate TEXT := E'AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision\n      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)';
+  old_guard TEXT := 'NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase';
+BEGIN
+  FOREACH function_name IN ARRAY ARRAY['guard_media_submission_update', 'guard_media_submission_update_rating_v2'] LOOP
+    definition := pg_get_functiondef((function_name || '()')::regprocedure);
+    IF (length(definition)-length(replace(definition,old_predicate,''))) <> length(old_predicate)
+       OR (length(definition)-length(replace(definition,old_guard,''))) <> length(old_guard) THEN
+      RAISE EXCEPTION 'author retry guard source is not recognized exactly once: %', function_name;
+    END IF;
+    definition := replace(definition,old_predicate,
+      replace(old_predicate,'NEW.workflow_revision = OLD.workflow_revision)',
+        'NEW.workflow_revision = OLD.workflow_revision + 1)'));
+    definition := replace(definition,old_guard,
+      replace(old_guard,'NEW.workflow_revision <> OLD.workflow_revision OR',
+        'NEW.workflow_revision <> OLD.workflow_revision + 1 OR'));
+    EXECUTE definition;
+  END LOOP;
+END;
+$migration$;
+
+CREATE FUNCTION validate_media_author_retry_launch() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_submission_outbox
+    WHERE submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      AND creation_revision=NEW.creation_revision AND workflow_revision=NEW.workflow_revision
+      AND event_type='analysis_launch'
+  ) THEN
+    RAISE EXCEPTION 'author retry requires its fresh Workflow launch';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER media_author_retry_launch
+  AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (OLD.status='processing_failed' AND NEW.status='processing'
+    AND NEW.retry_count=OLD.retry_count+1)
+  EXECUTE FUNCTION validate_media_author_retry_launch();

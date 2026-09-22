@@ -2827,14 +2827,16 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             },
           },
         };
+        let retryWorkflowRevision = 1;
+        let retryOutboxId = "media_pg_analysis_outbox";
         const interpret = () =>
           Effect.runPromise(
             runMediaProcessingWorkflow(
               {
-                outboxId: "media_pg_analysis_outbox",
+                outboxId: retryOutboxId,
                 submissionId: submission,
                 operationId: operation,
-                workflowRevision: 1,
+                workflowRevision: retryWorkflowRevision,
               },
               "analysis_launch",
               {
@@ -2881,6 +2883,26 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             }),
           ),
         ).toMatchObject({ kind: "committed" });
+        // Replayed browser commands must not allocate a second Workflow.
+        await run(connection, (store) =>
+          store.retry({
+            ...command(connection, "/media-post-submissions/:submissionId/retry", "retry-probe"),
+            expectedCreationRevision: 2,
+          }),
+        );
+        const launches = await admin.query(
+          "SELECT outbox_event_id,workflow_revision,workflow_instance_id FROM media_submission_outbox WHERE submission_id=$1 AND creation_revision=3 AND event_type='analysis_launch'",
+          [submission],
+        );
+        expect(launches.rows).toEqual([
+          {
+            outbox_event_id: `media-author-retry-${operation}-r2`,
+            workflow_revision: "2",
+            workflow_instance_id: `media-${operation}-r2`,
+          },
+        ]);
+        retryWorkflowRevision = 2;
+        retryOutboxId = launches.rows[0].outbox_event_id;
         expect(await interpret()).toMatchObject({ outcome: "published_without_alignment" });
         expect(probeCalls).toBe(rejectedStage === "probe" ? 2 : 1);
         expect(sampleCalls).toBe(rejectedStage === "sample" ? 2 : 1);
@@ -2895,6 +2917,28 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             )
           ).rows,
         ).toEqual([{ count: 1 }]);
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            "UPDATE media_processing_attempts SET author_retry_count=3 WHERE submission_id=$1 AND stage='probe'",
+            [submission],
+          ),
+        ).rejects.toThrow("media processing attempt author retry is immutable");
+        await admin.query("ROLLBACK");
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            `INSERT INTO media_processing_attempts
+             SELECT (jsonb_populate_record(NULL::media_processing_attempts,
+               to_jsonb(attempt) || jsonb_build_object(
+                 'attempt_id','forged-retry', 'provider_idempotency_key','forged-retry',
+                 'author_retry_count',2))).*
+             FROM media_processing_attempts attempt
+             WHERE submission_id=$1 AND stage='probe' LIMIT 1`,
+            [submission],
+          ),
+        ).rejects.toThrow("media processing attempt author retry is not authorized");
+        await admin.query("ROLLBACK");
       });
       completedTestCount += 1;
     }, 40_000);

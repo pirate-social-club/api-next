@@ -1434,6 +1434,7 @@ export function transitionMediaSubmission(
         ...current,
         creationRevision: current.creationRevision + 1,
         retryCount: current.retryCount + 1,
+        workflowRevision: current.workflowRevision + 1,
         status: "processing",
         phase: current.failure.lastSafePhase,
         failure: null,
