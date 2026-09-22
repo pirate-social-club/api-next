@@ -1,0 +1,23 @@
+[Unit]
+Description=Private HNS staging TLS-to-loopback transport
+Requires=pirate-hns-staging-gateway-bridge.socket
+After=pirate-hns-staging-gateway-bridge.socket
+
+[Service]
+Type=notify
+DynamicUser=yes
+Slice=pirate-hns-staging.slice
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=64 127.0.0.1:4269
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+MemoryMax=16M
+CPUQuota=5%
+TasksMax=16

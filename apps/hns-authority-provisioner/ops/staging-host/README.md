@@ -73,3 +73,19 @@ The TLS terminator, certificate and maintained gateway upstream still need
 composition. The TLS container has no Internet egress; the host-side gateway
 must retain its separately approved staging origin access. This network is not
 a public staging authority or authorization for a mainnet ceremony.
+
+The gateway-bridge socket/service templates reuse systemd-socket-proxyd to
+connect Caddy's private bridge destination to the maintained gateway's loopback
+listener. They bind only phnsstage0 at 172.31.254.1:4269, not a public interface.
+The proxy has a bounded connection count and staging slice budget; its IP
+allowlist admits only the TLS container and loopback. Verify the host supports
+the IP accounting/filtering directives before installation rather than treating
+unsupported filtering as enforced. No HTTP headers are added here: Caddy owns
+the scrubbed scheme/SNI boundary and the gateway owns request admission.
+
+These are source templates, not an installed service. Before enabling, verify
+the private network address, binary path and directives on the target host,
+qualify the approved gateway upstream on loopback, and confirm port ownership.
+Stopping the socket and service removes only this transport. Do not alter the
+existing Caddy or open a public port. A socket connection alone does not prove
+database authority, authenticated forwarding or community rendering.
