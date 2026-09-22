@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   type AuditTarget,
@@ -50,6 +51,19 @@ describe("secret drift audit", () => {
     expect(declared.workerName).toBe("fixture-worker-staging");
     expect(declared.vars).toEqual(["ROOT_VAR", "STAGING_VAR"]);
     expect(declared.secrets).toEqual(["STAGING_SECRET"]);
+  });
+
+  test("declares the installed staging avatar ingress secrets", () => {
+    const config = parseJsonc<{
+      name: string;
+      env: Record<string, unknown>;
+    }>(readFileSync(new URL("../apps/http-worker/wrangler.jsonc", import.meta.url), "utf8"));
+
+    const declared = declaredBindingsForEnvironment(config, "staging");
+    expect(declared.secrets.filter((name) => name.startsWith("AVATAR_R2_")).sort()).toEqual([
+      "AVATAR_R2_ACCESS_KEY_ID",
+      "AVATAR_R2_SECRET_ACCESS_KEY",
+    ]);
   });
 
   test("detects collisions, installed orphans, and missing declared secrets", () => {
