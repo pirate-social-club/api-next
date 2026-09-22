@@ -1,11 +1,13 @@
 import {
   canonicalTextModerationInput,
+  MODERATION_POLICY_CATEGORIES_V1,
   MODERATION_RATING_RULE_V2,
   resolveCommunityModerationPolicyV2,
 } from "@pirate/domain";
 import { Effect } from "effect";
 import type { ImageModerationProviderServiceV1 } from "../../application/src/media/processing-contracts.ts";
 import { mediaSha256Bytes } from "../../application/src/media/submission-service.ts";
+import { TextModerationProviderError } from "../../application/src/ports.ts";
 import type {
   TextModerationPolicySnapshotV2,
   TextModerationProviderServiceV1,
@@ -14,10 +16,43 @@ import {
   canonicalVideoCaptionSha256,
   type VideoAnalysisProviders,
   type VideoSafetyFact,
+  VideoSafetyModerationUnresolvedError,
 } from "../../application/src/video/analysis.ts";
 import { VIDEO_POSTER_POLICY_V1 } from "../../domain/src/video-submission.ts";
 
+export { VideoSafetyModerationUnresolvedError } from "../../application/src/video/analysis.ts";
+
 export type VideoSafetyInput = Parameters<VideoAnalysisProviders["moderate"]>[0];
+export type VideoSafetyFrameProviderResult = Effect.Success<
+  ReturnType<ImageModerationProviderServiceV1["evaluateImage"]>
+>;
+export type VideoSafetyFrameClaimInput = Readonly<{
+  operationId: string;
+  submissionId: string;
+  communityId: string;
+  videoRevision: number;
+  creationRevision: number;
+  frameRole: (typeof VIDEO_POSTER_POLICY_V1.roles)[number];
+  frameArtifactRef: string;
+  frameSha256: string;
+  timestampMs: number;
+  requestedTimestampMs: number | null;
+  requestId: string;
+}>;
+export type VideoSafetyFrameProviderFailure = Readonly<{
+  provider_id: "openai";
+  outcome: "non_success";
+  reason: "unavailable";
+  status: number;
+}>;
+export type VideoSafetyFrameClaim =
+  | Readonly<{ status: "dispatch"; claimToken: string }>
+  | Readonly<{ status: "succeeded"; result: VideoSafetyFrameProviderResult }>
+  | Readonly<{ status: "failed"; failure: VideoSafetyFrameProviderFailure }>
+  | Readonly<{ status: "unresolved" }>;
+export type VideoSafetyFrameClaimInspection =
+  | Readonly<{ status: "absent" }>
+  | Extract<VideoSafetyFrameClaim, { status: "succeeded" | "failed" | "unresolved" }>;
 export type VideoSafetyEvidence = Readonly<{
   ratingRuleRevision?: typeof MODERATION_RATING_RULE_V2;
   requestId: string;
@@ -29,8 +64,113 @@ export type VideoSafetyEvidence = Readonly<{
 }>;
 export type VideoSafetyEvidenceStore = Readonly<{
   load: (input: VideoSafetyInput, inputDigest: string) => Promise<VideoSafetyFact | null>;
-  save: (input: VideoSafetyInput, evidence: VideoSafetyEvidence) => Promise<VideoSafetyFact>;
+  save: (
+    input: VideoSafetyInput,
+    evidence: VideoSafetyEvidence,
+    unavailableFrames?: readonly VideoSafetyFrameClaimInput[],
+  ) => Promise<VideoSafetyFact>;
+  inspectFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaimInspection>;
+  claimFrame: (input: VideoSafetyFrameClaimInput) => Promise<VideoSafetyFrameClaim>;
+  succeedFrame: (
+    input: VideoSafetyFrameClaimInput,
+    claimToken: string,
+    result: VideoSafetyFrameProviderResult,
+  ) => Promise<VideoSafetyFrameProviderResult>;
+  failFrame: (
+    input: VideoSafetyFrameClaimInput,
+    claimToken: string,
+    failure: VideoSafetyFrameProviderFailure,
+  ) => Promise<VideoSafetyFrameProviderFailure>;
 }>;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+};
+
+export function validateVideoSafetyFrameProviderResult(
+  value: unknown,
+  expectedSha256: string,
+): VideoSafetyFrameProviderResult {
+  if (!isRecord(value) || new TextEncoder().encode(JSON.stringify(value)).byteLength > 12_288)
+    throw new Error("video safety provider result invalid");
+  if (
+    !hasExactKeys(value, [
+      "provider_id",
+      "requested_model",
+      "returned_model",
+      "input_sha256",
+      "matched_categories",
+      "evidence",
+    ]) ||
+    value.provider_id !== "openai" ||
+    typeof value.requested_model !== "string" ||
+    value.requested_model.length === 0 ||
+    typeof value.returned_model !== "string" ||
+    value.returned_model.length === 0 ||
+    value.input_sha256 !== expectedSha256 ||
+    !Array.isArray(value.matched_categories) ||
+    !isRecord(value.evidence)
+  )
+    throw new Error("video safety provider result shape mismatch");
+  const categorySet = new Set<string>(MODERATION_POLICY_CATEGORIES_V1);
+  const matched = value.matched_categories;
+  if (
+    matched.some((category) => typeof category !== "string" || !categorySet.has(category)) ||
+    new Set(matched).size !== matched.length ||
+    !hasExactKeys(value.evidence, [
+      "input_sha256",
+      "categories",
+      "scores",
+      "applied_input_types",
+    ]) ||
+    value.evidence.input_sha256 !== expectedSha256 ||
+    !isRecord(value.evidence.categories) ||
+    !isRecord(value.evidence.scores) ||
+    !isRecord(value.evidence.applied_input_types) ||
+    !hasExactKeys(value.evidence.categories, MODERATION_POLICY_CATEGORIES_V1) ||
+    !hasExactKeys(value.evidence.scores, MODERATION_POLICY_CATEGORIES_V1) ||
+    !hasExactKeys(value.evidence.applied_input_types, MODERATION_POLICY_CATEGORIES_V1)
+  )
+    throw new Error("video safety provider evidence shape mismatch");
+  for (const category of MODERATION_POLICY_CATEGORIES_V1) {
+    const score = value.evidence.scores[category];
+    const applied = value.evidence.applied_input_types[category];
+    if (
+      typeof value.evidence.categories[category] !== "boolean" ||
+      typeof score !== "number" ||
+      !Number.isFinite(score) ||
+      score < 0 ||
+      score > 1 ||
+      !Array.isArray(applied) ||
+      applied.some((inputType) => inputType !== "text" && inputType !== "image") ||
+      value.evidence.categories[category] !== matched.includes(category)
+    )
+      throw new Error("video safety provider category evidence mismatch");
+  }
+  return value as VideoSafetyFrameProviderResult;
+}
+
+export function validateVideoSafetyFrameProviderFailure(
+  value: unknown,
+): VideoSafetyFrameProviderFailure {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["provider_id", "outcome", "reason", "status"]) ||
+    value.provider_id !== "openai" ||
+    value.outcome !== "non_success" ||
+    value.reason !== "unavailable" ||
+    typeof value.status !== "number" ||
+    !Number.isInteger(value.status) ||
+    value.status < 300 ||
+    value.status > 599
+  )
+    throw new Error("video safety provider failure shape mismatch");
+  return value as VideoSafetyFrameProviderFailure;
+}
 
 /** OpenAI is a signal provider; without the separate visual gate media allow is unreachable. */
 export function makeVideoSafetyProvider(
@@ -80,6 +220,7 @@ export function makeVideoSafetyProvider(
     let platformHeld = false;
     let automatedRating: VideoSafetyFact["automatedRating"] = "general";
     const inputs: unknown[] = [];
+    const unavailableFrames: VideoSafetyFrameClaimInput[] = [];
     let mediaSafety: VideoSafetyFact["mediaSafety"] = "review_required";
     let captionSafety: VideoSafetyFact["captionSafety"] =
       caption === null ? "not_applicable" : "review_required";
@@ -97,38 +238,136 @@ export function makeVideoSafetyProvider(
       return result;
     };
     for (const [index, frame] of input.frames.entries()) {
-      try {
-        if (frame.role !== VIDEO_POSTER_POLICY_V1.roles[index] || options.image === null)
-          throw new Error("video safety input unavailable");
-        const bytes = await options.readFrame(frame.artifactRef, frame.sha256);
-        if (
-          bytes.byteLength > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
-          (await mediaSha256Bytes(bytes)) !== frame.sha256
-        )
-          throw new Error("video safety digest mismatch");
-        const result = await Effect.runPromise(
-          options.image.evaluateImage({ bytes, mediaType: "image/jpeg", sha256: frame.sha256 }),
-        );
-        if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 12_288)
-          throw new Error("video safety evidence exceeds bound");
-        if (result.input_sha256 !== frame.sha256) throw new Error("video safety input mismatch");
-        const resolution = resolve(result.matched_categories);
-        if (
-          resolution.effective_policy_decision === "block" ||
-          result.matched_categories.includes("sexual/minors")
-        )
-          mediaSafety = "blocked";
+      const claimInput: VideoSafetyFrameClaimInput = {
+        operationId: input.operationId,
+        submissionId: input.submissionId,
+        communityId: input.communityId,
+        videoRevision: input.videoRevision,
+        creationRevision: input.creationRevision,
+        frameRole: frame.role,
+        frameArtifactRef: frame.artifactRef,
+        frameSha256: frame.sha256,
+        timestampMs: frame.timestampMs,
+        requestedTimestampMs: frame.requestedTimestampMs,
+        requestId: `${requestId}:v${input.videoRevision}:${frame.role}`,
+      };
+      const retainedClaim = await options.evidence.inspectFrame(claimInput);
+      if (retainedClaim.status === "unresolved") {
+        throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
+      }
+      if (retainedClaim.status === "failed") {
+        unavailable = true;
+        unavailableFrames.push(claimInput);
         inputs.push({
           role: frame.role,
           sha256: frame.sha256,
-          outcome: "evaluated",
-          provider: result,
-          resolution,
+          outcome: "provider_failed",
+          provider: retainedClaim.failure,
         });
-      } catch {
-        unavailable = true;
-        inputs.push({ role: frame.role, sha256: frame.sha256, outcome: "unavailable" });
+        // Manual review is already required. Do not spend more provider calls on
+        // later frames, and replay the same bounded failure evidence.
+        break;
       }
+      let result: VideoSafetyFrameProviderResult;
+      if (retainedClaim.status === "succeeded") {
+        result = retainedClaim.result;
+      } else {
+        let bytes: Uint8Array;
+        try {
+          if (frame.role !== VIDEO_POSTER_POLICY_V1.roles[index] || options.image === null)
+            throw new Error("video safety input unavailable");
+          bytes = await options.readFrame(frame.artifactRef, frame.sha256);
+          if (
+            bytes.byteLength > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
+            (await mediaSha256Bytes(bytes)) !== frame.sha256
+          )
+            throw new Error("video safety digest mismatch");
+        } catch {
+          unavailable = true;
+          unavailableFrames.push(claimInput);
+          inputs.push({ role: frame.role, sha256: frame.sha256, outcome: "unavailable" });
+          continue;
+        }
+        const claim = await options.evidence.claimFrame(claimInput);
+        if (claim.status === "unresolved") {
+          throw new VideoSafetyModerationUnresolvedError(claimInput.requestId);
+        }
+        if (claim.status === "failed") {
+          unavailable = true;
+          unavailableFrames.push(claimInput);
+          inputs.push({
+            role: frame.role,
+            sha256: frame.sha256,
+            outcome: "provider_failed",
+            provider: claim.failure,
+          });
+          break;
+        }
+        if (claim.status === "succeeded") {
+          result = claim.result;
+        } else {
+          try {
+            result = validateVideoSafetyFrameProviderResult(
+              await Effect.runPromise(
+                options.image.evaluateImage({
+                  bytes,
+                  mediaType: "image/jpeg",
+                  sha256: frame.sha256,
+                }),
+              ),
+              frame.sha256,
+            );
+            result = await options.evidence.succeedFrame(claimInput, claim.claimToken, result);
+          } catch (cause) {
+            if (
+              cause instanceof TextModerationProviderError &&
+              cause.reason === "unavailable" &&
+              cause.responseStatus !== undefined
+            ) {
+              let failure: VideoSafetyFrameProviderFailure;
+              try {
+                failure = await options.evidence.failFrame(
+                  claimInput,
+                  claim.claimToken,
+                  validateVideoSafetyFrameProviderFailure({
+                    provider_id: "openai",
+                    outcome: "non_success",
+                    reason: cause.reason,
+                    status: cause.responseStatus,
+                  }),
+                );
+              } catch (persistenceCause) {
+                throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, {
+                  cause: persistenceCause,
+                });
+              }
+              unavailable = true;
+              unavailableFrames.push(claimInput);
+              inputs.push({
+                role: frame.role,
+                sha256: frame.sha256,
+                outcome: "provider_failed",
+                provider: failure,
+              });
+              break;
+            }
+            throw new VideoSafetyModerationUnresolvedError(claimInput.requestId, { cause });
+          }
+        }
+      }
+      const resolution = resolve(result.matched_categories);
+      if (
+        resolution.effective_policy_decision === "block" ||
+        result.matched_categories.includes("sexual/minors")
+      )
+        mediaSafety = "blocked";
+      inputs.push({
+        role: frame.role,
+        sha256: frame.sha256,
+        outcome: "evaluated",
+        provider: result,
+        resolution,
+      });
     }
     if (caption !== null) {
       try {
@@ -209,14 +448,18 @@ export function makeVideoSafetyProvider(
       adapterRevision: unavailable ? "safety-unavailable" : "video-openai-safety-v2",
     };
     // Database failures propagate as infrastructure failures; they never fabricate accepted evidence.
-    return options.evidence.save(input, {
-      ratingRuleRevision: MODERATION_RATING_RULE_V2,
-      requestId,
-      inputDigest,
-      fact,
-      platformHeld,
-      policy,
-      inputs,
-    });
+    return options.evidence.save(
+      input,
+      {
+        ratingRuleRevision: MODERATION_RATING_RULE_V2,
+        requestId,
+        inputDigest,
+        fact,
+        platformHeld,
+        policy,
+        inputs,
+      },
+      unavailableFrames,
+    );
   };
 }

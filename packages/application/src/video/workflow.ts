@@ -14,6 +14,8 @@ import {
   canonicalVideoCaptionSha256,
   type VideoAnalysisRuntimeServices,
   type VideoAnalysisSource,
+  type VideoSafetyFact,
+  VideoSafetyModerationUnresolvedError,
   type VideoTransformCapability,
   videoTransformBinding,
 } from "./analysis.ts";
@@ -430,21 +432,34 @@ export async function runVideoAnalysisWorkflow(
           });
           return "recognition";
         });
-      await step.do("safety", async () => {
+      const safety = await step.do("safety", async () => {
         const record = await active();
-        if (await fact(record, "safety")) return "safety";
+        if (await fact(record, "safety")) return "accepted" as const;
         const frames = (await requiredFact(record, "frames")).snapshot.frames;
-        const snapshot = await services.analysisProviders.moderate({
-          operationId: record.state.operationId,
-          submissionId: record.state.submissionId,
-          communityId: record.state.communityId,
-          videoRevision: record.state.videoRevision,
-          creationRevision: record.state.creationRevision,
-          authorDeclaredRating: record.state.authorDeclaredRating,
-          caption: record.state.caption,
-          captionSha256: await canonicalVideoCaptionSha256(record.state.caption),
-          frames,
-        });
+        let snapshot: VideoSafetyFact;
+        try {
+          snapshot = await services.analysisProviders.moderate({
+            operationId: record.state.operationId,
+            submissionId: record.state.submissionId,
+            communityId: record.state.communityId,
+            videoRevision: record.state.videoRevision,
+            creationRevision: record.state.creationRevision,
+            authorDeclaredRating: record.state.authorDeclaredRating,
+            caption: record.state.caption,
+            captionSha256: await canonicalVideoCaptionSha256(record.state.caption),
+            frames,
+          });
+        } catch (error) {
+          if (!(error instanceof VideoSafetyModerationUnresolvedError)) throw error;
+          await services.store.recordProcessingFailure({
+            submission: record.state,
+            observedEventSequence: record.eventSequence,
+            failureCode: "provider_submission_unconfirmed",
+            evidenceRef: `video-safety:${error.requestId}:unconfirmed`,
+            reconciliationRequired: true,
+          });
+          return "unresolved" as const;
+        }
         await services.stageFacts.write({
           submission: record.state,
           observedEventSequence: record.eventSequence,
@@ -455,8 +470,9 @@ export async function runVideoAnalysisWorkflow(
             artifacts: [],
           }),
         });
-        return "safety";
+        return "accepted" as const;
       });
+      if (safety === "unresolved") return { status: "reconciliation_required" };
     }
     const decideAndPublish = async () => {
       const record = await authority();

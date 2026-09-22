@@ -1,3 +1,94 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response GET /media-post-submissions/{submissionId}: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "get_mediaPostSubmissionsSubmissionId",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/media-post-submissions status 201: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communitiesCommunityIdMediaPostSubmissions",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/cancel: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdCancel",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/finalize: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdFinalize",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/lyrics: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdLyrics",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/poster-retry: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdPosterRetry",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/reference: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdReference",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/retry: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdRetry",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /media-post-submissions/{submissionId}/terms: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_mediaPostSubmissionsSubmissionIdTerms",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    },
+    {
+      "baselineSha": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+      "expectedViolations": [
+        "response POST /moderation/media-post-submissions/{submissionId}/actions: enum value added: \"author_abandoned_unresolved_provider\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_moderationMediaPostSubmissionsSubmissionIdActions",
+      "reason": "The governed video moderation task requires an explicit terminal abandonment for an unresolved provider dispatch; client 0.88.0 must be adopted before this disabled capability is enabled."
+    }
+  ]
 }

@@ -1370,6 +1370,7 @@ export const VideoPostSubmissionV1 = Schema.Union([
       "upload_expectation_mismatch",
       "upload_source_changed_before_finalize",
       "author_cancelled_before_finalize",
+      "author_abandoned_unresolved_provider",
     ]),
   }),
 ]);

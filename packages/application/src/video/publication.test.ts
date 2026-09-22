@@ -8,6 +8,7 @@ import {
 import type { MediaUploadSealer } from "../media/submission-sealing.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
 import {
+  cancelVideoSubmission,
   createVideoSubmission,
   finalizeVideoSubmission,
   normalizeVideoMultipartManifest,
@@ -256,6 +257,106 @@ describe("video publication application", () => {
         state: { ...membershipRecord.state, retryCount: 3 },
       }),
     ).toMatchObject({ retryable: false });
+  });
+
+  test("an unresolved moderation dispatch can only be abandoned without retry or claim replacement", async () => {
+    const initial = createOriginalVideoSubmission({
+      submissionId: "media-submission-video",
+      operationId: "media-operation-video",
+      communityId: "community_video",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      reservationId: "media-reservation-video",
+      caption: null,
+      authorDeclaredRating: "general",
+    });
+    const record: VideoSubmissionRecord = {
+      state: {
+        ...initial,
+        videoRevision: 1,
+        video: {
+          videoRevision: 1,
+          immutableRef: "media://immutable/media-operation-video/video/1",
+          canonicalSha256: "a".repeat(64),
+          contentType: "video/mp4",
+          sizeBytes: 100,
+        },
+        status: "processing_failed",
+        phase: null,
+        failureCode: "provider_submission_unconfirmed",
+        reconciliationRequired: true,
+      },
+      eventSequence: 2,
+      updatedAt: "2026-09-06T00:00:00.000Z",
+      authorPersona: {
+        persona_id: persona.persona_id,
+        object: "persona",
+        display_name: "Video Author",
+        avatar_ref: null,
+        primary_public_handle: null,
+      },
+    };
+    let cancelled: Parameters<VideoPublicationStore["cancel"]>[0] | undefined;
+    let cancelOutcome: Awaited<ReturnType<VideoPublicationStore["cancel"]>> = { kind: "none" };
+    let multipartAborts = 0;
+    const services = servicesWith({
+      store: storeWith({
+        getSubmissionForAccount: async () => record,
+        cancel: async (input) => {
+          cancelled = input;
+          return cancelOutcome;
+        },
+      }),
+      multipart: multipartWith({
+        abort: async () => {
+          multipartAborts += 1;
+        },
+      }),
+    });
+
+    expect(
+      await cancelVideoSubmission(
+        {
+          submissionId: record.state.submissionId,
+          actor,
+          body: {
+            persona_id: persona.persona_id,
+            idempotency_key: "abandon-unresolved-video",
+            expected_creation_revision: 1,
+          },
+        },
+        services,
+      ),
+    ).toMatchObject({
+      status: "abandoned",
+      reason_code: "author_abandoned_unresolved_provider",
+    });
+    expect(cancelled).toMatchObject({
+      expectedCreationRevision: 1,
+      idempotencyKey: "abandon-unresolved-video",
+      submission: {
+        status: "processing_failed",
+        failureCode: "provider_submission_unconfirmed",
+        reconciliationRequired: true,
+      },
+    });
+    expect(multipartAborts).toBe(0);
+
+    cancelOutcome = { kind: "conflict", entityId: record.state.submissionId };
+    await expect(
+      cancelVideoSubmission(
+        {
+          submissionId: record.state.submissionId,
+          actor,
+          body: {
+            persona_id: persona.persona_id,
+            idempotency_key: "abandon-unresolved-video",
+            expected_creation_revision: 1,
+          },
+        },
+        services,
+      ),
+    ).rejects.toMatchObject({ _tag: "IdempotencyConflict" });
   });
 
   test("routes a technical retry back to analysis with the sealed revision retained", async () => {

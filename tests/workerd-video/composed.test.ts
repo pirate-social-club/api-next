@@ -16,7 +16,10 @@ import type {
   VideoSafetyFact,
   VideoSoundtrackFact,
 } from "../../packages/application/src/video/analysis.ts";
-import { moderateVideoSubmission } from "../../packages/application/src/video/publication.ts";
+import {
+  moderateVideoSubmission,
+  projectVideoSubmission,
+} from "../../packages/application/src/video/publication.ts";
 import { dispatchVideoPublicationWakeups } from "../../packages/application/src/video/publication-wakeup.ts";
 import { recoverVideoWorkflowLaunches } from "../../packages/application/src/video/workflow-recovery.ts";
 import { OPENAI_MODERATION_MODEL } from "../../packages/platform-cf/src/openai-text-moderation.ts";
@@ -72,7 +75,7 @@ afterEach(async () => {
 
 function harness(
   durableGrants = false,
-  safety?: "clean" | "minors" | "caption" | "unavailable",
+  safety?: "clean" | "minors" | "caption" | "unavailable" | "non_success",
   recognition?: "no_match" | "alternate_match" | "throttled",
 ) {
   const recognitionCalls: string[] = [];
@@ -266,7 +269,8 @@ function harness(
                 ? "image"
                 : "text";
           moderationCalls.push(type);
-          if (safety === "unavailable") return new Response(null, { status: 503 });
+          if (safety === "unavailable") throw new Error("fixture transport outcome unknown");
+          if (safety === "non_success") return new Response(null, { status: 503 });
           const category =
             safety === "minors" && type === "image"
               ? "sexual/minors"
@@ -959,7 +963,7 @@ test("durable source grant composition: submit replay preserves one grant and st
   }
 });
 
-for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
+for (const mode of ["clean", "minors", "caption"] as const) {
   test(`composed safety ${mode}: real moderation composition retains evidence and fails closed`, async () => {
     const h = harness(false, mode);
     const event = await h.launch();
@@ -970,8 +974,6 @@ for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
     if (mode === "clean") expect(record?.state.reviewReasons).toContain("media_review_required");
     if (mode === "caption")
       expect(record?.state.reviewReasons).toContain("caption_review_required");
-    if (mode === "unavailable")
-      expect(record?.state.reviewReasons).toContain("safety_adapter_unavailable");
     const rows = (
       await admin.query("SELECT platform_held,evidence_snapshot FROM media_video_safety_evidence")
     ).rows;
@@ -986,6 +988,169 @@ for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
     expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
   });
 }
+
+test("composed ambiguous moderation dispatch stays unresolved and cannot publish or redispatch", async () => {
+  const h = harness(false, "unavailable");
+  const event = await h.launch();
+  await expect(h.run(event)).resolves.toEqual({ status: "reconciliation_required" });
+  await expect(h.run(event)).resolves.toEqual({ status: "reconciliation_required" });
+  expect(h.moderationCalls).toEqual(["image"]);
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state,provider_result FROM media_video_safety_provider_calls",
+      )
+    ).rows,
+  ).toEqual([{ frame_role: "poster", state: "sending", provider_result: null }]);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+  ).toBe(0);
+  expect(
+    (
+      await admin.query(
+        "SELECT count(*)::int AS n FROM media_video_stage_facts WHERE stage='safety'",
+      )
+    ).rows[0].n,
+  ).toBe(0);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+  const unresolved = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(unresolved?.state).toMatchObject({
+    status: "processing_failed",
+    phase: null,
+    failureCode: "provider_submission_unconfirmed",
+    reconciliationRequired: true,
+  });
+  if (unresolved === null) throw new Error("missing unresolved submission");
+  expect(projectVideoSubmission(unresolved)).toMatchObject({
+    status: "processing_failed",
+    reason_code: "provider_submission_unconfirmed",
+    retryable: false,
+  });
+  expect(
+    (
+      await admin.query(
+        "SELECT failure_code,retryable,failure_evidence_ref FROM media_post_submissions WHERE submission_id=$1",
+        [submissionId],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      failure_code: "provider_submission_unconfirmed",
+      retryable: false,
+      failure_evidence_ref:
+        "video-safety:video-safety-media-operation-video-publication-c1:v1:poster:unconfirmed",
+    },
+  ]);
+
+  const abandonment = {
+    submission: unresolved.state,
+    expectedCreationRevision: unresolved.state.creationRevision,
+    endpointTemplate: "/media-post-submissions/:submissionId/cancel",
+    idempotencyKey: "abandon-unresolved-moderation",
+    requestHash: "9".repeat(64),
+    responseBytes,
+    responseSha256,
+  };
+  expect(await fixture.store.cancel(abandonment)).toEqual({ kind: "none" });
+  const replay = await fixture.store.cancel(abandonment);
+  expect(replay).toMatchObject({ kind: "replay", entityId: submissionId });
+  if (replay.kind !== "replay") throw new Error("missing abandonment replay");
+  expect([...replay.bytes]).toEqual([...responseBytes]);
+  expect(
+    (await fixture.store.getSubmissionByOperation({ submissionId, operationId }))?.state,
+  ).toMatchObject({
+    status: "abandoned",
+    phase: null,
+    failureCode: null,
+    reconciliationRequired: false,
+    abandonmentReason: "author_abandoned_unresolved_provider",
+  });
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state,provider_result FROM media_video_safety_provider_calls",
+      )
+    ).rows,
+  ).toEqual([{ frame_role: "poster", state: "sending", provider_result: null }]);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+});
+
+test("composed confirmed provider failure is retained for manual review without redispatch", async () => {
+  const h = harness(false, "non_success");
+  const event = await h.launch();
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  expect(h.moderationCalls).toEqual(["image"]);
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state,provider_result,provider_failure FROM media_video_safety_provider_calls",
+      )
+    ).rows,
+  ).toEqual([
+    {
+      frame_role: "poster",
+      state: "failed",
+      provider_result: null,
+      provider_failure: {
+        provider_id: "openai",
+        outcome: "non_success",
+        reason: "unavailable",
+        status: 503,
+      },
+    },
+  ]);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+  ).toBe(1);
+  expect(
+    (
+      await admin.query(
+        "SELECT count(*)::int AS n FROM media_video_stage_facts WHERE stage='safety'",
+      )
+    ).rows[0].n,
+  ).toBe(1);
+  const record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(record?.state.status).toBe("manual_review");
+  if (record?.state.status !== "manual_review") throw new Error("missing manual review state");
+  expect(record.state.reconciliationRequired).toBe(false);
+  expect(record.state.reviewReasons).toContain("safety_adapter_unavailable");
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+});
+
+test("composed evidence-write failure replays persisted frame results without provider calls", async () => {
+  const h = harness(false, "clean");
+  await admin.query(`CREATE FUNCTION reject_video_safety_evidence_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'injected safety evidence write failure'; END $$;
+    CREATE TRIGGER reject_video_safety_evidence_fixture BEFORE INSERT ON media_video_safety_evidence
+      FOR EACH ROW EXECUTE FUNCTION reject_video_safety_evidence_fixture()`);
+  const event = await h.launch();
+  try {
+    await expect(h.run(event)).rejects.toBeDefined();
+  } finally {
+    await admin.query(
+      "DROP TRIGGER IF EXISTS reject_video_safety_evidence_fixture ON media_video_safety_evidence; DROP FUNCTION IF EXISTS reject_video_safety_evidence_fixture()",
+    );
+  }
+  expect(h.moderationCalls).toEqual(["image", "image", "image"]);
+  expect(
+    (
+      await admin.query(
+        "SELECT frame_role,state FROM media_video_safety_provider_calls ORDER BY frame_role",
+      )
+    ).rows,
+  ).toEqual([
+    { frame_role: "first", state: "succeeded" },
+    { frame_role: "midpoint", state: "succeeded" },
+    { frame_role: "poster", state: "succeeded" },
+  ]);
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  expect(h.moderationCalls).toEqual(["image", "image", "image"]);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM media_video_safety_evidence")).rows[0].n,
+  ).toBe(1);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+});
 
 test("recognition: both MP3 clips no-match publish after safety approval through the moderation endpoint", async () => {
   const h = harness(false, "clean", "no_match");

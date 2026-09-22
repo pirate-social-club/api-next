@@ -380,7 +380,11 @@ export interface VideoPublicationStore {
   readonly recordProcessingFailure: (input: {
     submission: VideoSubmissionState;
     observedEventSequence: number;
-    failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
+    failureCode:
+      | VideoTechnicalFailureCode
+      | "poster_undecodable"
+      | "poster_timestamp_out_of_range"
+      | "provider_submission_unconfirmed";
     evidenceRef: string;
     /**
      * An execution whose outcome is unknown: the failure is not retryable
@@ -439,10 +443,13 @@ export interface VideoPublicationStore {
   }) => Promise<StoredReplay | Readonly<{ kind: "membership_required" }>>;
   readonly cancel: (input: {
     submission: VideoSubmissionState;
+    expectedCreationRevision: number;
     endpointTemplate: string;
     idempotencyKey: string;
     requestHash: string;
-  }) => Promise<VideoSubmissionRecord>;
+    responseBytes: Uint8Array;
+    responseSha256: string;
+  }) => Promise<StoredReplay>;
   readonly moderate: (input: {
     submission: VideoSubmissionState;
     actor: M2Actor;
@@ -628,7 +635,14 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
           state.failureCode !== "upload_seal_conflict",
       };
     case "abandoned":
-      return { ...common, status: "abandoned", reason_code: "author_cancelled_before_finalize" };
+      return {
+        ...common,
+        status: "abandoned",
+        reason_code:
+          state.abandonmentReason === "author_abandoned_unresolved_provider"
+            ? "author_abandoned_unresolved_provider"
+            : "author_cancelled_before_finalize",
+      };
   }
 }
 
@@ -1570,33 +1584,55 @@ export async function cancelVideoSubmission(
   });
   if (record === null) throw new NotFound({ message: "Video submission not found" });
   ensurePersonaContinuity(record.state, body.persona_id);
-  if (record.state.video !== null || record.state.status !== "processing")
+  const unresolvedModeration =
+    record.state.status === "processing_failed" &&
+    record.state.reconciliationRequired &&
+    record.state.failureCode === "provider_submission_unconfirmed";
+  const awaitingUpload = record.state.video === null && record.state.status === "processing";
+  if (!awaitingUpload && !unresolvedModeration)
     throw new Conflict({
       message: "Video cancellation is not allowed",
       details: { reason_code: "action_expired" },
     });
   const requestHash = await mediaRequestHash({ submission_id: input.submissionId }, body);
-  const reservation = await services.store.getReservationForAuthor({
-    reservationId: record.state.reservationId,
-    actorAccountId: input.actor.userId,
-    authorPersonaId: body.persona_id,
-  });
-  if (reservation !== null && reservation.manifest === null) {
-    await services.multipart
-      .abort({
-        objectKey: videoIngressObjectKey(reservation.reservationId),
-        uploadId: reservation.uploadId,
-      })
-      .catch(() => undefined);
+  if (awaitingUpload) {
+    const reservation = await services.store.getReservationForAuthor({
+      reservationId: record.state.reservationId,
+      actorAccountId: input.actor.userId,
+      authorPersonaId: body.persona_id,
+    });
+    if (reservation !== null && reservation.manifest === null) {
+      await services.multipart
+        .abort({
+          objectKey: videoIngressObjectKey(reservation.reservationId),
+          uploadId: reservation.uploadId,
+        })
+        .catch(() => undefined);
+    }
   }
-  return projectVideoSubmission(
-    await services.store.cancel({
-      submission: record.state,
-      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.cancel,
-      idempotencyKey: body.idempotency_key,
-      requestHash,
-    }),
+  const nextState: VideoSubmissionState = {
+    ...record.state,
+    status: "abandoned",
+    phase: null,
+    failureCode: null,
+    reconciliationRequired: false,
+    abandonmentReason: unresolvedModeration
+      ? "author_abandoned_unresolved_provider"
+      : "author_cancelled_before_finalize",
+  };
+  const response = await snapshot(
+    projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
   );
+  const outcome = await services.store.cancel({
+    submission: record.state,
+    expectedCreationRevision: body.expected_creation_revision,
+    endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.cancel,
+    idempotencyKey: body.idempotency_key,
+    requestHash,
+    responseBytes: response.bytes,
+    responseSha256: response.sha256,
+  });
+  return replaySubmission(outcome) ?? response.document;
 }
 
 export async function moderateVideoSubmission(

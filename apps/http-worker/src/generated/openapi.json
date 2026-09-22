@@ -73514,7 +73514,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -75522,7 +75523,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -77384,7 +77386,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -79325,7 +79328,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -81874,7 +81878,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -83607,7 +83612,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -85440,7 +85446,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -86618,7 +86625,8 @@
                             "upload_reservation_expired",
                             "upload_expectation_mismatch",
                             "upload_source_changed_before_finalize",
-                            "author_cancelled_before_finalize"
+                            "author_cancelled_before_finalize",
+                            "author_abandoned_unresolved_provider"
                           ]
                         }
                       },
@@ -88348,7 +88356,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
@@ -90484,7 +90493,8 @@
                                 "upload_reservation_expired",
                                 "upload_expectation_mismatch",
                                 "upload_source_changed_before_finalize",
-                                "author_cancelled_before_finalize"
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
                               ]
                             }
                           },
