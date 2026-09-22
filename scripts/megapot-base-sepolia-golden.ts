@@ -1,3 +1,7 @@
+import { endpoint, MegapotBaseSepoliaGoldenFailed, requestJson } from "./megapot-golden-http.ts";
+
+export { MegapotBaseSepoliaGoldenFailed } from "./megapot-golden-http.ts";
+
 import {
   AddMegapotPoolLeg,
   GetMegapotPoolFunding,
@@ -12,7 +16,6 @@ import {
 import { Schema } from "effect";
 import {
   type MegapotParticipantPreflight,
-  parseMegapotParticipantPreflight,
   participantPreflightMatches,
   studySessionMatchesParticipantPreflight,
 } from "./megapot-participant-preflight-artifact.ts";
@@ -81,27 +84,6 @@ export type MegapotGoldenDependencies = Readonly<{
   synthesizeStudyAudio?: (referenceText: string) => Promise<StudyFixtureAudio>;
 }>;
 
-export class MegapotBaseSepoliaGoldenFailed extends Error {
-  readonly code: "invalid-auth" | "invalid-input" | "invalid-options" | "request-failed";
-
-  constructor(code: MegapotBaseSepoliaGoldenFailed["code"], message: string) {
-    super(message);
-    this.name = "MegapotBaseSepoliaGoldenFailed";
-    this.code = code;
-  }
-}
-
-function decode<S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown): S["Type"] {
-  try {
-    return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
-  } catch {
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "request-failed",
-      "The staging API returned an invalid rewards contract.",
-    );
-  }
-}
-
 export function parseMegapotGoldenInput(value: unknown): GoldenInput {
   let input: GoldenInput;
   try {
@@ -124,65 +106,6 @@ export function parseMegapotGoldenInput(value: unknown): GoldenInput {
     );
   }
   return input;
-}
-
-function endpoint(origin: string, path: string): string {
-  let url: URL;
-  try {
-    url = new URL(origin);
-  } catch {
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "invalid-options",
-      "The staging API origin is invalid.",
-    );
-  }
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== "api-next-staging.pirate.sc" ||
-    url.pathname !== "/" ||
-    url.search !== "" ||
-    url.hash !== ""
-  ) {
-    throw new MegapotBaseSepoliaGoldenFailed("invalid-options", "Staging API required.");
-  }
-  return new URL(path, url).toString();
-}
-
-function authHeaders(
-  options: MegapotGoldenOptions,
-  write: boolean,
-  contentType = "application/json",
-) {
-  const headers = new Headers({ accept: "application/json" });
-  if (options.authorization !== undefined) {
-    if (
-      options.cookie !== undefined ||
-      options.csrfToken !== undefined ||
-      options.authorization.includes("\n") ||
-      !options.authorization.startsWith("Bearer ")
-    ) {
-      throw new MegapotBaseSepoliaGoldenFailed("invalid-auth", "Staging authorization is invalid.");
-    }
-    headers.set("authorization", options.authorization);
-  } else {
-    const cookie = options.cookie;
-    const csrf = options.csrfToken;
-    if (
-      cookie === undefined ||
-      csrf === undefined ||
-      cookie.includes("\n") ||
-      csrf.includes("\n") ||
-      !cookie.includes("__Host-pirate_session=") ||
-      !cookie.includes(`__Host-pirate_csrf=${csrf}`)
-    ) {
-      throw new MegapotBaseSepoliaGoldenFailed("invalid-auth", "Session and CSRF required.");
-    }
-    headers.set("cookie", cookie);
-    headers.set("origin", "https://web-next-staging.pirate.sc");
-    if (write) headers.set("x-csrf-token", csrf);
-  }
-  if (write) headers.set("content-type", contentType);
-  return headers;
 }
 
 function participantOptions(options: MegapotGoldenOptions): MegapotGoldenOptions {
@@ -254,56 +177,6 @@ async function assertParticipantReady(
     );
   }
   return session;
-}
-
-async function requestJson<S extends Schema.ConstraintDecoder<unknown>>(
-  dependencies: MegapotGoldenDependencies,
-  options: MegapotGoldenOptions,
-  path: string,
-  schema: S,
-  request?: {
-    readonly method: "POST";
-    readonly body: unknown;
-    readonly contentType?: string;
-    readonly rawBody?: boolean;
-    readonly headers?: Readonly<Record<string, string>>;
-  },
-): Promise<S["Type"]> {
-  const headers = authHeaders(
-    options,
-    request !== undefined,
-    request?.contentType ?? "application/json",
-  );
-  for (const [name, value] of Object.entries(request?.headers ?? {})) headers.set(name, value);
-  const response = await dependencies.fetcher(endpoint(options.apiOrigin, path), {
-    method: request?.method ?? "GET",
-    headers,
-    ...(request === undefined
-      ? {}
-      : {
-          body:
-            request.rawBody === true
-              ? (request.body as Bun.BodyInit)
-              : JSON.stringify(request.body),
-        }),
-  });
-  if (!response.ok) {
-    const requestId = response.headers.get("x-request-id") ?? "missing";
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "request-failed",
-      `Staging rewards request failed with HTTP ${response.status}; request id ${requestId}.`,
-    );
-  }
-  let document: unknown;
-  try {
-    document = (await response.json()) as unknown;
-  } catch {
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "request-failed",
-      "The staging rewards response was not JSON.",
-    );
-  }
-  return decode(schema, document);
 }
 
 function idempotencyKey(input: GoldenInput, step: "offer" | "leg" | "funding"): string {
@@ -501,99 +374,9 @@ export async function runMegapotBaseSepoliaGolden(
   };
 }
 
-function parseOptions(args: readonly string[]) {
-  const execute = args.includes("--execute");
-  const confirmed = args.includes("--confirm-base-sepolia");
-  const qualifyStudy = args.includes("--qualify-study");
-  const inputIndex = args.indexOf("--input");
-  const input = inputIndex < 0 ? undefined : args[inputIndex + 1];
-  const preflightIndex = args.indexOf("--participant-preflight");
-  const participantPreflight = preflightIndex < 0 ? undefined : args[preflightIndex + 1];
-  const allowed = new Set([
-    "--execute",
-    "--confirm-base-sepolia",
-    "--qualify-study",
-    "--input",
-    input,
-    "--participant-preflight",
-    participantPreflight,
-  ]);
-  const unknown = args.find((argument) => !allowed.has(argument));
-  if (
-    unknown !== undefined ||
-    input === undefined ||
-    input.startsWith("--") ||
-    (execute && (participantPreflight === undefined || participantPreflight.startsWith("--"))) ||
-    (!execute && participantPreflight !== undefined) ||
-    execute !== confirmed ||
-    (qualifyStudy && !execute)
-  ) {
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "invalid-options",
-      "Use --input PATH for dry-run; writes also require --participant-preflight PATH, --execute, and --confirm-base-sepolia. Add --qualify-study only after an eligible drawing is open.",
-    );
-  }
-  return {
-    execute,
-    qualifyStudy,
-    input,
-    ...(participantPreflight === undefined ? {} : { participantPreflight }),
-  };
-}
-
 export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
-  if (process.env.API_NEXT_ENV !== "staging") {
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "invalid-options",
-      "The golden flow is refused unless API_NEXT_ENV=staging.",
-    );
-  }
-  const parsed = parseOptions(args);
-  let document: unknown;
-  try {
-    document = JSON.parse(await Bun.file(parsed.input).text()) as unknown;
-  } catch {
-    throw new MegapotBaseSepoliaGoldenFailed("invalid-input", "Unable to read golden-flow input.");
-  }
-  let participantPreflight: MegapotParticipantPreflight | undefined;
-  if (parsed.participantPreflight !== undefined) {
-    try {
-      participantPreflight = parseMegapotParticipantPreflight(
-        JSON.parse(await Bun.file(parsed.participantPreflight).text()) as unknown,
-      );
-    } catch (error) {
-      if (error instanceof MegapotBaseSepoliaGoldenFailed) throw error;
-      throw new MegapotBaseSepoliaGoldenFailed(
-        "invalid-input",
-        "Unable to read participant preflight artifact.",
-      );
-    }
-  }
-  const result = await runMegapotBaseSepoliaGolden(parseMegapotGoldenInput(document), {
-    execute: parsed.execute,
-    qualifyStudy: parsed.qualifyStudy,
-    apiOrigin: process.env.PIRATE_API_PUBLIC_ORIGIN ?? "https://api-next-staging.pirate.sc",
-    ...(process.env.PIRATE_STAGING_AUTHORIZATION === undefined
-      ? {}
-      : { authorization: process.env.PIRATE_STAGING_AUTHORIZATION }),
-    ...(process.env.PIRATE_STAGING_COOKIE === undefined
-      ? {}
-      : { cookie: process.env.PIRATE_STAGING_COOKIE }),
-    ...(process.env.PIRATE_STAGING_CSRF_TOKEN === undefined
-      ? {}
-      : { csrfToken: process.env.PIRATE_STAGING_CSRF_TOKEN }),
-    ...(process.env.PIRATE_STAGING_PARTICIPANT_AUTHORIZATION === undefined
-      ? {}
-      : { participantAuthorization: process.env.PIRATE_STAGING_PARTICIPANT_AUTHORIZATION }),
-    ...(process.env.PIRATE_STAGING_PARTICIPANT_COOKIE === undefined
-      ? {}
-      : { participantCookie: process.env.PIRATE_STAGING_PARTICIPANT_COOKIE }),
-    ...(process.env.PIRATE_STAGING_PARTICIPANT_CSRF_TOKEN === undefined
-      ? {}
-      : { participantCsrfToken: process.env.PIRATE_STAGING_PARTICIPANT_CSRF_TOKEN }),
-    ...(participantPreflight === undefined ? {} : { participantPreflight }),
-  });
-  console.log(JSON.stringify(result, null, 2));
+  const cli = await import("./megapot-golden-cli.ts");
+  await cli.main(args);
 }
 
 if (import.meta.main) {
