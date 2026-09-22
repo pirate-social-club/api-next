@@ -1802,42 +1802,77 @@ export function makeControlPlaneVideoPublicationStore(
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
+              yield* lock(
+                tx,
+                `video-cancel:${input.submission.actorAccountId}:${input.idempotencyKey}`,
+              );
+              const prior = yield* commandReplay(tx, {
+                actorAccountId: input.submission.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+              });
+              if (prior.kind !== "none") return prior;
               const current = yield* findSubmission(tx, {
                 clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
                 values: [input.submission.submissionId, input.submission.operationId],
               });
+              const unresolvedModeration =
+                current?.state.status === "processing_failed" &&
+                current.state.reconciliationRequired &&
+                current.state.failureCode === "provider_submission_unconfirmed";
+              const awaitingUpload =
+                current?.state.video === null && current.state.status === "processing";
               if (
                 current === null ||
-                current.state.video !== null ||
-                current.state.status !== "processing"
+                current.state.creationRevision !== input.expectedCreationRevision ||
+                (!awaitingUpload && !unresolvedModeration)
               )
                 throw new Error("video cancel rejected");
               const next: VideoSubmissionState = {
                 ...current.state,
                 status: "abandoned",
                 phase: null,
+                failureCode: null,
+                reconciliationRequired: false,
+                abandonmentReason: unresolvedModeration
+                  ? "author_abandoned_unresolved_provider"
+                  : "author_cancelled_before_finalize",
               };
-              yield* tx.execute({
-                label: "video-publication.cancel-reservation",
-                text: `UPDATE media_upload_reservations SET state='rejected',
+              if (awaitingUpload)
+                yield* tx.execute({
+                  label: "video-publication.cancel-reservation",
+                  text: `UPDATE media_upload_reservations SET state='rejected',
                         terminal_reason='source_precondition_failed',terminal_evidence_ref=$1,
                         terminal_evidence_digest=encode(sha256(convert_to($1,'UTF8')),'hex'),
                         terminal_at=clock_timestamp(),terminal_fence=claim_fence,
                         multipart_aborted_at=clock_timestamp(),updated_at=clock_timestamp()
                         WHERE reservation_id=$2 AND state='claimed'`,
-                values: [
-                  `video-author-cancel:${current.state.operationId}`,
-                  current.state.reservationId,
-                ],
-                readonly: false,
+                  values: [
+                    `video-author-cancel:${current.state.operationId}`,
+                    current.state.reservationId,
+                  ],
+                  readonly: false,
+                });
+              yield* updateSubmissionSnapshot(tx, {
+                prior: current.state,
+                next,
+                extraSql:
+                  ",abandonment_reason=$10,retention_disposition=$11,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL",
+                extraValues: unresolvedModeration
+                  ? ["author_abandoned_unresolved_provider", "retain_for_reconciliation"]
+                  : ["author_cancelled", "no_object"],
               });
-              yield* updateSubmissionSnapshot(tx, { prior: current.state, next });
-              return {
-                ...current,
-                eventSequence: current.eventSequence + 1,
-                state: next,
-                updatedAt: new Date().toISOString(),
-              };
+              yield* storeCommand(tx, {
+                state: current.state,
+                actorAccountId: current.state.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+                responseBytes: input.responseBytes,
+                responseSha256: input.responseSha256,
+              });
+              return { kind: "none" as const };
             }),
           );
         }),

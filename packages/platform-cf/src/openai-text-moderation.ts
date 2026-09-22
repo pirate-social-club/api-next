@@ -115,7 +115,10 @@ export type OpenAiTextModerationOptions = Readonly<{
 }>;
 
 class OpenAiModerationFailure extends Error {
-  constructor(readonly reason: TextModerationProviderError["reason"]) {
+  constructor(
+    readonly reason: TextModerationProviderError["reason"],
+    readonly responseStatus?: number,
+  ) {
     super(reason);
   }
 }
@@ -372,7 +375,7 @@ export function makeOpenAiTextModerationProvider(
             : { rate_limit_remaining_requests: rateLimitRemainingRequests }),
           ...(retryAfter === undefined ? {} : { retry_after: retryAfter }),
         });
-        throw new OpenAiModerationFailure("unavailable");
+        throw new OpenAiModerationFailure("unavailable", response.status);
       }
       const responseBytes = await readBoundedBody(
         response,
@@ -445,7 +448,12 @@ export function makeOpenAiTextModerationProvider(
       },
       catch: (cause) =>
         cause instanceof OpenAiModerationFailure
-          ? new TextModerationProviderError({ reason: cause.reason })
+          ? new TextModerationProviderError({
+              reason: cause.reason,
+              ...(cause.responseStatus === undefined
+                ? {}
+                : { responseStatus: cause.responseStatus }),
+            })
           : new TextModerationProviderError({ reason: "unavailable" }),
     });
 
@@ -499,7 +507,12 @@ export function makeOpenAiTextModerationProvider(
       },
       catch: (cause) =>
         cause instanceof OpenAiModerationFailure
-          ? new TextModerationProviderError({ reason: cause.reason })
+          ? new TextModerationProviderError({
+              reason: cause.reason,
+              ...(cause.responseStatus === undefined
+                ? {}
+                : { responseStatus: cause.responseStatus }),
+            })
           : new TextModerationProviderError({ reason: "unavailable" }),
     });
 

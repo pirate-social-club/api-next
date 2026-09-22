@@ -8763,6 +8763,33 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_attempt_author_retry() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  submission_retry_count INTEGER;
+  submission_status TEXT;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.author_retry_count IS DISTINCT FROM OLD.author_retry_count THEN
+      RAISE EXCEPTION 'media processing attempt author retry is immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.author_retry_count > 0 THEN
+    SELECT retry_count, status INTO submission_retry_count, submission_status
+      FROM media_post_submissions
+      WHERE submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      FOR SHARE;
+    IF submission_retry_count IS DISTINCT FROM NEW.author_retry_count
+      OR submission_status IS DISTINCT FROM 'processing' THEN
+      RAISE EXCEPTION 'media processing attempt author retry is not authorized';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_finalize_fence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -9260,7 +9287,7 @@ BEGIN
     OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.phase IS NOT DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count AND NEW.workflow_replacement_sequence = 0 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.failure_code IS NULL AND NEW.failure_retry_count IS NULL AND NEW.retryable IS NULL AND NEW.last_safe_phase IS NULL AND NEW.post_id IS NULL AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0))
     OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = OLD.last_safe_phase
       AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
-      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + (CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END))
     OR (OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'abandoned' AND NEW.phase IS NULL AND OLD.action_kind = 'reference_required'
       AND OLD.action_expires_at <= clock_timestamp() AND NEW.abandonment_reason = 'action_deadline_elapsed' AND NEW.post_id IS NULL)
     OR (OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload') AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
@@ -9429,7 +9456,7 @@ BEGIN
     IF NEW.workflow_replacement_sequence <> 0 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NOT EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0) THEN RAISE EXCEPTION 'operator reprocess transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
     IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'retry transition pointers are not exact'; END IF;
-    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
+    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + (CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END) OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
   END IF;
   IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.bound_reference_evidence_ref AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'bound reference evidence is missing'; END IF;
   IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
@@ -9513,7 +9540,7 @@ BEGIN
     OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.failure_code = 'workflow_terminal_unconverged' AND NEW.status = 'processing' AND NEW.phase IS NOT DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count AND NEW.workflow_replacement_sequence = 0 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.failure_code IS NULL AND NEW.failure_retry_count IS NULL AND NEW.retryable IS NULL AND NEW.last_safe_phase IS NULL AND NEW.post_id IS NULL AND EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0))
     OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = OLD.last_safe_phase
       AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
-      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision + (CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END))
     OR (OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'abandoned' AND NEW.phase IS NULL AND OLD.action_kind = 'reference_required'
       AND OLD.action_expires_at <= clock_timestamp() AND NEW.abandonment_reason = 'action_deadline_elapsed' AND NEW.post_id IS NULL)
     OR (OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload') AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
@@ -9682,7 +9709,7 @@ BEGIN
     IF NEW.workflow_replacement_sequence <> 0 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision IS DISTINCT FROM (SELECT COALESCE(max(d.decision_revision),0) FROM media_publication_decisions d WHERE d.operation_id=OLD.operation_id) OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.phase IS DISTINCT FROM (CASE WHEN OLD.last_safe_phase='publish' THEN 'decision' ELSE OLD.last_safe_phase END) OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NOT EXISTS (SELECT 1 FROM media_operator_reprocess_actions action WHERE action.community_id=NEW.community_id AND action.actor_user_id=NEW.actor_user_id AND action.submission_id=NEW.submission_id AND action.operation_id=NEW.operation_id AND action.expected_creation_revision=OLD.creation_revision AND action.expected_workflow_revision=OLD.workflow_revision AND action.resulting_creation_revision=NEW.creation_revision AND action.resulting_workflow_revision=NEW.workflow_revision AND action.replacement_budget_before=OLD.workflow_replacement_sequence AND action.replacement_budget_after=0) THEN RAISE EXCEPTION 'operator reprocess transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
     IF NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition THEN RAISE EXCEPTION 'retry transition pointers are not exact'; END IF;
-    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
+    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision + (CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END) OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
   END IF;
   IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.bound_reference_evidence_ref AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'bound reference evidence is missing'; END IF;
   IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
@@ -9754,6 +9781,34 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION guard_media_video_safety_provider_call() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.operation_id IS DISTINCT FROM NEW.operation_id
+    OR OLD.submission_id IS DISTINCT FROM NEW.submission_id
+    OR OLD.community_id IS DISTINCT FROM NEW.community_id
+    OR OLD.video_revision IS DISTINCT FROM NEW.video_revision
+    OR OLD.creation_revision IS DISTINCT FROM NEW.creation_revision
+    OR OLD.frame_role IS DISTINCT FROM NEW.frame_role
+    OR OLD.frame_artifact_ref IS DISTINCT FROM NEW.frame_artifact_ref
+    OR OLD.input_sha256 IS DISTINCT FROM NEW.input_sha256
+    OR OLD.timestamp_ms IS DISTINCT FROM NEW.timestamp_ms
+    OR OLD.requested_timestamp_ms IS DISTINCT FROM NEW.requested_timestamp_ms
+    OR OLD.request_id IS DISTINCT FROM NEW.request_id
+    OR OLD.claim_token IS DISTINCT FROM NEW.claim_token
+    OR OLD.claimed_at IS DISTINCT FROM NEW.claimed_at
+    OR OLD.state <> 'sending'
+    OR NEW.state NOT IN ('succeeded', 'failed')
+    OR OLD.provider_result IS NOT NULL
+    OR OLD.provider_failure IS NOT NULL
+    OR OLD.resolved_at IS NOT NULL
+  THEN
+    RAISE EXCEPTION 'video safety provider call is immutable';
+  END IF;
+  RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_media_video_song_reference() RETURNS trigger
     LANGUAGE plpgsql
@@ -13093,7 +13148,7 @@ CREATE TABLE media_post_submissions (
     poster_timestamp_ms bigint,
     video_state_snapshot jsonb,
     failure_evidence_ref text,
-    CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
+    CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text, 'author_abandoned_unresolved_provider'::text])))),
     CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
     CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),
     CONSTRAINT media_post_submissions_audio_revision_check CHECK ((audio_revision >= 0)),
@@ -20606,6 +20661,22 @@ BEGIN
      OR NEW.analysis_snapshot->'acr'->>'policyRevision' IS DISTINCT FROM NEW.acr_policy_revision
      OR NEW.analysis_snapshot->'acr'->>'adapterRevision' IS DISTINCT FROM NEW.acr_adapter_revision THEN
     RAISE EXCEPTION 'analysis snapshot scalars do not match columns';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_media_author_retry_launch() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_submission_outbox
+    WHERE submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      AND creation_revision=NEW.creation_revision AND workflow_revision=NEW.workflow_revision
+      AND event_type='analysis_launch'
+  ) THEN
+    RAISE EXCEPTION 'author retry requires its fresh Workflow launch';
   END IF;
   RETURN NEW;
 END;
@@ -28974,12 +29045,15 @@ CREATE TABLE media_processing_attempts (
     actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
     failure_evidence jsonb,
+    author_retry_count integer DEFAULT 0 NOT NULL,
+    CONSTRAINT media_attempt_author_retry_stage CHECK (((author_retry_count = 0) OR (stage = ANY (ARRAY['probe'::text, 'sample_primary'::text, 'sample_alternate'::text])))),
     CONSTRAINT media_processing_attempt_state_shape CHECK ((((state = 'pending'::text) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'running'::text) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (((evidence_ref IS NULL) AND (result IS NULL)) OR ((evidence_ref IS NOT NULL) AND (result IS NOT NULL)))) OR ((state = 'retry_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'poll_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable IS NULL) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'failed'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND ((result IS NULL) OR (evidence_ref IS NOT NULL))) OR ((state = 'succeeded'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'exhausted'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable = false) AND (failure_code IS NOT NULL) AND ((result IS NULL) OR (evidence_ref IS NOT NULL))))),
     CONSTRAINT media_processing_attempts_adapter_revision_check CHECK ((btrim(adapter_revision) <> ''::text)),
     CONSTRAINT media_processing_attempts_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_processing_attempts_attempt_id_check CHECK ((btrim(attempt_id) <> ''::text)),
     CONSTRAINT media_processing_attempts_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
     CONSTRAINT media_processing_attempts_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT media_processing_attempts_author_retry_count_check CHECK (((author_retry_count >= 0) AND (author_retry_count <= 3))),
     CONSTRAINT media_processing_attempts_claim_fence_check CHECK ((claim_fence >= 0)),
     CONSTRAINT media_processing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['invalid_media'::text, 'unsupported_media'::text, 'probe_failed'::text, 'hash_failed'::text, 'transform_failed'::text, 'publication_failed'::text, 'upload_seal_conflict'::text, 'elevenlabs_key_missing'::text, 'key_invalid'::text, 'rate_limited'::text, 'provider_unavailable'::text, 'timeout'::text, 'invalid_response'::text, 'alignment_failed'::text, 'lyrics_missing'::text, 'audio_missing'::text, 'provider_timeout'::text, 'provider_invalid'::text])))),
     CONSTRAINT media_processing_attempts_failure_evidence_shape CHECK (((failure_evidence IS NULL) OR ((jsonb_typeof(failure_evidence) = 'object'::text) AND (failure_evidence ? 'providerStatusClass'::text) AND (failure_evidence ? 'outcome'::text) AND (failure_evidence ? 'reason'::text) AND ((failure_evidence - ARRAY['providerStatusClass'::text, 'outcome'::text, 'reason'::text]) = '{}'::jsonb)))),
@@ -29669,6 +29743,40 @@ CREATE TABLE media_video_rights (
     CONSTRAINT media_video_rights_offered_license_check CHECK ((offered_license IS NULL)),
     CONSTRAINT media_video_rights_rights_basis_check CHECK ((rights_basis = ANY (ARRAY['original'::text, 'derivative'::text]))),
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
+);
+
+CREATE TABLE media_video_safety_provider_calls (
+    operation_id text NOT NULL,
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    creation_revision bigint NOT NULL,
+    frame_role text NOT NULL,
+    frame_artifact_ref text NOT NULL,
+    input_sha256 text NOT NULL,
+    timestamp_ms bigint NOT NULL,
+    requested_timestamp_ms bigint,
+    request_id text NOT NULL,
+    claim_token text NOT NULL,
+    state text NOT NULL,
+    provider_result jsonb,
+    provider_failure jsonb,
+    claimed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    resolved_at timestamp with time zone,
+    CONSTRAINT media_video_safety_provider_calls_claim_token_check CHECK ((claim_token ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text)),
+    CONSTRAINT media_video_safety_provider_calls_community_id_check CHECK ((btrim(community_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_video_safety_provider_calls_frame_artifact_ref_check CHECK ((btrim(frame_artifact_ref) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_frame_role_check CHECK ((frame_role = ANY (ARRAY['poster'::text, 'first'::text, 'midpoint'::text]))),
+    CONSTRAINT media_video_safety_provider_calls_input_sha256_check CHECK ((input_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_safety_provider_calls_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_requested_timestamp_ms_check CHECK (((requested_timestamp_ms IS NULL) OR (requested_timestamp_ms >= 0))),
+    CONSTRAINT media_video_safety_provider_calls_result_shape CHECK ((((state = 'sending'::text) AND (provider_result IS NULL) AND (provider_failure IS NULL) AND (resolved_at IS NULL)) OR COALESCE(((state = 'succeeded'::text) AND (provider_result IS NOT NULL) AND (provider_failure IS NULL) AND (resolved_at IS NOT NULL) AND (resolved_at >= claimed_at) AND (jsonb_typeof(provider_result) = 'object'::text) AND (octet_length((provider_result)::text) <= 12288) AND (provider_result ?& ARRAY['provider_id'::text, 'requested_model'::text, 'returned_model'::text, 'input_sha256'::text, 'matched_categories'::text, 'evidence'::text]) AND (((((((provider_result - 'provider_id'::text) - 'requested_model'::text) - 'returned_model'::text) - 'input_sha256'::text) - 'matched_categories'::text) - 'evidence'::text) = '{}'::jsonb) AND (jsonb_typeof((provider_result -> 'provider_id'::text)) = 'string'::text) AND (btrim((provider_result ->> 'provider_id'::text)) <> ''::text) AND (jsonb_typeof((provider_result -> 'requested_model'::text)) = 'string'::text) AND (btrim((provider_result ->> 'requested_model'::text)) <> ''::text) AND (jsonb_typeof((provider_result -> 'returned_model'::text)) = 'string'::text) AND (btrim((provider_result ->> 'returned_model'::text)) <> ''::text) AND ((provider_result ->> 'input_sha256'::text) = input_sha256) AND (jsonb_typeof((provider_result -> 'matched_categories'::text)) = 'array'::text) AND (jsonb_typeof((provider_result -> 'evidence'::text)) = 'object'::text) AND ((provider_result -> 'evidence'::text) ?& ARRAY['input_sha256'::text, 'categories'::text, 'scores'::text, 'applied_input_types'::text]) AND ((((((provider_result -> 'evidence'::text) - 'input_sha256'::text) - 'categories'::text) - 'scores'::text) - 'applied_input_types'::text) = '{}'::jsonb) AND (((provider_result -> 'evidence'::text) ->> 'input_sha256'::text) = input_sha256) AND (jsonb_typeof(((provider_result -> 'evidence'::text) -> 'categories'::text)) = 'object'::text) AND (jsonb_typeof(((provider_result -> 'evidence'::text) -> 'scores'::text)) = 'object'::text) AND (jsonb_typeof(((provider_result -> 'evidence'::text) -> 'applied_input_types'::text)) = 'object'::text)), false) OR COALESCE(((state = 'failed'::text) AND (provider_result IS NULL) AND (provider_failure IS NOT NULL) AND (resolved_at IS NOT NULL) AND (resolved_at >= claimed_at) AND (jsonb_typeof(provider_failure) = 'object'::text) AND (octet_length((provider_failure)::text) <= 512) AND (provider_failure ?& ARRAY['provider_id'::text, 'outcome'::text, 'reason'::text, 'status'::text]) AND (((((provider_failure - 'provider_id'::text) - 'outcome'::text) - 'reason'::text) - 'status'::text) = '{}'::jsonb) AND ((provider_failure ->> 'provider_id'::text) = 'openai'::text) AND ((provider_failure ->> 'outcome'::text) = 'non_success'::text) AND ((provider_failure ->> 'reason'::text) = 'unavailable'::text) AND (jsonb_typeof((provider_failure -> 'status'::text)) = 'number'::text) AND ((provider_failure ->> 'status'::text) ~ '^[0-9]{3}$'::text) AND ((((provider_failure ->> 'status'::text))::integer >= 300) AND (((provider_failure ->> 'status'::text))::integer <= 599))), false))),
+    CONSTRAINT media_video_safety_provider_calls_state_check CHECK ((state = ANY (ARRAY['sending'::text, 'succeeded'::text, 'failed'::text]))),
+    CONSTRAINT media_video_safety_provider_calls_submission_id_check CHECK ((btrim(submission_id) <> ''::text)),
+    CONSTRAINT media_video_safety_provider_calls_timestamp_ms_check CHECK ((timestamp_ms >= 0)),
+    CONSTRAINT media_video_safety_provider_calls_video_revision_check CHECK ((video_revision > 0))
 );
 
 CREATE TABLE media_video_source_grants (
@@ -34040,6 +34148,9 @@ ALTER TABLE ONLY media_analysis_evidence
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_submission_id_audio_revision_analys_key UNIQUE (submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
 
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_attempt_author_retry_identity UNIQUE (submission_id, audio_revision, analysis_revision, stage, author_retry_count, attempt_number);
+
 ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_pkey PRIMARY KEY (submission_id, audio_revision);
 
@@ -34114,9 +34225,6 @@ ALTER TABLE ONLY media_processing_attempts
 
 ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_provider_idempotency_key_key UNIQUE (provider_idempotency_key);
-
-ALTER TABLE ONLY media_processing_attempts
-    ADD CONSTRAINT media_processing_attempts_submission_id_audio_revision_anal_key UNIQUE (submission_id, audio_revision, analysis_revision, stage, attempt_number);
 
 ALTER TABLE ONLY media_publication_decisions
     ADD CONSTRAINT media_publication_decisions_pkey PRIMARY KEY (submission_id, decision_revision);
@@ -34300,6 +34408,15 @@ ALTER TABLE ONLY media_video_safety_evidence
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_request_id_key UNIQUE (request_id);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_calls_claim_token_key UNIQUE (claim_token);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_calls_pkey PRIMARY KEY (operation_id, video_revision, creation_revision, frame_role);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_calls_request_id_key UNIQUE (request_id);
 
 ALTER TABLE ONLY media_video_song_references
     ADD CONSTRAINT media_video_song_references_master_revision_id_key UNIQUE (master_revision_id);
@@ -36259,9 +36376,13 @@ CREATE TRIGGER media_analysis_lyrics_lineage_guard BEFORE INSERT ON media_analys
 
 CREATE TRIGGER media_analysis_snapshot_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_analysis_snapshot_v3();
 
+CREATE TRIGGER media_attempt_author_retry_guard BEFORE INSERT OR UPDATE ON media_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_media_attempt_author_retry();
+
 CREATE TRIGGER media_audio_lineage_guard BEFORE INSERT ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
 CREATE TRIGGER media_audio_revisions_append_only BEFORE DELETE OR UPDATE ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
+
+CREATE CONSTRAINT TRIGGER media_author_retry_launch AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'processing_failed'::text) AND (new.status = 'processing'::text) AND (new.retry_count = (old.retry_count + 1)) AND (new.audio_revision > 0))) EXECUTE FUNCTION validate_media_author_retry_launch();
 
 CREATE TRIGGER media_decision_lineage_guard BEFORE INSERT ON media_publication_decisions FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
@@ -36426,6 +36547,8 @@ CREATE TRIGGER media_video_reservation_update_guard BEFORE UPDATE ON media_uploa
 CREATE CONSTRAINT TRIGGER media_video_rights_basis_matches_intent AFTER INSERT OR UPDATE ON media_video_rights DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_media_video_rights_basis_matches_intent();
 
 CREATE TRIGGER media_video_safety_evidence_immutable BEFORE UPDATE ON media_video_safety_evidence FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
+
+CREATE TRIGGER media_video_safety_provider_call_guard BEFORE UPDATE ON media_video_safety_provider_calls FOR EACH ROW EXECUTE FUNCTION guard_media_video_safety_provider_call();
 
 CREATE TRIGGER media_video_song_reference_guard BEFORE DELETE OR UPDATE ON media_video_song_references FOR EACH ROW EXECUTE FUNCTION guard_media_video_song_reference();
 
@@ -38455,6 +38578,9 @@ ALTER TABLE ONLY media_video_rights
 
 ALTER TABLE ONLY media_video_safety_evidence
     ADD CONSTRAINT media_video_safety_evidence_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_safety_provider_calls
+    ADD CONSTRAINT media_video_safety_provider_c_community_id_submission_id_o_fkey FOREIGN KEY (community_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_video_song_references
     ADD CONSTRAINT media_video_song_references_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_accepted_masters(master_revision_id, plan_id) ON DELETE RESTRICT;

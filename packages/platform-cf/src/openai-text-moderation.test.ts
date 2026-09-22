@@ -46,6 +46,16 @@ const failureReason = async (
     : "unknown";
 };
 
+const providerFailure = async (
+  provider: ReturnType<typeof makeOpenAiTextModerationProvider>,
+): Promise<{ reason?: unknown; responseStatus?: unknown }> => {
+  const exit = await Effect.runPromiseExit(provider.evaluate(input));
+  if (Exit.isSuccess(exit)) throw new Error("expected provider failure");
+  const found = Cause.findError(exit.cause);
+  const failure = Result.isSuccess(found) ? found.success : undefined;
+  return typeof failure === "object" && failure !== null ? failure : {};
+};
+
 describe("OpenAI text moderation provider", () => {
   test("sends a bounded private image as one data-url input", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
@@ -145,7 +155,10 @@ describe("OpenAI text moderation provider", () => {
         return new Response("busy", { status: 503 });
       },
     });
-    expect(await failureReason(unavailable)).toBe("unavailable");
+    expect(await providerFailure(unavailable)).toMatchObject({
+      reason: "unavailable",
+      responseStatus: 503,
+    });
     expect(unavailableCalls).toBe(1);
 
     const redirected = makeOpenAiTextModerationProvider({
@@ -158,7 +171,10 @@ describe("OpenAI text moderation provider", () => {
         });
       },
     });
-    expect(await failureReason(redirected)).toBe("unavailable");
+    expect(await providerFailure(redirected)).toMatchObject({
+      reason: "unavailable",
+      responseStatus: 302,
+    });
 
     const timedOut = makeOpenAiTextModerationProvider({
       apiKey: "test-key",
@@ -170,7 +186,9 @@ describe("OpenAI text moderation provider", () => {
           });
         }),
     });
-    expect(await failureReason(timedOut)).toBe("timeout");
+    const timeoutFailure = await providerFailure(timedOut);
+    expect(timeoutFailure).toMatchObject({ reason: "timeout" });
+    expect(timeoutFailure).not.toHaveProperty("responseStatus");
 
     const oversized = makeOpenAiTextModerationProvider({
       apiKey: "test-key",

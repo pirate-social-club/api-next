@@ -14,7 +14,7 @@ export function parseAvatarRemoval(args: readonly string[]) {
       apply = true;
       continue;
     }
-    if (key !== "--database-url-env" && key !== "--asset-id")
+    if (key !== "--database-url-env" && key !== "--asset-id" && key !== "--schema")
       throw new Error("Unknown or duplicate argument");
     const value = args[++index];
     if (!value || value.startsWith("--") || options.has(key))
@@ -25,18 +25,22 @@ export function parseAvatarRemoval(args: readonly string[]) {
   if (!variable || !/^[A-Z][A-Z0-9_]*$/u.test(variable))
     throw new Error("An explicit database URL environment variable name is required");
   const assetId = Schema.decodeUnknownSync(AvatarAssetId)(options.get("--asset-id"));
-  return { variable, assetId, apply };
+  const schema = options.get("--schema") ?? "api_next";
+  if (!/^[a-z][a-z0-9_]*$/u.test(schema)) throw new Error("Invalid database schema");
+  return { variable, assetId, schema, apply };
 }
 
 async function main(args: readonly string[]) {
   if (args.length === 1 && args[0] === "--help") {
-    console.log("remove-avatar --database-url-env NAME --asset-id avatar-UUID [--apply]");
+    console.log(
+      "remove-avatar --database-url-env NAME --asset-id avatar-UUID [--schema api_next] [--apply]",
+    );
     console.log(
       "Defaults to a read-only preview. Apply revokes delivery; the cleanup job deletes bytes later.",
     );
     return;
   }
-  const { variable, assetId, apply } = parseAvatarRemoval(args);
+  const { variable, assetId, schema, apply } = parseAvatarRemoval(args);
   const raw = process.env[variable];
   if (!raw) throw new Error("Database URL is not configured");
   const connectionString = normalizePostgresConnectionString(raw);
@@ -46,23 +50,45 @@ async function main(args: readonly string[]) {
     Effect.scoped(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        yield* db.execute({
+          label: "avatars.operator.schema",
+          text: "SELECT set_config('search_path',$1,false)",
+          values: [`${schema},pg_catalog`],
+          readonly: false,
+        });
         const identity = yield* db.execute<{
           principal: string;
           database_name: string;
+          schema_name: string;
           authorized: boolean;
         }>({
           label: "avatars.operator.authority",
-          text: "SELECT session_user AS principal,current_database() AS database_name,(r.rolsuper OR pg_has_role(session_user,d.datdba,'USAGE')) AS authorized FROM pg_roles r JOIN pg_database d ON d.datname=current_database() WHERE r.rolname=session_user",
-          values: [],
+          text: `SELECT session_user AS principal,current_database() AS database_name,current_schema() AS schema_name,
+            (current_user=session_user AND current_schema()=$1
+              AND has_schema_privilege(session_user,current_schema(),'USAGE')
+              AND has_table_privilege(session_user,format('%I.%I',current_schema(),'avatar_assets'),'SELECT')
+              AND has_table_privilege(session_user,format('%I.%I',current_schema(),'avatar_assets'),'UPDATE')
+              AND has_table_privilege(session_user,format('%I.%I',current_schema(),'schema_migrations'),'SELECT')
+              AND has_table_privilege(session_user,format('%I.%I',current_schema(),'schema_migrations'),'INSERT')) AS authorized`,
+          values: [schema],
           readonly: true,
         });
         const operator = identity.rows[0];
         if (operator?.authorized !== true || typeof operator.principal !== "string")
           return yield* Effect.fail(new Error("Database operator required"));
         if (apply) yield* makeAvatarStoreFromDb(db).remove(assetId);
-        const asset = yield* db.execute<{ state: string; moderation_status: string }>({
+        const asset = yield* db.execute<{
+          asset_id: string;
+          owner_account_id: string;
+          purpose: string;
+          intent_id: string | null;
+          attached_target_id: string | null;
+          state: string;
+          moderation_status: string;
+        }>({
           label: "avatars.operator.report",
-          text: "SELECT state,moderation_status FROM avatar_assets WHERE asset_id=$1",
+          text: `SELECT asset_id,owner_account_id,purpose,intent_id,attached_target_id,state,moderation_status
+            FROM avatar_assets WHERE asset_id=$1`,
           values: [assetId],
           readonly: true,
         });
@@ -71,6 +97,7 @@ async function main(args: readonly string[]) {
           apply,
           operator_role: operator.principal,
           database: operator.database_name,
+          schema: operator.schema_name,
           delivery_revoked: apply,
           asset: asset.rows[0] ?? null,
         };

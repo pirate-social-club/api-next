@@ -10,6 +10,7 @@ import {
   services,
   transform,
 } from "./analysis.test-fixtures.ts";
+import { VideoSafetyModerationUnresolvedError } from "./analysis.ts";
 import type { VideoSubmissionRecord } from "./publication.ts";
 import { type VideoStageFact, validateVideoStageFact } from "./stage-facts.ts";
 import {
@@ -63,9 +64,20 @@ function fixture() {
         calls.publications++;
         return change(state);
       },
-      recordProcessingFailure: async ({ submission, observedEventSequence, failureCode }) => {
+      recordProcessingFailure: async ({
+        submission,
+        observedEventSequence,
+        failureCode,
+        reconciliationRequired,
+      }) => {
         expect(observedEventSequence).toBe(record.eventSequence);
-        return change({ ...submission, status: "processing_failed", phase: null, failureCode });
+        return change({
+          ...submission,
+          status: "processing_failed",
+          phase: null,
+          failureCode,
+          reconciliationRequired: reconciliationRequired === true,
+        });
       },
     },
     transform: {
@@ -343,6 +355,73 @@ test("database failure after accepted start propagates and replay observes the o
     status: "published",
   });
   expect(f.calls.starts).toBe(3);
+});
+
+test("unresolved image moderation becomes an author-visible non-retryable disposition", async () => {
+  const f = fixture();
+  let moderationInvocations = 0;
+  Object.assign(f.runtime.analysisProviders, {
+    moderate: async () => {
+      moderationInvocations += 1;
+      throw new VideoSafetyModerationUnresolvedError("video-safety-operation-c1:v1:poster");
+    },
+  });
+
+  expect(await runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).toEqual({
+    status: "reconciliation_required",
+  });
+  expect(f.record().state).toMatchObject({
+    status: "processing_failed",
+    phase: null,
+    failureCode: "provider_submission_unconfirmed",
+    reconciliationRequired: true,
+  });
+  expect(f.stageFacts.has("safety")).toBe(false);
+  expect(f.calls.publications).toBe(0);
+
+  f.continue();
+  expect(await runVideoAnalysisWorkflow(`${f.identity}:k1`, f.step, f.runtime)).toEqual({
+    status: "superseded",
+  });
+  expect(moderationInvocations).toBe(1);
+  expect(f.calls.publications).toBe(0);
+});
+
+test("a lost failure-write response retains the unresolved disposition and cannot publish", async () => {
+  const f = fixture();
+  Object.assign(f.runtime.analysisProviders, {
+    moderate: async () => {
+      throw new VideoSafetyModerationUnresolvedError("video-safety-operation-c1:v1:poster");
+    },
+  });
+  const persist = f.runtime.store.recordProcessingFailure;
+  let loseResponse = true;
+  Object.assign(f.runtime.store, {
+    recordProcessingFailure: async (input: Parameters<typeof persist>[0]) => {
+      const result = await persist(input);
+      if (loseResponse) {
+        loseResponse = false;
+        throw new Error("failure disposition response lost");
+      }
+      return result;
+    },
+  });
+
+  await expect(runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).rejects.toThrow(
+    "failure disposition response lost",
+  );
+  expect(f.record().state).toMatchObject({
+    status: "processing_failed",
+    failureCode: "provider_submission_unconfirmed",
+    reconciliationRequired: true,
+  });
+  expect(f.calls.publications).toBe(0);
+
+  f.continue();
+  expect(await runVideoAnalysisWorkflow(`${f.identity}:k1`, f.step, f.runtime)).toEqual({
+    status: "superseded",
+  });
+  expect(f.calls.publications).toBe(0);
 });
 
 for (const timing of ["before-wait", "entering-wait"] as const) {
