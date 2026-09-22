@@ -170,6 +170,20 @@ const source = {
 };
 
 describe("media submission service upload orchestration", () => {
+  test("projects the persisted publication route rather than the internal post identifier", () => {
+    const view = {
+      state: { ...awaitingUpload, status: "published" as const, postId: "media-post-internal-id" },
+      lyrics,
+      updatedAt: "2026-09-22T00:00:00.000Z",
+    };
+    expect(
+      projectMediaSubmission({ ...view, publishedHref: "/posts/fixture-song-2" }, persona),
+    ).toMatchObject({
+      published_resource: { post_id: "media-post-internal-id", href: "/posts/fixture-song-2" },
+    });
+    expect(() => projectMediaSubmission(view, persona)).toThrow("published post route missing");
+  });
+
   test("interrupts a pending persona lookup with the request boundary", async () => {
     let beginLookup!: () => void;
     const lookupBegan = new Promise<void>((resolve) => {

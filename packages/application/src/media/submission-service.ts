@@ -122,6 +122,8 @@ export type MediaSubmissionView = Readonly<{
   readonly state: MediaSubmissionState;
   readonly lyrics: MediaLyricsSnapshot;
   readonly updatedAt: string;
+  /** Persisted post alias, resolved only after submission ownership is checked. */
+  readonly publishedHref?: string;
 }>;
 
 export type MediaModeratorView = MediaSubmissionView &
@@ -544,7 +546,7 @@ function publicPersona(
 }
 
 export function projectMediaSubmission(
-  view: Readonly<{ state: MediaSubmissionState; lyrics: MediaLyricsSnapshot; updatedAt: string }>,
+  view: MediaSubmissionView,
   persona: PersonaRecord | MediaPostSubmissionV1["author_persona"],
 ): SongMediaPostSubmissionV1 {
   const { state } = view;
@@ -593,12 +595,13 @@ export function projectMediaSubmission(
       };
     case "published":
       if (state.postId === null) throw new Error("published post missing");
+      if (view.publishedHref === undefined) throw new Error("published post route missing");
       return {
         ...common,
         status: "published",
         published_resource: {
           post_id: state.postId,
-          href: `/posts/${encodeURIComponent(state.postId)}`,
+          href: view.publishedHref,
         },
       };
     case "blocked":
