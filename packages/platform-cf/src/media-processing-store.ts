@@ -544,7 +544,26 @@ export function makeMediaProcessingStore(
 
   const startAttempt: MediaProcessingStore["startAttempt"] = async (input) => {
     const attempts = await attemptsFor(input);
-    const latest = attempts.at(-1);
+    const isTransform = ["probe", "sample_primary", "sample_alternate"].includes(input.stage);
+    const authorRetryCount = isTransform ? input.authority.retryCount : 0;
+    // Completed transforms remain reusable; a rejected result is final only
+    // within the author retry that produced it.
+    if (isTransform) {
+      for (const attempt of attempts) {
+        if (attempt.authorRetryCount > authorRetryCount) continue;
+        if (attempt.state !== "succeeded" || attempt.result === null) continue;
+        const result = decodeAttemptResult(attempt.result);
+        if (
+          (result.kind === "probe" || result.kind === "sample") &&
+          result.value.status === "completed"
+        ) {
+          return { kind: "replay", result };
+        }
+      }
+    }
+    const latest = attempts
+      .filter((attempt) => attempt.authorRetryCount === authorRetryCount)
+      .at(-1);
     if (latest?.state === "succeeded") {
       if (latest.result === null) {
         throw new MediaProcessingStoreError({ operation: "attempt", reason: "invalid-row" });
@@ -562,9 +581,11 @@ export function makeMediaProcessingStore(
 
     const attemptNumber = (latest?.attemptNumber ?? 0) + 1;
     if (attemptNumber > 3) return { kind: "exhausted" };
-    const attemptId = `${input.attemptId}-n${attemptNumber}`;
+    const retrySuffix = authorRetryCount === 0 ? "" : `-r${authorRetryCount}`;
+    const attemptId = `${input.attemptId}${retrySuffix}-n${attemptNumber}`;
     await run(
       submissions.recordProcessingAttempt({
+        authorRetryCount,
         attemptId,
         communityId: input.authority.communityId,
         submissionId: input.authority.submissionId,

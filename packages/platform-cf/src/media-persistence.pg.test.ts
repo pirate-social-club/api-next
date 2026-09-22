@@ -75,7 +75,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 73;
+const testCount = 75;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -2794,6 +2794,111 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  for (const rejectedStage of ["probe", "sample"] as const) {
+    test(`author retry recovers a rejected ${rejectedStage} without replaying the rejection`, async () => {
+      await withCurrentSchema(async (admin, connection) => {
+        await createThroughDecision(connection, decision, analysis, true, undefined, true);
+        let rejected = true;
+        let probeCalls = 0;
+        let sampleCalls = 0;
+        const providers: MediaProcessingProviders = {
+          ...songInterpreterProviders,
+          transform: {
+            ...songInterpreterProviders.transform,
+            probe: ((input: MediaTransformProbeInput) => {
+              probeCalls += 1;
+              return rejected && rejectedStage === "probe"
+                ? Effect.succeed({
+                    status: "rejected" as const,
+                    reason: "inconsistent_media_facts" as const,
+                    attempt: input.attempt,
+                  })
+                : songInterpreterProviders.transform.probe(input);
+            }) as MediaTransformService["probe"],
+            extractAudioSample: (input) => {
+              sampleCalls += 1;
+              return rejected && rejectedStage === "sample"
+                ? Effect.succeed({
+                    status: "rejected" as const,
+                    reason: "inconsistent_media_facts" as const,
+                    attempt: input.attempt,
+                  })
+                : songInterpreterProviders.transform.extractAudioSample(input);
+            },
+          },
+        };
+        const interpret = () =>
+          Effect.runPromise(
+            runMediaProcessingWorkflow(
+              {
+                outboxId: "media_pg_analysis_outbox",
+                submissionId: submission,
+                operationId: operation,
+                workflowRevision: 1,
+              },
+              "analysis_launch",
+              {
+                store: makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection)),
+                providers,
+                options: {
+                  enabled: true,
+                  workerId: "song-retry-regression",
+                  now: Date.now,
+                  policyRevision: "fixture-v1",
+                  transformAdapterRevision: "fixture-v1",
+                  metadataAdapterRevision: "fixture-v1",
+                  classifierTimeoutMs: 10000,
+                  transformRuntimeMs: 60000,
+                  maximumSampleBytes: 1000000,
+                },
+              },
+            ),
+          );
+        expect(await interpret()).toEqual({ outcome: "processing_failed" });
+        expect(probeCalls).toBe(1);
+        expect(
+          await run(connection, (store) =>
+            store.getForAuthor({
+              communityId: community,
+              submissionId: submission,
+              actorUserId: actor,
+              personaId: personaFor(connection),
+            }),
+          ),
+        ).toMatchObject({
+          status: "processing_failed",
+          failure: {
+            code: rejectedStage === "probe" ? "probe_failed" : "transform_failed",
+            retryable: true,
+          },
+        });
+        rejected = false;
+        expect(
+          await run(connection, (store) =>
+            store.retry({
+              ...command(connection, "/media-post-submissions/:submissionId/retry", "retry-probe"),
+              expectedCreationRevision: 2,
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+        expect(await interpret()).toMatchObject({ outcome: "published_without_alignment" });
+        expect(probeCalls).toBe(rejectedStage === "probe" ? 2 : 1);
+        expect(sampleCalls).toBe(rejectedStage === "sample" ? 2 : 1);
+        expect(await interpret()).toMatchObject({ outcome: "inert" });
+        expect(probeCalls).toBe(rejectedStage === "probe" ? 2 : 1);
+        expect(sampleCalls).toBe(rejectedStage === "sample" ? 2 : 1);
+        expect(
+          (
+            await admin.query(
+              "SELECT count(*)::int AS count FROM media_publication_projections WHERE submission_id=$1",
+              [submission],
+            )
+          ).rows,
+        ).toEqual([{ count: 1 }]);
+      });
+      completedTestCount += 1;
+    }, 40_000);
+  }
   test("records bounded typed failure retries and exact abandonment reasons", async () => {
     await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection);

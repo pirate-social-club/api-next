@@ -8763,6 +8763,33 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_attempt_author_retry() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  submission_retry_count INTEGER;
+  submission_status TEXT;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.author_retry_count IS DISTINCT FROM OLD.author_retry_count THEN
+      RAISE EXCEPTION 'media processing attempt author retry is immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.author_retry_count > 0 THEN
+    SELECT retry_count, status INTO submission_retry_count, submission_status
+      FROM media_post_submissions
+      WHERE submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      FOR SHARE;
+    IF submission_retry_count IS DISTINCT FROM NEW.author_retry_count
+      OR submission_status IS DISTINCT FROM 'processing' THEN
+      RAISE EXCEPTION 'media processing attempt author retry is not authorized';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_finalize_fence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -28974,12 +29001,15 @@ CREATE TABLE media_processing_attempts (
     actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
     failure_evidence jsonb,
+    author_retry_count integer DEFAULT 0 NOT NULL,
+    CONSTRAINT media_attempt_author_retry_stage CHECK (((author_retry_count = 0) OR (stage = ANY (ARRAY['probe'::text, 'sample_primary'::text, 'sample_alternate'::text])))),
     CONSTRAINT media_processing_attempt_state_shape CHECK ((((state = 'pending'::text) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'running'::text) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (((evidence_ref IS NULL) AND (result IS NULL)) OR ((evidence_ref IS NOT NULL) AND (result IS NOT NULL)))) OR ((state = 'retry_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'poll_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable IS NULL) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'failed'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND ((result IS NULL) OR (evidence_ref IS NOT NULL))) OR ((state = 'succeeded'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'exhausted'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable = false) AND (failure_code IS NOT NULL) AND ((result IS NULL) OR (evidence_ref IS NOT NULL))))),
     CONSTRAINT media_processing_attempts_adapter_revision_check CHECK ((btrim(adapter_revision) <> ''::text)),
     CONSTRAINT media_processing_attempts_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_processing_attempts_attempt_id_check CHECK ((btrim(attempt_id) <> ''::text)),
     CONSTRAINT media_processing_attempts_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
     CONSTRAINT media_processing_attempts_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT media_processing_attempts_author_retry_count_check CHECK (((author_retry_count >= 0) AND (author_retry_count <= 3))),
     CONSTRAINT media_processing_attempts_claim_fence_check CHECK ((claim_fence >= 0)),
     CONSTRAINT media_processing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['invalid_media'::text, 'unsupported_media'::text, 'probe_failed'::text, 'hash_failed'::text, 'transform_failed'::text, 'publication_failed'::text, 'upload_seal_conflict'::text, 'elevenlabs_key_missing'::text, 'key_invalid'::text, 'rate_limited'::text, 'provider_unavailable'::text, 'timeout'::text, 'invalid_response'::text, 'alignment_failed'::text, 'lyrics_missing'::text, 'audio_missing'::text, 'provider_timeout'::text, 'provider_invalid'::text])))),
     CONSTRAINT media_processing_attempts_failure_evidence_shape CHECK (((failure_evidence IS NULL) OR ((jsonb_typeof(failure_evidence) = 'object'::text) AND (failure_evidence ? 'providerStatusClass'::text) AND (failure_evidence ? 'outcome'::text) AND (failure_evidence ? 'reason'::text) AND ((failure_evidence - ARRAY['providerStatusClass'::text, 'outcome'::text, 'reason'::text]) = '{}'::jsonb)))),
@@ -34040,6 +34070,9 @@ ALTER TABLE ONLY media_analysis_evidence
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_submission_id_audio_revision_analys_key UNIQUE (submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
 
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_attempt_author_retry_identity UNIQUE (submission_id, audio_revision, analysis_revision, stage, author_retry_count, attempt_number);
+
 ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_pkey PRIMARY KEY (submission_id, audio_revision);
 
@@ -34114,9 +34147,6 @@ ALTER TABLE ONLY media_processing_attempts
 
 ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_provider_idempotency_key_key UNIQUE (provider_idempotency_key);
-
-ALTER TABLE ONLY media_processing_attempts
-    ADD CONSTRAINT media_processing_attempts_submission_id_audio_revision_anal_key UNIQUE (submission_id, audio_revision, analysis_revision, stage, attempt_number);
 
 ALTER TABLE ONLY media_publication_decisions
     ADD CONSTRAINT media_publication_decisions_pkey PRIMARY KEY (submission_id, decision_revision);
@@ -36258,6 +36288,8 @@ CREATE TRIGGER media_analysis_lineage_guard BEFORE INSERT ON media_analysis_evid
 CREATE TRIGGER media_analysis_lyrics_lineage_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
 
 CREATE TRIGGER media_analysis_snapshot_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_analysis_snapshot_v3();
+
+CREATE TRIGGER media_attempt_author_retry_guard BEFORE INSERT OR UPDATE ON media_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_media_attempt_author_retry();
 
 CREATE TRIGGER media_audio_lineage_guard BEFORE INSERT ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
