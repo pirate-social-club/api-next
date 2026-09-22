@@ -18,6 +18,19 @@
       "name": "pirate-hns-owner-verifier-staging",
       "workers_dev": false,
       "preview_urls": false,
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "vpc_services": [
+        {
+          "binding": "HNS_OBSERVER_DRIVER",
+          "service_id": "01a0ca40-3b7b-7ac1-ac71-1b2567fd4c14"
+        }
+      ],
       "observability": {
         "enabled": true,
         "logs": {
@@ -27,10 +40,14 @@
       "vars": {
         "HNS_OWNERSHIP_SOURCE": "hns_parent_chain_txt",
         "HNS_CHALLENGE_TTL_SECONDS": "3600",
-        "HNS_EVIDENCE_TTL_SECONDS": "2592000",
+        "HNS_EVIDENCE_TTL_SECONDS": "3600",
         "HNS_PROVIDER_ENVIRONMENT": "staging",
-        "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-staging",
-        "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1"
+        "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-staging-regtest",
+        "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_PROVIDER_CONFIGURATION_DIGEST": "e838222720d4f69477d58a3f76f772b8bbdee608c0592a62c1dff6068becf9e8",
+        "HNS_CHAIN_DRIVER_REFERENCE": "hsd-json-rpc:staging-regtest",
+        "HNS_SNAPSHOT_STORE_REFERENCE": "postgres:hns-control-observer-v1",
+        "HNS_OBSERVER_DEADLINE_MS": "12000"
       }
     },
     "production": {
