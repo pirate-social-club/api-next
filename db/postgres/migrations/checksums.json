@@ -201,6 +201,6 @@
     "0198_song_terms_analysis_resume.sql": "93887d219c61fb6e8f77f7a5c243b8a7947048a7709348aa145699d0ef1d25f6",
     "0199_video_safety_provider_calls.sql": "e8dfe8d17b52b831e748e4a1a128278ff1ee6e1ac893b0ee1eed0db8305fe8bb",
     "0200_video_moderation_unresolved_abandonment.sql": "8c440362972e34059a595c5551d4fcba0ebe9a08188029fd7e9dc25930ff78ef",
-    "0201_song_transform_author_retry.sql": "438e1f3073dd41ea9a5e5fc87256f71082f46dda70c2ca369ff5f2a0b5c0c30c"
+    "0201_song_transform_author_retry.sql": "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c"
   }
 }

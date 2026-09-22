@@ -57,10 +57,10 @@ BEGIN
     END IF;
     definition := replace(definition,old_predicate,
       replace(old_predicate,'NEW.workflow_revision = OLD.workflow_revision)',
-        'NEW.workflow_revision = OLD.workflow_revision + CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END)'));
+        'NEW.workflow_revision = OLD.workflow_revision + (CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END))'));
     definition := replace(definition,old_guard,
       replace(old_guard,'NEW.workflow_revision <> OLD.workflow_revision OR',
-        'NEW.workflow_revision <> OLD.workflow_revision + CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END OR'));
+        'NEW.workflow_revision <> OLD.workflow_revision + (CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END) OR'));
     EXECUTE definition;
   END LOOP;
 END;
