@@ -4,8 +4,8 @@
   "package": "@pirate/api-client",
   "version": "0.88.0",
   "sourceBranch": "fix/video-moderation-call-protection",
-  "sourceBase": "e2e840389bd4cc6e2d5d29d7f12c554f211e1ba7",
-  "validatedSourceCommit": "c21cb68b6c72353f4fd28e75e0bf5b815cdaf726",
+  "sourceBase": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+  "validatedSourceCommit": "b00fd46fb34a70f63823c529e14e8daa5fe543d1",
   "pullRequest": 392,
   "wireContract": "Expose the terminal author abandonment command for a video whose per-frame image-moderation dispatch remains unresolved. The immutable provider claim is retained, automatic redispatch and retry remain unavailable, and abandonment never becomes an allow decision.",
   "artifact": {
@@ -23,7 +23,7 @@
       "Maintained four-shard discovery and dynamic song-video sentinel upload detection",
       "Required PostgreSQL 17 general shards 0, 1 and 3 with 51,200-lock capacity",
       "Required FFmpeg 6.1.1 composed-flow and render-host suites with exact completion sentinels",
-      "Exact operation-scoped clean-break waivers for the unresolved-provider abandonment enum against source base e2e84038"
+      "Exact operation-scoped clean-break waivers for the unresolved-provider abandonment enum against source base db8788ff"
     ],
     "remaining": [
       "Hosted required checks on the exact pull-request head",
