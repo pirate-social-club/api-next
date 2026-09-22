@@ -2928,11 +2928,15 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         await admin.query("BEGIN");
         await expect(
           admin.query(
-            `INSERT INTO media_processing_attempts
-             SELECT (jsonb_populate_record(NULL::media_processing_attempts,
-               to_jsonb(attempt) || jsonb_build_object(
-                 'attempt_id','forged-retry', 'provider_idempotency_key','forged-retry',
-                 'author_retry_count',2))).*
+            `INSERT INTO media_processing_attempts (
+               attempt_id, submission_id, community_id, actor_user_id, operation_id,
+               audio_revision, analysis_revision, stage, attempt_number, input_hash,
+               provider_idempotency_key, input_kind, input_revision, policy_revision,
+               adapter_revision, state, author_persona_id, author_retry_count)
+             SELECT 'forged-retry', submission_id, community_id, actor_user_id, operation_id,
+               audio_revision, analysis_revision, stage, 1, input_hash,
+               'forged-retry', input_kind, input_revision, policy_revision,
+               adapter_revision, 'pending', author_persona_id, 2
              FROM media_processing_attempts attempt
              WHERE submission_id=$1 AND stage='probe' LIMIT 1`,
             [submission],

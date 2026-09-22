@@ -57,10 +57,10 @@ BEGIN
     END IF;
     definition := replace(definition,old_predicate,
       replace(old_predicate,'NEW.workflow_revision = OLD.workflow_revision)',
-        'NEW.workflow_revision = OLD.workflow_revision + 1)'));
+        'NEW.workflow_revision = OLD.workflow_revision + CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END)'));
     definition := replace(definition,old_guard,
       replace(old_guard,'NEW.workflow_revision <> OLD.workflow_revision OR',
-        'NEW.workflow_revision <> OLD.workflow_revision + 1 OR'));
+        'NEW.workflow_revision <> OLD.workflow_revision + CASE WHEN OLD.audio_revision>0 THEN 1 ELSE 0 END OR'));
     EXECUTE definition;
   END LOOP;
 END;
@@ -83,5 +83,5 @@ $$;
 CREATE CONSTRAINT TRIGGER media_author_retry_launch
   AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW WHEN (OLD.status='processing_failed' AND NEW.status='processing'
-    AND NEW.retry_count=OLD.retry_count+1)
+    AND NEW.retry_count=OLD.retry_count+1 AND NEW.audio_revision>0)
   EXECUTE FUNCTION validate_media_author_retry_launch();

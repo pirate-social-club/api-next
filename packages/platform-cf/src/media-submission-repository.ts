@@ -2613,7 +2613,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               return yield* Effect.fail(fail(operation, "invalid-input"));
             yield* insertOutbox(tx, next, "decision_wakeup", projection.referenceWakeup);
           }
-          if (projection.event === "retry_authorized") {
+          if (projection.event === "retry_authorized" && next.audioRevision > 0) {
             const retryLaunchId = `media-author-retry-${next.operationId}-r${next.workflowRevision}`;
             yield* insertOutbox(tx, next, "analysis_launch", {
               outboxEventId: retryLaunchId,
@@ -2962,7 +2962,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       }),
       (next, current) => ({
         event: "retry_authorized",
-        text: "UPDATE media_post_submissions SET creation_revision=$1,retry_count=retry_count+1,workflow_revision=workflow_revision+1,status='processing',phase=$2,decision_revision=0,current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND status='processing_failed'",
+        text: "UPDATE media_post_submissions SET creation_revision=$1,retry_count=retry_count+1,workflow_revision=workflow_revision+CASE WHEN audio_revision>0 THEN 1 ELSE 0 END,status='processing',phase=$2,decision_revision=0,current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND status='processing_failed'",
         values: [
           next.creationRevision,
           next.phase,
