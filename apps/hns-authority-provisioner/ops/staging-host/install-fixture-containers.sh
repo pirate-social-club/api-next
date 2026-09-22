@@ -35,7 +35,7 @@ done
   --memory=384m --memory-swap=384m --cpus=0.6 --pids-limit=256 \
   --mount type=volume,source=pirate-hns-staging-hsd-data,target=/data \
   "$hsd_image" node node_modules/hsd/bin/hsd \
-  --network=regtest --prefix=/data --listen=false --max-outbound=0 \
+  --network=regtest --prefix=/data --listen=false --only=127.0.0.1:1 \
   --http-host=127.0.0.1 --http-port=24037 \
   --wallet-http-host=127.0.0.1 --wallet-http-port=24039 \
   --api-key=controlled-progression --index-tx --index-address
