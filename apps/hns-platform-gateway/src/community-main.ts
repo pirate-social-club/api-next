@@ -52,7 +52,8 @@ export function parseHnsCommunityAppGatewayArguments(
     arguments_[0] !== "--mode" ||
     (arguments_[1] !== "production" &&
       arguments_[1] !== "shadow" &&
-      arguments_[1] !== "staging-shadow") ||
+      arguments_[1] !== "staging-shadow" &&
+      arguments_[1] !== "staging-private-tls") ||
     arguments_[2] !== "--manifest" ||
     arguments_[3] === undefined ||
     !isAbsolute(arguments_[3]) ||

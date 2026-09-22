@@ -57,7 +57,11 @@ export const HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS = Object.freeze(
   health_port: 4271,
 });
 
-export type HnsCommunityAppGatewayDeploymentMode = "production" | "shadow" | "staging-shadow";
+export type HnsCommunityAppGatewayDeploymentMode =
+  | "production"
+  | "shadow"
+  | "staging-shadow"
+  | "staging-private-tls";
 
 const Identity = Schema.String.check(
   Schema.isMinLength(1),
@@ -158,6 +162,18 @@ const StagingDeploymentManifestV1 = Schema.Struct({
   ...commonDeploymentManifestFields,
 });
 
+const PrivateTlsStagingDeploymentManifestV1 = Schema.Struct({
+  schema: Schema.Literal("pirate-hns-community-app-gateway-staging-private-tls-v1"),
+  mode: Schema.Literal("staging-private-tls"),
+  staging_gateway_listener: Schema.Literal("127.0.0.1:4269"),
+  staging_health_listener: Schema.Literal("127.0.0.1:4271"),
+  tls_terminator_contract: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT),
+  private_tls_listener: Schema.Literal("172.31.254.2:443"),
+  public_tls_termination: Schema.Literal(false),
+  gateway_certificate_spki_sha256: Sha256,
+  ...commonDeploymentManifestFields,
+});
+
 type HnsCommunityAppGatewayDeploymentManifestV1 = Schema.Schema.Type<typeof DeploymentManifestV1>;
 
 type HnsCommunityAppHandleGatewayDeploymentManifestV1 = Schema.Schema.Type<
@@ -171,7 +187,8 @@ type HnsCommunityAppGatewayStagingDeploymentManifestV1 = Schema.Schema.Type<
 type HnsCommunityAppGatewayDeploymentManifest =
   | HnsCommunityAppGatewayDeploymentManifestV1
   | HnsCommunityAppHandleGatewayDeploymentManifestV1
-  | HnsCommunityAppGatewayStagingDeploymentManifestV1;
+  | HnsCommunityAppGatewayStagingDeploymentManifestV1
+  | Schema.Schema.Type<typeof PrivateTlsStagingDeploymentManifestV1>;
 
 export type HnsCommunityAppGatewayRuntimeConfigurationV1 = Readonly<{
   manifest: HnsCommunityAppGatewayDeploymentManifest;
@@ -251,6 +268,18 @@ const stagingManifestKeys = Object.freeze([
   "ingress_contract",
   "public_tls_termination",
   "synthetic_certificate_spki_sha256",
+  ...commonManifestKeys,
+] as const);
+
+const privateTlsStagingManifestKeys = Object.freeze([
+  "schema",
+  "mode",
+  "staging_gateway_listener",
+  "staging_health_listener",
+  "tls_terminator_contract",
+  "private_tls_listener",
+  "public_tls_termination",
+  "gateway_certificate_spki_sha256",
   ...commonManifestKeys,
 ] as const);
 
@@ -365,8 +394,10 @@ function decodeManifest(
     const text = decoder.decode(bytes);
     const raw: unknown = JSON.parse(text);
     const staging = mode === "staging-shadow";
+    const privateTlsStaging = mode === "staging-private-tls";
     const combined =
       !staging &&
+      !privateTlsStaging &&
       typeof raw === "object" &&
       raw !== null &&
       !Array.isArray(raw) &&
@@ -374,21 +405,25 @@ function decodeManifest(
     if (
       !exactObjectKeys(
         raw,
-        staging
-          ? stagingManifestKeys
-          : combined
-            ? combinedProductionManifestKeys
-            : productionManifestKeys,
+        privateTlsStaging
+          ? privateTlsStagingManifestKeys
+          : staging
+            ? stagingManifestKeys
+            : combined
+              ? combinedProductionManifestKeys
+              : productionManifestKeys,
       ) ||
       JSON.stringify(raw) !== text
     ) {
       throw new Error("noncanonical manifest");
     }
-    const manifest = staging
-      ? Schema.decodeUnknownSync(StagingDeploymentManifestV1)(raw)
-      : combined
-        ? Schema.decodeUnknownSync(CombinedDeploymentManifestV1)(raw)
-        : Schema.decodeUnknownSync(DeploymentManifestV1)(raw);
+    const manifest = privateTlsStaging
+      ? Schema.decodeUnknownSync(PrivateTlsStagingDeploymentManifestV1)(raw)
+      : staging
+        ? Schema.decodeUnknownSync(StagingDeploymentManifestV1)(raw)
+        : combined
+          ? Schema.decodeUnknownSync(CombinedDeploymentManifestV1)(raw)
+          : Schema.decodeUnknownSync(DeploymentManifestV1)(raw);
     if (
       !exactHttpsOrigin(manifest.solid_origin) ||
       exactAuthorityDatabaseEndpoint(manifest.authority_database_endpoint) === null

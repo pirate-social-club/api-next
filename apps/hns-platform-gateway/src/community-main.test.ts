@@ -152,6 +152,20 @@ describe("community gateway executable assembly", () => {
         "arguments are invalid",
       );
     }
+    expect(
+      parseHnsCommunityAppGatewayArguments([
+        "--mode",
+        "staging-private-tls",
+        "--manifest",
+        "/srv/pirate-hns-staging/gateway/deployment-manifest.json",
+      ]),
+    ).toEqual({
+      mode: "staging-private-tls",
+      manifest_path: "/srv/pirate-hns-staging/gateway/deployment-manifest.json",
+    });
+    expect(listenersForMode("staging-private-tls")).toBe(
+      HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS,
+    );
     expect(HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS).toEqual({
       gateway_host: "127.0.0.1",
       gateway_port: 4069,

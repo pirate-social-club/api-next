@@ -65,6 +65,20 @@ async function manifest(
     api_next_source_commit: sourceCommit,
     bundle_sha256: await sha256(bundleBytes),
   };
+  if (mode === "staging-private-tls") {
+    return JSON.stringify({
+      schema: "pirate-hns-community-app-gateway-staging-private-tls-v1",
+      mode,
+      staging_gateway_listener: "127.0.0.1:4269",
+      staging_health_listener: "127.0.0.1:4271",
+      tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
+      private_tls_listener: "172.31.254.2:443",
+      public_tls_termination: false,
+      gateway_certificate_spki_sha256: "c".repeat(64),
+      ...common,
+      ...overrides,
+    });
+  }
   return JSON.stringify(
     mode === "staging-shadow"
       ? {
@@ -174,6 +188,38 @@ async function loadCombined(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 describe("community gateway deployment configuration", () => {
+  test("binds private staging TLS without accepting synthetic or production manifests", async () => {
+    const configuration = await load({ mode: "staging-private-tls" });
+    expect(configuration.manifest).toMatchObject({
+      mode: "staging-private-tls",
+      private_tls_listener: "172.31.254.2:443",
+      gateway_certificate_spki_sha256: "c".repeat(64),
+      public_tls_termination: false,
+    });
+    const changed = await load({
+      mode: "staging-private-tls",
+      manifest_overrides: { gateway_certificate_spki_sha256: "d".repeat(64) },
+    });
+    expect(changed.gateway_deployment_reference).not.toBe(
+      configuration.gateway_deployment_reference,
+    );
+    for (const other of ["production", "shadow", "staging-shadow"] as const) {
+      await expect(load({ mode: "staging-private-tls", manifest_mode: other })).rejects.toThrow();
+      await expect(load({ mode: other, manifest_mode: "staging-private-tls" })).rejects.toThrow();
+    }
+    for (const manifest_overrides of [
+      { staging_gateway_listener: "0.0.0.0:4269" },
+      { staging_health_listener: "127.0.0.1:4071" },
+      { private_tls_listener: "0.0.0.0:443" },
+      { public_tls_termination: true },
+      { gateway_certificate_spki_sha256: "c".repeat(63) },
+      { synthetic_certificate_spki_sha256: "c".repeat(64) },
+      { tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT },
+    ]) {
+      await expect(load({ mode: "staging-private-tls", manifest_overrides })).rejects.toThrow();
+    }
+  });
+
   test("binds exact manifest bytes, artifact, source, registry, and credential references", async () => {
     const manifestText = await manifest("production");
     const configuration = await load();

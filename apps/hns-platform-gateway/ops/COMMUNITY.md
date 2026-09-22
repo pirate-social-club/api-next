@@ -54,6 +54,27 @@ synthetic nonpublic SPKI digest used only for authority-tuple equality during
 the loopback preflight. It is not evidence of a certificate, TLS termination,
 TLSA record, DNSSEC validation, or public reachability.
 
+The separate `staging-private-tls` mode uses schema
+`pirate-hns-community-app-gateway-staging-private-tls-v1`. It preserves the
+staging loopback listener pair and therefore cannot run concurrently with
+staging-shadow. It binds `staging_gateway_listener` to `127.0.0.1:4269`,
+`staging_health_listener` to `127.0.0.1:4271`, `private_tls_listener` to
+`172.31.254.2:443`, and the maintained `tls_terminator_contract`. It requires
+the real certificate's `gateway_certificate_spki_sha256`, not a synthetic
+pin. `public_tls_termination` remains false because this is an isolated
+private container, not a public ingress. All common artifact, source,
+credential, authority, origin and registry fields remain mandatory.
+
+This manifest binds intended configuration; loading it does not observe a
+certificate or prove TLSA agreement. Readiness and acceptance must separately
+compare the actual peer SPKI with the provisioned TLSA and approved manifest.
+The Caddy profile lives under the authority provisioner's `ops/staging-host`.
+Its bridge-to-loopback transport and the gateway's read-only database role,
+staging forwarder registry and outbound Access pair must be qualified before
+installation. No production credential or broad runtime database role is a
+substitute. The production, shadow and synthetic staging manifest schemas do
+not accept this mode, and its schema accepts none of their manifests.
+
 The four credential names in the manifest are logical systemd credential
 names. Values never enter the manifest. The authority database URL must belong
 to a separate server-enforced read-only role and use `sslmode=verify-full`.
