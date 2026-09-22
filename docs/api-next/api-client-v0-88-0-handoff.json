@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.88.0",
+  "sourceBranch": "fix/video-moderation-call-protection",
+  "sourceBase": "db8788ff55a4a0b9748056c085d86c4f811e7b69",
+  "validatedSourceCommit": "b00fd46fb34a70f63823c529e14e8daa5fe543d1",
+  "pullRequest": 392,
+  "wireContract": "Expose the terminal author abandonment command for a video whose per-frame image-moderation dispatch remains unresolved. The immutable provider claim is retained, automatic redispatch and retry remain unavailable, and abandonment never becomes an allow decision.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.88.0.tgz",
+    "sha256": "b4c54d4334d6b05034dd287dae17eb0c2278d3e3de9d14bcba9fbe9754efc393"
+  },
+  "validation": {
+    "status": "Rebased local candidate passed required local repository and affected PostgreSQL gates; hosted review and paired Solid adoption pending",
+    "passed": [
+      "Contract generation",
+      "PostgreSQL baseline regeneration",
+      "Migration sequence integration after current main through 0198",
+      "Immutable package creation from the generated 0.88.0 client",
+      "Repository check and complete unit, Node and Workerd test graph",
+      "Maintained four-shard discovery and dynamic song-video sentinel upload detection",
+      "Required PostgreSQL 17 general shards 0, 1 and 3 with 51,200-lock capacity",
+      "Required FFmpeg 6.1.1 composed-flow and render-host suites with exact completion sentinels",
+      "Exact operation-scoped clean-break waivers for the unresolved-provider abandonment enum against source base db8788ff"
+    ],
+    "remaining": [
+      "Hosted required checks on the exact pull-request head",
+      "Paired Solid 0.88.0 adoption and local browser qualification"
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use, Stream operation or live product mutation occurred."
+  }
+}

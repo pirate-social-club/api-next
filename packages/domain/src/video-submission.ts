@@ -296,6 +296,11 @@ export type VideoSubmissionState = Readonly<{
     | "provider_submission_unconfirmed"
     | "upload_seal_conflict"
     | null;
+  /** Present only after an author has persisted a terminal abandonment. */
+  abandonmentReason?:
+    | "author_cancelled_before_finalize"
+    | "author_abandoned_unresolved_provider"
+    | null;
   postId: string | null;
 }>;
 

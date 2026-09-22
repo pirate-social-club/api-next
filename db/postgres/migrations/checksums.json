@@ -199,6 +199,8 @@
     "0196_active_song_submission_recovery.sql": "9f91e86ad024969b36b325316304f4d2daeb825dbc17639c1090133ac21cffb4",
     "0197_community_owner_session_sufficiency.sql": "25b5801040e50c39e2ba6f3510b3ed10eb415b67b8f5d15b8f6982987fe71db4",
     "0198_song_terms_analysis_resume.sql": "93887d219c61fb6e8f77f7a5c243b8a7947048a7709348aa145699d0ef1d25f6",
+    "0199_video_safety_provider_calls.sql": "e8dfe8d17b52b831e748e4a1a128278ff1ee6e1ac893b0ee1eed0db8305fe8bb",
+    "0200_video_moderation_unresolved_abandonment.sql": "8c440362972e34059a595c5551d4fcba0ebe9a08188029fd7e9dc25930ff78ef",
     "0201_song_transform_author_retry.sql": "438e1f3073dd41ea9a5e5fc87256f71082f46dda70c2ca369ff5f2a0b5c0c30c"
   }
 }

@@ -1453,6 +1453,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_video_revisions",
         "media_video_rights",
         "media_video_safety_evidence",
+        "media_video_safety_provider_calls",
         "media_video_song_references",
         "media_video_source_grants",
         "media_video_stage_facts",
