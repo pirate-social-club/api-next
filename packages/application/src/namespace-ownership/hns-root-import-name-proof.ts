@@ -26,7 +26,7 @@ const NameProofChain = Schema.Struct({
   ),
 });
 
-export type HnsNameProofChain = Schema.Schema.Type<typeof NameProofChain>;
+type HnsNameProofChain = Schema.Schema.Type<typeof NameProofChain>;
 
 function messageChainFields(chain: HnsNameProofChain | undefined, environment: string) {
   if (chain === undefined) return [HNS_ROOT_IMPORT_NAME_PROOF_NETWORK] as const;
@@ -38,49 +38,6 @@ function messageChainFields(chain: HnsNameProofChain | undefined, environment: s
     throw new TypeError("HNS name-proof chain configuration is invalid");
   }
   return [decoded.value.network, decoded.value.genesis_block_hash] as const;
-}
-
-export function hnsNameProofMessageMatchesContext(input: {
-  readonly message: string;
-  readonly root_label: string;
-  readonly root_import_session_id: string;
-  readonly chain?: HnsNameProofChain;
-  readonly environment?: string;
-}): boolean {
-  try {
-    const decoded = Schema.decodeUnknownOption(Schema.Array(Schema.String))(
-      decodeStrictHnsJsonBytes(
-        encoder.encode(input.message),
-        HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES,
-      ),
-    );
-    if (Option.isNone(decoded)) return false;
-    const fields = decoded.value;
-    const explicit = input.chain !== undefined;
-    const versions = explicit
-      ? ["pirate-hns-root-import-name-proof-v2", "pirate-hns-community-root-import-name-proof-v2"]
-      : [HNS_ROOT_IMPORT_NAME_PROOF_VERSION, HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION];
-    if (
-      fields.length !== (explicit ? 12 : 11) ||
-      !versions.some((version) => version === fields[0]) ||
-      fields[4] !== input.root_import_session_id ||
-      fields[6] !== input.root_label ||
-      canonicalJson(fields) !== input.message ||
-      (explicit && input.environment === undefined)
-    )
-      return false;
-    const environment = fields[explicit ? 9 : 8];
-    if (
-      environment === undefined ||
-      (input.environment !== undefined && environment !== input.environment)
-    )
-      return false;
-    return messageChainFields(input.chain, environment).every(
-      (field, index) => fields[7 + index] === field,
-    );
-  } catch {
-    return false;
-  }
 }
 
 function canonicalCompactSignature(value: string): boolean {

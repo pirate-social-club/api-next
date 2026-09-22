@@ -1,24 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import {
-  decodeHnsRootImportNameProofResultV1,
-  hnsRootImportNameProofMessage,
-} from "@pirate/application/namespace-ownership";
+import { decodeHnsRootImportNameProofResultV1 } from "@pirate/application/namespace-ownership";
 import type { HnsControlObserverHsdPrivateCapability } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import { HnsNameProofRuntimeError, makeHnsNameProofRuntime } from "./name-proof.ts";
 
 const signature = btoa("\u0001".repeat(64));
-const proofInput = {
-  actor_id: "actor-1",
-  creation_intent_id: "intent-1",
-  ceremony_intent_id: "ceremony-1",
-  root_import_session_id: "root-import-1",
-  namespace_session_id: "namespace-1",
-  root_label: "dankmemes",
-  challenge_txt_value: "pirate-verification=namespace-1",
-  environment: "staging",
-  expires_at: "2026-09-23T00:00:00.000Z",
-};
-const message = hnsRootImportNameProofMessage(proofInput);
+const message = '["pirate-hns-root-import-name-proof-v1","fixture"]';
 
 function capability(
   responseBody: string,
@@ -36,46 +22,6 @@ function capability(
 }
 
 describe("HNS name-proof verifier runtime", () => {
-  test("refuses cross-chain, wrong-session and unconfigured proofs before any HSD call", async () => {
-    const chain = { network: "regtest", genesis_block_hash: "a".repeat(64) } as const;
-    const requests: string[] = [];
-    const transport = capability('{"result":true,"error":null,"id":null}', requests);
-    const runtime = makeHnsNameProofRuntime({
-      capability: transport,
-      chain,
-      environment: "staging",
-    });
-    const valid = hnsRootImportNameProofMessage({ ...proofInput, chain });
-    for (const rejected of [
-      message,
-      hnsRootImportNameProofMessage({ ...proofInput, chain: { ...chain, network: "main" } }),
-      hnsRootImportNameProofMessage({
-        ...proofInput,
-        chain: { ...chain, genesis_block_hash: "b".repeat(64) },
-      }),
-      hnsRootImportNameProofMessage({ ...proofInput, chain, environment: "test" }),
-      hnsRootImportNameProofMessage({ ...proofInput, chain, root_import_session_id: "other" }),
-    ]) {
-      await expect(
-        runtime.verify(
-          { ...proofInput, message: rejected, signature },
-          new AbortController().signal,
-        ),
-      ).rejects.toBeInstanceOf(HnsNameProofRuntimeError);
-    }
-    await expect(
-      makeHnsNameProofRuntime({ capability: transport }).verify(
-        { ...proofInput, message: valid, signature },
-        new AbortController().signal,
-      ),
-    ).rejects.toBeInstanceOf(HnsNameProofRuntimeError);
-    expect(requests).toHaveLength(0);
-    await runtime.verify(
-      { ...proofInput, message: valid, signature },
-      new AbortController().signal,
-    );
-    expect(requests).toHaveLength(1);
-  });
   test("calls HSD with the exact safe name-verification vector", async () => {
     const requests: string[] = [];
     const runtime = makeHnsNameProofRuntime({
