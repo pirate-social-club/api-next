@@ -468,6 +468,7 @@ export * from "./hns-root-import-lifecycle-codec.ts";
 export * from "./hns-root-import-lifecycle-projection.ts";
 export type {
   HnsCommunityRootImportNameProofMessageInput,
+  HnsNameProofChain,
   HnsRootImportNameProofMessageInput,
 } from "./hns-root-import-name-proof.ts";
 export {
@@ -483,6 +484,7 @@ export {
   HnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
   hnsCommunityRootImportNameProofMessage,
+  hnsNameProofMessageMatchesContext,
   hnsRootImportNameProofMessage,
 } from "./hns-root-import-name-proof.ts";
 export * from "./hns-root-import-plan.ts";

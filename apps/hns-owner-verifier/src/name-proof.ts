@@ -3,8 +3,10 @@ import {
   encodeHnsRootImportNameProofResultV1,
   HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD,
   HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES,
+  type HnsNameProofChain,
   HnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
+  hnsNameProofMessageMatchesContext,
 } from "@pirate/application/namespace-ownership";
 import type { HnsControlObserverHsdPrivateCapability } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import { Option, Predicate, Schema } from "effect";
@@ -114,10 +116,22 @@ function exactRpcResult(bytes: Uint8Array): boolean {
 
 export function makeHnsNameProofRuntime(input: {
   readonly capability: HnsControlObserverHsdPrivateCapability;
+  readonly chain?: HnsNameProofChain;
+  readonly environment?: string;
 }): HnsNameProofRuntime {
   return {
     verify: async (request, signal) => {
       if (signal.aborted) throw new HnsNameProofRuntimeError("unavailable");
+      if (
+        !hnsNameProofMessageMatchesContext({
+          message: request.message,
+          root_label: request.root_label,
+          root_import_session_id: request.root_import_session_id,
+          ...(input.chain === undefined ? {} : { chain: input.chain }),
+          ...(input.environment === undefined ? {} : { environment: input.environment }),
+        })
+      )
+        throw new HnsNameProofRuntimeError("invalid_request");
       const requestBytes = encoder.encode(
         JSON.stringify({
           method: HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD,
