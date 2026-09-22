@@ -28,7 +28,11 @@ export async function seedVeryRewardEvidence(
   accountId: string,
   suffix: string,
   subjectDigest = "1".repeat(64),
+  evidenceAge: "current" | "expired" = "current",
 ): Promise<void> {
+  // Seed a coherently completed historical ceremony rather than mutate immutable evidence.
+  const observedAt =
+    evidenceAge === "expired" ? "(clock_timestamp() - interval '2 days')" : "clock_timestamp()";
   const proofSessionId = `composed-proof-${suffix}`;
   const subjectId = `composed-subject-${suffix}`;
   const bindingEventId = `composed-binding-${suffix}`;
@@ -44,7 +48,7 @@ export async function seedVeryRewardEvidence(
              started_at, expires_at, upstream_session_ref
            ) VALUES ($1,$2,$3,$4,$5,'dynamic',$6,$7,$8,$9,'issuer_rp_scope',$10,
              NULL,'dynamic',$11,'test','pending',$12::jsonb,$13::jsonb,$15,
-             clock_timestamp(),clock_timestamp() + interval '5 minutes',$14)`,
+             ${observedAt},${observedAt} + interval '5 minutes',$14)`,
     values: [
       proofSessionId,
       accountId,
@@ -76,7 +80,7 @@ export async function seedVeryRewardEvidence(
       text: `INSERT INTO subject_key_binding_events (
                binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
                binding_kind, idempotency_key, bound_at, previous_binding_event_id
-             ) VALUES ($1,$2,1,$3,$4,'initial',$5,clock_timestamp(),NULL)`,
+             ) VALUES ($1,$2,1,$3,$4,'initial',$5,${observedAt},NULL)`,
       values: [bindingEventId, subjectId, accountId, proofSessionId, `composed-bind-${suffix}`],
     });
     await admin.query({
@@ -88,8 +92,8 @@ export async function seedVeryRewardEvidence(
                provider_configuration_kind, provider_configuration_ref,
                provider_configuration_version
              ) VALUES ($1,$2,$3,$4,$5,$6,'issuer_rp_scope',$7,NULL,$8,'test',
-               'very.web.server-verified.v1',$9,'{}'::jsonb,clock_timestamp(),
-               clock_timestamp() + interval '1 day','proof_session',$10,$11,1,
+               'very.web.server-verified.v1',$9,'{}'::jsonb,${observedAt},
+               ${observedAt} + interval '1 day','proof_session',$10,$11,1,
                'dynamic',$12,$13)`,
       values: [
         receiptId,
@@ -120,9 +124,9 @@ export async function seedVeryRewardEvidence(
                claim_id, assertion_value, assurance, observed_at, expires_at
              ) VALUES
                ($1,$2,$3,$4,$5,'human.personhood','{"personhood":true}'::jsonb,
-                'provider_attested',clock_timestamp(),clock_timestamp() + interval '1 day'),
+                'provider_attested',${observedAt},${observedAt} + interval '1 day'),
                ($6,$2,$3,$4,$5,'credential.subject_unique','{"subject_unique":true}'::jsonb,
-                'provider_attested',clock_timestamp(),clock_timestamp() + interval '1 day')`,
+                'provider_attested',${observedAt},${observedAt} + interval '1 day')`,
       values: [
         `composed-assertion-person-${suffix}`,
         bindingId,
@@ -133,7 +137,7 @@ export async function seedVeryRewardEvidence(
       ],
     });
     await admin.query({
-      text: `WITH terminal(value) AS (SELECT clock_timestamp())
+      text: `WITH terminal(value) AS (SELECT ${observedAt})
              UPDATE proof_sessions
                 SET status='completed',completed_at=terminal.value,
                     completion_idempotency_key=$2,completion_result_hash=$3,
