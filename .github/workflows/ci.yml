@@ -296,6 +296,15 @@ jobs:
           done
           docker logs "$container" 2>&1 | tail -200
           exit 1
+      - name: Run real isolated HNS authorities
+        # Hosted jobs have their own VM. Bind only the two fixture loopbacks;
+        # a occupied listener is an error, never a reason to stop host DNS.
+        run: |
+          set -euo pipefail
+          command -v dig
+          docker pull powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59
+          bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-local \
+            2>&1 | tee /tmp/api-next-hns-authority-fixture.log
       - name: Run required HNS regtest suites
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -307,6 +316,7 @@ jobs:
           HNS_REGTEST_PRESERVE_RECEIPTS: "1"
         run: bun run test:hns-regtest
       - name: Upload HNS regtest receipts
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hns-regtest-receipts
@@ -314,6 +324,7 @@ jobs:
             /tmp/api-next-hns-regtest-run-*/composed-path-suite-complete
             /tmp/api-next-hns-regtest-run-*/service-loop-suite-complete
             /tmp/api-next-hns-regtest-report.json
+            /tmp/api-next-hns-authority-fixture.log
           if-no-files-found: error
           retention-days: 7
       - name: Show sanitized HSD diagnostics
@@ -321,7 +332,7 @@ jobs:
         run: docker logs "$HNS_REGTEST_CONTAINER_NAME" 2>&1 | tail -200
       - name: Remove the job-owned HSD fixture
         if: always() && env.HNS_REGTEST_CONTAINER_NAME != ''
-        run: docker rm -f "$HNS_REGTEST_CONTAINER_NAME"
+        run: docker rm -f -v "$HNS_REGTEST_CONTAINER_NAME"
 
   postgres17-general:
     name: postgres17-general-${{ matrix.shard }}

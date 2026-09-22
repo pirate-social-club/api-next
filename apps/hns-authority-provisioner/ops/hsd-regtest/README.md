@@ -121,5 +121,5 @@ suite receipts plus the completed-suite count report. Remove only the named
 containers created for the invocation:
 
 ```sh
-docker rm -f api-next-hns-regtest-hsd api-next-hns-regtest-pg
+docker rm -f -v api-next-hns-regtest-hsd api-next-hns-regtest-pg
 ```
