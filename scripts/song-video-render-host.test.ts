@@ -13,6 +13,8 @@ import {
   makeHostMasterOutputStore,
   makeHostMasterOutputWriter,
   makeHostMediaReader,
+  makeHostR2Adapters,
+  readHostR2Credentials,
 } from "./song-video-render-host-r2.ts";
 
 const bucket = "media-immutable-originals";
@@ -197,6 +199,110 @@ const accepted = {
     soundtrackSha256: "d".repeat(64),
   },
 };
+
+describe("host R2 credentials", () => {
+  const output = {
+    SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "output-key",
+    SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "output-secret",
+  };
+
+  test("uses the output pair for everything when no input pair is set", () => {
+    expect(
+      readHostR2Credentials({ ...output, SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: " " }),
+    ).toEqual({
+      output: { accessKeyId: "output-key", secretAccessKey: "output-secret" },
+      input: null,
+    });
+  });
+
+  test("reads a complete input pair separately from the output pair", () => {
+    expect(
+      readHostR2Credentials({
+        ...output,
+        SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: " input-key ",
+        SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "input-secret",
+      }),
+    ).toEqual({
+      output: { accessKeyId: "output-key", secretAccessKey: "output-secret" },
+      input: { accessKeyId: "input-key", secretAccessKey: "input-secret" },
+    });
+  });
+
+  test("refuses half an input pair instead of falling back to the output pair", () => {
+    expect(() =>
+      readHostR2Credentials({ ...output, SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "input-key" }),
+    ).toThrow("SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY is required");
+    expect(() =>
+      readHostR2Credentials({
+        ...output,
+        SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "input-secret",
+      }),
+    ).toThrow("SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID is required");
+  });
+
+  test("still requires the output pair", () => {
+    expect(() =>
+      readHostR2Credentials({
+        SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "output-key",
+        SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "input-key",
+        SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "input-secret",
+      }),
+    ).toThrow("SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY is required");
+  });
+
+  test("signs input reads with the input key and master writes and reads with the output key", async () => {
+    const { hex } = await digest(bytes);
+    const signedWith: { method: string; path: string; key: string }[] = [];
+    const fetch = async (url: string, init: RequestInit) => {
+      const authorization = new Headers(init.headers).get("authorization") ?? "";
+      signedWith.push({
+        method: String(init.method),
+        path: decodeURIComponent(new URL(url).pathname),
+        key: /Credential=([^/]+)\//u.exec(authorization)?.[1] ?? "",
+      });
+      return init.method === "PUT"
+        ? new Response(null, { status: 200, headers: { etag: '"etag-7"' } })
+        : new Response(bytes, { status: 200, headers: { etag: '"etag-7"' } });
+    };
+    const adapters = makeHostR2Adapters({
+      accountId: "account-1",
+      bucket,
+      credentials: {
+        output: { accessKeyId: "output-key", secretAccessKey: "output-secret" },
+        input: { accessKeyId: "input-key", secretAccessKey: "input-secret" },
+      },
+      fetch,
+    });
+    await adapters.mediaReader.read("media://immutable/operation-1/video/1");
+    await adapters.writer.writeOnce(masterRef, bytes, hex);
+    await adapters.output.read(masterRef);
+    expect(signedWith).toEqual([
+      { method: "GET", path: `/${bucket}/immutable/operation-1/video/1`, key: "input-key" },
+      { method: "PUT", path: `/${bucket}/${physicalKey}`, key: "output-key" },
+      { method: "GET", path: `/${bucket}/${physicalKey}`, key: "output-key" },
+    ]);
+  });
+
+  test("signs every request with the output key when no input pair is configured", async () => {
+    const keys: string[] = [];
+    const adapters = makeHostR2Adapters({
+      accountId: "account-1",
+      bucket,
+      credentials: {
+        output: { accessKeyId: "output-key", secretAccessKey: "output-secret" },
+        input: null,
+      },
+      fetch: async (_url, init) => {
+        const authorization = new Headers(init.headers).get("authorization") ?? "";
+        keys.push(/Credential=([^/]+)\//u.exec(authorization)?.[1] ?? "");
+        return new Response(bytes, { status: 200, headers: { etag: '"etag-7"' } });
+      },
+    });
+    await adapters.mediaReader.read("media://immutable/operation-1/video/1");
+    await adapters.output.read(masterRef);
+    expect(keys).toEqual(["output-key", "output-key"]);
+  });
+});
 
 describe("host render attempt", () => {
   test("plans the render request from the frozen attempt facts", () => {
