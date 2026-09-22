@@ -406,34 +406,138 @@ suite("creation avatar lifecycle", () => {
         ),
       );
       expect(deleted).toEqual([asset.ingressKey]);
+      const schema = (
+        await admin.query<{ schema_name: string }>("SELECT current_schema() AS schema_name")
+      ).rows[0]?.schema_name;
+      if (!schema) throw new Error("Missing avatar test schema");
+      const suffix = crypto.randomUUID().replaceAll("-", "");
+      const operatorRole = `avatar_operator_${suffix}`;
+      const runtimeRole = `avatar_runtime_${suffix}`;
+      const inheritedRole = `avatar_inherited_${suffix}`;
+      const password = crypto.randomUUID();
+      const operatorDatabase = new URL(databaseUrl);
+      operatorDatabase.username = operatorRole;
+      operatorDatabase.password = password;
+      operatorDatabase.searchParams.delete("options");
+      const runtimeDatabase = new URL(databaseUrl);
+      runtimeDatabase.username = runtimeRole;
+      runtimeDatabase.password = password;
+      runtimeDatabase.searchParams.delete("options");
       const removeArgs = [
         "scripts/remove-avatar.ts",
         "--database-url-env",
         "AVATAR_TEST_OPERATOR_DATABASE",
         "--asset-id",
         asset.assetId,
+        "--schema",
+        schema,
       ];
-      const runRemoval = (apply: boolean) =>
+      const runRemoval = (connectionString: string, apply: boolean) =>
         spawnSync("bun", [...removeArgs, ...(apply ? ["--apply"] : [])], {
-          env: { ...process.env, AVATAR_TEST_OPERATOR_DATABASE: databaseUrl },
+          env: { ...process.env, AVATAR_TEST_OPERATOR_DATABASE: connectionString },
           encoding: "utf8",
           timeout: 10000,
         });
-      const preview = runRemoval(false);
-      expect(preview.status).toBe(0);
-      expect(JSON.parse(preview.stdout)).toMatchObject({
-        apply: false,
-        asset: { state: "attached" },
-      });
-      expect(await Effect.runPromise(avatars.delivery(asset.assetId))).toMatchObject({
-        digest: image.digest,
-      });
-      const removed = runRemoval(true);
-      expect(removed.status).toBe(0);
-      expect(JSON.parse(removed.stdout)).toMatchObject({
-        asset_id: asset.assetId,
-        delivery_revoked: true,
-      });
+      let operatorCreated = false;
+      let runtimeCreated = false;
+      let inheritedCreated = false;
+      try {
+        await admin.query(`CREATE ROLE "${operatorRole}" LOGIN PASSWORD '${password}' NOSUPERUSER`);
+        operatorCreated = true;
+        await admin.query(`CREATE ROLE "${runtimeRole}" LOGIN PASSWORD '${password}' NOSUPERUSER`);
+        runtimeCreated = true;
+        await admin.query(`CREATE ROLE "${inheritedRole}" NOLOGIN NOSUPERUSER`);
+        inheritedCreated = true;
+        await admin.query(
+          `GRANT USAGE ON SCHEMA "${schema}" TO "${operatorRole}","${runtimeRole}"`,
+        );
+        await admin.query(
+          `GRANT SELECT,UPDATE ON "${schema}".avatar_assets TO "${operatorRole}","${runtimeRole}"`,
+        );
+        await admin.query(
+          `GRANT SELECT ON "${schema}".schema_migrations TO "${operatorRole}","${runtimeRole}"`,
+        );
+        await admin.query(`GRANT INSERT ON "${schema}".schema_migrations TO "${operatorRole}"`);
+        expect(
+          (
+            await admin.query(
+              `SELECT r.rolsuper AS superuser,
+                pg_has_role($1::name,d.datdba,'USAGE') AS database_owner,
+                has_table_privilege($1,format('%I.schema_migrations',$2::text),'INSERT') AS ledger_insert
+                FROM pg_roles r JOIN pg_database d ON d.datname=current_database()
+                WHERE r.rolname=$1`,
+              [operatorRole, schema],
+            )
+          ).rows,
+        ).toEqual([{ superuser: false, database_owner: false, ledger_insert: true }]);
+        expect(
+          (
+            await admin.query(
+              "SELECT has_table_privilege($1,format('%I.schema_migrations',$2::text),'INSERT') AS ledger_insert",
+              [runtimeRole, schema],
+            )
+          ).rows,
+        ).toEqual([{ ledger_insert: false }]);
+        await admin.query(`GRANT INSERT ON "${schema}".schema_migrations TO "${inheritedRole}"`);
+        await admin.query(`GRANT "${inheritedRole}" TO "${runtimeRole}"`);
+        expect(
+          (
+            await admin.query(
+              "SELECT has_table_privilege($1,format('%I.schema_migrations',$2::text),'INSERT') AS ledger_insert",
+              [runtimeRole, schema],
+            )
+          ).rows,
+        ).toEqual([{ ledger_insert: true }]);
+        await admin.query(`REVOKE "${inheritedRole}" FROM "${runtimeRole}"`);
+        expect(
+          (
+            await admin.query(
+              "SELECT has_table_privilege($1,format('%I.schema_migrations',$2::text),'INSERT') AS ledger_insert",
+              [runtimeRole, schema],
+            )
+          ).rows,
+        ).toEqual([{ ledger_insert: false }]);
+        const runtimeDenied = runRemoval(runtimeDatabase.toString(), true);
+        expect(runtimeDenied.status).toBe(1);
+        expect(runtimeDenied.stderr).toContain("Avatar removal failed");
+        expect((await admin.query("SELECT state FROM avatar_assets")).rows[0]?.state).toBe(
+          "attached",
+        );
+        const preview = runRemoval(operatorDatabase.toString(), false);
+        expect(preview.status).toBe(0);
+        expect(JSON.parse(preview.stdout)).toMatchObject({
+          apply: false,
+          operator_role: operatorRole,
+          schema,
+          asset: {
+            asset_id: asset.assetId,
+            owner_account_id: actor.userId,
+            purpose: "community",
+            intent_id: intent.document.intent_id,
+            attached_target_id: expect.any(String),
+            state: "attached",
+            moderation_status: "unscanned",
+          },
+        });
+        expect(await Effect.runPromise(avatars.delivery(asset.assetId))).toMatchObject({
+          digest: image.digest,
+        });
+        const removed = runRemoval(operatorDatabase.toString(), true);
+        expect(removed.status).toBe(0);
+        expect(JSON.parse(removed.stdout)).toMatchObject({
+          asset_id: asset.assetId,
+          operator_role: operatorRole,
+          delivery_revoked: true,
+          asset: { state: "deleting", moderation_status: "removed" },
+        });
+      } finally {
+        if (operatorCreated) await admin.query(`DROP OWNED BY "${operatorRole}"`);
+        if (runtimeCreated) await admin.query(`DROP OWNED BY "${runtimeRole}"`);
+        if (inheritedCreated) await admin.query(`DROP OWNED BY "${inheritedRole}"`);
+        if (operatorCreated) await admin.query(`DROP ROLE "${operatorRole}"`);
+        if (runtimeCreated) await admin.query(`DROP ROLE "${runtimeRole}"`);
+        if (inheritedCreated) await admin.query(`DROP ROLE "${inheritedRole}"`);
+      }
       expect(
         await Effect.runPromise(avatars.delivery(asset.assetId).pipe(Effect.flip)),
       ).toMatchObject({ reason: "not-found" });
