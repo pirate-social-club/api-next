@@ -58,6 +58,10 @@ for number in 1 2; do
     --webserver-allow-from=127.0.0.0/8 --security-poll-suffix= \
     --resolver=127.0.0.21:53 --version-string=anonymous \
     "--primary=$primary" "--secondary=$secondary" \
+    "--autosecondary=$secondary" --allow-unsigned-autoprimary=no \
+    --allow-unsigned-notify=no --send-signed-notify=yes \
     --allow-notify-from=127.0.0.21 --allow-axfr-ips= --only-notify=127.0.0.0/8 \
     --also-notify=127.0.0.22 --query-local-address=127.0.0.21 --setuid= --setgid=
 done
+"${docker_cmd[@]}" exec pirate-hns-staging-ns2 pdnsutil autoprimary add \
+  127.0.0.21 ns2.pirate isolated-staging-fixture

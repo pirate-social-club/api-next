@@ -20,6 +20,14 @@ and labeled containers before manually retiring that exact stale lease.
 
 The maintained PowerDNS provisioner creates the primary zone and real DNSSEC
 keys. The second authority obtains the signed zone by authenticated AXFR. The
+secondary is admitted automatically by a signed notification from the pinned
+loopback primary. Unsigned notifications and unsigned automatic admission are
+disabled. The fixture does not create secondary zones through the API or issue
+manual retrieve commands; it checks the retained transfer-key metadata too.
+PowerDNS does not propagate primary zone deletion to the secondary. This
+disposable runner removes both containers and their volumes; persistent
+staging teardown must explicitly reconcile secondary removal.
+The
 maintained DNSSEC validator verifies both authorities using the fixture's DS
 records and rejects tampered control TXT data. DNSKEY, NS, app address and TLSA
 answers must agree. The maintained inspector verifies managed records and the
