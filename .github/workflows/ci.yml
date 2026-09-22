@@ -305,8 +305,9 @@ jobs:
         run: |
           set -euo pipefail
           command -v dig
+          command -v openssl
           docker pull powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59
-          bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-local --with-chain \
+          bun scripts/hns-staging-gateway-fixture.ts --execute-local --with-chain \
             2>&1 | tee /tmp/api-next-hns-authority-fixture.log
       - name: Run required HNS regtest suites
         env:

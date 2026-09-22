@@ -11,7 +11,7 @@ import {
   makeNodeHnsDnsTcpConnector,
 } from "@pirate/hns-dns-runtime/dns-tcp";
 
-/** The DS trust anchor is fixture-provisioned here, not yet observed on a chain. */
+/** Caller supplies either diagnostic provisioner DS or validated safe-chain DS. */
 export async function validateFixtureDnssec(
   root: string,
   ds: readonly HnsRootDelegationDsV1[],

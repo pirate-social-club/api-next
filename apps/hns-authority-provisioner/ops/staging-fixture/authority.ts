@@ -74,13 +74,21 @@ async function eventually(action: () => Promise<void>): Promise<void> {
 }
 
 /** Real DNS provisioning, not complete onboarding or public staging serving. */
-async function runLocalAuthorityFixture(withChain: boolean): Promise<void> {
+export async function runLocalAuthorityFixture(
+  withChain: boolean,
+  startGateway?: (root: string) => Promise<{
+    spki: string;
+    verify: () => Promise<void>;
+    stop: () => Promise<void>;
+  }>,
+): Promise<void> {
   const releaseLease = await acquireAuthorityFixtureLease();
   const run = randomUUID().replaceAll("-", "");
   const root = `e2e${run.slice(0, 12)}`;
   const challenge = `pirate-verification=${run}`;
   const owned: string[] = [];
   const failures: unknown[] = [];
+  let gateway: Awaited<ReturnType<NonNullable<typeof startGateway>>> | undefined;
   let chainReceipt: Awaited<ReturnType<typeof publishFixtureResource>>["receipt"] | null = null;
   const config = {
     api_url: `http://${authorityAddresses[0]}:8081`,
@@ -95,6 +103,12 @@ async function runLocalAuthorityFixture(withChain: boolean): Promise<void> {
     ttl_seconds: 60,
   };
   try {
+    gateway = await startGateway?.(root);
+    if (gateway) {
+      config.shared_tlsa_association = `3 1 1 ${gateway.spki}`;
+      config.gateway_certificate_spki_sha256 = gateway.spki;
+      config.gateway_deployment_reference = "isolated-gateway-fixture";
+    }
     for (const [index, address] of authorityAddresses.entries()) {
       const name = `pirate-hns-staging-fixture-${run}-${index}`;
       // Claim by successful create, never remove a pre-existing named container.
@@ -209,6 +223,16 @@ async function runLocalAuthorityFixture(withChain: boolean): Promise<void> {
     } else {
       await validateFixtureDnssec(root, result.ds_records);
     }
+    if (gateway) {
+      for (const address of authorityAddresses) {
+        const tlsa = (await query(address, `_443._tcp.app.${root}`, "TLSA"))
+          .replaceAll(/\s/g, "")
+          .toLowerCase();
+        if (tlsa !== `311${gateway.spki}`)
+          throw new Error("Served TLSA differs from certificate pin");
+      }
+      await gateway.verify();
+    }
     await makePowerDnsRootTeardown(config)({ root_label: root, challenge_txt_value: challenge });
   } catch (error) {
     failures.push(error);
@@ -224,6 +248,12 @@ async function runLocalAuthorityFixture(withChain: boolean): Promise<void> {
     }
   } finally {
     let cleanupFailed = false;
+    try {
+      await gateway?.stop();
+    } catch {
+      cleanupFailed = true;
+      failures.push(new Error("Gateway fixture cleanup failed"));
+    }
     for (const name of owned.reverse()) {
       try {
         await command(["docker", "rm", "-f", "-v", name]);
@@ -247,7 +277,8 @@ async function runLocalAuthorityFixture(withChain: boolean): Promise<void> {
       reservation_teardown: true,
       containers_removed: true,
       chain_resource_binding: chainReceipt,
-      certificate_acceptance: false,
+      certificate_acceptance: gateway !== undefined,
+      gateway_component_acceptance: gateway !== undefined,
       browser_acceptance: false,
     }),
   );
