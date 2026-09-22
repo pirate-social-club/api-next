@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "scripts/hns-staging-gateway-fixture.ts",
     "packages",
     "apps",
     "scripts/api-client-provenance.ts",

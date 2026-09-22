@@ -59,10 +59,23 @@ retained. The local test:hns-regtest command itself still runs only those two
 suites. Plain --execute-local remains a DNS-only diagnostic whose DS anchor is
 supplied directly by the provisioner; it is not the hosted acceptance command.
 
-This is not complete HNS onboarding. The TLSA hash is still a placeholder; no
-certificate or gateway acceptance is claimed. Authenticated import, real
-TLSA/certificate matching, activation, gateway isolation and Playwright recovery
-remain to be composed before staging flags are enabled. Production is unchanged.
+The required hosted job uses scripts/hns-staging-gateway-fixture.ts with the
+same --execute-local --with-chain arguments. It generates an in-memory,
+one-day certificate and publishes its actual SPKI digest as TLSA. Both
+authorities must serve that pin. TLS probes check the certificate and exercise
+the maintained community gateway composition: the admitted app host reaches a
+real loopback HTTPS fixture origin; an unclaimed host returns an empty 421 and
+does not contact the origin. A wrong SPKI is rejected. Keys never enter files,
+arguments or receipts. The standalone authority command retains its placeholder
+TLSA diagnostic and does not claim certificate acceptance.
+
+This remains component acceptance, not complete onboarding. Gateway authority
+is seeded for this layer, not produced by authenticated activation. The origin
+is a marker server, not Solid. TLS listeners use OS-assigned loopback ports as
+an explicit fixture transport mapping for logical port 443, not public DNS
+routing or production Caddy acceptance. Authenticated import, activation, real
+community rendering and Playwright recovery remain unfinished. Public staging
+flags and production are unchanged.
 
 PowerDNS permits reading but not writing AXFR-MASTER-TSIG through its metadata
 HTTP endpoint. Secondary setup therefore uses the maintained pdnsutil tsigkey
