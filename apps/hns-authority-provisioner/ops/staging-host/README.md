@@ -89,3 +89,25 @@ qualify the approved gateway upstream on loopback, and confirm port ownership.
 Stopping the socket and service removes only this transport. Do not alter the
 existing Caddy or open a public port. A socket connection alone does not prove
 database authority, authenticated forwarding or community rendering.
+
+## Private staging connector
+
+The tunnel service uses cloudflared 2026.9.1 for Linux amd64, verified against
+SHA-256 03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc.
+Install it at /srv/pirate-hns-staging/tunnel/cloudflared after digest validation.
+Automatic updates are disabled. The dedicated connector token is installed
+root-owned mode 0600 at /etc/pirate-hns-staging/tunnel-token and delivered by
+systemd LoadCredential, never an argument or environment variable. Verify its
+account and tunnel binding in memory before installation. Do not reuse a
+production connector credential.
+
+Metrics bind only 127.0.0.1:4083. The dynamic-user service shares the bounded
+staging slice and adds a 96 MiB memory ceiling, 15 percent CPU quota and 64-task
+limit. Check host port ownership and systemd validation before enabling.
+Disabling only pirate-hns-staging-tunnel.service stops this connector without
+removing Cloudflare resources or affecting another tunnel.
+
+The approved observer service targets HTTP 127.0.0.1:4082 through this tunnel.
+There is no public hostname. Healthy connector connections and exact directory
+readback are transport prerequisites, not proof of a Worker fetch or an
+authenticated import. Worker binding and deployment remain separate operations.
