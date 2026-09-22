@@ -10,12 +10,7 @@ import { makeControlPlaneSongVideoIntervalStore } from "../packages/platform-cf/
 import { makeSongVideoRenderStore } from "../packages/platform-cf/src/song-video-render-store.ts";
 import { makeLocalPinnedFfmpegSongVideoEngine } from "./song-video-ffmpeg.ts";
 import { makeLocalSongVideoRenderer } from "./song-video-local-render.ts";
-import {
-  makeHostMasterOutputStore,
-  makeHostMasterOutputWriter,
-  makeHostMediaReader,
-  makeHostR2Transport,
-} from "./song-video-render-host-r2.ts";
+import { makeHostR2Adapters, readHostR2Credentials } from "./song-video-render-host-r2.ts";
 
 /**
  * The operator-supervised FFmpeg host on the selected execution path (U.2).
@@ -254,19 +249,14 @@ async function main(): Promise<void> {
   const claimId = process.env.SONG_VIDEO_RENDER_HOST_ID?.trim() || crypto.randomUUID();
   const databaseUrl = required("SONG_VIDEO_RENDER_DATABASE_URL");
   const bucket = required("SONG_VIDEO_RENDER_R2_BUCKET");
-  const transport = makeHostR2Transport({
+  const { output, writer, mediaReader } = makeHostR2Adapters({
     accountId: required("SONG_VIDEO_RENDER_R2_ACCOUNT_ID"),
-    credentials: {
-      accessKeyId: required("SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
-      secretAccessKey: required("SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
-    },
+    bucket,
+    credentials: readHostR2Credentials(process.env),
     ...(process.env.SONG_VIDEO_RENDER_R2_ENDPOINT?.trim()
       ? { endpoint: process.env.SONG_VIDEO_RENDER_R2_ENDPOINT.trim() }
       : {}),
   });
-  const output = makeHostMasterOutputStore({ transport, bucket });
-  const writer = makeHostMasterOutputWriter({ transport, bucket });
-  const mediaReader = makeHostMediaReader({ transport, bucket });
   const engine = makeLocalPinnedFfmpegSongVideoEngine({
     mediaReader,
     ...(process.env.SONG_VIDEO_FFMPEG_BINARY === undefined
