@@ -297,13 +297,16 @@ jobs:
           docker logs "$container" 2>&1 | tail -200
           exit 1
       - name: Run real isolated HNS authorities
+        env:
+          HSD_REGTEST_NODE_URL: http://127.0.0.1:24037/
+          HSD_REGTEST_WALLET_URL: http://127.0.0.1:24039/
         # Hosted jobs have their own VM. Bind only the two fixture loopbacks;
-        # a occupied listener is an error, never a reason to stop host DNS.
+        # an occupied listener is an error, never a reason to stop host DNS.
         run: |
           set -euo pipefail
           command -v dig
           docker pull powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59
-          bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-local \
+          bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-local --with-chain \
             2>&1 | tee /tmp/api-next-hns-authority-fixture.log
       - name: Run required HNS regtest suites
         env:

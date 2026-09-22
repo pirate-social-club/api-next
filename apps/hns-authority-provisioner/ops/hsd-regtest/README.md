@@ -83,8 +83,11 @@ attribution recorded in the task.
 
 `bun run test:hns-regtest` is the fail-closed gate for the two maintained live
 service suites: the lifecycle composed path and the provisioner service-loop
-entrypoint. It deliberately does not include PowerDNS, gateway/TLS, browser or
-HSD 6.1.1 transaction-ceremony acceptance.
+entrypoint. The hosted hns-regtest job additionally runs the sibling
+staging-fixture/authority.ts with --execute-local --with-chain against real
+PowerDNS authorities before those suites. That separate step covers UPDATE
+publication, current/safe observations and chain-bound DNSSEC. Neither command
+claims gateway/TLS, browser or HSD 6.1.1 transaction-ceremony acceptance.
 
 The command requires a disposable PostgreSQL 17 server with at least 51,200
 lock-table entries, plus the HSD 8.0.0 image above. Both HSD endpoints must be

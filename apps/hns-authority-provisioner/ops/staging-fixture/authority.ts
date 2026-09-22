@@ -4,6 +4,7 @@ import {
   makePowerDnsRootProvisioner,
   makePowerDnsRootTeardown,
 } from "../../src/powerdns.ts";
+import { publishFixtureResource } from "./chain.ts";
 import { validateFixtureDnssec } from "./dnssec.ts";
 import { acquireAuthorityFixtureLease } from "./lease.ts";
 
@@ -16,7 +17,10 @@ const transferKey = Buffer.from("isolated-regtest-transfer-key-not-a-live-secret
 );
 
 export function requireLocalFixtureExecution(args: readonly string[]): void {
-  if (args.length !== 1 || args[0] !== "--execute-local") {
+  if (
+    args[0] !== "--execute-local" ||
+    (args.length !== 1 && !(args.length === 2 && args[1] === "--with-chain"))
+  ) {
     throw new Error(
       "Use --execute-local to create disposable loopback DNS fixtures; no remote mode exists",
     );
@@ -70,13 +74,14 @@ async function eventually(action: () => Promise<void>): Promise<void> {
 }
 
 /** Real DNS provisioning, not complete onboarding or public staging serving. */
-async function runLocalAuthorityFixture(): Promise<void> {
+async function runLocalAuthorityFixture(withChain: boolean): Promise<void> {
   const releaseLease = await acquireAuthorityFixtureLease();
   const run = randomUUID().replaceAll("-", "");
   const root = `e2e${run.slice(0, 12)}`;
   const challenge = `pirate-verification=${run}`;
   const owned: string[] = [];
   const failures: unknown[] = [];
+  let chainReceipt: Awaited<ReturnType<typeof publishFixtureResource>>["receipt"] | null = null;
   const config = {
     api_url: `http://${authorityAddresses[0]}:8081`,
     api_key: fixtureKey,
@@ -197,7 +202,13 @@ async function runLocalAuthorityFixture(): Promise<void> {
     });
     if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
       throw new Error("Managed resource readback drift");
-    await validateFixtureDnssec(root, result.ds_records);
+    if (withChain) {
+      const observed = await publishFixtureResource(root, challenge, result.ds_records);
+      chainReceipt = observed.receipt;
+      await validateFixtureDnssec(root, observed.ds);
+    } else {
+      await validateFixtureDnssec(root, result.ds_records);
+    }
     await makePowerDnsRootTeardown(config)({ root_label: root, challenge_txt_value: challenge });
   } catch (error) {
     failures.push(error);
@@ -235,7 +246,7 @@ async function runLocalAuthorityFixture(): Promise<void> {
       authority_agreement: true,
       reservation_teardown: true,
       containers_removed: true,
-      chain_acceptance: false,
+      chain_resource_binding: chainReceipt,
       certificate_acceptance: false,
       browser_acceptance: false,
     }),
@@ -244,5 +255,5 @@ async function runLocalAuthorityFixture(): Promise<void> {
 
 if (import.meta.main) {
   requireLocalFixtureExecution(process.argv.slice(2));
-  await runLocalAuthorityFixture();
+  await runLocalAuthorityFixture(process.argv.includes("--with-chain"));
 }

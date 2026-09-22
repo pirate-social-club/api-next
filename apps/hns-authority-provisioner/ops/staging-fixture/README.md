@@ -7,8 +7,8 @@ bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-lo
 ```
 
 The digest-pinned PowerDNS image must already exist locally. The runner does
-not pull images, accept remote endpoints, read credentials, or connect to a
-wallet. It creates two uniquely named disposable containers, bound only to
+not pull images or accept remote authority endpoints. The command above does
+not connect to a wallet. It creates two uniquely named disposable containers, bound only to
 127.0.0.21 and 127.0.0.22 on DNS port 53 and API port 8081. Conflicting listeners
 cause failure; the runner never stops another container. Only its own containers
 and their anonymous volumes are removed, on success or failure. A forced process
@@ -33,13 +33,36 @@ query production authorities. The fixture uses host networking for the existing
 controlled test environment, with only bind-service and file-access capabilities,
 no host filesystem mounts, and no public listeners.
 
-This is the real-authority component of staging enablement, not complete HNS
-onboarding. Its DS trust anchor is supplied directly by the provisioner, not
-read back from a chain. The TLSA hash is a placeholder; no certificate or gateway
-acceptance is claimed. Authenticated import, regtest publication/current/safe
-observations, real TLSA/certificate matching, activation, gateway isolation and
-Playwright recovery remain to be composed before staging flags are enabled.
-There is no change to the hosted required regtest gate or production settings.
+To exercise the chain-to-DNS binding, start the maintained disposable HSD 8.0.0
+regtest container from the sibling hsd-regtest profile, then run:
+
+```sh
+HSD_REGTEST_NODE_URL=http://127.0.0.1:24037/ \
+HSD_REGTEST_WALLET_URL=http://127.0.0.1:24039/ \
+bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-local --with-chain
+```
+
+The additional mode checks the node network and genesis and the existing
+wallet's regtest receive-address prefix before any wallet mutation. It funds
+only a regtest wallet, auctions a generated name, registers an empty R0, then
+publishes an actual UPDATE from the maintained complete-resource plan builder.
+The maintained observer must see matching current records before matching safe
+records. DNSSEC anchors are extracted from that safe-chain resource; whole-wire
+resource equality and the maintained commitment selection are required. The
+receipt retains the UPDATE txid, heights, selected commitment and resource digest.
+The caller owns HSD cleanup; the fixture owns its two DNS containers. Repeated
+runs create distinct names. There is no mainnet mode or Bob/6.1.1 ceremony proof.
+
+The required hosted hns-regtest job now runs this chain-bound fixture before its
+two existing lifecycle suites, on the job's isolated VM, with failure logs
+retained. The local test:hns-regtest command itself still runs only those two
+suites. Plain --execute-local remains a DNS-only diagnostic whose DS anchor is
+supplied directly by the provisioner; it is not the hosted acceptance command.
+
+This is not complete HNS onboarding. The TLSA hash is still a placeholder; no
+certificate or gateway acceptance is claimed. Authenticated import, real
+TLSA/certificate matching, activation, gateway isolation and Playwright recovery
+remain to be composed before staging flags are enabled. Production is unchanged.
 
 PowerDNS permits reading but not writing AXFR-MASTER-TSIG through its metadata
 HTTP endpoint. Secondary setup therefore uses the maintained pdnsutil tsigkey

@@ -64,7 +64,7 @@ describe("HNS regtest target gate", () => {
     const job = workflow.match(/\n {2}hns-regtest:\n([\s\S]*?)\n {2}postgres17-general:\n/u)?.[1];
     expect(job).toBeDefined();
     expect(job).toContain("run: bun run test:hns-regtest");
-    expect(job).toContain("authority.ts --execute-local");
+    expect(job).toContain("authority.ts --execute-local --with-chain");
     expect(job).toContain("set -euo pipefail");
     expect(job).toContain("/tmp/api-next-hns-authority-fixture.log");
     expect(job).toContain("- name: Upload HNS regtest receipts\n        if: always()");

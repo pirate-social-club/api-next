@@ -5,9 +5,20 @@ import {
   hsdRegtestIdentityError,
   probeHsdRegtestIdentity,
   probeHsdRegtestWallet,
+  requireHsdRegtestChain,
 } from "./hns-regtest-node.pg-fixture.ts";
 
 describe("required HSD regtest identity", () => {
+  test("chain-only preflight needs no database and refuses a mainnet node before wallet access", async () => {
+    const methods: string[] = [];
+    await expect(
+      requireHsdRegtestChain(async (_url, method) => {
+        methods.push(method);
+        return method === "getblockchaininfo" ? { chain: "main" } : hsdRegtestGenesis;
+      }),
+    ).rejects.toThrow("HSD regtest required");
+    expect(methods).toEqual(["getblockchaininfo", "getblockhash"]);
+  });
   test("refuses non-loopback and non-HTTP fixture endpoints", () => {
     expect(hsdRegtestEndpointError("node", "http://127.0.0.1:14037/")).toBeNull();
     expect(hsdRegtestEndpointError("node", "https://127.0.0.1:14037/")).toContain(
