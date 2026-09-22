@@ -105,7 +105,16 @@ suite("Composed current-policy Megapot settlement", () => {
 
       const layer = makeDirectPostgresControlPlaneLayer(scoped);
       const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
-      const people = ["study", "karaoke", "both", "unverified", "below", "late"] as const;
+      const people = [
+        "study",
+        "karaoke",
+        "both",
+        "unverified",
+        "expired",
+        "failed",
+        "below",
+        "late",
+      ] as const;
       const personas = new Map<string, string>();
       for (const person of people) {
         const account = `winner-${person}`;
@@ -114,7 +123,22 @@ suite("Composed current-policy Megapot settlement", () => {
         await confirmWallet(layer)(account, prepared.persona_id);
         personas.set(person, prepared.persona_id);
         if (person !== "unverified") {
-          await seedVeryRewardEvidence(admin, account, person, await digest(`subject-${person}`));
+          await seedVeryRewardEvidence(
+            admin,
+            account,
+            person,
+            await digest(`subject-${person}`),
+            person === "expired" ? "expired" : "current",
+          );
+        }
+        if (person === "failed") {
+          // Two independently valid subjects are ambiguous, never two reward identities.
+          await seedVeryRewardEvidence(
+            admin,
+            account,
+            "failed-second",
+            await digest("subject-failed-second"),
+          );
         }
       }
       const persona = (person: string) => {
@@ -162,7 +186,7 @@ suite("Composed current-policy Megapot settlement", () => {
       const first = await study.completeSession("winner-study", persona("study"), "winner-study");
       expect(await study.replaySpokenCommand(first.final.command)).toEqual(first.final.result);
       await study.completeSession("winner-both", persona("both"), "winner-both");
-      for (const person of ["karaoke", "both", "unverified"]) {
+      for (const person of ["karaoke", "both", "unverified", "expired", "failed"]) {
         const authority = await karaoke.reserve(
           `winner-${person}`,
           persona(person),
@@ -226,11 +250,59 @@ suite("Composed current-policy Megapot settlement", () => {
       expect(
         (
           await admin.query(
-            "SELECT outcome,reason FROM reward_eligibility_decisions WHERE account_id='winner-unverified' AND leg_id=$1",
+            `SELECT e.account_id,e.outcome,e.reason,d.outcome AS decision_outcome
+               FROM reward_eligibility_decisions e JOIN decision_records d USING (decision_record_id)
+              WHERE e.account_id IN ('winner-unverified','winner-expired','winner-failed')
+                AND e.leg_id=$1 ORDER BY e.account_id`,
             [legId],
           )
         ).rows,
-      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
+      ).toEqual([
+        {
+          account_id: "winner-expired",
+          outcome: "ineligible",
+          reason: "verification_stale",
+          decision_outcome: "needs_evidence",
+        },
+        {
+          account_id: "winner-failed",
+          outcome: "ineligible",
+          reason: "verification_failed",
+          decision_outcome: "fail",
+        },
+        {
+          account_id: "winner-unverified",
+          outcome: "ineligible",
+          reason: "verification_missing",
+          decision_outcome: "needs_evidence",
+        },
+      ]);
+      for (const account of ["winner-expired", "winner-failed", "winner-unverified"]) {
+        const counts = await admin.query(
+          `SELECT
+             (SELECT count(*)::int FROM activity_qualifications WHERE account_id=$1) AS qualifications,
+             (SELECT count(*)::int FROM megapot_pool_shares WHERE account_id=$1) AS shares,
+             (SELECT count(*)::int FROM reward_subject_consumptions WHERE user_id=$1) AS consumptions`,
+          [account],
+        );
+        expect(counts.rows).toEqual([{ qualifications: 1, shares: 0, consumptions: 0 }]);
+      }
+      expect(
+        (
+          await admin.query(
+            `SELECT
+               (SELECT count(*)::int FROM evidence_receipts
+                 WHERE user_id='winner-expired' AND expires_at < clock_timestamp()) AS receipts,
+               (SELECT count(*)::int FROM assertions
+                 WHERE user_id='winner-expired' AND expires_at < clock_timestamp()) AS assertions,
+               (SELECT count(*)::int FROM proof_sessions
+                 WHERE actor_id='winner-expired' AND status='completed'
+                   AND completed_at < expires_at) AS completed_sessions,
+               (SELECT count(*)::int FROM assertion_revalidation_events
+                 WHERE user_id='winner-expired') AS revalidations`,
+          )
+        ).rows,
+      ).toEqual([{ receipts: 1, assertions: 2, completed_sessions: 1, revalidations: 0 }]);
       expect(
         (
           await admin.query("SELECT status FROM study_sessions_v2 WHERE session_id=$1", [
