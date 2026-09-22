@@ -35,3 +35,20 @@ and runs. Cleanup targets only inventoried HNS resources, never Docker prune.
 Host installation does not authorize Cloudflare resource creation, a Worker
 deployment, an import or mainnet operations. Those steps retain their own
 configuration, authority and acceptance checks.
+
+`authority-smoke.ts --execute-host` exercises the maintained provisioner against
+these exact loopback authorities. Build its Bun bundle in the admitted checkout
+and compare its digest after transfer before running it on the approved host.
+It creates one random fixture zone, waits for automatic signed secondary
+admission, validates real DNSSEC on both authorities, rejects tampered DNS, and
+removes the primary through the maintained reservation-aware teardown. Secondary
+removal requires a fresh match of its fixture account, primary address, exact
+root and challenge TXT. Both removals are read back independently.
+
+A failure retains the zone for diagnosis and prints only its generated root.
+Do not blindly retry: inspect that exact root on both authorities and reconcile
+its disposition first. The command does not clean other runs or zones. Its DS
+anchor comes directly from provisioning, and its TLSA is a placeholder; this is
+authority installation acceptance, not chain, gateway or browser acceptance.
+The explicit secondary cleanup here does not implement cleanup for persistent
+product imports; that lifecycle integration remains separate work.
