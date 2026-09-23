@@ -6,16 +6,17 @@ import { join } from "node:path";
 import { Client } from "pg";
 import { runMultiGolden } from "./megapot-base-sepolia-golden-multi.ts";
 import {
+  onePalmRehearsalInput,
   rehearsalInput,
   rehearsalObservation,
   rehearsalTime,
 } from "./megapot-golden-multi.fixture.ts";
 import type { MultiParticipantPreflight } from "./megapot-golden-multi-input.ts";
 
-test("mixed orchestration keeps credentials separate, preflights before funding, and skips completed activities on replay", async () => {
+async function exerciseOrchestration(makeInput: typeof rehearsalInput): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "golden-orchestration-"));
   const pcm = new ArrayBuffer(16000);
-  const base = rehearsalInput();
+  const base = makeInput();
   const input = {
     ...base,
     participants: base.participants.map((p) =>
@@ -82,7 +83,7 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
     },
     pool: async (_input, options, journal) => {
       expect(calls.filter((call) => call.startsWith("preflight:")).length).toBeGreaterThanOrEqual(
-        3,
+        input.participants.length,
       );
       expect(options.authorization).toBe("Bearer sponsor");
       calls.push("pool");
@@ -97,7 +98,7 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
     activity: async (_input, participant, _artifact, activity, http, journal) => {
       expect(http.authorization).toBe(`Bearer ${participant.key}`);
       expect(journal.state.pending_activity).toBe(`${participant.key}:${activity}`);
-      calls.push(`activity:${participant.key}`);
+      calls.push(`activity:${participant.key}:${activity}`);
       return {
         object: "staging_study_participant_result_v2",
         session_id: "session",
@@ -110,7 +111,7 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
         score_bps: 7500,
       };
     },
-    observe: async () => rehearsalObservation(),
+    observe: async () => rehearsalObservation(input),
     recoverDrawing: async () => {
       throw new Error("Unexpected recovery");
     },
@@ -148,22 +149,23 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
     expect(await runMultiGolden(input, options, deps)).toMatchObject({
       state: "reconciled_no_win",
     });
-    expect(calls.filter((call) => call.startsWith("activity:"))).toEqual([
-      "activity:study",
-      "activity:karaoke",
-      "activity:negative",
-    ]);
+    const expectedActivities = input.participants.flatMap((p) =>
+      p.activities.map((activity) => `activity:${p.key}:${activity}`),
+    );
+    expect(calls.filter((call) => call.startsWith("activity:"))).toEqual(expectedActivities);
     expect(await runMultiGolden(input, options, deps)).toMatchObject({
       state: "reconciled_no_win",
     });
-    expect(calls.filter((call) => call.startsWith("activity:"))).toHaveLength(3);
+    expect(calls.filter((call) => call.startsWith("activity:"))).toHaveLength(
+      expectedActivities.length,
+    );
     const interruptedOptions = { ...options, journalPath: join(directory, "lost-attempt.jsonl") };
     let reservations = 0;
     const interrupted = {
       ...deps,
       activity: async (...args: Parameters<typeof deps.activity>) => {
-        const participant = args[1];
-        if (participant.key !== "karaoke") return deps.activity(...args);
+        const activity = args[3];
+        if (activity !== "karaoke") return deps.activity(...args);
         const journal = args[5];
         await journal.save({
           ...journal.state,
@@ -183,4 +185,10 @@ test("mixed orchestration keeps credentials separate, preflights before funding,
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
+}
+
+test("two verified accounts orchestrate without duplicate effects", () =>
+  exerciseOrchestration(rehearsalInput));
+
+test("one verified dual-activity account orchestrates without duplicate effects", () =>
+  exerciseOrchestration(onePalmRehearsalInput));

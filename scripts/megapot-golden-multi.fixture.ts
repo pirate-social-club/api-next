@@ -1,4 +1,4 @@
-import { parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
+import { type MultiGoldenInput, parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
 import type { GoldenObservation } from "./megapot-golden-reconciliation.ts";
 
 export const rehearsalTime = Date.parse("2026-09-21T10:00:00.000Z");
@@ -78,8 +78,28 @@ export const rehearsalInput = () =>
     },
   });
 
-export function rehearsalObservation(): GoldenObservation {
-  const input = rehearsalInput();
+export function onePalmRehearsalInput(): MultiGoldenInput {
+  const base = rehearsalInput();
+  const verified = base.participants[0];
+  const karaoke = base.participants[1];
+  const unverified = base.participants[2];
+  if (!verified || !karaoke?.karaoke_audio || !unverified) throw new Error("fixture");
+  return parseMultiGoldenInput({
+    ...base,
+    participants: [
+      {
+        ...verified,
+        activities: ["study", "karaoke"],
+        karaoke_audio: karaoke.karaoke_audio,
+      },
+      unverified,
+    ],
+  });
+}
+
+export function rehearsalObservation(
+  input: MultiGoldenInput = rehearsalInput(),
+): GoldenObservation {
   const positives = input.participants.filter((p) => p.expected_admission === "eligible");
   return {
     leg_id: "leg",

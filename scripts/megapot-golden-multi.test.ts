@@ -6,6 +6,7 @@ import { runMultiGolden } from "./megapot-base-sepolia-golden-multi.ts";
 import { endpoint } from "./megapot-golden-http.ts";
 import { withGoldenJournal } from "./megapot-golden-journal.ts";
 import {
+  onePalmRehearsalInput,
   rehearsalInput,
   rehearsalObservation,
   rehearsalTime,
@@ -22,6 +23,49 @@ import {
 } from "./megapot-golden-reconciliation.ts";
 
 describe("multi-participant golden boundaries", () => {
+  test("one verified account can do both activities beside an unverified negative", async () => {
+    const input = onePalmRehearsalInput();
+    expect(input.participants).toHaveLength(2);
+    expect(
+      await runMultiGolden(
+        { ...input, authorization: null },
+        { execute: false, reconcileOnly: false, environment: {} },
+      ),
+    ).toMatchObject({ mode: "dry-run", expected_shares: 1, live_calls: 0 });
+
+    const observation = rehearsalObservation(input);
+    expect(observation.qualifications).toHaveLength(3);
+    expect(observation.shares).toHaveLength(1);
+    expect(() => assertGoldenAdmission(input, observation)).not.toThrow();
+    expect(evaluateGoldenSettlement(input, observation, rehearsalTime).state).toBe(
+      "reconciled_no_win",
+    );
+
+    const beneficiary = observation.beneficiaries[0];
+    if (!beneficiary) throw new Error("fixture");
+    expect(
+      evaluateGoldenSettlement(
+        input,
+        {
+          ...observation,
+          drawing_status: "credited",
+          net_winnings_atomic: "101",
+          claim_receipt_atomic: "101",
+          credits: [
+            {
+              ...beneficiary,
+              amount_atomic: "101",
+              paid_atomic: "101",
+              reserved_atomic: "0",
+              state: "sent",
+              receipt_confirmed: true,
+            },
+          ],
+        },
+        rehearsalTime,
+      ).state,
+    ).toBe("reconciled_win");
+  });
   test("dry run needs no credentials, files, provider, or authorization", async () => {
     const input = { ...rehearsalInput(), authorization: null };
     expect(
@@ -54,6 +98,31 @@ describe("multi-participant golden boundaries", () => {
       parseMultiGoldenInput({
         ...input,
         authorization: { ...input.authorization, max_tickets: 2 },
+      }),
+    ).toThrow();
+  });
+  test("one-palm mode still requires both activities and a distinct negative", () => {
+    const input = onePalmRehearsalInput();
+    const verified = input.participants[0];
+    const unverified = input.participants[1];
+    if (!verified || !unverified) throw new Error("fixture");
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: [{ ...verified, activities: ["study"] }, unverified],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: [{ ...verified, activities: ["karaoke"] }, unverified],
+      }),
+    ).toThrow();
+    expect(() => parseMultiGoldenInput({ ...input, participants: [verified] })).toThrow();
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: [{ ...verified, expected_admission: "verification_missing" }, unverified],
       }),
     ).toThrow();
   });

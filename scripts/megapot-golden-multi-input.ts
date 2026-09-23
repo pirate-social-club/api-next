@@ -50,7 +50,7 @@ export const MultiGoldenInput = Schema.Struct({
   max_ticket_price_atomic: RehearsalAtomic,
   entry_cutoff_seconds: Positive,
   participants: Schema.Array(RehearsalParticipant).check(
-    Schema.isMinLength(3),
+    Schema.isMinLength(2),
     Schema.isMaxLength(8),
   ),
   funding_transaction_hash: Schema.optional(
@@ -87,7 +87,7 @@ export function parseMultiGoldenInput(value: unknown): MultiGoldenInput {
     new Set(input.participants.map((p) => p.account_id)).size !== input.participants.length ||
     new Set(input.participants.map((p) => p.persona_id)).size !== input.participants.length ||
     new Set(input.participants.map((p) => p.credential_key)).size !== input.participants.length ||
-    positives.length < 2 ||
+    positives.length < 1 ||
     !positives.some((p) => p.activities.includes("study")) ||
     !positives.some((p) => p.activities.includes("karaoke")) ||
     !input.participants.some((p) => p.expected_admission === "verification_missing") ||
