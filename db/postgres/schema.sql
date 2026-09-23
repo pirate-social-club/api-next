@@ -540,10 +540,9 @@ CREATE FUNCTION advance_handle_linkage_after_grant_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  PERFORM advance_handle_persona_public_linkage_v1(
-    NEW.owner_persona_id,
-    NEW.issued_at
-  );
+  IF NEW.family = 'hns' THEN
+    PERFORM advance_handle_persona_public_linkage_v1(NEW.owner_persona_id, NEW.issued_at);
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -1035,6 +1034,83 @@ BEGIN
   IF handle_spaces_membership_satisfied_v1(offering.community_id, candidate.actor_account_id)
        IS NOT TRUE THEN
     RAISE EXCEPTION 'Spaces handle claim requires an active community membership';
+  END IF;
+END;
+$$;
+
+CREATE TABLE handle_grants (
+    grant_id text NOT NULL,
+    grant_generation bigint NOT NULL,
+    community_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_hash text NOT NULL,
+    claim_id text NOT NULL,
+    owner_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    sale_namespace_activation_id text NOT NULL,
+    sale_namespace_activation_generation bigint NOT NULL,
+    fulfillment_kind text NOT NULL,
+    family text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    display_identifier text NOT NULL,
+    status text NOT NULL,
+    issued_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    recipient_kind text,
+    recipient_network text,
+    recipient_taproot_assignment_id text,
+    recipient_script_pubkey_hex text,
+    spaces_final_evidence_id text,
+    CONSTRAINT handle_grant_family_shape CHECK ((((family = 'hns'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (recipient_kind IS NULL) AND (recipient_network IS NULL) AND (recipient_taproot_assignment_id IS NULL) AND (recipient_script_pubkey_hex IS NULL)) OR (((family = 'spaces'::text) AND (fulfillment_kind = 'spaces_native_v1'::text) AND (recipient_kind = 'persona_taproot_v1'::text) AND (recipient_network = ANY (ARRAY['mainnet'::text, 'testnet4'::text, 'regtest'::text])) AND is_handle_sales_identifier_v1(recipient_taproot_assignment_id, 128) AND (recipient_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text)) IS TRUE))),
+    CONSTRAINT handle_grant_final_evidence_shape CHECK ((((family = 'hns'::text) AND (spaces_final_evidence_id IS NULL)) OR ((family = 'spaces'::text) AND (spaces_final_evidence_id IS NOT NULL)))),
+    CONSTRAINT handle_grants_grant_generation_check CHECK ((grant_generation = 1)),
+    CONSTRAINT handle_grants_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_grants_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text, 'tombstoned'::text])))
+);
+
+CREATE FUNCTION assert_spaces_handle_grant_insert_v1(candidate handle_grants) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim handle_claims%ROWTYPE;
+  offering community_handle_offering_revisions%ROWTYPE;
+  evidence spaces_final_issuance_evidence%ROWTYPE;
+BEGIN
+  SELECT * INTO claim FROM handle_claims WHERE claim_id=candidate.claim_id FOR SHARE;
+  SELECT * INTO offering FROM community_handle_offering_revisions
+    WHERE offering_id=claim.offering_id AND offering_hash=claim.offering_hash FOR SHARE;
+  SELECT * INTO evidence FROM spaces_final_issuance_evidence
+    WHERE evidence_id=candidate.spaces_final_evidence_id FOR SHARE;
+  IF claim.claim_id IS NULL
+    OR offering.offering_id IS NULL
+    OR evidence.evidence_id IS NULL
+    OR claim.family <> 'spaces'
+    OR claim.state <> 'issued'
+    OR claim.grant_id <> candidate.grant_id
+    OR offering.community_id <> candidate.community_id
+    OR claim.actor_account_id <> candidate.owner_account_id
+    OR claim.owner_persona_id <> candidate.owner_persona_id
+    OR claim.offering_id <> candidate.offering_id
+    OR claim.offering_hash <> candidate.offering_hash
+    OR claim.sale_namespace_activation_id <> candidate.sale_namespace_activation_id
+    OR claim.sale_namespace_activation_generation <> candidate.sale_namespace_activation_generation
+    OR claim.fulfillment_kind <> candidate.fulfillment_kind
+    OR claim.namespace_root <> candidate.namespace_root
+    OR claim.handle_label <> candidate.handle_label
+    OR claim.display_identifier <> candidate.display_identifier
+    OR claim.recipient_kind <> candidate.recipient_kind
+    OR claim.recipient_network <> candidate.recipient_network
+    OR claim.recipient_taproot_assignment_id <> candidate.recipient_taproot_assignment_id
+    OR claim.recipient_script_pubkey_hex <> candidate.recipient_script_pubkey_hex
+    OR evidence.claim_id <> candidate.claim_id
+    OR evidence.network <> candidate.recipient_network
+    OR evidence.namespace_root <> candidate.namespace_root
+    OR evidence.handle_label <> candidate.handle_label
+    OR evidence.script_pubkey_hex <> candidate.recipient_script_pubkey_hex
+    OR candidate.status NOT IN ('active', 'tombstoned')
+    OR candidate.issued_at <> evidence.recorded_at THEN
+    RAISE EXCEPTION 'Spaces handle grant requires matching final issuance evidence';
   END IF;
 END;
 $$;
@@ -13227,6 +13303,52 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_spaces_final_conflict_evidence_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim handle_claims%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Spaces final conflict evidence is append-only';
+  END IF;
+  SELECT * INTO claim FROM handle_claims WHERE claim_id=NEW.claim_id FOR SHARE;
+  IF claim.claim_id IS NULL
+    OR claim.family <> 'spaces'
+    OR claim.state <> 'issuance_pending'
+    OR claim.namespace_root <> NEW.namespace_root
+    OR claim.handle_label <> NEW.handle_label
+    OR claim.recipient_network <> NEW.network
+    OR claim.recipient_script_pubkey_hex <> NEW.expected_script_pubkey_hex THEN
+    RAISE EXCEPTION 'Spaces final conflict evidence does not match the pending claim';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_final_issuance_evidence_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim handle_claims%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Spaces final issuance evidence is append-only';
+  END IF;
+  SELECT * INTO claim FROM handle_claims WHERE claim_id=NEW.claim_id FOR SHARE;
+  IF claim.claim_id IS NULL
+    OR claim.family <> 'spaces'
+    OR claim.state <> 'issuance_pending'
+    OR claim.namespace_root <> NEW.namespace_root
+    OR claim.handle_label <> NEW.handle_label
+    OR claim.recipient_network <> NEW.network
+    OR claim.recipient_script_pubkey_hex <> NEW.script_pubkey_hex THEN
+    RAISE EXCEPTION 'Spaces final issuance evidence does not match the pending claim';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_spaces_issuance_driver_root_enablement_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -21902,7 +22024,8 @@ DECLARE
   offering community_handle_offering_revisions%ROWTYPE;
 BEGIN
   IF NEW.family = 'spaces' THEN
-    RAISE EXCEPTION 'Spaces handle grants require verified final issuance evidence';
+    PERFORM assert_spaces_handle_grant_insert_v1(NEW);
+    RETURN NEW;
   END IF;
 
   SELECT * INTO claim FROM handle_claims WHERE claim_id = NEW.claim_id FOR SHARE;
@@ -29669,35 +29792,6 @@ CREATE TABLE handle_direct_grant_recipient_tokens (
     CONSTRAINT handle_recipient_token_time_order CHECK (((expires_at > created_at) AND ((superseded_at IS NULL) OR (superseded_at >= created_at)) AND ((consumed_at IS NULL) OR (consumed_at >= created_at))))
 );
 
-CREATE TABLE handle_grants (
-    grant_id text NOT NULL,
-    grant_generation bigint NOT NULL,
-    community_id text NOT NULL,
-    offering_id text NOT NULL,
-    offering_hash text NOT NULL,
-    claim_id text NOT NULL,
-    owner_account_id text NOT NULL,
-    owner_persona_id text NOT NULL,
-    sale_namespace_activation_id text NOT NULL,
-    sale_namespace_activation_generation bigint NOT NULL,
-    fulfillment_kind text NOT NULL,
-    family text NOT NULL,
-    namespace_root text NOT NULL,
-    handle_label text NOT NULL,
-    display_identifier text NOT NULL,
-    status text NOT NULL,
-    issued_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    recipient_kind text,
-    recipient_network text,
-    recipient_taproot_assignment_id text,
-    recipient_script_pubkey_hex text,
-    CONSTRAINT handle_grant_family_shape CHECK ((((family = 'hns'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (recipient_kind IS NULL) AND (recipient_network IS NULL) AND (recipient_taproot_assignment_id IS NULL) AND (recipient_script_pubkey_hex IS NULL)) OR (((family = 'spaces'::text) AND (fulfillment_kind = 'spaces_native_v1'::text) AND (recipient_kind = 'persona_taproot_v1'::text) AND (recipient_network = ANY (ARRAY['mainnet'::text, 'testnet4'::text, 'regtest'::text])) AND is_handle_sales_identifier_v1(recipient_taproot_assignment_id, 128) AND (recipient_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text)) IS TRUE))),
-    CONSTRAINT handle_grants_grant_generation_check CHECK ((grant_generation = 1)),
-    CONSTRAINT handle_grants_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_grants_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text, 'tombstoned'::text])))
-);
-
 CREATE TABLE handle_issuance_driver_revisions (
     family text NOT NULL,
     driver_id text NOT NULL,
@@ -34401,10 +34495,50 @@ CREATE TABLE spaces_external_conflict_observations (
     recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     registry_acknowledgment_id text,
     occupancy_observation_id text,
-    CONSTRAINT spaces_external_conflict_evidence_shape CHECK (((((evidence_kind = 'registry_acknowledgment_v1'::text) AND (registry_acknowledgment_id IS NOT NULL) AND (occupancy_observation_id IS NULL)) IS TRUE) OR (((evidence_kind = 'occupancy_observation_v1'::text) AND (occupancy_observation_id IS NOT NULL) AND (registry_acknowledgment_id IS NULL)) IS TRUE))),
+    final_conflict_evidence_id text,
+    CONSTRAINT spaces_external_conflict_evidence_shape CHECK (((((evidence_kind = 'registry_acknowledgment_v1'::text) AND (registry_acknowledgment_id IS NOT NULL) AND (occupancy_observation_id IS NULL) AND (final_conflict_evidence_id IS NULL)) IS TRUE) OR (((evidence_kind = 'occupancy_observation_v1'::text) AND (occupancy_observation_id IS NOT NULL) AND (registry_acknowledgment_id IS NULL) AND (final_conflict_evidence_id IS NULL)) IS TRUE) OR (((evidence_kind = 'final_conflict_evidence_v1'::text) AND (final_conflict_evidence_id IS NOT NULL) AND (registry_acknowledgment_id IS NULL) AND (occupancy_observation_id IS NULL)) IS TRUE))),
     CONSTRAINT spaces_external_conflict_identity_check CHECK ((is_handle_sales_identifier_v1(observation_id, 128) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (observed_at <= recorded_at))),
-    CONSTRAINT spaces_external_conflict_observations_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['registry_acknowledgment_v1'::text, 'occupancy_observation_v1'::text]))),
+    CONSTRAINT spaces_external_conflict_observations_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['registry_acknowledgment_v1'::text, 'occupancy_observation_v1'::text, 'final_conflict_evidence_v1'::text]))),
     CONSTRAINT spaces_external_conflict_observations_family_check CHECK ((family = 'spaces'::text))
+);
+
+CREATE TABLE spaces_final_conflict_evidence (
+    evidence_id text NOT NULL,
+    claim_id text NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    expected_script_pubkey_hex text NOT NULL,
+    observed_script_pubkey_hex text NOT NULL,
+    certificate_sha256_hex text NOT NULL,
+    commitment_txid_hex text NOT NULL,
+    commitment_root_hex text NOT NULL,
+    mined_height bigint NOT NULL,
+    verified_tip_height bigint NOT NULL,
+    verifier_id text NOT NULL,
+    verifier_version text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_final_conflict_evidence_identity_check CHECK (((evidence_id ~ '^sconfinal_[0-9a-f]{32}$'::text) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (expected_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_script_pubkey_hex <> expected_script_pubkey_hex) AND (certificate_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_txid_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND (mined_height >= 0) AND (verified_tip_height > (mined_height + 144)) AND is_handle_sales_identifier_v1(verifier_id, 128) AND is_handle_sales_identifier_v1(verifier_version, 128) AND (observed_at <= recorded_at)))
+);
+
+CREATE TABLE spaces_final_issuance_evidence (
+    evidence_id text NOT NULL,
+    claim_id text NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    script_pubkey_hex text NOT NULL,
+    certificate_sha256_hex text NOT NULL,
+    commitment_txid_hex text NOT NULL,
+    commitment_root_hex text NOT NULL,
+    mined_height bigint NOT NULL,
+    verified_tip_height bigint NOT NULL,
+    verifier_id text NOT NULL,
+    verifier_version text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_final_issuance_evidence_identity_check CHECK (((evidence_id ~ '^sfinal_[0-9a-f]{32}$'::text) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (certificate_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_txid_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND (mined_height >= 0) AND (verified_tip_height > (mined_height + 144)) AND is_handle_sales_identifier_v1(verifier_id, 128) AND is_handle_sales_identifier_v1(verifier_version, 128) AND (observed_at <= recorded_at)))
 );
 
 CREATE TABLE spaces_issuance_driver_root_enablements (
@@ -34435,7 +34569,12 @@ CREATE TABLE spaces_issuance_verifications (
     overdue_marked_at timestamp with time zone,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
+    lease_token text,
+    leased_until timestamp with time zone,
+    overdue_alerted_at timestamp with time zone,
     CONSTRAINT spaces_issuance_verification_identity_check CHECK (((issuance_operation_id = ('issuance:spaces-native:'::text || claim_id)) AND (updated_at >= created_at) AND ((last_attempted_at IS NULL) OR (last_attempted_at >= created_at)) AND ((overdue_marked_at IS NULL) OR (overdue_marked_at >= created_at)))),
+    CONSTRAINT spaces_issuance_verification_lease_shape CHECK ((((lease_token IS NULL) AND (leased_until IS NULL)) OR ((lease_token ~ '^slease_[0-9a-f]{32}$'::text) AND (leased_until IS NOT NULL)))),
+    CONSTRAINT spaces_issuance_verification_overdue_alert_shape CHECK (((overdue_alerted_at IS NULL) OR ((overdue_marked_at IS NOT NULL) AND (overdue_alerted_at >= overdue_marked_at)))),
     CONSTRAINT spaces_issuance_verifications_attempt_count_check CHECK (((attempt_count >= 0) AND (attempt_count <= '9007199254740991'::bigint))),
     CONSTRAINT spaces_issuance_verifications_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'verified'::text, 'closed'::text])))
 );
@@ -37871,6 +38010,21 @@ ALTER TABLE ONLY spaces_external_conflict_observations
 ALTER TABLE ONLY spaces_external_conflict_observations
     ADD CONSTRAINT spaces_external_conflict_observations_pkey PRIMARY KEY (observation_id);
 
+ALTER TABLE ONLY spaces_final_conflict_evidence
+    ADD CONSTRAINT spaces_final_conflict_evidence_claim_id_key UNIQUE (claim_id);
+
+ALTER TABLE ONLY spaces_final_conflict_evidence
+    ADD CONSTRAINT spaces_final_conflict_evidence_key_unique UNIQUE (evidence_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_final_conflict_evidence
+    ADD CONSTRAINT spaces_final_conflict_evidence_pkey PRIMARY KEY (evidence_id);
+
+ALTER TABLE ONLY spaces_final_issuance_evidence
+    ADD CONSTRAINT spaces_final_issuance_evidence_claim_id_key UNIQUE (claim_id);
+
+ALTER TABLE ONLY spaces_final_issuance_evidence
+    ADD CONSTRAINT spaces_final_issuance_evidence_pkey PRIMARY KEY (evidence_id);
+
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_issuance_driver_root_enablements_pkey PRIMARY KEY (enablement_id);
 
@@ -39825,6 +39979,10 @@ CREATE TRIGGER spaces_driver_root_enablement_change_guard BEFORE INSERT OR DELET
 
 CREATE TRIGGER spaces_external_conflict_observations_append_only BEFORE DELETE OR UPDATE ON spaces_external_conflict_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
+CREATE TRIGGER spaces_final_conflict_evidence_append_only BEFORE INSERT OR DELETE OR UPDATE ON spaces_final_conflict_evidence FOR EACH ROW EXECUTE FUNCTION guard_spaces_final_conflict_evidence_v1();
+
+CREATE TRIGGER spaces_final_issuance_evidence_append_only BEFORE INSERT OR DELETE OR UPDATE ON spaces_final_issuance_evidence FOR EACH ROW EXECUTE FUNCTION guard_spaces_final_issuance_evidence_v1();
+
 CREATE TRIGGER spaces_issuance_verification_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_issuance_verifications FOR EACH ROW EXECUTE FUNCTION guard_spaces_issuance_verification_v1();
 
 CREATE TRIGGER spaces_namespace_authority_evidence_append_only BEFORE DELETE OR UPDATE ON spaces_namespace_authority_evidence FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
@@ -40981,6 +41139,9 @@ ALTER TABLE ONLY handle_grants
 
 ALTER TABLE ONLY handle_grants
     ADD CONSTRAINT handle_grants_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_grants
+    ADD CONSTRAINT handle_grants_spaces_final_evidence_id_fkey FOREIGN KEY (spaces_final_evidence_id) REFERENCES spaces_final_issuance_evidence(evidence_id);
 
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fence_external_conflict_fk FOREIGN KEY (external_conflict_observation_id, family, namespace_root, handle_label) REFERENCES spaces_external_conflict_observations(observation_id, family, namespace_root, handle_label);
@@ -42417,10 +42578,25 @@ ALTER TABLE ONLY spaces_external_conflict_observations
     ADD CONSTRAINT spaces_external_conflict_acknowledgment_fk FOREIGN KEY (registry_acknowledgment_id, network, namespace_root, handle_label) REFERENCES spaces_registry_acknowledgments(acknowledgment_id, network, namespace_root, handle_label);
 
 ALTER TABLE ONLY spaces_external_conflict_observations
+    ADD CONSTRAINT spaces_external_conflict_final_evidence_fk FOREIGN KEY (final_conflict_evidence_id, network, namespace_root, handle_label) REFERENCES spaces_final_conflict_evidence(evidence_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_external_conflict_observations
     ADD CONSTRAINT spaces_external_conflict_observations_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
 
 ALTER TABLE ONLY spaces_external_conflict_observations
     ADD CONSTRAINT spaces_external_conflict_occupancy_fk FOREIGN KEY (occupancy_observation_id, network, namespace_root, handle_label) REFERENCES spaces_registry_occupancy_observations(occupancy_observation_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_final_conflict_evidence
+    ADD CONSTRAINT spaces_final_conflict_evidence_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES spaces_issuance_verifications(claim_id);
+
+ALTER TABLE ONLY spaces_final_conflict_evidence
+    ADD CONSTRAINT spaces_final_conflict_evidence_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_final_issuance_evidence
+    ADD CONSTRAINT spaces_final_issuance_evidence_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES spaces_issuance_verifications(claim_id);
+
+ALTER TABLE ONLY spaces_final_issuance_evidence
+    ADD CONSTRAINT spaces_final_issuance_evidence_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
 
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_issuance_driver_root_enablements_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);

@@ -394,6 +394,8 @@ TRUNCATE TABLE
   "song_streak_days",
   "song_streaks",
   "spaces_external_conflict_observations",
+  "spaces_final_conflict_evidence",
+  "spaces_final_issuance_evidence",
   "spaces_issuance_driver_root_enablements",
   "spaces_issuance_verifications",
   "spaces_namespace_authority_evidence",
