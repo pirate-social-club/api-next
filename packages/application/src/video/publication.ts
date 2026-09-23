@@ -1700,7 +1700,8 @@ export async function moderateVideoSubmission(
       ...(allApproved
         ? {
             status: "processing" as const,
-            phase: "publish" as const,
+            phase:
+              record.state.intent === "song_reference" ? ("render" as const) : ("publish" as const),
             reviewReasons: [],
             decision:
               record.state.decision === null

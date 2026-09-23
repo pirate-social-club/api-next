@@ -57,7 +57,7 @@ export async function dispatchVideoPublicationWakeups(
       }
       if (
         authority.state.status !== "processing" ||
-        authority.state.phase !== "publish" ||
+        (authority.state.phase !== "publish" && authority.state.phase !== "render") ||
         authority.state.analysis === null
       )
         continue;
