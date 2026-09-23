@@ -54,6 +54,7 @@
     "hns:emit-authority-successor": "bun apps/hns-observer-driver/src/authority-successor-main.ts",
     "hns:provision-authority-root": "bun apps/hns-authority-provisioner/src/main.ts",
     "db:preflight:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-preflight.ts",
+    "db:preflight:megapot-base-mainnet": "bun scripts/megapot-base-mainnet-preflight.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",
     "deploy:worker": "bun scripts/deploy-worker-with-provenance.ts",
