@@ -18,7 +18,11 @@ import {
   verifyGoldenIdentity,
   withGoldenReadOnly,
 } from "./megapot-golden-readonly.ts";
-import { waitForGoldenSettlement } from "./megapot-golden-reconciliation.ts";
+import {
+  type GoldenObservation,
+  goldenAdmissionProgress,
+  waitForGoldenSettlement,
+} from "./megapot-golden-reconciliation.ts";
 
 function credentials(key: string, environment: NodeJS.ProcessEnv): GoldenHttpOptions {
   const authorization = environment[`${key}_AUTHORIZATION`];
@@ -43,6 +47,18 @@ const defaultDependencies = {
   activity: runGoldenActivity,
   observe: observeGoldenDrawing,
   recoverDrawing: recoverGoldenDrawing,
+  adopt: async (
+    input: MultiGoldenInput,
+    read: typeof withGoldenReadOnly,
+    url: string,
+    host: string,
+    database: string,
+  ) => {
+    const manifest = await loadMegapotBaseSepoliaBootstrapManifest();
+    await read(url, host, database, (client) =>
+      assertGoldenAdoptedPool(client, input, manifest.usdc_address),
+    );
+  },
 };
 
 export async function collectMultiGoldenPreflight(
@@ -87,6 +103,7 @@ export async function runMultiGolden(
         expected_admission: p.expected_admission,
       })),
       expected_shares: input.participants.filter((p) => p.expected_admission === "eligible").length,
+      activity_mode: input.activity_mode ?? "runner",
       authorization_supplied: input.authorization !== null,
       funding_mode: input.app_funded_pool ? "app-funded" : "runner-created",
       live_calls: 0,
@@ -122,13 +139,17 @@ export async function runMultiGolden(
       const prepared = await Promise.all(
         input.participants.map(async (participant) => {
           const http = credentials(participant.credential_key, environment);
-          authHeaders(http, true);
+          if (
+            input.activity_mode !== "observe_app" ||
+            participant.expected_admission === "verification_missing"
+          )
+            authHeaders(http, true);
           const artifact = Schema.decodeUnknownSync(MultiParticipantPreflight, {
             onExcessProperty: "error",
           })(await dependencies.readArtifact(participant.preflight_path));
           assertMultiParticipantPreflight(artifact, input, participant, dependencies.now());
           let pcm16: ArrayBuffer | undefined;
-          if (participant.karaoke_audio) {
+          if (input.activity_mode !== "observe_app" && participant.karaoke_audio) {
             pcm16 = await dependencies.readAudio(participant.karaoke_audio.pcm_path);
             if (
               pcm16.byteLength !== participant.karaoke_audio.duration_ms * 32 ||
@@ -145,6 +166,8 @@ export async function runMultiGolden(
         (count, entry) =>
           count +
           (entry.participant.activities.includes("study") &&
+          (input.activity_mode !== "observe_app" ||
+            entry.participant.expected_admission === "verification_missing") &&
           !journal.state.completed_activities.includes(`${entry.participant.key}:study`)
             ? entry.artifact.study_exercise_count
             : 0),
@@ -158,12 +181,13 @@ export async function runMultiGolden(
       if (dependencies.now() >= Date.parse(authorization.qualification_deadline))
         throw new Error("Qualification window ended during preflight.");
       if (input.app_funded_pool) {
-        const manifest = await loadMegapotBaseSepoliaBootstrapManifest();
-        await read((client) => assertGoldenAdoptedPool(client, input, manifest.usdc_address));
+        await dependencies.adopt(input, dependencies.read, dbUrl, dbHost, dbName);
       }
       const pool = await dependencies.pool(input, sponsor, journal);
       if (pool.state !== "funded") return pool;
       for (const { participant, http, artifact, pcm16 } of prepared) {
+        if (input.activity_mode === "observe_app" && participant.expected_admission === "eligible")
+          continue;
         for (const activity of participant.activities) {
           const key = `${participant.key}:${activity}`;
           if (journal.state.completed_activities.includes(key)) continue;
@@ -178,6 +202,54 @@ export async function runMultiGolden(
             pending_activity: null,
             completed_activities: [...journal.state.completed_activities, key],
           });
+        }
+      }
+      if (input.activity_mode === "observe_app") {
+        const legId = journal.state.leg_id;
+        const drawingId = journal.state.drawing_id;
+        if (!legId || !drawingId) throw new Error("Adopted drawing is missing.");
+        while (true) {
+          for (const entry of prepared)
+            await read((client) =>
+              dependencies.verifyIdentity(client, entry.artifact, dependencies.now()),
+            );
+          const observation: GoldenObservation = await read((client) =>
+            dependencies.observe(client, legId, drawingId),
+          );
+          if (observation.leg_id !== legId || observation.drawing_id !== drawingId)
+            throw new Error("Observed drawing scope changed.");
+          const current = dependencies.now();
+          if (
+            Date.parse(observation.observed_at) > current ||
+            current - Date.parse(observation.observed_at) > 60000
+          )
+            throw new Error("Activity observation is not fresh.");
+          const cutoff = Math.min(
+            Date.parse(observation.entry_cutoff_at),
+            Date.parse(authorization.qualification_deadline),
+          );
+          const progress = goldenAdmissionProgress(input, observation);
+          if (progress === "complete" && current < cutoff) {
+            for (const participant of input.participants) {
+              for (const activity of participant.activities) {
+                const key = `${participant.key}:${activity}`;
+                if (!journal.state.completed_activities.includes(key))
+                  await journal.save({
+                    ...journal.state,
+                    completed_activities: [...journal.state.completed_activities, key],
+                  });
+              }
+            }
+            break;
+          }
+          if (current >= cutoff)
+            return {
+              state: "activity_evidence_incomplete" as const,
+              terminal: false as const,
+              leg_id: legId,
+              drawing_id: drawingId,
+            };
+          await dependencies.sleep(Math.min(5000, cutoff - current));
         }
       }
     }
