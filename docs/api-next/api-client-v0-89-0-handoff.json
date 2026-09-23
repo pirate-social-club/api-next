@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.89.0",
+  "sourceBranch": "feat/spaces-native-claims",
+  "sourceBase": "3b70f465db080163919c55032ebc489b917baff5",
+  "wireContract": "Adds checked Spaces name sale, private pending claim, public final grant, and seller readiness projections while keeping Spaces issuance disabled.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.89.0.tgz",
+    "sha256": "d275f312a37798ba0a3998931f4a16c7aefb580d4df0706c08d5ec8899e6d549"
+  },
+  "validation": {
+    "status": "Local candidate passed repository, unit, Worker, and affected PostgreSQL tests; full PostgreSQL shards and hosted review pending",
+    "passed": [
+      "Contract generation",
+      "Immutable package creation from the generated 0.89.0 client",
+      "Focused Spaces contract and HTTP boundary tests",
+      "Repository check, OpenAPI transition check, and immutable client package verification",
+      "Complete Bun unit, Node, and Workerd test graph",
+      "Affected Spaces and HNS PostgreSQL 17 suites: 26 passed"
+    ],
+    "remaining": [
+      "PostgreSQL 17 general shards and recovery",
+      "Hosted pull request checks and paired Solid client adoption"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, driver enablement, chain transaction, or live Spaces issuance occurred."
+  }
+}

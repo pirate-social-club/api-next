@@ -1,22 +1,22 @@
 import type {
-  CommunityHandleOffering,
-  CommunityHandleOfferingManagementItemV2,
+  CommunityHandleOfferingManagementItemV3,
+  CommunityHandleOfferingV4,
   CreateHandleQuoteResultV3,
   CreateHandleSpacesQuoteResultV1,
   HandleClaimV2,
   HandleCuratedQualificationPolicyRefV1,
   HandleGrantPrivateV2,
-  HandleOfferingTermsCommandV2,
+  HandleOfferingTermsCommandV3,
   HandleQuoteV2,
   HandleReservationV2,
   HandleSafeReasonV2,
-  HandleSaleNamespaceManagementItemV1,
-  HandleSalesManagementContextV1,
+  HandleSaleNamespaceManagementItemV2,
+  HandleSalesManagementContextV2,
   HandleSpacesClaimV1,
   HandleSpacesReservationV1,
-  PublicHandleGrantV3,
-  PublicPersonaProfileV1,
-  SaleNamespaceActivationV1,
+  PublicHandleGrantV4,
+  PublicPersonaProfileV2,
+  SaleNamespaceActivationV2,
 } from "@pirate/contracts";
 import { Context, Data, Effect } from "effect";
 import { IdGen } from "../ports.ts";
@@ -111,7 +111,7 @@ export type CreateHandleOfferingInput = Readonly<{
   accountId: string;
   communityId: string;
   idempotencyKey: string;
-  terms: HandleOfferingTermsCommandV2;
+  terms: HandleOfferingTermsCommandV3;
 }>;
 
 export type ReviseHandleOfferingInput = CreateHandleOfferingInput &
@@ -149,8 +149,8 @@ export type CreateHandleQuoteResultV2 =
 /**
  * Store results widen with the native Spaces successors (spec 012 §5.3.13.6),
  * which are discriminated by `fulfillment.kind` and include the ruling-Q2
- * `recipient_wallet_required` quote refusal. The public endpoint unions that
- * serialize them are not wired yet, so no Spaces result reaches the wire.
+ * `recipient_wallet_required` quote refusal. Public successor endpoint unions
+ * serialize these variants while the Spaces driver remains disabled.
  */
 export type CreateHandleQuoteStoreResult =
   | CreateHandleQuoteResultV3
@@ -177,19 +177,19 @@ export interface HandleSalesStore {
   readonly createSaleNamespace: (
     input: CreateHandleSaleNamespaceInput & Readonly<{ activationId: string; actionId: string }>,
   ) => Effect.Effect<
-    Readonly<{ activation: SaleNamespaceActivationV1; replayed: boolean }>,
+    Readonly<{ activation: SaleNamespaceActivationV2; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly reviseSaleNamespace: (
     input: ReviseHandleSaleNamespaceInput & Readonly<{ actionId: string }>,
   ) => Effect.Effect<
-    Readonly<{ activation: SaleNamespaceActivationV1; replayed: boolean }>,
+    Readonly<{ activation: SaleNamespaceActivationV2; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly listSaleNamespaces: (
     input: Readonly<{ communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<SaleNamespaceActivationV1>,
+    PageResult<SaleNamespaceActivationV2>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly createRecipientToken: (
@@ -219,19 +219,19 @@ export interface HandleSalesStore {
   readonly createOffering: (
     input: CreateHandleOfferingInput & Readonly<{ offeringId: string; actionId: string }>,
   ) => Effect.Effect<
-    Readonly<{ offering: CommunityHandleOffering; replayed: boolean }>,
+    Readonly<{ offering: CommunityHandleOfferingV4; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly reviseOffering: (
     input: ReviseHandleOfferingInput & Readonly<{ actionId: string }>,
   ) => Effect.Effect<
-    Readonly<{ offering: CommunityHandleOffering; replayed: boolean }>,
+    Readonly<{ offering: CommunityHandleOfferingV4; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly listOfferings: (
     input: Readonly<{ communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<CommunityHandleOffering>,
+    PageResult<CommunityHandleOfferingV4>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly getManagementContext: (
@@ -239,17 +239,17 @@ export interface HandleSalesStore {
       accountId: string;
       communityId: string;
     }>,
-  ) => Effect.Effect<HandleSalesManagementContextV1 | null, HandleSalesStorageFailed>;
+  ) => Effect.Effect<HandleSalesManagementContextV2 | null, HandleSalesStorageFailed>;
   readonly listManagementSaleNamespaces: (
     input: Readonly<{ accountId: string; communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<HandleSaleNamespaceManagementItemV1> | null,
+    PageResult<HandleSaleNamespaceManagementItemV2> | null,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly listManagementOfferings: (
     input: Readonly<{ accountId: string; communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<CommunityHandleOfferingManagementItemV2> | null,
+    PageResult<CommunityHandleOfferingManagementItemV3> | null,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly confirmPersonaReuse: (
@@ -316,17 +316,17 @@ export interface HandleSalesStore {
   readonly listPersonaGrants: (
     input: Readonly<{ personaId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<PublicHandleGrantV3>,
+    PageResult<PublicHandleGrantV4>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly getPublicGrant: (input: {
     readonly family: "hns" | "spaces";
     readonly namespaceRoot: string;
     readonly handleLabel: string;
-  }) => Effect.Effect<PublicHandleGrantV3 | null, HandleSalesStorageFailed>;
+  }) => Effect.Effect<PublicHandleGrantV4 | null, HandleSalesStorageFailed>;
   readonly getPublicPersona: (input: {
     readonly personaId: string;
-  }) => Effect.Effect<PublicPersonaProfileV1 | null, HandleSalesStorageFailed>;
+  }) => Effect.Effect<PublicPersonaProfileV2 | null, HandleSalesStorageFailed>;
 }
 
 const nextId = (prefix: string): Effect.Effect<string, never, IdGen> =>

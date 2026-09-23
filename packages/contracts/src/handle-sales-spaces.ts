@@ -1,16 +1,34 @@
 import { parseCanonicalRouteLabelV1 } from "@pirate/route-label-codec";
 import { Schema } from "effect";
 import { HandleSafeReasonV2 } from "./errors.ts";
+import { HandleNationalityRequiredV1 } from "./handle-nationality.ts";
 import {
+  CommunityHandleKeyV1,
+  CommunityHandleOfferingManagementItemV2,
+  CommunityHandleOfferingV2,
+  CommunityHandleOfferingV3,
+  HandleAvailabilityRuleV1,
+  HandleClaimV2,
+  HandleCuratedQualificationPolicyRefV1,
   HandleEligibilitySnapshotV1,
   HandleFreePricingV1,
   HandleGrantPrivateV2,
+  HandleOfferingAuthoringPresetV1,
   HandlePaymentV1,
+  HandleQuoteV2,
+  HandleQuoteV3,
+  HandleReservationV2,
+  HandleSaleNamespaceCandidateV1,
+  HandleSaleNamespaceManagementItemV1,
+  PublicHandleGrantV3,
+  PublicPersonaProfileV1,
+  SaleNamespaceActivationV1,
 } from "./handle-sales.ts";
 import {
   BoundedIdentifier,
   CanonicalInstant,
   IdempotencyKey,
+  NonNegativeInteger,
   PositiveInteger,
   Sha256Hex,
 } from "./handle-sales-scalars.ts";
@@ -19,8 +37,7 @@ import { PersonaIdV1 } from "./personas.ts";
 /**
  * Native Spaces sale-namespace activation (spec 012 §5.3.13.3, §5.3.13.4, and
  * §5.3.13.11). These schemas are the checked Spaces sibling of the HNS
- * activation. They are not wired to any endpoint until the public contract
- * unions land; the HNS wire is unchanged.
+ * activation. Public successor contracts admit it alongside the HNS wire.
  */
 
 export const SpacesNetworkV1 = Schema.Literals(["mainnet", "testnet4", "regtest"]);
@@ -74,6 +91,12 @@ export const SpacesSaleNamespaceActivationV1 = Schema.Struct({
 export type SpacesSaleNamespaceActivationV1 = Schema.Schema.Type<
   typeof SpacesSaleNamespaceActivationV1
 >;
+
+export const SaleNamespaceActivationV2 = Schema.Union([
+  SaleNamespaceActivationV1,
+  SpacesSaleNamespaceActivationV1,
+]);
+export type SaleNamespaceActivationV2 = Schema.Schema.Type<typeof SaleNamespaceActivationV2>;
 
 /** The owner command. Network, roots, authority, assignment, and hashes are server-resolved. */
 export const CreateSpacesSaleNamespaceActivationV1 = Schema.Struct({
@@ -129,6 +152,75 @@ export const SpacesOperatorFundingV1 = Schema.Struct({
 });
 export type SpacesOperatorFundingV1 = Schema.Schema.Type<typeof SpacesOperatorFundingV1>;
 
+export const HandleSaleNamespaceCandidateV2 = Schema.Union([
+  HandleSaleNamespaceCandidateV1,
+  Schema.Struct({
+    kind: Schema.Literal("ready_v1"),
+    family: Schema.Literal("spaces"),
+    network: SpacesNetworkV1,
+    canonical_root: SpacesCanonicalRootV1,
+    display_root: Schema.String,
+    namespace_authority_reference: BoundedIdentifier,
+    expected_namespace_authority_generation: PositiveInteger,
+    operator_assignment_id: BoundedIdentifier,
+    expected_operator_assignment_generation: PositiveInteger,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("unavailable_v1"),
+    family: Schema.Literal("spaces"),
+    network: SpacesNetworkV1,
+    canonical_root: SpacesCanonicalRootV1,
+    display_root: Schema.String,
+    reason: SpacesSaleReadinessReasonV1,
+  }),
+]);
+export type HandleSaleNamespaceCandidateV2 = Schema.Schema.Type<
+  typeof HandleSaleNamespaceCandidateV2
+>;
+
+export const HandleOfferingAuthoringPresetV2 = Schema.Union([
+  HandleOfferingAuthoringPresetV1,
+  Schema.Struct({
+    kind: Schema.Literal("spaces_native_free_v1"),
+    reserved_labels_id: BoundedIdentifier,
+    expected_reserved_labels_revision: PositiveInteger,
+    broad_qualification_policy_id: BoundedIdentifier,
+    expected_broad_qualification_policy_revision: PositiveInteger,
+    pricing_id: BoundedIdentifier,
+    expected_pricing_revision: PositiveInteger,
+    issuance_driver_id: BoundedIdentifier,
+    expected_issuance_driver_version: BoundedIdentifier,
+    quote_ttl_seconds: Schema.Int.check(Schema.isBetween({ minimum: 30, maximum: 900 })),
+    reservation_ttl_seconds: Schema.Int.check(Schema.isBetween({ minimum: 30, maximum: 300 })),
+  }),
+]);
+export type HandleOfferingAuthoringPresetV2 = Schema.Schema.Type<
+  typeof HandleOfferingAuthoringPresetV2
+>;
+
+export const HandleSalesManagementContextV2 = Schema.Struct({
+  community_id: BoundedIdentifier,
+  sale_namespace_candidates: Schema.Array(HandleSaleNamespaceCandidateV2),
+  offering_authoring_presets: Schema.Array(HandleOfferingAuthoringPresetV2),
+  observed_at: CanonicalInstant,
+});
+export type HandleSalesManagementContextV2 = Schema.Schema.Type<
+  typeof HandleSalesManagementContextV2
+>;
+
+export const HandleSaleNamespaceManagementItemV2 = Schema.Union([
+  HandleSaleNamespaceManagementItemV1,
+  Schema.Struct({
+    activation: SpacesSaleNamespaceActivationV1,
+    readiness: SpacesSaleReadinessV1,
+    funding: SpacesOperatorFundingV1,
+    pending_claim_count: NonNegativeInteger,
+  }),
+]);
+export type HandleSaleNamespaceManagementItemV2 = Schema.Schema.Type<
+  typeof HandleSaleNamespaceManagementItemV2
+>;
+
 /**
  * `spaces_subspace_label_v1` (spec 012 §5.3.13.3): canonical lower-case ASCII
  * letters and digits with interior single hyphens, 1 to 62 bytes, no `xn--`
@@ -153,6 +245,64 @@ export const SpacesHandleKeyV1 = Schema.Struct({
   handle_label: SpacesSubspaceLabelV1,
 });
 export type SpacesHandleKeyV1 = Schema.Schema.Type<typeof SpacesHandleKeyV1>;
+
+export const SpacesHandleLabelScopeV1 = Schema.Struct({
+  kind: Schema.Literal("label_rule_v2"),
+  label_grammar_id: Schema.Literal("spaces_subspace_label_v1"),
+  reserved_labels_id: BoundedIdentifier,
+  reserved_labels_revision: PositiveInteger,
+  reserved_labels_hash: Sha256Hex,
+  availability: HandleAvailabilityRuleV1,
+});
+
+export const CommunityHandleSpacesOfferingV1 = Schema.Struct({
+  ...CommunityHandleOfferingV2.fields,
+  family: Schema.Literal("spaces"),
+  namespace_root: SpacesCanonicalRootV1,
+  label_scope: SpacesHandleLabelScopeV1,
+  allocation: Schema.Struct({ kind: Schema.Literal("first_come_v1") }),
+  fulfillment: Schema.Struct({ kind: Schema.Literal("spaces_native_v1") }),
+  qualification_policy: HandleCuratedQualificationPolicyRefV1,
+  issuance: Schema.Struct({
+    family: Schema.Literal("spaces"),
+    driver_id: BoundedIdentifier,
+    driver_version: BoundedIdentifier,
+  }),
+});
+export type CommunityHandleSpacesOfferingV1 = Schema.Schema.Type<
+  typeof CommunityHandleSpacesOfferingV1
+>;
+
+const HnsFulfillment = Schema.Struct({
+  kind: Schema.Literals(["hosted_persona_v1", "delegated_zone_v1"]),
+});
+const HnsHandle = Schema.Struct({
+  ...CommunityHandleKeyV1.fields,
+  family: Schema.Literal("hns"),
+});
+const HnsOfferingFields = {
+  family: Schema.Literal("hns"),
+  fulfillment: HnsFulfillment,
+  issuance: Schema.Struct({
+    ...CommunityHandleOfferingV2.fields.issuance.fields,
+    family: Schema.Literal("hns"),
+  }),
+} as const;
+
+export const CommunityHandleOfferingV4 = Schema.Union([
+  Schema.Struct({ ...CommunityHandleOfferingV2.fields, ...HnsOfferingFields }),
+  Schema.Struct({ ...CommunityHandleOfferingV3.fields, ...HnsOfferingFields }),
+  CommunityHandleSpacesOfferingV1,
+]);
+export type CommunityHandleOfferingV4 = Schema.Schema.Type<typeof CommunityHandleOfferingV4>;
+
+export const CommunityHandleOfferingManagementItemV3 = Schema.Struct({
+  offering: CommunityHandleOfferingV4,
+  effectiveness: CommunityHandleOfferingManagementItemV2.fields.effectiveness,
+});
+export type CommunityHandleOfferingManagementItemV3 = Schema.Schema.Type<
+  typeof CommunityHandleOfferingManagementItemV3
+>;
 
 /**
  * The owner-only recipient of a Spaces quote, reservation, or claim (spec 012
@@ -179,6 +329,37 @@ export const HandleSafeReasonV3 = Schema.Union([
 export type HandleSafeReasonV3 = Schema.Schema.Type<typeof HandleSafeReasonV3>;
 
 const SpacesFulfillmentV1 = Schema.Struct({ kind: Schema.Literal("spaces_native_v1") });
+
+export const HandleSpacesGrantPrivateV1 = Schema.Struct({
+  ...HandleGrantPrivateV2.fields,
+  fulfillment: SpacesFulfillmentV1,
+  handle: SpacesHandleKeyV1,
+});
+export type HandleSpacesGrantPrivateV1 = Schema.Schema.Type<typeof HandleSpacesGrantPrivateV1>;
+
+export const PublicHandleSpacesGrantV1 = Schema.Struct({
+  ...PublicHandleGrantV3.fields,
+  fulfillment: SpacesFulfillmentV1,
+  handle: SpacesHandleKeyV1,
+  host: Schema.Struct({ kind: Schema.Literal("not_applicable") }),
+});
+export type PublicHandleSpacesGrantV1 = Schema.Schema.Type<typeof PublicHandleSpacesGrantV1>;
+
+export const PublicHandleGrantV4 = Schema.Union([
+  Schema.Struct({
+    ...PublicHandleGrantV3.fields,
+    fulfillment: HnsFulfillment,
+    handle: HnsHandle,
+  }),
+  PublicHandleSpacesGrantV1,
+]);
+export type PublicHandleGrantV4 = Schema.Schema.Type<typeof PublicHandleGrantV4>;
+
+export const PublicPersonaProfileV2 = Schema.Struct({
+  ...PublicPersonaProfileV1.fields,
+  handle_grants: Schema.Array(PublicHandleGrantV4),
+});
+export type PublicPersonaProfileV2 = Schema.Schema.Type<typeof PublicPersonaProfileV2>;
 
 /**
  * The spec's `HandleQuoteV3`, named for its family (ruling Q1) so it cannot
@@ -248,7 +429,7 @@ export const HandleSpacesClaimV1 = Schema.Struct({
   state: Schema.Literals(["issuance_pending", "issued", "issuance_failed"]),
   delayed: Schema.Boolean,
   safe_reason: Schema.NullOr(HandleSafeReasonV3),
-  grant: Schema.NullOr(HandleGrantPrivateV2),
+  grant: Schema.NullOr(HandleSpacesGrantPrivateV1),
   created_at: CanonicalInstant,
   updated_at: CanonicalInstant,
 });
@@ -272,8 +453,7 @@ export type HandleRecipientWalletRequiredV1 = Schema.Schema.Type<
 /**
  * Quote results for a `spaces_native_v1` offering. A nonmember receives
  * `qualification_unsatisfied`, never `evidence_required`, because no proof or
- * wallet satisfies the members-only requirement (§5.3.13.12). Not yet wired to
- * the public endpoint.
+ * wallet satisfies the members-only requirement (§5.3.13.12).
  */
 export const CreateHandleSpacesQuoteResultV1 = Schema.Union([
   Schema.Struct({
@@ -292,3 +472,41 @@ export const CreateHandleSpacesQuoteResultV1 = Schema.Union([
 export type CreateHandleSpacesQuoteResultV1 = Schema.Schema.Type<
   typeof CreateHandleSpacesQuoteResultV1
 >;
+
+export const CreateHandleQuoteResultV4 = Schema.Union([
+  HandleNationalityRequiredV1,
+  Schema.Struct({
+    kind: Schema.Literal("quoted"),
+    quote: Schema.Union([
+      Schema.Struct({ ...HandleQuoteV2.fields, fulfillment: HnsFulfillment, handle: HnsHandle }),
+      Schema.Struct({ ...HandleQuoteV3.fields, fulfillment: HnsFulfillment, handle: HnsHandle }),
+    ]),
+    replayed: Schema.Boolean,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("eligibility_required"),
+    offering_id: BoundedIdentifier,
+    owner_persona_id: PersonaIdV1,
+    reason: Schema.Literals(["evidence_required", "qualification_unsatisfied"]),
+  }),
+  CreateHandleSpacesQuoteResultV1,
+]);
+export const HandleReservationV3 = Schema.Union([
+  Schema.Struct({ ...HandleReservationV2.fields, fulfillment: HnsFulfillment, handle: HnsHandle }),
+  HandleSpacesReservationV1,
+]);
+export const HandleClaimV3 = Schema.Union([
+  Schema.Struct({
+    ...HandleClaimV2.fields,
+    fulfillment: HnsFulfillment,
+    handle: HnsHandle,
+    grant: Schema.NullOr(
+      Schema.Struct({
+        ...HandleGrantPrivateV2.fields,
+        fulfillment: HnsFulfillment,
+        handle: HnsHandle,
+      }),
+    ),
+  }),
+  HandleSpacesClaimV1,
+]);

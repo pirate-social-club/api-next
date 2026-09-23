@@ -58,6 +58,94 @@ const workerWith = (store: HandleSalesStore) => {
 };
 
 describe("handle sales HTTP handlers", () => {
+  test("keeps a pending Spaces name private to its claimant", async () => {
+    const claim = {
+      claim_id: "claim-spaces-http",
+      owner_persona_id: "persona-spaces-http",
+      offering_id: "offering-spaces-http",
+      offering_hash: "a".repeat(64),
+      quote_id: "quote-spaces-http",
+      reservation_id: "reservation-spaces-http",
+      reservation_hash: "b".repeat(64),
+      sale_namespace_activation_id: "activation-spaces-http",
+      sale_namespace_activation_generation: 1,
+      fulfillment: { kind: "spaces_native_v1" as const },
+      recipient: {
+        kind: "persona_taproot_v1" as const,
+        network: "regtest" as const,
+        script_pubkey_hex: `5120${"c".repeat(64)}`,
+      },
+      handle: {
+        family: "spaces" as const,
+        namespace_root: "charizard",
+        handle_label: "member",
+      },
+      display_identifier: "member@charizard",
+      payment: {
+        kind: "not_required_v1" as const,
+        pricing_revision: 1,
+        pricing_hash: "d".repeat(64),
+        atomic_amount: "0" as const,
+        status: "not_applicable" as const,
+      },
+      state: "issuance_pending" as const,
+      delayed: false,
+      safe_reason: "issuance_pending" as const,
+      grant: null,
+      created_at: "2026-09-24T00:00:00.000Z",
+      updated_at: "2026-09-24T00:00:00.000Z",
+    };
+    const worker = workerWith(
+      storeWith({
+        getClaim: () => Effect.succeed(claim),
+        getPublicGrant: () => Effect.succeed(null),
+      }),
+    );
+    const privateResponse = await worker.request("/handle-claims/claim-spaces-http", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(privateResponse.status).toBe(200);
+    expect(privateResponse.headers.get("cache-control")).toBe("no-store");
+    expect(await privateResponse.json()).toEqual(claim);
+
+    const publicResponse = await worker.request("/handles/spaces/charizard/member");
+    expect(publicResponse.status).toBe(404);
+    expect(await publicResponse.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("serves a finalized Spaces grant without an HNS host projection", async () => {
+    const persona = {
+      persona_id: "persona-spaces-public",
+      object: "persona" as const,
+      display_name: "Member",
+      avatar_ref: null,
+      primary_public_handle: null,
+    };
+    const grant = {
+      grant_id: "grant-spaces-public",
+      grant_generation: 1,
+      community_id: "community-spaces-public",
+      owner_persona: persona,
+      sale_namespace_activation_id: "activation-spaces-public",
+      sale_namespace_activation_generation: 1,
+      fulfillment: { kind: "spaces_native_v1" as const },
+      handle: {
+        family: "spaces" as const,
+        namespace_root: "charizard",
+        handle_label: "member",
+      },
+      display_identifier: "member@charizard",
+      host: { kind: "not_applicable" as const },
+      issued_at: "2026-09-24T00:00:00.000Z",
+    };
+    const response = await workerWith(
+      storeWith({ getPublicGrant: () => Effect.succeed(grant) }),
+    ).request("/handles/spaces/charizard/member");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600, must-revalidate");
+    expect(await response.json()).toEqual(grant);
+  });
+
   test("serves the seller-management context only to the authorized account", async () => {
     let observedAccount: string | undefined;
     const context = {
@@ -74,20 +162,22 @@ describe("handle sales HTTP handlers", () => {
           expected_dns_zone_activation_generation: 2,
         },
       ],
-      offering_authoring_preset: {
-        kind: "hns_hosted_persona_free_v1" as const,
-        reserved_labels_id: "reserved_labels_01",
-        expected_reserved_labels_revision: 1,
-        broad_qualification_policy_id: "none_v1",
-        expected_broad_qualification_policy_revision: 1,
-        expected_account_directory_binding_version: "1",
-        pricing_id: "platform_free_handles_v1",
-        expected_pricing_revision: 1,
-        issuance_driver_id: "hosted_persona-local",
-        expected_issuance_driver_version: "1",
-        quote_ttl_seconds: 120,
-        reservation_ttl_seconds: 300,
-      },
+      offering_authoring_presets: [
+        {
+          kind: "hns_hosted_persona_free_v1" as const,
+          reserved_labels_id: "reserved_labels_01",
+          expected_reserved_labels_revision: 1,
+          broad_qualification_policy_id: "none_v1",
+          expected_broad_qualification_policy_revision: 1,
+          expected_account_directory_binding_version: "1",
+          pricing_id: "platform_free_handles_v1",
+          expected_pricing_revision: 1,
+          issuance_driver_id: "hosted_persona-local",
+          expected_issuance_driver_version: "1",
+          quote_ttl_seconds: 120,
+          reservation_ttl_seconds: 300,
+        },
+      ],
       observed_at: "2026-08-26T00:00:00.000Z",
     };
     const worker = workerWith(
