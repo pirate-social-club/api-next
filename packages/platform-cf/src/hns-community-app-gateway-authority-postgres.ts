@@ -17,6 +17,11 @@ export type HnsCommunityAppGatewayPostgresAuthorityV1 = Readonly<{
   ready: (signal?: AbortSignal) => Promise<boolean>;
 }>;
 
+export interface HnsCommunityAppGatewayPostgresAuthorityOptionsV1
+  extends PostgresControlPlaneOptions {
+  readonly resolutionDeadlineMs?: number;
+}
+
 export function makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
   source: HnsForwarderGatewayAuthoritySourceV1,
   deadlineMs = 1_500,
@@ -61,13 +66,17 @@ export function makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
  */
 export function makePostgresHnsCommunityAppGatewayAuthorityV1(
   connectionString: string,
-  options?: PostgresControlPlaneOptions,
+  options: HnsCommunityAppGatewayPostgresAuthorityOptionsV1 = {},
 ): HnsCommunityAppGatewayPostgresAuthorityV1 {
+  const { resolutionDeadlineMs = 1_500, ...postgresOptions } = options;
   const source = makeControlPlaneHnsCommunityAppHostAuthoritySource(
-    makeReadOnlyPostgresControlPlaneLayer(connectionString, options),
+    makeReadOnlyPostgresControlPlaneLayer(connectionString, postgresOptions),
     { authority_schema: "api_next" },
   );
-  const authoritySource = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(source);
+  const authoritySource = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
+    source,
+    resolutionDeadlineMs,
+  );
   return Object.freeze({
     authority_source: authoritySource,
     ready: async (signal) => {
