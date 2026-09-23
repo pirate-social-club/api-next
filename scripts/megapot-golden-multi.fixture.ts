@@ -134,13 +134,15 @@ export function rehearsalObservation(
       account_id: p.account_id,
       persona_id: p.persona_id,
     })),
-    decisions: input.participants.map((p) => ({
-      account_id: p.account_id,
-      persona_id: p.persona_id,
-      activity_key: p.activities[0],
-      outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
-      reason: p.expected_admission === "eligible" ? null : "verification_missing",
-    })),
+    decisions: input.participants.flatMap((p) =>
+      p.activities.map((activity_key) => ({
+        account_id: p.account_id,
+        persona_id: p.persona_id,
+        activity_key,
+        outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
+        reason: p.expected_admission === "eligible" ? null : "verification_missing",
+      })),
+    ),
     credits: [],
   };
 }

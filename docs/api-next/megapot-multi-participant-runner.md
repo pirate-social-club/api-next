@@ -17,6 +17,22 @@ against staging before writes and each activity. Artifact freshness is ten
 minutes maximum; arrange short runs and regenerate artifacts before starting,
 not by editing their timestamps. A long run fails closed on expired evidence.
 
+For the in-app rehearsal, set `activity_mode` to `"observe_app"` and supply
+`app_funded_pool`. The verified account completes both Study and Karaoke in
+Solid after its real palm-gated join. Its plan entry needs no `accepted_lyrics`
+or `karaoke_audio`; the runner never submits its Study answers, reads a vocal
+file or creates its Karaoke attempt. The separate unverified account still
+needs `accepted_lyrics` and a Study credential because the runner drives that
+negative case with synthesized answers. Collect a fresh preflight for each
+account before adoption. During the wait the runner re-reads current identity
+and reward evidence from staging; the ten-minute preflight file does not act
+as an activity-time clock. Expired live Very evidence still stops the run.
+Before the run, check that the unverified account's persona is bound to the
+community for activity (`active_activity_persona`) and can access the public
+song. Study does not require community membership, but its start route requires
+that binding. If absent, activity persona preparation is a separate authorized
+app/API action; the runner does not create it.
+
 An offline plan makes no API, database or provider calls:
 
 ```sh
@@ -85,6 +101,30 @@ confirmed transfer to one open drawing with enough cutoff time. Any mismatch
 stops before Study or Karaoke writes. Replaying the same journal repeats only
 these reads, never a funding or offer POST.
 
+In `observe_app`, the runner waits for both verified qualifications, their
+independent eligible decisions, exactly one share, and the negative Study
+qualification with `verification_missing` and no share. Each poll uses a new
+read-only database transaction scoped to the adopted leg and drawing. The
+earlier of the approved qualification deadline and the drawing's actual entry
+cutoff ends the wait. Missing rows then return nonterminal
+`activity_evidence_incomplete`; mismatched or duplicate shares and contrary
+decisions stop immediately. Only the negative Study submission is journaled as
+a runner activity. A replay does not repeat it; use a newly collected preflight
+if the prior file has expired.
+
+The one-ticket limit needs a timing check outside this plan. The scheduler can
+open another drawing when its cutoff is at or before the offer end. Before
+funding, establish the target and following drawing cutoffs from current live
+read-only evidence. Whether the following cutoff is available before funding
+is an unresolved feasibility check. Set the offer end strictly after the target
+cutoff and before the following cutoff, then confirm those exact terms in the
+app-funded handoff. If the following cutoff cannot be established, the run is
+not ready for funding.
+Funding of 1 USDC and a per-drawing ticket ceiling do not prove a one-ticket
+total. The offer may end before target settlement: terminal closure waits for
+the drawing to reach a terminal state and for reservations to clear. Record
+that terminal progression during the enabled closeout.
+
 The older runner-created mode remains for its existing tests and operator
 compatibility. Without `app_funded_pool`, the first call returns its funding
 instruction; an operator supplies `funding_transaction_hash` after a separate
@@ -149,6 +189,10 @@ independent chain balances, attestation, deployment readbacks, gas/provider cap
 enforcement, kill-switch exercise or the 24-hour closeout. It cannot choose a
 winner or authorize a waiver. Neither a passed local test nor a JSON approval
 reference supplies owner authority.
+Keep the rewards scheduler enabled for the separately approved 24-hour
+affected-flow closeout after the run, observe rollover and liveness with the
+offer ending inside that window, then disable both flags and read them back.
+The runner does not schedule or automate that closeout.
 
 ## Hard-death lock recovery
 

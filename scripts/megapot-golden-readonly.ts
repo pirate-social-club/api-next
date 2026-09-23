@@ -114,6 +114,7 @@ const Content = Schema.Struct({
 export async function verifyGoldenIdentity(
   client: Client,
   artifact: MultiParticipantPreflight,
+  now: number = Date.now(),
 ): Promise<void> {
   const result = await client.query(goldenIdentitySql, [artifact.account_id, artifact.persona_id]);
   if (result.rows.length !== 1) throw new Error("Current participant identity missing.");
@@ -128,6 +129,9 @@ export async function verifyGoldenIdentity(
     throw new Error("Current participant identity mismatch.");
   for (const evidence of artifact.very_evidence) {
     const current = row.evidence[0];
+    const expiresAt = current?.evidence_expires_at;
+    if (typeof expiresAt === "string" && Date.parse(expiresAt) <= now)
+      throw new Error("Current Very witness expired.");
     for (const key of [
       "subject_key_id",
       "binding_event_id",
