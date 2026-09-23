@@ -20,6 +20,7 @@
     "scripts/m3-staging-preflight.ts",
     "scripts/megapot-base-sepolia-golden.ts",
     "scripts/megapot-golden-multi.test.ts",
+    "scripts/megapot-golden-adopted-pool.test.ts",
     "scripts/megapot-golden-orchestration.test.ts",
     "scripts/megapot-golden-recovery.test.ts",
     "scripts/megapot-golden-preflight-v2.test.ts",

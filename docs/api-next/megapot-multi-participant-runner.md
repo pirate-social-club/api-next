@@ -52,13 +52,51 @@ part of offline preparation.
 bun scripts/megapot-base-sepolia-golden.ts --multi-participant --input /approved/run.json --journal /private/run.jsonl --execute --confirm-base-sepolia
 ```
 
-The first call without a funding transaction returns the exact funding
-instruction. The approved operator transfers once, adds only that transaction
-hash to the input, and repeats the command with the same journal. All other
-input fields are digest-bound. The runner observes funding; it never transfers,
-signs, bootstraps or enables anything. A pending funding observation is not a
-successful rehearsal. A natural drawing must already be open with sufficient
-time before the actual cutoff.
+For the staging sponsor rehearsal, create and fund the offer in Solid's Boost
+flow from the sponsor's authenticated browser session. The sponsor signs the
+exact Base Sepolia USDC transfer there; the runner does not hold a wallet key.
+Wait for the app's funding effect to be confirmed. Then record the exact
+offer, leg and funding-effect ids, transfer hash, and sponsor wallet address
+in the private plan's `app_funded_pool` field:
+
+```json
+{
+  "app_funded_pool": {
+    "offer_id": "APP_OFFER_ID",
+    "leg_id": "APP_LEG_ID",
+    "funding_effect_id": "APP_FUNDING_EFFECT_ID",
+    "transaction_hash": "0xEXACT_CONFIRMED_TRANSFER_HASH",
+    "sender_address": "0xSPONSOR_PERSONA_WALLET"
+  }
+}
+```
+
+Use actual 32-byte hashes and 20-byte addresses, not these placeholders.
+Set the rest of the private plan to the app-created terms, especially its
+exact `starts_at` (generated when Boost creates the offer), `ends_at`, amount,
+ticket ceiling and cutoff. Select both Study and Karaoke, a 70% additional
+score floor, and `no_purchase` for an empty pool. Do not also set
+`funding_transaction_hash`. Read back the app's confirmed funding and current
+offer terms before authorizing execution; a draft or pending funding effect is
+not a handoff. The runner's read-only PostgreSQL check binds the offer to the
+sponsor's active persona wallet, exact terms, one pool leg, one funding effect,
+active staging attestation and custody recipient. Its API GETs then bind the
+confirmed transfer to one open drawing with enough cutoff time. Any mismatch
+stops before Study or Karaoke writes. Replaying the same journal repeats only
+these reads, never a funding or offer POST.
+
+The older runner-created mode remains for its existing tests and operator
+compatibility. Without `app_funded_pool`, the first call returns its funding
+instruction; an operator supplies `funding_transaction_hash` after a separate
+approved transfer, and the runner observes it. Do not use that mode for the
+app-funded rehearsal. Neither mode transfers, signs, bootstraps or enables
+anything. A pending funding observation is not a successful rehearsal.
+
+The staging estimate for two Karaoke attempts is at most one hour of scored
+audio, about $0.39 at the provider's published base rate as checked on
+2026-09-23. `max_provider_spend_atomic` is not a metered billing cap; the
+enforced runner controls are two attempts and the approved audio-duration and
+Study-submission limits. Record actual provider charges separately.
 
 The journal uses an exclusive lock and appends synced sanitized state before
 activity writes. It excludes credentials, audio and WebSocket tokens. A crash
