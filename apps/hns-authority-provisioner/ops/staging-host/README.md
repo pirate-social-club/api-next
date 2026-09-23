@@ -90,6 +90,18 @@ Stopping the socket and service removes only this transport. Do not alter the
 existing Caddy or open a public port. A socket connection alone does not prove
 database authority, authenticated forwarding or community rendering.
 
+The gateway and provisioner unit templates are also staged here. They use
+separate staging paths and the existing bounded slice. The gateway selects the
+maintained `staging-private-tls` mode and receives database, forwarder and
+Solid Access credentials through systemd `LoadCredential`. The provisioner
+retains the maintained schema/bundle launch guard and reads its own root-owned
+environment file plus a separate TSIG credential. Neither unit is installed
+by the fixture or tunnel setup. Before installing either, verify the exact
+bundle and manifest, credential identities and file modes, read-only gateway
+database grants, local listener ownership, service dependencies and combined
+slice headroom on the target host. A passing unit-template test is not a
+running-service or E2E result.
+
 ## Private staging connector
 
 The tunnel service uses cloudflared 2026.9.1 for Linux amd64, verified against

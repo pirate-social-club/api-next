@@ -34,3 +34,39 @@ test("private TLS bridge binds only the isolated interface and loopback gateway"
   expect(service).toContain("CPUQuota=5%\n");
   expect(service).toContain("TasksMax=16\n");
 });
+
+test("staging gateway uses its own bounded service and credentials", async () => {
+  const service = await Bun.file(
+    new URL("./pirate-hns-staging-gateway.service", import.meta.url),
+  ).text();
+  expect(service).toContain("Slice=pirate-hns-staging.slice\n");
+  expect(service).toContain("DynamicUser=yes\n");
+  expect(service).toContain("MemoryMax=128M\n");
+  expect(service).toContain("CPUQuota=15%\n");
+  expect(service).toContain("--mode staging-private-tls --manifest ");
+  expect(service).toContain("/srv/pirate-hns-staging/gateway/current/");
+  expect([...service.matchAll(/^LoadCredential=.*:(.+)$/gm)].map((match) => match[1])).toEqual([
+    "/etc/pirate-hns-staging/gateway/authority-database-url",
+    "/etc/pirate-hns-staging/gateway/forwarder-key-registry.json",
+    "/etc/pirate-hns-staging/gateway/solid-access-client-id",
+    "/etc/pirate-hns-staging/gateway/solid-access-client-secret",
+  ]);
+  expect(service).not.toContain("/etc/pirate/");
+});
+
+test("staging provisioner retains cutover guard and isolated credentials", async () => {
+  const service = await Bun.file(
+    new URL("./pirate-hns-staging-provisioner.service", import.meta.url),
+  ).text();
+  expect(service).toContain("Slice=pirate-hns-staging.slice\n");
+  expect(service).toContain("DynamicUser=yes\n");
+  expect(service).toContain("MemoryMax=192M\n");
+  expect(service).toContain("CPUQuota=20%\n");
+  expect(service).toContain("EnvironmentFile=/etc/pirate-hns-staging/provisioner.env\n");
+  expect(service).toContain(
+    "LoadCredential=hns_axfr_tsig_secret:/etc/pirate-hns-staging/axfr-tsig-secret\n",
+  );
+  expect(service).toContain("--verify-schema --manifest ");
+  expect(service).toContain("--serve\n");
+  expect(service).not.toContain("/etc/pirate/");
+});

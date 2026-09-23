@@ -230,6 +230,12 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "services": [
+        {
+          "binding": "HNS_OWNER_VERIFIER",
+          "service": "pirate-hns-owner-verifier-staging"
+        }
+      ],
       "workflows": [
         {
           "binding": "STUDY_GENERATION_WORKFLOW",
