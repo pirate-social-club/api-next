@@ -34,6 +34,20 @@ secret belongs in this directory. The environment variables are exactly those
 in the example; the database URL, account id, bucket and R2 credentials are
 private operator configuration.
 
+## R2 credentials
+
+The master writer and the output store touch only the attempt's assigned
+output key, including the seal's re-read of the verified version. The media
+reader touches only the render inputs: the sealed source video and the
+canonical song. `SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID` and
+`SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY` sign every request unless the optional
+`SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID` and
+`SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY` are set, in which case the media
+reader signs with the input pair instead. That lets an operator give the inputs
+a read-only credential and scope the output credential to the master prefix,
+so the host cannot write any input object. Setting only one half of the input
+pair is refused at startup; it never falls back to the output pair.
+
 ## Running
 
 Two runnable paths are provided. The mounted-checkout invocation checks the

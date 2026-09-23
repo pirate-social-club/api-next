@@ -125,6 +125,8 @@ suite("song-video render host entry point", () => {
   let server: ReturnType<typeof Bun.serve>;
   let endpoint = "";
   let putCount = 0;
+  // Which access key signed each request the fake bucket received.
+  const signedBy: { method: string; key: string; accessKeyId: string }[] = [];
   let directory = "";
   let planId = "";
   let attemptId = "";
@@ -339,6 +341,12 @@ suite("song-video render host entry point", () => {
         const bucket = separator < 0 ? path : path.slice(0, separator);
         const key = separator < 0 ? "" : path.slice(separator + 1);
         const stored = bucket === BUCKET ? objects.get(key) : undefined;
+        signedBy.push({
+          method: request.method,
+          key,
+          accessKeyId:
+            /Credential=([^/]+)\//u.exec(request.headers.get("authorization") ?? "")?.[1] ?? "",
+        });
         if (request.method === "GET" || request.method === "HEAD") {
           if (stored === undefined) return new Response(null, { status: 404 });
           return new Response(request.method === "HEAD" ? null : stored.bytes, {
@@ -444,9 +452,11 @@ suite("song-video render host entry point", () => {
     };
   }
 
-  async function runHost(): Promise<{ exit: number; stdout: string }> {
+  async function runHost(
+    extra: Record<string, string> = {},
+  ): Promise<{ exit: number; stdout: string }> {
     const child = Bun.spawn([process.execPath, "scripts/song-video-render-host.ts"], {
-      env: hostEnv(),
+      env: { ...hostEnv(), ...extra },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -513,7 +523,30 @@ suite("song-video render host entry point", () => {
   }
 
   test("renders once, seals the master and refuses a duplicate invocation", async () => {
-    const first = await runHost();
+    // A separate input pair must sign every read of the render inputs, and the
+    // output pair every request for the master, so an operator can give the
+    // inputs a read-only credential.
+    const signedBefore = signedBy.length;
+    const first = await runHost({
+      SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "test-input-access-key",
+      SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "test-input-secret-key",
+    });
+    const firstRequests = signedBy.slice(signedBefore);
+    const masterPhysicalKey = masterKey.replace("media://immutable/", "immutable/");
+    const inputRequests = firstRequests.filter((request) => request.key !== masterPhysicalKey);
+    const masterRequests = firstRequests.filter((request) => request.key === masterPhysicalKey);
+    expect(new Set(inputRequests.map((request) => request.key))).toEqual(
+      new Set([
+        `immutable/${operationId}/video/1`,
+        SONG_ASSET.replace("media://immutable/", "immutable/"),
+      ]),
+    );
+    expect(inputRequests.every((request) => request.method === "GET")).toBe(true);
+    expect(inputRequests.every((request) => request.accessKeyId === "test-input-access-key")).toBe(
+      true,
+    );
+    expect(masterRequests.some((request) => request.method === "PUT")).toBe(true);
+    expect(masterRequests.every((request) => request.accessKeyId === "test-access-key")).toBe(true);
     expect(first.exit).toBe(0);
     expect(JSON.parse(first.stdout)).toMatchObject({ plan_id: planId, status: "accepted" });
 
