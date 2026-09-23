@@ -274,7 +274,7 @@ describe("Qencode media transform", () => {
         audio_bitrate: 192,
         audio_sample_rate: 44_100,
         audio_channels_number: 2,
-        user_tag: "pirate-audio-v1",
+        tag: "pirate-audio-v1",
       },
       ...(["primary", "alternate"] as const).map((variant) => ({
         output: "mp3",
@@ -283,10 +283,36 @@ describe("Qencode media transform", () => {
         audio_channels_number: 2,
         start_time: variant === "primary" ? 42 : 126,
         duration: 12,
-        user_tag: `pirate-acr-${variant}-v1`,
+        tag: `pirate-acr-${variant}-v1`,
       })),
     ]);
     expect(started?.query.source).toStartWith("https://video-source.example.invalid/");
+  });
+
+  test("sends Qencode's documented tag field for a new probe job", async () => {
+    let started: Parameters<QencodeTaskTransport["startTask"]>[0] | undefined;
+    const service = makeQencodeMediaTransform(
+      options(
+        fakeTransport({
+          status: { state: "not_started" },
+          onStart: (value) => {
+            started = value;
+          },
+        }),
+      ),
+    );
+    const result = await Effect.runPromise(
+      service.submit({
+        version: "media-transform-video-probe-input-v1",
+        binding,
+        source,
+        attempt: acceptedAttempt("submitting"),
+      }),
+    );
+    expect(result.status).toBe("processing");
+    expect(started?.query.format).toEqual([
+      { output: "metadata", metadata_version: "4.1.5", tag: "pirate-probe-v1" },
+    ]);
   });
 
   test("refuses submit from allocated before grants or any transport call", async () => {
@@ -454,6 +480,119 @@ describe("Qencode media transform", () => {
     expect(result.attempt.providerJobPhase).toBe("started");
   });
 
+  test("reconciles one legacy untagged probe output without creating or starting another job", async () => {
+    let statusCalls = 0;
+    let artifactReads = 0;
+    const transport = makeQencodeTaskTransport(async () => {
+      statusCalls++;
+      return Response.json({
+        error: 0,
+        statuses: {
+          [JOB_ID]: {
+            status: "completed",
+            error: 0,
+            videos: [
+              {
+                tag: "metadata-0-0",
+                user_tag: null,
+                url: "https://storage.qencode.com/job/metadata.json",
+                output_format: "metadata",
+              },
+            ],
+          },
+        },
+      });
+    });
+    const service = makeQencodeMediaTransform(
+      options(
+        {
+          ...transport,
+          createTask: async () => {
+            throw new Error("duplicate create");
+          },
+          startTask: async () => {
+            throw new Error("duplicate start");
+          },
+        },
+        {
+          artifacts: fakeArtifacts({
+            readJson: async () => {
+              artifactReads++;
+              return {
+                format: { duration: "16.4" },
+                streams: [
+                  {
+                    codec_type: "video",
+                    codec_name: "h264",
+                    width: 1280,
+                    height: 720,
+                    avg_frame_rate: "30/1",
+                    has_b_frames: 0,
+                  },
+                  { codec_type: "audio", codec_name: "aac", sample_rate: "48000", channels: 1 },
+                ],
+              };
+            },
+          }),
+        },
+      ),
+    );
+    const result = await Effect.runPromise(
+      service.observe({
+        version: "media-transform-video-probe-input-v1",
+        binding,
+        source,
+        attempt: acceptedAttempt("started"),
+      }),
+    );
+    expect(result.status).toBe("completed");
+    expect({ statusCalls, artifactReads }).toEqual({ statusCalls: 1, artifactReads: 1 });
+  });
+
+  test("does not accept ambiguous or mismatched untagged provider outputs", async () => {
+    const legacy: QencodeOutput = {
+      kind: "metadata",
+      userTag: null,
+      systemTag: "metadata-0-0",
+      url: "https://storage.qencode.com/job/metadata.json",
+      outputFormat: "metadata",
+      mediaFacts: { codec: null, sampleRateHz: null, channels: null, width: null, height: null },
+    };
+    for (const outputs of [
+      [{ ...legacy, systemTag: "metadata-0-1" }],
+      [legacy, { ...legacy, systemTag: "metadata-0-1" }],
+      [{ ...legacy, outputFormat: "mp4" }],
+    ]) {
+      let artifactReads = 0;
+      const service = makeQencodeMediaTransform(
+        options(
+          fakeTransport({
+            status: { state: "completed", outputs },
+          }),
+          {
+            artifacts: fakeArtifacts({
+              readJson: async () => {
+                artifactReads++;
+                return {};
+              },
+            }),
+          },
+        ),
+      );
+      expect(
+        await Effect.runPromise(
+          service.observe({
+            version: "media-transform-video-probe-input-v1",
+            binding,
+            source,
+            attempt: acceptedAttempt("started"),
+          }),
+        ),
+      ).toMatchObject({ status: "malformed_response", reason: "unsupported_shape" });
+      expect(artifactReads).toBe(0);
+    }
+  });
+
   test("does not mistake source-stream status metadata for the frozen M4A output policy", async () => {
     const service = makeQencodeMediaTransform(
       options(
@@ -544,7 +683,7 @@ describe("Qencode media transform", () => {
         height: 240,
         image_format: "jpg",
         quality: 82,
-        user_tag: "pirate-frame-poster-v1",
+        tag: "pirate-frame-poster-v1",
       },
       {
         output: "thumbnail",
@@ -553,7 +692,7 @@ describe("Qencode media transform", () => {
         height: 240,
         image_format: "jpg",
         quality: 82,
-        user_tag: "pirate-frame-first-v1",
+        tag: "pirate-frame-first-v1",
       },
       {
         output: "thumbnail",
@@ -562,7 +701,7 @@ describe("Qencode media transform", () => {
         height: 240,
         image_format: "jpg",
         quality: 82,
-        user_tag: "pirate-frame-midpoint-v1",
+        tag: "pirate-frame-midpoint-v1",
       },
     ]);
   });
