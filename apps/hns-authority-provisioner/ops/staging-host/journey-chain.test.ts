@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { buildHnsRootImportPublishPlanV1 } from "@pirate/application/namespace-ownership";
-import { parseJourneyCommand, requirePublishablePlan } from "./journey-chain.ts";
+import {
+  buildHnsRootImportPublishPlanV1,
+  validateHnsRootResourceRecordsV1,
+} from "@pirate/application/namespace-ownership";
+import { reservationAccount } from "../../src/powerdns.ts";
+import {
+  parseJourneyCommand,
+  requirePlanProvenance,
+  requirePublishablePlan,
+} from "./journey-chain.ts";
+
+const root = "e2eabc123";
+const challenge = "pirate-verification=00000000-0000-4000-8000-000000000000";
+const ds = [
+  { key_tag: 1, algorithm: 13, digest_type: 2 as const, digest: "a".repeat(64) },
+  { key_tag: 1, algorithm: 13, digest_type: 4 as const, digest: "b".repeat(96) },
+];
+const zoneDs = ["1 13 2 " + "A".repeat(64), "1 13 4 " + "B".repeat(96)];
 
 const code = async (run: () => unknown) => {
   try {
@@ -11,72 +27,104 @@ const code = async (run: () => unknown) => {
   return "admitted";
 };
 
+async function productPlan() {
+  const built = await buildHnsRootImportPublishPlanV1({
+    current_records: [],
+    challenge_txt_value: challenge,
+    ds_records: ds,
+  });
+  return {
+    root_label: root,
+    replacement_records: built.replacement_records,
+    encoded_resource_sha256: built.encoded_resource_sha256,
+  };
+}
+
+function authority(zone: unknown, keys: unknown, status = 200) {
+  return async (url: string) => {
+    const body = url.endsWith("/cryptokeys") ? keys : zone;
+    return new Response(JSON.stringify(body), { status });
+  };
+}
+
 describe("staging journey chain command", () => {
-  test("parses only the five bounded commands", async () => {
-    expect(parseJourneyCommand(["advance-safe", "--root", "e2eabc", "--plan", "/p.json"])).toEqual({
+  test("parses only bounded commands on journey-generated roots", async () => {
+    expect(parseJourneyCommand(["begin", "--root", root])).toEqual({ kind: "begin", root });
+    expect(parseJourneyCommand(["mine", "--root", root, "--blocks", "5"])).toEqual({
+      kind: "mine",
+      root,
+      blocks: 5,
+    });
+    expect(parseJourneyCommand(["advance-safe", "--root", root, "--plan", "/p.json"])).toEqual({
       kind: "advance-safe",
-      root: "e2eabc",
+      root,
       plan: "/p.json",
     });
-    expect(parseJourneyCommand(["acquire", "--root", "e2eabc"])).toEqual({
-      kind: "acquire",
-      root: "e2eabc",
-    });
-    expect(parseJourneyCommand(["mine", "--blocks", "5"])).toEqual({ kind: "mine", blocks: 5 });
-    expect(await code(() => parseJourneyCommand(["mine", "--blocks", "61"]))).toBe(
+    expect(await code(() => parseJourneyCommand(["mine", "--blocks", "5"]))).toBe("root_invalid");
+    expect(await code(() => parseJourneyCommand(["mine", "--root", root, "--blocks", "61"]))).toBe(
       "blocks_invalid",
     );
-    expect(await code(() => parseJourneyCommand(["mine", "--blocks", "0"]))).toBe("blocks_invalid");
-    expect(await code(() => parseJourneyCommand(["acquire", "--root", "Bad Root"]))).toBe(
+    expect(await code(() => parseJourneyCommand(["acquire", "--root", "0qcm"]))).toBe(
       "root_invalid",
     );
-    expect(await code(() => parseJourneyCommand(["acquire", "--root", "x", "--root", "y"]))).toBe(
+    expect(await code(() => parseJourneyCommand(["acquire", "--root", "pirate"]))).toBe(
+      "root_invalid",
+    );
+    expect(await code(() => parseJourneyCommand(["acquire", "--root", root, "--root", root]))).toBe(
       "option_duplicate",
     );
     expect(
-      await code(() => parseJourneyCommand(["publish", "--root", "e2eabc", "--plan", "rel.json"])),
+      await code(() => parseJourneyCommand(["publish", "--root", root, "--plan", "rel"])),
     ).toBe("plan_path_invalid");
-    expect(
-      await code(() => parseJourneyCommand(["status", "--root", "e2eabc", "--blocks", "1"])),
-    ).toBe("option_unexpected");
-    expect(await code(() => parseJourneyCommand(["transfer", "--root", "e2eabc"]))).toBe(
+    expect(await code(() => parseJourneyCommand(["transfer", "--root", root]))).toBe(
       "command_invalid",
     );
   });
 
-  test("publishes only the product plan for this root at its digest", async () => {
-    const built = await buildHnsRootImportPublishPlanV1({
-      current_records: [],
-      challenge_txt_value: "pirate-verification=00000000-0000-4000-8000-000000000000",
-      ds_records: [
-        { key_tag: 1, algorithm: 13, digest_type: 2, digest: "a".repeat(64) },
-        { key_tag: 1, algorithm: 13, digest_type: 4, digest: "b".repeat(96) },
-      ],
-    });
-    const plan = {
-      root_label: "e2eabc",
-      replacement_records: built.replacement_records,
-      encoded_resource_sha256: built.encoded_resource_sha256,
-    };
-    expect(await code(() => requirePublishablePlan("e2eabc", plan))).toBe("admitted");
-    expect(await code(() => requirePublishablePlan("e2eother", plan))).toBe("plan_root_mismatch");
+  test("publishes only a self-consistent plan for this root", async () => {
+    const plan = await productPlan();
+    expect(await code(() => requirePublishablePlan(root, plan))).toBe("admitted");
+    expect(await code(() => requirePublishablePlan("e2eother99", plan))).toBe("plan_root_mismatch");
     expect(
       await code(() =>
-        requirePublishablePlan("e2eabc", { ...plan, encoded_resource_sha256: "b".repeat(64) }),
+        requirePublishablePlan(root, { ...plan, encoded_resource_sha256: "b".repeat(64) }),
       ),
     ).toBe("plan_digest_mismatch");
+    expect(await code(() => requirePublishablePlan(root, { root_label: root }))).toBe("plan_shape");
     expect(
       await code(() =>
-        requirePublishablePlan("e2eabc", { ...plan, encoded_resource_sha256: "short" }),
+        requirePublishablePlan(root, { ...plan, replacement_records: [{ type: "BOGUS" }] }),
       ),
-    ).toBe("plan_digest_invalid");
-    expect(await code(() => requirePublishablePlan("e2eabc", { root_label: "e2eabc" }))).toBe(
-      "plan_shape",
+    ).toBe("plan_records_invalid");
+  });
+
+  test("requires a product-provisioned zone for the exact challenge and DS set", async () => {
+    const records = validateHnsRootResourceRecordsV1((await productPlan()).replacement_records);
+    const account = await reservationAccount(challenge);
+    const keys = [{ active: true, published: true, ds: zoneDs }];
+    const run = (fetcher: ReturnType<typeof authority>, url = "http://127.0.0.21:8081") =>
+      requirePlanProvenance(root, records, fetcher, url, "fixture-key");
+    expect(await code(() => run(authority({ account }, keys)))).toBe("admitted");
+    expect(await code(() => run(authority({ account: "0".repeat(40) }, keys)))).toBe(
+      "plan_not_from_product_provisioning",
     );
     expect(
       await code(() =>
-        requirePublishablePlan("e2eabc", { ...plan, replacement_records: [{ type: "BOGUS" }] }),
+        run(
+          authority({ account }, [
+            { active: true, published: true, ds: ["1 13 2 " + "C".repeat(64)] },
+          ]),
+        ),
       ),
-    ).toBe("plan_records_invalid");
+    ).toBe("plan_ds_differs_from_zone");
+    expect(
+      await code(() =>
+        run(authority({ account }, [{ active: false, published: true, ds: zoneDs }])),
+      ),
+    ).toBe("plan_ds_differs_from_zone");
+    expect(await code(() => run(authority({}, keys, 404)))).toBe("plan_zone_absent");
+    expect(await code(() => run(authority({ account }, keys), "http://10.0.0.5:8081"))).toBe(
+      "authority_not_loopback",
+    );
   });
 });

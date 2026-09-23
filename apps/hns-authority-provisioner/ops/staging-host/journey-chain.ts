@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import {
   hnsObservedResourceMatchesEncodedPlanV1,
   validateHnsRootResourceRecordsV1,
@@ -13,17 +14,23 @@ import {
   hsdRegtestWallet,
   requireHsdRegtestChain,
 } from "../../../../packages/platform-cf/src/hns-regtest-node.pg-fixture.ts";
+import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
 
 /**
  * Chain leg of the staging HNS onboarding journey, run on the isolated staging
  * host against its loopback regtest node. It never chooses records: `publish`
  * sends exactly the replacement resource the product returned, after proving
- * it matches the product's encoded digest. Every command first proves the
- * pinned regtest genesis and loopback endpoints. Output is one JSON line.
+ * it matches the product's encoded digest and that the product's provisioner
+ * created a zone for its exact challenge with the same DNSSEC DS set. Every
+ * command first proves the pinned regtest genesis and loopback endpoints.
+ * Mutating commands require the host-wide run lease naming their root; a
+ * stale lease is never evicted automatically. Output is one JSON line.
  *
+ *   begin --root R                      take the exclusive run lease for R
  *   acquire --root R                    register R to the fixture wallet (resumable)
  *   publish --root R --plan FILE        UPDATE R with FILE's replacement_records
- *   mine --blocks N                     1 <= N <= 60
+ *   mine --root R --blocks N            1 <= N <= 60
+ *   end --root R                        release R's run lease
  *   advance-safe --root R --plan FILE   mine one block at a time (max 60) until the
  *                                       maintained safe view carries FILE's digest
  *   status --root R                     current and safe observation summary
@@ -31,7 +38,11 @@ import {
 
 const TREE_INTERVAL_BLOCKS = 5;
 const SAFE_CONFIRMATIONS = 12;
-const ROOT = /^[a-z0-9][a-z0-9-]{2,62}$/u;
+// Only journey-generated names; never an operator- or owner-supplied root.
+const ROOT = /^e2e[a-z0-9]{6,40}$/u;
+const LEASE_DIRECTORY = process.env.HNS_JOURNEY_LEASE_DIR ?? "/var/tmp/pirate-hns-staging-journey";
+const AUTHORITY_API = process.env.HNS_JOURNEY_PDNS_API_URL ?? "http://127.0.0.21:8081";
+const AUTHORITY_KEY = process.env.HNS_JOURNEY_PDNS_API_KEY ?? "isolated-hns-authority-fixture-only";
 
 class JourneyRefusal extends Error {
   constructor(readonly code: string) {
@@ -40,9 +51,11 @@ class JourneyRefusal extends Error {
 }
 
 export type JourneyCommand =
+  | Readonly<{ kind: "begin"; root: string }>
+  | Readonly<{ kind: "end"; root: string }>
   | Readonly<{ kind: "acquire"; root: string }>
   | Readonly<{ kind: "publish"; root: string; plan: string }>
-  | Readonly<{ kind: "mine"; blocks: number }>
+  | Readonly<{ kind: "mine"; root: string; blocks: number }>
   | Readonly<{ kind: "advance-safe"; root: string; plan: string }>
   | Readonly<{ kind: "status"; root: string }>;
 
@@ -66,7 +79,7 @@ export function parseJourneyCommand(argv: readonly string[]): JourneyCommand {
     for (const key of options.keys())
       if (!allowed.includes(key)) throw new JourneyRefusal("option_unexpected");
   };
-  if (kind === "acquire" || kind === "status") {
+  if (kind === "acquire" || kind === "status" || kind === "begin" || kind === "end") {
     only("--root");
     return { kind, root: root() };
   }
@@ -77,11 +90,11 @@ export function parseJourneyCommand(argv: readonly string[]): JourneyCommand {
     return { kind, root: root(), plan };
   }
   if (kind === "mine") {
-    only("--blocks");
+    only("--root", "--blocks");
     const blocks = Number(options.get("--blocks"));
     if (!Number.isSafeInteger(blocks) || blocks < 1 || blocks > 60)
       throw new JourneyRefusal("blocks_invalid");
-    return { kind, blocks };
+    return { kind, root: root(), blocks };
   }
   throw new JourneyRefusal("command_invalid");
 }
@@ -115,6 +128,124 @@ export async function requirePublishablePlan(root: string, raw: unknown) {
   }
   if (!matches) throw new JourneyRefusal("plan_digest_mismatch");
   return { records, digest: plan.encoded_resource_sha256 };
+}
+
+type Records = ReturnType<typeof validateHnsRootResourceRecordsV1>;
+
+function planChallenge(records: Records): string {
+  const challenges = records.flatMap((record) =>
+    record.type === "TXT" && Array.isArray(record.txt)
+      ? [record.txt.join("")].filter((value) => value.startsWith("pirate-verification="))
+      : [],
+  );
+  if (challenges.length !== 1) throw new JourneyRefusal("plan_challenge_not_unique");
+  return challenges[0] as string;
+}
+
+function planDs(records: Records) {
+  const ds = records.flatMap((record) => {
+    if (record.type !== "DS") return [];
+    const { keyTag, algorithm, digestType, digest } = record as Record<string, unknown>;
+    if (
+      typeof keyTag !== "number" ||
+      typeof algorithm !== "number" ||
+      typeof digestType !== "number" ||
+      typeof digest !== "string"
+    )
+      throw new JourneyRefusal("plan_ds_invalid");
+    return [{ key_tag: keyTag, algorithm, digest_type: digestType, digest: digest.toLowerCase() }];
+  });
+  return ds.sort(
+    (left, right) =>
+      left.key_tag - right.key_tag ||
+      left.algorithm - right.algorithm ||
+      left.digest_type - right.digest_type,
+  );
+}
+
+type AuthorityFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+/**
+ * Provenance without API credentials: the product's provisioner stamps each
+ * zone with an account derived from the import challenge and holds its DNSSEC
+ * keys. A plan is publishable only if such a zone exists for its exact
+ * challenge and its DS set equals the zone's active DS set.
+ */
+export async function requirePlanProvenance(
+  root: string,
+  records: Records,
+  fetcher: AuthorityFetch = fetch,
+  apiUrl = AUTHORITY_API,
+  apiKey = AUTHORITY_KEY,
+): Promise<void> {
+  const base = new URL(apiUrl);
+  if (base.protocol !== "http:" || !base.hostname.startsWith("127."))
+    throw new JourneyRefusal("authority_not_loopback");
+  const get = async (path: string) => {
+    const response = await fetcher(
+      `${base.origin}/api/v1/servers/localhost/zones/${root}.${path}`,
+      {
+        method: "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(5000),
+        headers: { accept: "application/json", "x-api-key": apiKey },
+      },
+    );
+    if (response.status === 404) throw new JourneyRefusal("plan_zone_absent");
+    if (!response.ok) throw new JourneyRefusal("authority_unreadable");
+    return (await response.json()) as unknown;
+  };
+  const challenge = planChallenge(records);
+  const zone = (await get("")) as { account?: unknown };
+  if (zone.account !== (await reservationAccount(challenge)))
+    throw new JourneyRefusal("plan_not_from_product_provisioning");
+  const keys = await get("/cryptokeys");
+  if (!Array.isArray(keys)) throw new JourneyRefusal("authority_unreadable");
+  const zoneDs = retainedDsRecords(
+    (keys as { active?: unknown; published?: unknown; ds?: unknown }[])
+      .filter((key) => key.active !== false && key.published !== false)
+      .flatMap((key) =>
+        Array.isArray(key.ds) ? key.ds.filter((v): v is string => typeof v === "string") : [],
+      ),
+  );
+  if (JSON.stringify(zoneDs) !== JSON.stringify(planDs(records)))
+    throw new JourneyRefusal("plan_ds_differs_from_zone");
+}
+
+const leasePath = () => join(LEASE_DIRECTORY, "lease.json");
+
+async function beginLease(root: string) {
+  await mkdir(LEASE_DIRECTORY, { recursive: true, mode: 0o700 });
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(leasePath(), "wx", 0o600);
+  } catch {
+    throw new JourneyRefusal("run_lease_held");
+  }
+  try {
+    await handle.writeFile(
+      JSON.stringify({ root, pid: process.pid, started_at: new Date().toISOString() }),
+    );
+  } finally {
+    await handle.close();
+  }
+  return { outcome: "lease_taken", root };
+}
+
+async function requireLease(root: string) {
+  let lease: { root?: unknown };
+  try {
+    lease = JSON.parse(await readFile(leasePath(), "utf8")) as { root?: unknown };
+  } catch {
+    throw new JourneyRefusal("run_lease_missing");
+  }
+  if (lease.root !== root) throw new JourneyRefusal("run_lease_names_other_root");
+}
+
+async function endLease(root: string) {
+  await requireLease(root);
+  await unlink(leasePath());
+  return { outcome: "lease_released", root };
 }
 
 const observe = makeHsdRootResourceObserver({
@@ -200,11 +331,14 @@ async function publish(root: string, planPath: string) {
   );
   if (!(await ownedByWallet(root))) throw new JourneyRefusal("name_not_owned");
   const current = await observe(root, "current");
-  if (
-    current.kind === "observed" &&
-    (await hnsObservedResourceMatchesEncodedPlanV1(current.observation.records, digest))
-  )
+  if (current.kind !== "observed") throw new JourneyRefusal("current_unobservable");
+  if (await hnsObservedResourceMatchesEncodedPlanV1(current.observation.records, digest))
     return { outcome: "already_current", root, digest, height: await tip() };
+  // Only the empty registration resource may be replaced; anything else is
+  // someone else's state and is reconciled by a person, not overwritten.
+  if (current.observation.records.length !== 0)
+    throw new JourneyRefusal("pre_update_resource_not_empty");
+  await requirePlanProvenance(root, records);
   const update = Schema.decodeUnknownSync(
     Schema.Struct({
       hash: Schema.String,
@@ -274,14 +408,17 @@ async function status(root: string) {
 async function runJourneyCommand(argv: readonly string[]) {
   const command = parseJourneyCommand(argv);
   await requireHsdRegtestChain();
+  if (command.kind === "begin") return beginLease(command.root);
+  if (command.kind === "status") return status(command.root);
+  await requireLease(command.root);
+  if (command.kind === "end") return endLease(command.root);
   if (command.kind === "mine") {
     await mine(command.blocks);
     return { outcome: "mined", blocks: command.blocks, height: await tip() };
   }
   if (command.kind === "acquire") return acquire(command.root);
   if (command.kind === "publish") return publish(command.root, command.plan);
-  if (command.kind === "advance-safe") return advanceSafe(command.root, command.plan);
-  return status(command.root);
+  return advanceSafe(command.root, command.plan);
 }
 
 if (import.meta.main) {
