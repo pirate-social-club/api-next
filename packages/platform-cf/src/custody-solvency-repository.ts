@@ -8,6 +8,7 @@ import {
   type CustodySolvencyStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -100,6 +101,7 @@ function candidateFromRow(row: Row): CustodySolvencyCandidate {
     referrerAddress: text(row, "referrer_address"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
   };
 }
@@ -166,6 +168,7 @@ export function makeControlPlaneCustodySolvencyRepository() {
                         attestation.chain_id, asset.token_address, attestation.usdc_address,
                         custody_address, jackpot_address, ticket_nft_address,
                         referrer_address, jackpot_code_hash, usdc_code_hash,
+                        attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
                         ticket_nft_code_hash
                    FROM megapot_deployment_attestations attestation
                    JOIN reward_asset_whitelist asset
@@ -232,6 +235,7 @@ export function makeControlPlaneCustodySolvencyRepository() {
                             attestation.chain_id, asset.token_address, attestation.usdc_address,
                             custody_address, jackpot_address, ticket_nft_address,
                             referrer_address, jackpot_code_hash, usdc_code_hash,
+                            attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
                             ticket_nft_code_hash
                        FROM megapot_deployment_attestations attestation
                        JOIN reward_asset_whitelist asset

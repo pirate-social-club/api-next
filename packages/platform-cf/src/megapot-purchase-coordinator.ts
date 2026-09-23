@@ -11,6 +11,7 @@ import type {
 import { deriveMegapotTicket } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
+import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   encodeMegapotBuyTickets,
   MEGAPOT_REFERRAL_SPLIT_SCALE,
@@ -109,6 +110,7 @@ function deployment(candidate: MegapotPurchaseCandidate): MegapotV2DeploymentAtt
     jackpotCodeHash: candidate.jackpotCodeHash,
     ticketNftCodeHash: candidate.ticketNftCodeHash,
     usdcCodeHash: candidate.usdcCodeHash,
+    ...megapotImplementationIdentityFromCandidate(candidate),
     attestationId: candidate.attestationId,
   };
 }

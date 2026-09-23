@@ -30027,6 +30027,8 @@ CREATE TABLE megapot_deployment_attestations (
     verified_at timestamp with time zone NOT NULL,
     retired_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    usdc_implementation_address text,
+    usdc_implementation_code_hash text,
     CONSTRAINT megapot_attestation_environment_chain CHECK ((((environment = 'production'::text) AND (chain_id = 8453)) OR ((environment = ANY (ARRAY['test'::text, 'staging'::text])) AND (chain_id = 84532)))),
     CONSTRAINT megapot_attestation_status_shape CHECK ((((status = 'active'::text) AND (retired_at IS NULL)) OR ((status = 'retired'::text) AND (retired_at IS NOT NULL) AND (retired_at >= verified_at)))),
     CONSTRAINT megapot_deployment_attestations_abi_version_check CHECK ((abi_version = 'megapot_v2'::text)),
@@ -30044,7 +30046,9 @@ CREATE TABLE megapot_deployment_attestations (
     CONSTRAINT megapot_deployment_attestations_ticket_nft_address_check CHECK ((ticket_nft_address ~ '^0x[0-9a-f]{40}$'::text)),
     CONSTRAINT megapot_deployment_attestations_ticket_nft_code_hash_check CHECK ((ticket_nft_code_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_deployment_attestations_usdc_address_check CHECK ((usdc_address ~ '^0x[0-9a-f]{40}$'::text)),
-    CONSTRAINT megapot_deployment_attestations_usdc_code_hash_check CHECK ((usdc_code_hash ~ '^0x[0-9a-f]{64}$'::text))
+    CONSTRAINT megapot_deployment_attestations_usdc_code_hash_check CHECK ((usdc_code_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_production_usdc_implementation_required CHECK (((environment <> 'production'::text) OR ((usdc_implementation_address IS NOT NULL) AND (usdc_implementation_code_hash IS NOT NULL)))),
+    CONSTRAINT megapot_usdc_implementation_pair CHECK ((((usdc_implementation_address IS NULL) AND (usdc_implementation_code_hash IS NULL)) OR ((usdc_implementation_address IS NOT NULL) AND (usdc_implementation_code_hash IS NOT NULL) AND (usdc_implementation_address ~ '^0x[0-9a-f]{40}$'::text) AND (usdc_implementation_address <> '0x0000000000000000000000000000000000000000'::text) AND (usdc_implementation_code_hash ~ '^0x[0-9a-f]{64}$'::text))))
 );
 
 CREATE TABLE megapot_drawing_observations (

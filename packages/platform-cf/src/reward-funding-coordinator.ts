@@ -5,6 +5,7 @@ import type {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
+import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   type MegapotTransactionReceipt,
   type MegapotV2DeploymentAttestation,
@@ -44,6 +45,7 @@ function deployment(intent: RewardFundingIntent): MegapotV2DeploymentAttestation
     jackpotCodeHash: intent.jackpotCodeHash,
     ticketNftCodeHash: intent.ticketNftCodeHash,
     usdcCodeHash: intent.usdcCodeHash,
+    ...megapotImplementationIdentityFromCandidate(intent),
     attestationId: intent.attestationId,
   };
 }

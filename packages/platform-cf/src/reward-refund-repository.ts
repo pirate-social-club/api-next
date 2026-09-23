@@ -12,6 +12,7 @@ import {
   type RewardRefundStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -145,7 +146,8 @@ const CANDIDATE_SELECT = `
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
          attestation.referrer_address, attestation.jackpot_code_hash,
-         attestation.usdc_code_hash, attestation.ticket_nft_code_hash
+         attestation.usdc_code_hash, attestation.ticket_nft_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash
     FROM allocations allocation
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=allocation.chain_id AND asset.token_address=allocation.token_address
@@ -190,6 +192,7 @@ function candidateFromRow(row: Row): RewardRefundCandidate {
     referrerAddress: text(row, "referrer_address"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
   };
 }
@@ -269,7 +272,8 @@ const PROGRESS_SELECT = `
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
          attestation.referrer_address, attestation.jackpot_code_hash,
-         attestation.usdc_code_hash, attestation.ticket_nft_code_hash
+         attestation.usdc_code_hash, attestation.ticket_nft_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash
     FROM reward_chain_effects effect
     JOIN reward_refund_effects refund ON refund.refund_effect_id=effect.effect_id
     JOIN custody_solvency_observations observation

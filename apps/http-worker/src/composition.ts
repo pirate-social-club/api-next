@@ -54,6 +54,7 @@ import {
   ProviderUnavailable,
 } from "@pirate/contracts";
 import { compileAccountAgeVerificationPolicy } from "@pirate/domain";
+import { megapotImplementationIdentityFromCandidate } from "@pirate/platform-cf";
 import { makeControlPlaneAccountAgeVerification } from "@pirate/platform-cf/account-age-verification";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
@@ -1417,6 +1418,7 @@ export async function createProductionHttpWorker(
               jackpotCodeHash: candidate.jackpotCodeHash,
               ticketNftCodeHash: candidate.ticketNftCodeHash,
               usdcCodeHash: candidate.usdcCodeHash,
+              ...megapotImplementationIdentityFromCandidate(candidate),
             },
           });
           const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);

@@ -49,6 +49,8 @@ export type MegapotPurchaseCandidate = Readonly<{
   referrerAddress: string;
   jackpotCodeHash: string;
   usdcCodeHash: string;
+  usdcImplementationAddress?: string;
+  usdcImplementationCodeHash?: string;
   ticketNftCodeHash: string;
 }>;
 

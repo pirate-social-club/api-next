@@ -8,6 +8,7 @@ import {
 } from "@pirate/application";
 import { Effect } from "effect";
 import { sha256, toBytes } from "viem";
+import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import type { MegapotV2DeploymentAttestation } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
@@ -33,6 +34,7 @@ function deployment(candidate: MegapotDrawingObserverCandidate): MegapotV2Deploy
     jackpotCodeHash: candidate.jackpotCodeHash,
     ticketNftCodeHash: candidate.ticketNftCodeHash,
     usdcCodeHash: candidate.usdcCodeHash,
+    ...megapotImplementationIdentityFromCandidate(candidate),
   };
 }
 
@@ -51,7 +53,9 @@ function sameDeployment(
     canonicalAddress(left.referrerAddress) === canonicalAddress(right.referrerAddress) &&
     left.jackpotCodeHash.toLowerCase() === right.jackpotCodeHash.toLowerCase() &&
     left.ticketNftCodeHash.toLowerCase() === right.ticketNftCodeHash.toLowerCase() &&
-    left.usdcCodeHash.toLowerCase() === right.usdcCodeHash.toLowerCase()
+    left.usdcCodeHash.toLowerCase() === right.usdcCodeHash.toLowerCase() &&
+    left.usdcImplementationAddress === right.usdcImplementationAddress &&
+    left.usdcImplementationCodeHash === right.usdcImplementationCodeHash
   );
 }
 

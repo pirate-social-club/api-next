@@ -38,6 +38,8 @@ export type MegapotDrawingObserverCandidate = Readonly<{
   sourceTag: string;
   jackpotCodeHash: string;
   usdcCodeHash: string;
+  usdcImplementationAddress?: string;
+  usdcImplementationCodeHash?: string;
   ticketNftCodeHash: string;
   attestationBlockNumber: bigint;
   attestationBlockHash: string;

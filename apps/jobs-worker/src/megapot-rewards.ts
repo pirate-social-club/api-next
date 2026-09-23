@@ -30,6 +30,7 @@ import {
   makeR2MegapotCommitmentPublisher,
   makeRewardPayoutCoordinator,
   makeRewardRefundCoordinator,
+  megapotImplementationIdentityFromCandidate,
 } from "@pirate/platform-cf";
 import { Effect, Layer } from "effect";
 import {
@@ -195,6 +196,7 @@ export function makeMegapotRewardsJob(
         jackpotCodeHash: deployment.jackpotCodeHash,
         ticketNftCodeHash: deployment.ticketNftCodeHash,
         usdcCodeHash: deployment.usdcCodeHash,
+        ...megapotImplementationIdentityFromCandidate(deployment),
       },
     });
     const transactionSigner = makeBaseSepoliaMegapotV2PrivateKeySigner({
