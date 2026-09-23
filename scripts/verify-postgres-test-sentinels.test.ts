@@ -48,6 +48,7 @@ async function sentinelSet(): Promise<{
     "hns-observer",
     "hns-host-persistence",
     "handle-sales",
+    "spaces-sale-namespace",
     "community-moderation",
     "dance-reference",
     "public-post-slug",
@@ -180,6 +181,23 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-dance-reference-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps Spaces sale-namespace persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_SPACES_SALE_NAMESPACE_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete",
+    );
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete/gu,
+      ),
     ).toHaveLength(2);
   });
 
