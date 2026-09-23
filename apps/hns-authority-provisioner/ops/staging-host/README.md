@@ -83,6 +83,15 @@ the IP accounting/filtering directives before installation rather than treating
 unsupported filtering as enforced. No HTTP headers are added here: Caddy owns
 the scrubbed scheme/SNI boundary and the gateway owns request admission.
 
+The proxy does not send a systemd readiness notification, so its service uses
+`Type=simple`. A `Type=notify` service can forward briefly but then fail on
+systemd's startup timeout. If the host's input firewall blocks the private
+bridge, an operator must separately approve an exact rule restricted to
+`phnsstage0`, source `172.31.254.2`, destination `172.31.254.1`, TCP port 4269.
+Record normalized IPv4 and IPv6 rules before and after, read back that single
+rule, and remove it if the bridge cannot remain healthy. Do not open a public
+port or change forwarding.
+
 These are source templates, not an installed service. Before enabling, verify
 the private network address, binary path and directives on the target host,
 qualify the approved gateway upstream on loopback, and confirm port ownership.

@@ -4,7 +4,7 @@ Requires=pirate-hns-staging-gateway-bridge.socket
 After=pirate-hns-staging-gateway-bridge.socket
 
 [Service]
-Type=notify
+Type=simple
 DynamicUser=yes
 Slice=pirate-hns-staging.slice
 ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=64 127.0.0.1:4269

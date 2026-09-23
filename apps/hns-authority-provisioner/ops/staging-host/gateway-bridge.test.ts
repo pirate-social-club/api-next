@@ -24,6 +24,8 @@ test("private TLS bridge binds only the isolated interface and loopback gateway"
   expect(service).toContain(
     "ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=64 127.0.0.1:4269\n",
   );
+  expect(service).toContain("Type=simple\n");
+  expect(service).not.toContain("Type=notify\n");
   expect(service).toContain("Slice=pirate-hns-staging.slice\n");
   expect(service).toContain("IPAddressDeny=any\n");
   expect([...service.matchAll(/^IPAddressAllow=(.+)$/gm)].map((match) => match[1])).toEqual([
