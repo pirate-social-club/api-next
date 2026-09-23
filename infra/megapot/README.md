@@ -4,13 +4,16 @@ were cross-checked against Megapot's maintained starter-kit contract map at
 `https://github.com/coordinationlabs/megapot-starter-kit/blob/main/src/config/contracts.ts`.
 The code hashes were observed through Base's public RPC on 2026-09-23. The
 read-only preflight in `scripts/megapot-base-mainnet-preflight.ts` rechecks
-those hashes and the Jackpot's linked NFT and USDC addresses at one block
-through two distinct RPC origins. It sends no transaction.
+those hashes, the Jackpot's linked NFT and USDC addresses, and Circle USDC's
+ZeppelinOS implementation slot and implementation code hash at one block
+through two distinct RPC origins. Circle's slot definition is in
+`https://github.com/circlefin/stablecoin-evm/blob/master/contracts/upgradeability/UpgradeabilityProxy.sol`.
+The preflight sends no transaction.
 
 The candidate intentionally contains no custody address, referrer, signing
-key, source tag or attestation id. In particular, an upgradeable proxy's
-runtime bytecode hash does not prove its implementation has not changed.
-Implementation identity, the production signer backend, custody controls,
+key, source tag or attestation id. The observed USDC implementation identity
+can change after this snapshot; it must be rechecked before any money movement.
+The production signer backend, custody controls,
 numeric caps and the actual claim-to-wallet-payout path remain separate
 launch gates. This file must not be used as an activation instruction.
 

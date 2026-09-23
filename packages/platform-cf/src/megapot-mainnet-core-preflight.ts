@@ -2,10 +2,13 @@ import { Schema } from "effect";
 import { createPublicClient, type Hex, http, keccak256 } from "viem";
 import { base } from "viem/chains";
 
-// Read-only candidate evidence. Matching proxy bytecode alone does not attest
-// upgradeable implementation slots or authorize custody, signing, or rollout.
+// Read-only candidate evidence. It does not authorize custody, signing, or rollout.
 const Address = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u));
 const Hash = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u));
+// Circle FiatTokenProxy uses the ZeppelinOS slot, not ERC-1967.
+// Source: circlefin/stablecoin-evm/contracts/upgradeability/UpgradeabilityProxy.sol.
+const CIRCLE_USDC_IMPLEMENTATION_SLOT =
+  "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3" as const;
 
 const MegapotMainnetCoreCandidateSchema = Schema.Struct({
   domain: Schema.Literal("pirate.megapot-mainnet-core-candidate.v1"),
@@ -17,6 +20,8 @@ const MegapotMainnetCoreCandidateSchema = Schema.Struct({
   jackpot_code_hash: Hash,
   ticket_nft_code_hash: Hash,
   usdc_code_hash: Hash,
+  usdc_implementation_address: Address,
+  usdc_implementation_code_hash: Hash,
   abi_version: Schema.Literal("megapot_v2"),
 });
 
@@ -38,6 +43,7 @@ export class MegapotMainnetCorePreflightFailed extends Error {
       | "block-mismatch"
       | "code-missing"
       | "code-mismatch"
+      | "implementation-mismatch"
       | "linked-contract-mismatch",
   ) {
     super(reason);
@@ -49,6 +55,7 @@ export interface MegapotMainnetCoreReader {
   readonly head: () => Promise<bigint>;
   readonly blockHash: (blockNumber: bigint) => Promise<string>;
   readonly code: (address: string, blockNumber: bigint) => Promise<Hex | undefined>;
+  readonly storage: (address: string, slot: Hex, blockNumber: bigint) => Promise<Hex | undefined>;
   readonly linkedAddress: (
     jackpotAddress: string,
     functionName: "jackpotNFT" | "usdc",
@@ -95,6 +102,8 @@ export function makeMegapotMainnetCoreReader(rpcUrl: string): MegapotMainnetCore
     blockHash: async (blockNumber) => (await client.getBlock({ blockNumber })).hash,
     code: (address, blockNumber) =>
       client.getBytecode({ address: address as `0x${string}`, blockNumber }),
+    storage: (address, slot, blockNumber) =>
+      client.getStorageAt({ address: address as `0x${string}`, slot, blockNumber }),
     linkedAddress: (jackpotAddress, functionName, blockNumber) =>
       client.readContract({
         address: jackpotAddress as `0x${string}`,
@@ -112,6 +121,8 @@ export type MegapotMainnetCoreProof = Readonly<{
   jackpotCodeHash: string;
   ticketNftCodeHash: string;
   usdcCodeHash: string;
+  usdcImplementationAddress: string;
+  usdcImplementationCodeHash: string;
   jackpotTicketNftAddress: string;
   jackpotUsdcAddress: string;
 }>;
@@ -122,19 +133,34 @@ async function observe(
   blockNumber: bigint,
 ): Promise<MegapotMainnetCoreProof> {
   const blockHashBefore = await reader.blockHash(blockNumber);
-  const [jackpotCode, ticketNftCode, usdcCode, jackpotTicketNftAddress, jackpotUsdcAddress] =
-    await Promise.all([
-      reader.code(candidate.jackpot_address, blockNumber),
-      reader.code(candidate.ticket_nft_address, blockNumber),
-      reader.code(candidate.usdc_address, blockNumber),
-      reader.linkedAddress(candidate.jackpot_address, "jackpotNFT", blockNumber),
-      reader.linkedAddress(candidate.jackpot_address, "usdc", blockNumber),
-    ]);
+  const [
+    jackpotCode,
+    ticketNftCode,
+    usdcCode,
+    usdcImplementationSlot,
+    jackpotTicketNftAddress,
+    jackpotUsdcAddress,
+  ] = await Promise.all([
+    reader.code(candidate.jackpot_address, blockNumber),
+    reader.code(candidate.ticket_nft_address, blockNumber),
+    reader.code(candidate.usdc_address, blockNumber),
+    reader.storage(candidate.usdc_address, CIRCLE_USDC_IMPLEMENTATION_SLOT, blockNumber),
+    reader.linkedAddress(candidate.jackpot_address, "jackpotNFT", blockNumber),
+    reader.linkedAddress(candidate.jackpot_address, "usdc", blockNumber),
+  ]);
+  if (!usdcImplementationSlot || !/^0x[0-9a-f]{64}$/iu.test(usdcImplementationSlot)) {
+    throw new MegapotMainnetCorePreflightFailed("implementation-mismatch");
+  }
+  const usdcImplementationAddress = `0x${usdcImplementationSlot.slice(-40)}`.toLowerCase();
+  if (usdcImplementationAddress === `0x${"0".repeat(40)}`) {
+    throw new MegapotMainnetCorePreflightFailed("implementation-mismatch");
+  }
+  const usdcImplementationCode = await reader.code(usdcImplementationAddress, blockNumber);
   const blockHashAfter = await reader.blockHash(blockNumber);
   if (blockHashBefore.toLowerCase() !== blockHashAfter.toLowerCase()) {
     throw new MegapotMainnetCorePreflightFailed("block-mismatch");
   }
-  if (!jackpotCode || !ticketNftCode || !usdcCode) {
+  if (!jackpotCode || !ticketNftCode || !usdcCode || !usdcImplementationCode) {
     throw new MegapotMainnetCorePreflightFailed("code-missing");
   }
   return {
@@ -144,6 +170,8 @@ async function observe(
     jackpotCodeHash: keccak256(jackpotCode).toLowerCase(),
     ticketNftCodeHash: keccak256(ticketNftCode).toLowerCase(),
     usdcCodeHash: keccak256(usdcCode).toLowerCase(),
+    usdcImplementationAddress,
+    usdcImplementationCodeHash: keccak256(usdcImplementationCode).toLowerCase(),
     jackpotTicketNftAddress: jackpotTicketNftAddress.toLowerCase(),
     jackpotUsdcAddress: jackpotUsdcAddress.toLowerCase(),
   };
@@ -184,6 +212,14 @@ export async function inspectMegapotMainnetCore(input: {
     left.usdcCodeHash !== input.candidate.usdc_code_hash
   ) {
     throw new MegapotMainnetCorePreflightFailed("code-mismatch");
+  }
+  if (
+    left.usdcImplementationAddress !== right.usdcImplementationAddress ||
+    left.usdcImplementationCodeHash !== right.usdcImplementationCodeHash ||
+    left.usdcImplementationAddress !== input.candidate.usdc_implementation_address ||
+    left.usdcImplementationCodeHash !== input.candidate.usdc_implementation_code_hash
+  ) {
+    throw new MegapotMainnetCorePreflightFailed("implementation-mismatch");
   }
   if (
     left.jackpotTicketNftAddress !== right.jackpotTicketNftAddress ||

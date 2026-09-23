@@ -23,6 +23,8 @@ const candidate = () =>
     jackpot_code_hash: keccak256(code),
     ticket_nft_code_hash: keccak256(code),
     usdc_code_hash: keccak256(code),
+    usdc_implementation_address: address("4"),
+    usdc_implementation_code_hash: keccak256(code),
     abi_version: "megapot_v2",
   });
 
@@ -32,6 +34,8 @@ function reader(
     head: bigint;
     blockHash: string;
     bytecode: Hex | undefined;
+    implementationSlot: Hex | undefined;
+    implementationCode: Hex | undefined;
     ticketNft: string;
     usdc: string;
   }> = {},
@@ -44,9 +48,20 @@ function reader(
       expect(blockNumber).toBe(500n);
       return changes.blockHash ?? hash("a");
     },
-    code: async (_address, blockNumber) => {
+    code: async (contractAddress, blockNumber) => {
       expect(blockNumber).toBe(500n);
+      if (contractAddress === expected.usdc_implementation_address) {
+        return "implementationCode" in changes ? changes.implementationCode : code;
+      }
       return "bytecode" in changes ? changes.bytecode : code;
+    },
+    storage: async (contractAddress, slot, blockNumber) => {
+      expect(contractAddress).toBe(expected.usdc_address);
+      expect(slot).toBe("0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3");
+      expect(blockNumber).toBe(500n);
+      return "implementationSlot" in changes
+        ? changes.implementationSlot
+        : (`0x${"0".repeat(24)}${expected.usdc_implementation_address.slice(2)}` as Hex);
     },
     linkedAddress: async (_jackpot, functionName, blockNumber) => {
       expect(blockNumber).toBe(500n);
@@ -70,6 +85,8 @@ describe("Megapot Base mainnet core preflight", () => {
       jackpotCodeHash: keccak256(code),
       ticketNftCodeHash: keccak256(code),
       usdcCodeHash: keccak256(code),
+      usdcImplementationAddress: address("4"),
+      usdcImplementationCodeHash: keccak256(code),
     });
   });
 
@@ -116,6 +133,31 @@ describe("Megapot Base mainnet core preflight", () => {
     ).rejects.toMatchObject({ reason: "code-mismatch" });
   });
 
+  test("rejects changed USDC proxy implementation despite identical proxy code", async () => {
+    const changedSlot = `0x${"0".repeat(24)}${address("5").slice(2)}` as Hex;
+    await expect(
+      inspectMegapotMainnetCore({
+        candidate: candidate(),
+        readers: [reader({ implementationSlot: changedSlot }), reader()],
+      }),
+    ).rejects.toMatchObject({ reason: "implementation-mismatch" });
+    await expect(
+      inspectMegapotMainnetCore({
+        candidate: candidate(),
+        readers: [
+          reader({ implementationCode: "0x6001" }),
+          reader({ implementationCode: "0x6001" }),
+        ],
+      }),
+    ).rejects.toMatchObject({ reason: "implementation-mismatch" });
+    await expect(
+      inspectMegapotMainnetCore({
+        candidate: candidate(),
+        readers: [reader({ implementationSlot: undefined }), reader()],
+      }),
+    ).rejects.toMatchObject({ reason: "implementation-mismatch" });
+  });
+
   test("rejects a Jackpot linked to a different token or NFT", async () => {
     await expect(
       inspectMegapotMainnetCore({
@@ -145,6 +187,7 @@ describe("Megapot Base mainnet core preflight", () => {
     expect(parsed.chain_id).toBe(8_453);
     expect(parsed.jackpot_address).toBe("0x3bae643002069dbcbcd62b1a4eb4c4a397d042a2");
     expect(parsed.usdc_address).toBe("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913");
+    expect(parsed.usdc_implementation_address).toBe("0x2ce6311ddae708829bc0784c967b7d77d19fd779");
     expect(() =>
       decodeMegapotMainnetCoreCandidate({ ...parsed, custody_address: address("5") }),
     ).toThrow();

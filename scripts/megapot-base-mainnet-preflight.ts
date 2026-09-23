@@ -39,6 +39,8 @@ export async function runMegapotBaseMainnetPreflight(input: {
       jackpot_code_hash: proof.jackpotCodeHash,
       ticket_nft_code_hash: proof.ticketNftCodeHash,
       usdc_code_hash: proof.usdcCodeHash,
+      usdc_implementation_address: proof.usdcImplementationAddress,
+      usdc_implementation_code_hash: proof.usdcImplementationCodeHash,
     }),
   );
 }
