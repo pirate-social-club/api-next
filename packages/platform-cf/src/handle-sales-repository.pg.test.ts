@@ -1369,20 +1369,20 @@ suite("community handle sales on PostgreSQL 17", () => {
             expected_dns_zone_activation_generation: 1,
           },
         ],
-        offering_authoring_preset: {
-          kind: "hns_hosted_persona_free_v1",
-          reserved_labels_id: "reserved_labels_01",
-          expected_reserved_labels_revision: 1,
-          broad_qualification_policy_id: "none_v1",
-          expected_broad_qualification_policy_revision: 1,
-          expected_account_directory_binding_version: "1",
-          pricing_id: "platform_free_handles_v1",
-          expected_pricing_revision: 1,
-          issuance_driver_id: "hosted_persona-local",
-          expected_issuance_driver_version: "1",
-          quote_ttl_seconds: 120,
-          reservation_ttl_seconds: 300,
-        },
+      });
+      expect(managementContext?.offering_authoring_presets[0]).toMatchObject({
+        kind: "hns_hosted_persona_free_v1",
+        reserved_labels_id: "reserved_labels_01",
+        expected_reserved_labels_revision: 1,
+        broad_qualification_policy_id: "none_v1",
+        expected_broad_qualification_policy_revision: 1,
+        expected_account_directory_binding_version: "1",
+        pricing_id: "platform_free_handles_v1",
+        expected_pricing_revision: 1,
+        issuance_driver_id: "hosted_persona-local",
+        expected_issuance_driver_version: "1",
+        quote_ttl_seconds: 120,
+        reservation_ttl_seconds: 300,
       });
 
       const activation = await run(
