@@ -121,9 +121,14 @@ function transport() {
   const key = process.env.QUAL_R2_ACCESS_KEY_ID;
   const secret = process.env.QUAL_R2_SECRET_ACCESS_KEY;
   if (!key || !secret) throw new Error("QUAL_R2_ACCESS_KEY_ID and QUAL_R2_SECRET_ACCESS_KEY are required");
+  const sessionToken = process.env.QUAL_R2_SESSION_TOKEN?.trim();
   return makeHostR2Transport({
     accountId: arg("account"),
-    credentials: { accessKeyId: key, secretAccessKey: secret },
+    credentials: {
+      accessKeyId: key,
+      secretAccessKey: secret,
+      ...(sessionToken ? { sessionToken } : {}),
+    },
     ...(process.env.QUAL_R2_ENDPOINT ? { endpoint: process.env.QUAL_R2_ENDPOINT } : {}),
   });
 }
