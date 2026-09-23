@@ -70,6 +70,7 @@ import {
   collectSongPipelineTerminalAlerts,
   handleSongPipelineDlqBatch,
 } from "./song-pipeline-terminal-alerts";
+import { makeSpacesReconciliationJob } from "./spaces-reconciliation";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -699,6 +700,12 @@ export function makeJobsWorkerDeclarations(
   }>,
   hnsRootHealthRenewalEnabled = false,
   avatars?: AvatarCleanupBuckets,
+  spacesReconciliation?: Readonly<{
+    store: import("@pirate/application").SpacesReconciliationStore;
+    verifier: import("@pirate/application").SpacesFinalIssuanceVerifier;
+    overdueThresholdSeconds: number;
+    measurementReference: string;
+  }>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -726,6 +733,14 @@ export function makeJobsWorkerDeclarations(
   }
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
+  }
+  if (spacesReconciliation !== undefined) {
+    declarations.push(
+      makeSpacesReconciliationJob(sink, spacesReconciliation.store, spacesReconciliation.verifier, {
+        overdueThresholdSeconds: spacesReconciliation.overdueThresholdSeconds,
+        measurementReference: spacesReconciliation.measurementReference,
+      }),
+    );
   }
   return declarations;
 }
