@@ -123,6 +123,7 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-upgrade-plan.pg.test.ts",
   "scripts/staging-reset-release-live-runtime.pg.test.ts",
   "scripts/staging-hns-post-migration-entry.pg.test.ts",
+  "scripts/staging-hns-gateway-role.pg.test.ts",
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
   "packages/platform-cf/src/hns-admission-privileges.pg.test.ts",
   "packages/platform-cf/src/video-reconciliation-operator.pg.test.ts",
