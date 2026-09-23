@@ -118,7 +118,7 @@ PY
   log "branch preflight ok";;
 sequence)
   load
-  bun qualification/branch-helpers.ts mint input object-read-only 7200 --object "$SOURCE_KEY" --object "$SONG_KEY" > "$EV/mint-input.json" 2>&1 < /dev/null || fail "mint input"
+  ops bun qualification/branch-helpers.ts mint input object-read-only 7200 --object "$SOURCE_KEY" --object "$SONG_KEY" > "$EV/mint-input.json" 2>&1 < /dev/null || fail "mint input"
   export QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")"
   snap A
   bun qualification/render-qualification.ts request-timing --song-post $SONG > "$EV/step-timing-request.json" || fail "timing request"
@@ -131,7 +131,7 @@ sequence)
   bun qualification/render-qualification.ts verify-timing --song-post $SONG --audio-revision 1 --expect-sha256 $SONG_SHA --min-samples $((CLIP_START+CLIP_DURATION)) --expect-prober ffmpeg-6.1.1-song-video-v1 > "$EV/step-verify-timing.json" || fail "timing verification"
   log "timing ready: $(python3 -c "import json;print(json.load(open('$EV/step-verify-timing.json'))['row']['duration_samples'])")"
   snap D0
-  bun qualification/branch-helpers.ts mint upload object-read-write 3600 --object "$SOURCE_KEY" > "$EV/mint-upload.json" || fail "mint upload"
+  ops bun qualification/branch-helpers.ts mint upload object-read-write 3600 --object "$SOURCE_KEY" > "$EV/mint-upload.json" || fail "mint upload"
   bun qualification/branch-helpers.ts upload-env upload > /dev/null
   set -a; . "$PRIV/upload.env"; set +a
   bun qualification/render-qualification.ts upload-source --account 08a4c22cf52e2ecae883e36f80a33f4a --bucket pirate-media-immutable-staging --file "$EV/capture.mp4" > "$EV/step-upload.json" || fail "source upload"
@@ -142,7 +142,7 @@ sequence)
   PLAN=$(python3 -c "import json;print(json.load(open('$EV/step-fixture.json'))['attempt']['planId'])"); ATT=$(python3 -c "import json;print(json.load(open('$EV/step-fixture.json'))['attempt']['attemptId'])")
   [ "$ATT" = "$(python3 -c "import json;print(json.load(open('qualification/manifests.json'))['identities']['attempt_id'])")" ] || fail "attempt id $ATT differs from the bound id"
   sessions before-render
-  bun qualification/branch-helpers.ts mint output object-read-write 7200 --prefix "$MASTER_PREFIX" > "$EV/mint-output.json" || fail "mint output"
+  ops bun qualification/branch-helpers.ts mint output object-read-write 7200 --prefix "$MASTER_PREFIX" > "$EV/mint-output.json" || fail "mint output"
   bun qualification/branch-helpers.ts host-env render host-data.url input output SONG_VIDEO_RENDER_PLAN_ID=$PLAN SONG_VIDEO_RENDER_ATTEMPT_ID=$ATT SONG_VIDEO_RENDER_HOST_ID=song-video-render-host-qualification-20260921-01 > /dev/null
   set +e; host render > "$EV/step-render.json" 2> "$EV/step-render.err"; RC=$?; set -e
   log "render exit $RC: $(cat $EV/step-render.json)"
