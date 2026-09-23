@@ -4,6 +4,7 @@ import { Client } from "pg";
 import { assertGoldenAdoptedPool } from "./megapot-golden-adopted-pool.ts";
 import { rehearsalInput } from "./megapot-golden-multi.fixture.ts";
 import { parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
+import { observeGoldenDrawing } from "./megapot-golden-readonly.ts";
 import { applyPostgresTestBaselineConnection } from "./postgres-test-baseline.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -39,6 +40,9 @@ pgTest(
         await expect(
           assertGoldenAdoptedPool(reader, plan, "0x036cbd53842c5426634e7929541ec2318f3dcf7e"),
         ).rejects.toThrow("Exact app-funded pool handoff missing");
+        await expect(observeGoldenDrawing(reader, "missing-leg", "101")).rejects.toThrow(
+          "Exact drawing observation missing",
+        );
         expect((await reader.query("SHOW transaction_read_only")).rows[0]).toEqual({
           transaction_read_only: "on",
         });

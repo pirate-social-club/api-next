@@ -38,6 +38,7 @@ export type RehearsalParticipant = typeof RehearsalParticipant.Type;
 
 export const MultiGoldenInput = Schema.Struct({
   object: Schema.Literal("megapot_base_sepolia_golden_v2"),
+  activity_mode: Schema.optional(Schema.Literal("observe_app")),
   run_id: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,35}$/u)),
   community_id: RehearsalId,
   post_id: RehearsalId,
@@ -100,14 +101,22 @@ export function parseMultiGoldenInput(value: unknown): MultiGoldenInput {
     !positives.some((p) => p.activities.includes("study")) ||
     !positives.some((p) => p.activities.includes("karaoke")) ||
     !input.participants.some((p) => p.expected_admission === "verification_missing") ||
-    input.participants.some(
-      (p) =>
-        new Set(p.activities).size !== p.activities.length ||
-        (p.activities.includes("study") && !p.accepted_lyrics) ||
-        (p.activities.includes("karaoke") && !p.karaoke_audio),
-    ) ||
+    input.participants.some((p) => new Set(p.activities).size !== p.activities.length) ||
     Date.parse(input.starts_at) >= Date.parse(input.ends_at) ||
     (input.app_funded_pool !== undefined && input.funding_transaction_hash !== undefined) ||
+    (input.activity_mode === "observe_app" &&
+      (!input.app_funded_pool ||
+        input.participants.some((p) =>
+          p.expected_admission === "verification_missing"
+            ? p.activities.length !== 1 || p.activities[0] !== "study" || !p.accepted_lyrics
+            : false,
+        ))) ||
+    (input.activity_mode !== "observe_app" &&
+      input.participants.some(
+        (p) =>
+          (p.activities.includes("study") && !p.accepted_lyrics) ||
+          (p.activities.includes("karaoke") && !p.karaoke_audio),
+      )) ||
     BigInt(input.max_ticket_price_atomic) < 1n ||
     BigInt(input.funding_amount_atomic) < BigInt(input.max_ticket_price_atomic)
   ) {

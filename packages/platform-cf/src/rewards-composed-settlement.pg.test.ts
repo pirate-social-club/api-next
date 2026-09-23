@@ -8,12 +8,17 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { onePalmRehearsalInput } from "../../../scripts/megapot-golden-multi.fixture.ts";
 import {
   goldenContentSql,
   goldenDrawingRecoverySql,
   goldenIdentitySql,
   observeGoldenDrawing,
 } from "../../../scripts/megapot-golden-readonly.ts";
+import {
+  assertGoldenAdmission,
+  goldenAdmissionProgress,
+} from "../../../scripts/megapot-golden-reconciliation.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   AUTHOR_ID,
@@ -490,6 +495,46 @@ suite("Composed current-policy Megapot settlement", () => {
       expect(observed.unresolved_effect_count).toBe(0);
       expect(observed.refunded_atomic).toBe("0");
       expect(observed.qualifications.filter((q) => q.account_id === "winner-both")).toHaveLength(2);
+      // The staging observer must accept what the real 0134 projection wrote:
+      // winner-both qualified twice but holds one decision and one share.
+      expect(observed.decisions.filter((d) => d.account_id === "winner-both")).toHaveLength(1);
+      const fixtureInput = onePalmRehearsalInput();
+      const template = fixtureInput.participants[0];
+      if (!template) throw new Error("missing fixture participant");
+      const participant = (
+        key: string,
+        account: string,
+        person: string,
+        activities: readonly ("study" | "karaoke")[],
+        expected: "eligible" | "verification_missing",
+      ) => ({
+        ...template,
+        key,
+        account_id: account,
+        persona_id: persona(person),
+        activities: [...activities] as ["study" | "karaoke", ...("study" | "karaoke")[]],
+        expected_admission: expected,
+      });
+      const observerInput = {
+        ...fixtureInput,
+        community_id: COMMUNITY_ID,
+        post_id: POST_ID,
+        audio_revision: observed.audio_revision,
+        participants: [
+          participant("study", "winner-study", "study", ["study"], "eligible"),
+          participant("karaoke", "winner-karaoke", "karaoke", ["karaoke"], "eligible"),
+          participant("both", "winner-both", "both", ["study", "karaoke"], "eligible"),
+          participant(
+            "negative",
+            "winner-unverified",
+            "unverified",
+            ["karaoke"],
+            "verification_missing",
+          ),
+        ],
+      };
+      expect(goldenAdmissionProgress(observerInput, observed)).toBe("complete");
+      expect(() => assertGoldenAdmission(observerInput, observed)).not.toThrow();
       const witness = await admin.query(goldenIdentitySql, ["winner-study", personas.get("study")]);
       expect(witness.rows).toHaveLength(1);
       expect(witness.rows[0]?.evidence).toHaveLength(1);
