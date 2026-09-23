@@ -461,9 +461,13 @@ describe("config system (000 §9)", () => {
       binding: "HNS_OWNER_VERIFIER",
       service: "pirate-hns-owner-verifier-production",
     });
-    expect(JSON.stringify([config.services, config.env?.staging?.services])).not.toContain(
-      "HNS_OWNER_VERIFIER",
-    );
+    expect(config.services).toBeUndefined();
+    expect(config.env?.staging?.services).toEqual([
+      {
+        binding: "HNS_OWNER_VERIFIER",
+        service: "pirate-hns-owner-verifier-staging",
+      },
+    ]);
     expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
