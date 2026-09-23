@@ -156,6 +156,15 @@ describe("Megapot Base mainnet core preflight", () => {
         readers: [reader({ implementationSlot: undefined }), reader()],
       }),
     ).rejects.toMatchObject({ reason: "implementation-mismatch" });
+    await expect(
+      inspectMegapotMainnetCore({
+        candidate: candidate(),
+        readers: [
+          reader({ implementationSlot: `0x${"f".repeat(24)}${address("4").slice(2)}` as Hex }),
+          reader(),
+        ],
+      }),
+    ).rejects.toMatchObject({ reason: "implementation-mismatch" });
   });
 
   test("rejects a Jackpot linked to a different token or NFT", async () => {

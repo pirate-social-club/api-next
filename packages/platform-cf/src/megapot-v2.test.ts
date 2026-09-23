@@ -329,6 +329,27 @@ describe("Megapot v2 deployment and receipt evidence", () => {
     ).toThrow(MegapotV2EvidenceInvalid);
   });
 
+  test("requires an implementation identity for a production deployment attestation", () => {
+    const mainnet = { ...deployment, environment: "production" as const, chainId: 8_453 };
+    expect(() => validateMegapotV2DeploymentAttestation(mainnet)).toThrow(MegapotV2EvidenceInvalid);
+    expect(() =>
+      validateMegapotV2DeploymentAttestation({
+        ...mainnet,
+        usdcImplementationAddress: RECIPIENT,
+      }),
+    ).toThrow(MegapotV2EvidenceInvalid);
+    expect(
+      validateMegapotV2DeploymentAttestation({
+        ...mainnet,
+        usdcImplementationAddress: RECIPIENT.toUpperCase().replace("0X", "0x"),
+        usdcImplementationCodeHash: `0x${"04".repeat(32)}`,
+      }),
+    ).toMatchObject({
+      usdcImplementationAddress: RECIPIENT,
+      usdcImplementationCodeHash: `0x${"04".repeat(32)}`,
+    });
+  });
+
   test("proves purchase drawing, custody recipient, ticket ids, mint, and log identity", () => {
     expect(
       validateMegapotPurchaseReceipt({

@@ -1,14 +1,11 @@
 import { Schema } from "effect";
 import { createPublicClient, type Hex, http, keccak256 } from "viem";
 import { base } from "viem/chains";
+import { CIRCLE_USDC_IMPLEMENTATION_SLOT } from "./megapot-v2.ts";
 
 // Read-only candidate evidence. It does not authorize custody, signing, or rollout.
 const Address = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u));
 const Hash = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u));
-// Circle FiatTokenProxy uses the ZeppelinOS slot, not ERC-1967.
-// Source: circlefin/stablecoin-evm/contracts/upgradeability/UpgradeabilityProxy.sol.
-const CIRCLE_USDC_IMPLEMENTATION_SLOT =
-  "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3" as const;
 
 const MegapotMainnetCoreCandidateSchema = Schema.Struct({
   domain: Schema.Literal("pirate.megapot-mainnet-core-candidate.v1"),
@@ -148,7 +145,7 @@ async function observe(
     reader.linkedAddress(candidate.jackpot_address, "jackpotNFT", blockNumber),
     reader.linkedAddress(candidate.jackpot_address, "usdc", blockNumber),
   ]);
-  if (!usdcImplementationSlot || !/^0x[0-9a-f]{64}$/iu.test(usdcImplementationSlot)) {
+  if (!usdcImplementationSlot || !/^0x0{24}[0-9a-f]{40}$/iu.test(usdcImplementationSlot)) {
     throw new MegapotMainnetCorePreflightFailed("implementation-mismatch");
   }
   const usdcImplementationAddress = `0x${usdcImplementationSlot.slice(-40)}`.toLowerCase();
