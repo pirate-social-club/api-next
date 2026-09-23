@@ -1,8 +1,8 @@
 import type { ControlPlaneTransaction, HandleSalesStore } from "@pirate/application";
 import type {
   CreateHandleSpacesQuoteResultV1,
-  HandleGrantPrivateV2,
   HandleSpacesClaimV1,
+  HandleSpacesGrantPrivateV1,
   HandleSpacesQuoteV1,
   HandleSpacesRecipientV1,
   HandleSpacesReservationV1,
@@ -154,7 +154,7 @@ export const spacesReservationFromRow = (row: Row): HandleSpacesReservationV1 =>
   };
 };
 
-const spacesGrantFromRow = (row: Row): HandleGrantPrivateV2 => ({
+const spacesGrantFromRow = (row: Row): HandleSpacesGrantPrivateV1 => ({
   grant_id: text(row, "grant_grant_id"),
   grant_generation: integer(row, "grant_grant_generation"),
   community_id: text(row, "grant_community_id"),
@@ -167,7 +167,7 @@ const spacesGrantFromRow = (row: Row): HandleGrantPrivateV2 => ({
   fulfillment: { kind: "spaces_native_v1" },
   handle: spacesKey(row, "grant_"),
   display_identifier: text(row, "grant_display_identifier"),
-  status: text(row, "grant_status") as HandleGrantPrivateV2["status"],
+  status: text(row, "grant_status") as HandleSpacesGrantPrivateV1["status"],
   issued_at: instant(row.grant_issued_at),
 });
 

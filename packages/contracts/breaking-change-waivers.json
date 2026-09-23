@@ -1,3 +1,186 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_communitiesCommunityIdHandleOfferings",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-offerings: type changed from integer to undefined",
+        "response GET /communities/{communityId}/handle-offerings: type changed from object to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_communitiesCommunityIdHandleSaleNamespaces",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-sale-namespaces: enum value added: \"spaces\"",
+        "response GET /communities/{communityId}/handle-sale-namespaces: response/request property removed: items.items.root_replacement",
+        "response GET /communities/{communityId}/handle-sale-namespaces: response/request property removed: items.items.serving"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_communitiesCommunityIdHandleSalesManagement",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces owner-management successor in Spec 012 section 5.3.13.11, including plural authoring presets; HNS candidates remain admitted.",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-sales-management: enum value added: \"owner_challenge_required\"",
+        "response GET /communities/{communityId}/handle-sales-management: enum value added: \"ready_v1\"",
+        "response GET /communities/{communityId}/handle-sales-management: enum value added: \"spaces\"",
+        "response GET /communities/{communityId}/handle-sales-management: response/request property removed: offering_authoring_preset",
+        "response GET /communities/{communityId}/handle-sales-management: response/request property removed: sale_namespace_candidates.items.dns_zone_activation_id",
+        "response GET /communities/{communityId}/handle-sales-management: response/request property removed: sale_namespace_candidates.items.expected_dns_zone_activation_generation",
+        "response GET /communities/{communityId}/handle-sales-management: response/request property removed: sale_namespace_candidates.items.reason"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_communitiesCommunityIdHandleSalesManagementOfferings",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-sales-management/offerings: type changed from integer to undefined",
+        "response GET /communities/{communityId}/handle-sales-management/offerings: type changed from object to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_communitiesCommunityIdHandleSalesManagementSaleNamespaces",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/handle-sales-management/sale-namespaces: enum value added: \"spaces\"",
+        "response GET /communities/{communityId}/handle-sales-management/sale-namespaces: response/request property removed: items.items.activation.root_replacement",
+        "response GET /communities/{communityId}/handle-sales-management/sale-namespaces: response/request property removed: items.items.activation.serving",
+        "response GET /communities/{communityId}/handle-sales-management/sale-namespaces: response/request property removed: items.items.effectiveness"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_handleClaimsClaimId",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /handle-claims/{claimId}: enum value added: \"recipient_wallet_required\"",
+        "response GET /handle-claims/{claimId}: type changed from null to object",
+        "response GET /handle-claims/{claimId}: type changed from object to undefined",
+        "response GET /handle-claims/{claimId}: type changed from string to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_handlesFamilyNamespaceRootHandleLabel",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /handles/{family}/{namespaceRoot}/{handleLabel}: type changed from object to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "get_personasPersonaIdHandleGrants",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response GET /personas/{personaId}/handle-grants: type changed from object to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "post_communitiesCommunityIdHandleOfferings",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "request POST /communities/{communityId}/handle-offerings: enum value removed: \"label_rule_v2\"",
+        "request POST /communities/{communityId}/handle-offerings: enum value removed: \"spaces_native_v1\"",
+        "request POST /communities/{communityId}/handle-offerings: property became required: handle_label",
+        "request POST /communities/{communityId}/handle-offerings: response/request property removed: terms.label_scope.availability",
+        "response POST /communities/{communityId}/handle-offerings status 201: type changed from integer to undefined",
+        "response POST /communities/{communityId}/handle-offerings status 201: type changed from object to undefined",
+        "response POST /communities/{communityId}/handle-offerings: type changed from integer to undefined",
+        "response POST /communities/{communityId}/handle-offerings: type changed from object to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "post_communitiesCommunityIdHandleOfferingsOfferingIdRevisions",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "request POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: enum value removed: \"label_rule_v2\"",
+        "request POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: enum value removed: \"spaces_native_v1\"",
+        "request POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: property became required: handle_label",
+        "request POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: response/request property removed: terms.label_scope.availability",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions status 201: type changed from integer to undefined",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions status 201: type changed from object to undefined",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: type changed from integer to undefined",
+        "response POST /communities/{communityId}/handle-offerings/{offeringId}/revisions: type changed from object to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "post_communitiesCommunityIdHandleSaleNamespaces",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/handle-sale-namespaces status 201: enum value added: \"spaces\"",
+        "response POST /communities/{communityId}/handle-sale-namespaces status 201: response/request property removed: activation.root_replacement",
+        "response POST /communities/{communityId}/handle-sale-namespaces status 201: response/request property removed: activation.serving",
+        "response POST /communities/{communityId}/handle-sale-namespaces: enum value added: \"spaces\"",
+        "response POST /communities/{communityId}/handle-sale-namespaces: response/request property removed: activation.root_replacement",
+        "response POST /communities/{communityId}/handle-sale-namespaces: response/request property removed: activation.serving"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "post_communitiesCommunityIdHandleSaleNamespacesActivationIdRevisions",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/handle-sale-namespaces/{activationId}/revisions status 201: enum value added: \"spaces\"",
+        "response POST /communities/{communityId}/handle-sale-namespaces/{activationId}/revisions status 201: response/request property removed: activation.root_replacement",
+        "response POST /communities/{communityId}/handle-sale-namespaces/{activationId}/revisions status 201: response/request property removed: activation.serving",
+        "response POST /communities/{communityId}/handle-sale-namespaces/{activationId}/revisions: enum value added: \"spaces\"",
+        "response POST /communities/{communityId}/handle-sale-namespaces/{activationId}/revisions: response/request property removed: activation.root_replacement",
+        "response POST /communities/{communityId}/handle-sale-namespaces/{activationId}/revisions: response/request property removed: activation.serving"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "post_handleClaims",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response POST /handle-claims status 201: enum value added: \"recipient_wallet_required\"",
+        "response POST /handle-claims status 201: type changed from null to object",
+        "response POST /handle-claims status 201: type changed from object to undefined",
+        "response POST /handle-claims status 201: type changed from string to undefined",
+        "response POST /handle-claims: enum value added: \"recipient_wallet_required\"",
+        "response POST /handle-claims: type changed from null to object",
+        "response POST /handle-claims: type changed from object to undefined",
+        "response POST /handle-claims: type changed from string to undefined"
+      ]
+    },
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "operationId": "post_handleQuotes",
+      "kind": "clean-break",
+      "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
+      "expectedViolations": [
+        "response POST /handle-quotes status 201: enum value added: \"eligibility_required\"",
+        "response POST /handle-quotes status 201: enum value added: \"recipient_wallet_required\"",
+        "response POST /handle-quotes status 201: response/request property removed: quote",
+        "response POST /handle-quotes status 201: response/request property removed: replayed",
+        "response POST /handle-quotes status 201: type changed from object to undefined",
+        "response POST /handle-quotes: enum value added: \"eligibility_required\"",
+        "response POST /handle-quotes: enum value added: \"recipient_wallet_required\"",
+        "response POST /handle-quotes: response/request property removed: quote",
+        "response POST /handle-quotes: response/request property removed: replayed",
+        "response POST /handle-quotes: type changed from object to undefined"
+      ]
+    }
+  ]
 }

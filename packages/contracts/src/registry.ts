@@ -40,7 +40,7 @@ import {
   ReserveDanceSessionUpload,
   SubmitDanceSessionForGrading,
 } from "./dance-attempt.ts";
-import { handleSalesRegistry } from "./handle-sales.ts";
+import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
@@ -150,7 +150,7 @@ export const registry = {
   GetCurrentHnsCommunityRootImport,
   PollHnsCommunityRootImport,
   ActivateHnsCommunityRootImport,
-  ...handleSalesRegistry,
+  ...handleSalesSpacesRegistry,
   ListMyPersonas,
   ListMyPendingPersonaWallets,
   CreatePersona,

@@ -59,7 +59,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 20;
+const testCount = 21;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -454,6 +454,77 @@ const setMembership = (admin: Client, accountId: string, status: "left" | "banne
   );
 
 suite("Spaces quote, reservation, and atomic claim", () => {
+  test("projects the enabled Spaces offering and owner setup without changing HNS reads", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const funding = await Effect.runPromise(
+        spacesStore(connection).recordFundingObservation({
+          operatorAssignmentId: "spaces_operator_assignment_01",
+          operatorAssignmentGeneration: 1,
+          observedAt: new Date(Date.now() - 1_000).toISOString(),
+          confirmedBalanceSats: "1000",
+          nextCommitFeeSats: "500",
+        }),
+      );
+      expect(funding.kind).toBe("recorded");
+      const store = salesStore(connection);
+      const activations = await Effect.runPromise(store.listSaleNamespaces({ communityId }));
+      expect(activations.items).toMatchObject([
+        {
+          family: "spaces",
+          canonical_root: spacesRoot,
+          operator: { operator_assignment_id: "spaces_operator_assignment_01" },
+        },
+      ]);
+      const offerings = await Effect.runPromise(store.listOfferings({ communityId }));
+      expect(offerings.items).toMatchObject([
+        {
+          family: "spaces",
+          label_scope: { label_grammar_id: "spaces_subspace_label_v1" },
+          qualification_policy: { kind: "curated_policy_v1" },
+        },
+      ]);
+      const context = await Effect.runPromise(
+        store.getManagementContext({
+          accountId: seller,
+          communityId,
+        }),
+      );
+      expect(context?.sale_namespace_candidates).toMatchObject([
+        {
+          family: "spaces",
+          kind: "ready_v1",
+          canonical_root: spacesRoot,
+        },
+      ]);
+      expect(context?.offering_authoring_presets.map((preset) => preset.kind)).toEqual([
+        "hns_hosted_persona_free_v1",
+        "spaces_native_free_v1",
+      ]);
+      const managedActivations = await Effect.runPromise(
+        store.listManagementSaleNamespaces({ accountId: seller, communityId }),
+      );
+      expect(managedActivations?.items).toMatchObject([
+        {
+          activation: { family: "spaces" },
+          readiness: { kind: "ready_v1" },
+          funding: { status: "funded_v1", confirmed_balance_sats: "1000" },
+          pending_claim_count: 0,
+        },
+      ]);
+      const managedOfferings = await Effect.runPromise(
+        store.listManagementOfferings({ accountId: seller, communityId }),
+      );
+      expect(managedOfferings?.items).toMatchObject([
+        {
+          offering: { family: "spaces" },
+          effectiveness: { kind: "effective_v1" },
+        },
+      ]);
+    });
+    completed++;
+  });
+
   test("refuses the members-only matrix before recipient resolution and writes nothing", async () => {
     await withSchema(async (admin, connection) => {
       await seedSpacesSale(admin, connection);

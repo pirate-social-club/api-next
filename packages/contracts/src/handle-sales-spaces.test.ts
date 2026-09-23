@@ -11,6 +11,7 @@ import {
   SpacesSaleNamespaceActivationV1,
   SpacesSaleReadinessV1,
 } from "./handle-sales-spaces.ts";
+import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 
 const strict = { onExcessProperty: "error" } as const;
 const decodes = <S extends Schema.Top>(schema: S, value: unknown): boolean =>
@@ -47,6 +48,12 @@ const activation = {
 describe("Spaces sale-namespace activation contract", () => {
   test("admits the checked Spaces shape and never cross-decodes with HNS", () => {
     expect(decodes(SpacesSaleNamespaceActivationV1, activation)).toBe(true);
+    expect(
+      decodes(handleSalesSpacesRegistry.ListHandleSaleNamespaces.response, {
+        items: [activation],
+        next_cursor: null,
+      }),
+    ).toBe(true);
     expect(decodes(SaleNamespaceActivationV1, activation)).toBe(false);
     for (const invalid of [
       { ...activation, family: "hns" },
@@ -159,8 +166,48 @@ const quote = {
 } as const;
 
 describe("Spaces quote, reservation, and claim contracts", () => {
+  test("keeps the Spaces label grammar when decoding owner offering terms", () => {
+    const terms = {
+      sale_namespace_activation_id: activation.sale_namespace_activation_id,
+      expected_sale_namespace_activation_generation: 2,
+      label_scope: {
+        kind: "label_rule_v2",
+        label_grammar_id: "spaces_subspace_label_v1",
+        reserved_labels_id: "reserved_labels_spaces_01",
+        expected_reserved_labels_revision: 1,
+        availability: {
+          kind: "length_band_v1",
+          min_label_length: 8,
+          max_label_length: 32,
+        },
+      },
+      allocation_kind: "first_come_v1",
+      max_active_grants_per_account: 1,
+      fulfillment_kind: "spaces_native_v1",
+      qualification_policy_id: "qualification_policy_spaces_members_01",
+      expected_qualification_policy_revision: 1,
+      pricing_id: "platform_free_handles_v1",
+      expected_pricing_revision: 1,
+      issuance_driver_id: "spaces_native-local",
+      expected_issuance_driver_version: "1",
+      quote_ttl_seconds: 120,
+      reservation_ttl_seconds: 300,
+    } as const;
+    const parsed = Schema.decodeUnknownSync(
+      handleSalesSpacesRegistry.CreateCommunityHandleOffering.request.body,
+    )({ idempotency_key: "spaces-offering-http", terms });
+    expect(parsed.terms).toEqual(terms);
+  });
+
   test("carries the owner-only recipient and never cross-decodes with the HNS quote", () => {
     expect(decodes(HandleSpacesQuoteV1, quote)).toBe(true);
+    expect(
+      decodes(handleSalesSpacesRegistry.CreateHandleQuote.response, {
+        kind: "quoted",
+        quote,
+        replayed: false,
+      }),
+    ).toBe(true);
     expect(decodes(HandleQuoteV2, quote)).toBe(false);
     for (const invalid of [
       { ...quote, recipient: { ...recipient, taproot_assignment_id: "taproot_assignment_01" } },
@@ -225,6 +272,13 @@ describe("Spaces quote, reservation, and claim contracts", () => {
     } as const;
     expect(decodes(HandleSpacesClaimV1, claim)).toBe(true);
     expect(
+      decodes(handleSalesSpacesRegistry.SubmitFreeHandleClaim.response, {
+        claim,
+        replayed: false,
+      }),
+    ).toBe(true);
+    expect(decodes(handleSalesSpacesRegistry.GetHandleClaim.response, claim)).toBe(true);
+    expect(
       decodes(HandleSpacesClaimV1, { ...claim, safe_reason: "recipient_wallet_required" }),
     ).toBe(true);
     expect(decodes(HandleClaimV2, claim)).toBe(false);
@@ -236,6 +290,38 @@ describe("Spaces quote, reservation, and claim contracts", () => {
     ]) {
       expect(decodes(HandleSpacesClaimV1, invalid), JSON.stringify(invalid)).toBe(false);
     }
+  });
+
+  test("keeps the Spaces public route exact and separate from the HNS root", () => {
+    const path = handleSalesSpacesRegistry.GetPublicHandleGrant.request.path;
+    expect(
+      decodes(path, {
+        family: "hns",
+        namespaceRoot: "charizard",
+        handleLabel: "longname",
+      }),
+    ).toBe(true);
+    expect(
+      decodes(path, {
+        family: "spaces",
+        namespaceRoot: "xn--6r8h",
+        handleLabel: "longname",
+      }),
+    ).toBe(true);
+    expect(
+      decodes(path, {
+        family: "spaces",
+        namespaceRoot: "XN--6R8H",
+        handleLabel: "longname",
+      }),
+    ).toBe(false);
+    expect(
+      decodes(path, {
+        family: "spaces",
+        namespaceRoot: "xn--6r8h",
+        handleLabel: "xn--longname",
+      }),
+    ).toBe(false);
   });
 
   test("refuses a quote without a recipient wallet or membership before any quote exists", () => {
