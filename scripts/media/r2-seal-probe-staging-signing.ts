@@ -6,6 +6,8 @@ const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
 export type StagingCredentials = Readonly<{
   accessKeyId: string;
   secretAccessKey: string;
+  /** Present for R2 temporary access credentials; signed as x-amz-security-token. */
+  sessionToken?: string;
 }>;
 
 export type SignRequestInput = Readonly<{
@@ -141,6 +143,9 @@ export async function signR2Request(input: SignRequestInput): Promise<SignedStag
     host,
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": date.full,
+    ...(input.credentials.sessionToken === undefined
+      ? {}
+      : { "x-amz-security-token": input.credentials.sessionToken }),
   };
   const canonical = canonicalHeaders(headers);
   const canonicalRequest = [

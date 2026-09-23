@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
+import { loadMegapotBaseSepoliaBootstrapManifest } from "./bootstrap-megapot-base-sepolia.ts";
+import { assertGoldenAdoptedPool } from "./megapot-golden-adopted-pool.ts";
 import { authHeaders, endpoint, type GoldenHttpOptions } from "./megapot-golden-http.ts";
 import { withGoldenJournal } from "./megapot-golden-journal.ts";
 import { runGoldenActivity } from "./megapot-golden-multi-activities.ts";
@@ -86,6 +88,7 @@ export async function runMultiGolden(
       })),
       expected_shares: input.participants.filter((p) => p.expected_admission === "eligible").length,
       authorization_supplied: input.authorization !== null,
+      funding_mode: input.app_funded_pool ? "app-funded" : "runner-created",
       live_calls: 0,
     };
   const environment = options.environment ?? process.env;
@@ -152,12 +155,20 @@ export async function runMultiGolden(
         authorization.max_study_submissions
       )
         throw new Error("Study submission cap cannot cover planned work.");
+      if (dependencies.now() >= Date.parse(authorization.qualification_deadline))
+        throw new Error("Qualification window ended during preflight.");
+      if (input.app_funded_pool) {
+        const manifest = await loadMegapotBaseSepoliaBootstrapManifest();
+        await read((client) => assertGoldenAdoptedPool(client, input, manifest.usdc_address));
+      }
       const pool = await dependencies.pool(input, sponsor, journal);
       if (pool.state !== "funded") return pool;
       for (const { participant, http, artifact, pcm16 } of prepared) {
         for (const activity of participant.activities) {
           const key = `${participant.key}:${activity}`;
           if (journal.state.completed_activities.includes(key)) continue;
+          if (dependencies.now() >= Date.parse(authorization.qualification_deadline))
+            throw new Error("Qualification window ended before activity.");
           assertMultiParticipantPreflight(artifact, input, participant, dependencies.now());
           await read((client) => dependencies.verifyIdentity(client, artifact));
           await journal.save({ ...journal.state, pending_activity: key });

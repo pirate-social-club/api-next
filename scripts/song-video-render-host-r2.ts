@@ -238,10 +238,13 @@ export function readHostR2Credentials(
   env: Readonly<Record<string, string | undefined>>,
 ): HostR2Credentials {
   return {
-    output: {
-      accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
-      secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
-    },
+    output: withSessionToken(
+      {
+        accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
+        secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
+      },
+      optionalEnv(env, "SONG_VIDEO_RENDER_R2_SESSION_TOKEN"),
+    ),
     input: readInputPair(env),
   };
 }
@@ -261,15 +264,32 @@ function requiredEnv(env: Readonly<Record<string, string | undefined>>, name: st
 function readInputPair(
   env: Readonly<Record<string, string | undefined>>,
 ): StagingCredentials | null {
+  const sessionToken = optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SESSION_TOKEN");
   if (
     optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID") === undefined &&
     optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY") === undefined
-  )
+  ) {
+    // A session token is meaningless without its key pair; refuse it rather
+    // than silently signing with the output pair.
+    if (sessionToken !== undefined)
+      throw new Error("SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID is required");
     return null;
-  return {
-    accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID"),
-    secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY"),
-  };
+  }
+  return withSessionToken(
+    {
+      accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID"),
+      secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY"),
+    },
+    sessionToken,
+  );
+}
+
+/** Temporary R2 credentials carry a session token that must be signed with the pair. */
+function withSessionToken(
+  pair: Readonly<{ accessKeyId: string; secretAccessKey: string }>,
+  sessionToken: string | undefined,
+): StagingCredentials {
+  return sessionToken === undefined ? pair : { ...pair, sessionToken };
 }
 
 /**
