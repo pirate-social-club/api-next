@@ -221,3 +221,102 @@ export function makeHostMediaReader(input: HostAdapterInput): SongVideoMediaRead
     },
   };
 }
+
+export type HostR2Credentials = Readonly<{
+  output: StagingCredentials;
+  input: StagingCredentials | null;
+}>;
+
+/**
+ * Reads the host's R2 credentials. The output pair is required. The input pair
+ * is optional, so an operator can give the reads of the sealed source and the
+ * canonical song a read-only credential that cannot write either object; when
+ * one half of it is present, the other is required rather than silently
+ * falling back to the output pair.
+ */
+export function readHostR2Credentials(
+  env: Readonly<Record<string, string | undefined>>,
+): HostR2Credentials {
+  return {
+    output: {
+      accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
+      secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
+    },
+    input: readInputPair(env),
+  };
+}
+
+function optionalEnv(env: Readonly<Record<string, string | undefined>>, name: string) {
+  const raw = env[name]?.trim();
+  return raw === undefined || raw.length === 0 ? undefined : raw;
+}
+
+function requiredEnv(env: Readonly<Record<string, string | undefined>>, name: string) {
+  const present = optionalEnv(env, name);
+  if (present === undefined) throw new Error(`${name} is required`);
+  return present;
+}
+
+/** The optional input pair, complete or absent; half a pair is refused. */
+function readInputPair(
+  env: Readonly<Record<string, string | undefined>>,
+): StagingCredentials | null {
+  if (
+    optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID") === undefined &&
+    optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY") === undefined
+  )
+    return null;
+  return {
+    accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID"),
+    secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY"),
+  };
+}
+
+/**
+ * Builds the host's three adapters. The master writer and the output store touch
+ * only the attempt's output key, including the seal's version re-read, so they
+ * use the output credential. The media reader touches only the render inputs,
+ * so it uses the input credential when one is configured.
+ */
+export function makeHostR2Adapters(
+  input: Readonly<{
+    accountId: string;
+    bucket: string;
+    credentials: HostR2Credentials;
+    endpoint?: string;
+    fetch?: (url: string, init: RequestInit) => Promise<Response>;
+    now?: () => Date;
+  }>,
+): Readonly<{
+  output: SongVideoOutputStore;
+  writer: SongVideoOutputWriter;
+  mediaReader: SongVideoMediaReader;
+}> {
+  const transportFor = (credentials: StagingCredentials) =>
+    makeHostR2Transport({
+      accountId: input.accountId,
+      credentials,
+      ...(input.endpoint === undefined ? {} : { endpoint: input.endpoint }),
+      ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
+      ...(input.now === undefined ? {} : { now: input.now }),
+    });
+  const outputTransport = transportFor(input.credentials.output);
+  const inputTransport =
+    input.credentials.input === null ? outputTransport : transportFor(input.credentials.input);
+  return {
+    output: makeHostMasterOutputStore({ transport: outputTransport, bucket: input.bucket }),
+    writer: makeHostMasterOutputWriter({ transport: outputTransport, bucket: input.bucket }),
+    mediaReader: makeHostMediaReader({ transport: inputTransport, bucket: input.bucket }),
+  };
+}
+
+/**
+ * The single read credential a measurement-only run needs: the input pair when
+ * configured, otherwise the output pair. Measuring reads the canonical song and
+ * writes no object, so it never requires a credential that can write.
+ */
+export function readHostR2ReadCredentials(
+  env: Readonly<Record<string, string | undefined>>,
+): StagingCredentials {
+  return readInputPair(env) ?? readHostR2Credentials(env).output;
+}

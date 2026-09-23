@@ -28,6 +28,8 @@
   "environment": {
     "SONG_VIDEO_RENDER_PLAN_ID": "OPTIONAL_PLAN_ID_FOR_ONE_TARGETED_PASS",
     "SONG_VIDEO_RENDER_ATTEMPT_ID": "OPTIONAL_ATTEMPT_ID",
+    "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID": "OPTIONAL_SONG_POST_ID_FOR_ONE_TARGETED_MEASUREMENT",
+    "SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION": "OPTIONAL_AUDIO_REVISION_SET_WITH_THE_SONG_POST_ID",
     "SONG_VIDEO_RENDER_HOST_ID": "OPTIONAL_STABLE_HOST_ID",
     "SONG_VIDEO_RENDER_POLL_MS": "OPTIONAL_POLL_INTERVAL_1000_TO_600000_DEFAULT_15000",
     "SONG_VIDEO_RENDER_DATABASE_URL": "REPLACE_WITH_PRIVATE_CONNECTION_STRING",
@@ -35,6 +37,8 @@
     "SONG_VIDEO_RENDER_R2_BUCKET": "REPLACE_WITH_IMMUTABLE_ORIGINALS_BUCKET",
     "SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID": "REPLACE_WITH_PRIVATE_ACCESS_KEY_ID",
     "SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY": "REPLACE_WITH_PRIVATE_SECRET_ACCESS_KEY",
+    "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID": "OPTIONAL_READ_ONLY_INPUT_ACCESS_KEY_ID_SET_WITH_ITS_SECRET",
+    "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY": "OPTIONAL_READ_ONLY_INPUT_SECRET_ACCESS_KEY_SET_WITH_ITS_ID",
     "SONG_VIDEO_RENDER_R2_ENDPOINT": "OPTIONAL_CUSTOM_ENDPOINT",
     "SONG_VIDEO_FFMPEG_BINARY": "ffmpeg",
     "SONG_VIDEO_FFPROBE_BINARY": "ffprobe"
@@ -45,7 +49,8 @@
     "refused": "refusal reason printed; the attempt is abandoned by the workflow",
     "not_claimed": "no waiting attempt this pass; the loop waits and tries again",
     "pending": "printed as pending; the attempt stays claimed and is never rendered again",
-    "targeted_pass": "with a plan id, the one pass exits 0, or 2 when the execution stayed pending"
+    "targeted_pass": "with a plan id, the one pass exits 0, or 2 when the execution stayed pending",
+    "targeted_measurement": "with a song post id and audio revision, one measurement of that revision only; exits 0, or 2 when deferred"
   },
   "authorization": {
     "deployment": false,

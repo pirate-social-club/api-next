@@ -34,6 +34,20 @@ secret belongs in this directory. The environment variables are exactly those
 in the example; the database URL, account id, bucket and R2 credentials are
 private operator configuration.
 
+## R2 credentials
+
+The master writer and the output store touch only the attempt's assigned
+output key, including the seal's re-read of the verified version. The media
+reader touches only the render inputs: the sealed source video and the
+canonical song. `SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID` and
+`SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY` sign every request unless the optional
+`SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID` and
+`SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY` are set, in which case the media
+reader signs with the input pair instead. That lets an operator give the inputs
+a read-only credential and scope the output credential to the master prefix,
+so the host cannot write any input object. Setting only one half of the input
+pair is refused at startup; it never falls back to the output pair.
+
 ## Running
 
 Two runnable paths are provided. The mounted-checkout invocation checks the
@@ -65,6 +79,22 @@ with an accepted or refused outcome, `not_claimed` and exit 0 when another host
 holds the claim or the attempt is concluded, and exit 2 when that execution
 stayed pending. A pending attempt is never retried by another pass; it is
 resolved by reconciliation.
+
+## Measuring one song
+
+Setting `SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID` and
+`SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION` runs one targeted measurement instead
+of rendering. It claims only that song revision's pending canonical timing,
+with the same 300-second lease and `SKIP LOCKED` claim the loop uses, measures
+it, prints one JSON line and exits. No other pending timing is read or changed,
+and no render attempt is claimed. The outcome is `measured` with
+`duration_samples`, `failed` with `failure_code`, `not_claimed` when the
+revision is absent, already concluded, leased or locked, or `deferred` when the
+prober was unavailable and the revision stays pending. It exits 0, or 2 when
+deferred. Only a read credential is needed: the input pair when set, otherwise
+the output pair. Naming only one of the two variables, or combining them with
+`SONG_VIDEO_RENDER_PLAN_ID` or `SONG_VIDEO_RENDER_ATTEMPT_ID`, is refused at
+startup.
 
 ## What this does not authorize
 

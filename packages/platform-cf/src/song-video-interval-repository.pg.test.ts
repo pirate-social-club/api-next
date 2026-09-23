@@ -450,4 +450,133 @@ suite("song video interval persistence", () => {
       }),
     ).toBe(false);
   });
+
+  // Songs used only by the targeted-measurement cases, each seeded like the
+  // suite's song so the maintained timing request and claims run unchanged.
+  async function seedTargetSong(postId: string) {
+    await admin.query("SET session_replication_role = replica");
+    try {
+      await admin.query(
+        `INSERT INTO media_publication_projections (
+           submission_id, community_id, actor_user_id, operation_id, post_id,
+           creation_revision, audio_revision, analysis_revision, decision_revision,
+           canonical_audio_sha256, title, audio_asset_ref, language_status,
+           primary_language_bcp47, lyrics_explicitness, alignment, data_registration,
+           locked_delivery, projected_at, author_persona_id, lyrics_status)
+         VALUES ($1,$2,$3,$4,$5,1,1,1,1,$6,'Target song',$7,'ready','en','not_explicit',
+           'ready','registered','not_required',clock_timestamp(),'song-interval-persona','no_lyrics')`,
+        [
+          `submission-${postId}`,
+          SONG_COMMUNITY,
+          SONG_OWNER,
+          `operation-${postId}`,
+          postId,
+          SONG_SHA,
+          `audio-ref-${postId}`,
+        ],
+      );
+    } finally {
+      await admin.query("SET session_replication_role = origin");
+    }
+    const song = await intervals.getPublishedSong(postId);
+    if (song === null) throw new Error("target song missing");
+    expect(await intervals.getOrRequestTiming(song)).toEqual({ state: "pending" });
+  }
+
+  const timingRow = async (postId: string) =>
+    (
+      await client.query("SELECT * FROM media_song_canonical_timings WHERE song_post_id=$1", [
+        postId,
+      ])
+    ).rows[0];
+
+  const pendingFact = (postId: string) => ({
+    songPostId: postId,
+    audioRevision: 1,
+    canonicalAudioSha256: SONG_SHA,
+    audioAssetRef: `audio-ref-${postId}`,
+  });
+
+  test("a targeted claim takes only the named revision, ahead of an older pending one", async () => {
+    // The unrelated song is requested first, so a scan would take it first.
+    await seedTargetSong("post-target-older");
+    await seedTargetSong("post-target-named");
+    const unrelated = await timingRow("post-target-older");
+
+    expect(
+      await intervals.claimPendingFor({ songPostId: "post-target-named", audioRevision: 1 }),
+    ).toEqual(pendingFact("post-target-named"));
+    expect(await timingRow("post-target-older")).toEqual(unrelated);
+    const named = await timingRow("post-target-named");
+    expect(named.attempts).toBe(1);
+    expect(named.state).toBe("pending");
+    expect(named.lease_expires_at).not.toBeNull();
+
+    // Leased: neither a second targeted claim nor a scan takes it again, and
+    // the scan still finds the unrelated song.
+    expect(
+      await intervals.claimPendingFor({ songPostId: "post-target-named", audioRevision: 1 }),
+    ).toBeNull();
+    expect(await intervals.claimPending(8)).toEqual([pendingFact("post-target-older")]);
+    expect((await timingRow("post-target-named")).attempts).toBe(1);
+  });
+
+  test("a targeted claim skips a revision another transaction holds, without waiting", async () => {
+    await seedTargetSong("post-target-locked");
+    const holder = new Client({ connectionString: scoped.toString() });
+    await holder.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT 1 FROM media_song_canonical_timings WHERE song_post_id=$1 FOR UPDATE",
+        ["post-target-locked"],
+      );
+      const started = Date.now();
+      expect(
+        await intervals.claimPendingFor({ songPostId: "post-target-locked", audioRevision: 1 }),
+      ).toBeNull();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      await holder.query("ROLLBACK");
+    } finally {
+      await holder.end();
+    }
+    expect((await timingRow("post-target-locked")).attempts).toBe(0);
+
+    // Two workers racing for the same revision: exactly one wins it.
+    const raced = await Promise.all([
+      intervals.claimPendingFor({ songPostId: "post-target-locked", audioRevision: 1 }),
+      intervals.claimPendingFor({ songPostId: "post-target-locked", audioRevision: 1 }),
+    ]);
+    expect(raced.filter((claim) => claim !== null)).toEqual([pendingFact("post-target-locked")]);
+    expect((await timingRow("post-target-locked")).attempts).toBe(1);
+  });
+
+  test("a lapsed lease is reclaimable, and a completed revision replays as nothing", async () => {
+    await seedTargetSong("post-target-replay");
+    const target = { songPostId: "post-target-replay", audioRevision: 1 };
+    expect(await intervals.claimPendingFor(target)).toEqual(pendingFact("post-target-replay"));
+    await admin.query(
+      "UPDATE media_song_canonical_timings SET lease_expires_at=clock_timestamp() - interval '1 second' WHERE song_post_id=$1",
+      ["post-target-replay"],
+    );
+    expect(await intervals.claimPendingFor(target)).toEqual(pendingFact("post-target-replay"));
+    expect((await timingRow("post-target-replay")).attempts).toBe(2);
+
+    await intervals.complete({
+      ...pendingFact("post-target-replay"),
+      durationSamples: MEASURED,
+      proberIdentity: "ffmpeg-pinned-test",
+      proberPolicyRevision: 1,
+    });
+    const measured = await timingRow("post-target-replay");
+    expect(measured.state).toBe("ready");
+    expect(await intervals.claimPendingFor(target)).toBeNull();
+    expect(await timingRow("post-target-replay")).toEqual(measured);
+
+    // Absent revisions and songs are not claimable either.
+    expect(await intervals.claimPendingFor({ ...target, audioRevision: 2 })).toBeNull();
+    expect(
+      await intervals.claimPendingFor({ songPostId: "post-target-absent", audioRevision: 1 }),
+    ).toBeNull();
+  });
 });
