@@ -16,6 +16,7 @@ export const QUALIFICATION_TABLES = [
   "media_immutable_objects",
   "media_video_revisions",
   "media_video_analysis_outbox",
+  "media_submission_command_replays",
   "media_song_video_render_attempts",
   "media_song_video_masters",
   "media_song_video_accepted_masters",

@@ -1,0 +1,60 @@
+{
+  "approval": "owner approval 2026-09-23: add media_submission_command_replays (one finalize replay for the qualification submission); bind the attempt to the render store's own identifier",
+  "identities": {
+    "reservation_id": "media-reservation-00000000-0000-4000-8000-000000009211",
+    "submission_id": "media-submission-video-qualification-20260921-01",
+    "operation_id": "media-operation-video-qualification-20260921-01",
+    "plan_id": "song-video-plan:qualification-20260921-01",
+    "attempt_id": "song-video-plan:qualification-20260921-01:g1",
+    "output_key": "immutable/song-video-masters/song-video-plan:qualification-20260921-01/g1",
+    "source_key": "immutable/media-operation-video-qualification-20260921-01/video/1"
+  },
+  "manifests": {
+    "timing_request": {
+      "tables": ["media_song_canonical_timings"],
+      "rows": { "media_song_canonical_timings": "+1 pending row for the anchor song, audio revision 1" }
+    },
+    "measurement": {
+      "tables": ["media_song_canonical_timings"],
+      "rows": { "media_song_canonical_timings": "update of that row only, to ready" }
+    },
+    "fixture": {
+      "tables": [
+        "media_upload_reservations",
+        "media_video_reservation_song_plans",
+        "media_video_upload_parts",
+        "media_post_submissions",
+        "media_song_video_render_plans",
+        "media_immutable_objects",
+        "media_video_revisions",
+        "media_video_analysis_outbox",
+        "media_submission_command_replays",
+        "media_song_video_render_attempts"
+      ],
+      "rows": {
+        "media_upload_reservations": "+1",
+        "media_video_reservation_song_plans": "+1",
+        "media_video_upload_parts": "+1",
+        "media_post_submissions": "+1",
+        "media_song_video_render_plans": "+1",
+        "media_immutable_objects": "+1",
+        "media_video_revisions": "+1",
+        "media_video_analysis_outbox": "+1, stays pending",
+        "media_submission_command_replays": "+1, endpoint /media-post-submissions/:submissionId/finalize, the qualification submission only",
+        "media_song_video_render_attempts": "+1, attempt song-video-plan:qualification-20260921-01:g1, execution_phase submitting"
+      }
+    },
+    "render": {
+      "tables": [
+        "media_song_video_render_attempts",
+        "media_song_video_masters",
+        "media_song_video_accepted_masters"
+      ],
+      "rows": {
+        "media_song_video_render_attempts": "update of attempt song-video-plan:qualification-20260921-01:g1 only",
+        "media_song_video_masters": "+1",
+        "media_song_video_accepted_masters": "+1"
+      }
+    }
+  }
+}
