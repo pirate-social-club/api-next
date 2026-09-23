@@ -1378,9 +1378,10 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
         `INSERT INTO persona_wallet_assignments (
            assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,status,
            reservation_idempotency_key,bitcoin_network,privy_wallet_id,address,output_script_hex,
-           assigned_at
+           assigned_at,created_at,updated_at
          ) VALUES ('taproot-retiring','persona-retiring',$1,'bitcoin-taproot',NULL,'active',
-                   'taproot-retiring','regtest','privy-taproot',$2,$3,clock_timestamp())`,
+                   'taproot-retiring','regtest','privy-taproot',$2,$3,
+                   statement_timestamp(),statement_timestamp(),statement_timestamp())`,
         [account, `bcrt1p${"q".repeat(58)}`, `5120${"5".repeat(64)}`],
       );
       // Direct retirement with a live Taproot recipient fails at commit.
@@ -1425,9 +1426,10 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
             `INSERT INTO persona_wallet_assignments (
                assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,status,
                reservation_idempotency_key,bitcoin_network,privy_wallet_id,address,
-               output_script_hex,assigned_at
+               output_script_hex,assigned_at,created_at,updated_at
              ) VALUES ('taproot-reuse','persona-evm-only',$1,'bitcoin-taproot',NULL,'active',
-                       'taproot-reuse','regtest','privy-reuse',$2,$3,clock_timestamp())`,
+                       'taproot-reuse','regtest','privy-reuse',$2,$3,
+                       statement_timestamp(),statement_timestamp(),statement_timestamp())`,
             [account, `bcrt1p${"p".repeat(58)}`, `5120${"5".repeat(64)}`],
           ),
         ),
