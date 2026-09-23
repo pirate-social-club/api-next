@@ -672,6 +672,7 @@ const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "RetirePersona",
   "GetSongOwnerPolicy",
   "UpdateSongOwnerPolicy",
+  "ListPersonaSongs",
 ]);
 const PRIVATE_NO_STORE_PATH = /^(?:\/auth\/register|\/personas(?:\/|$))/u;
 // Endpoints that mint the browser session cookie share one same-origin policy
@@ -1004,6 +1005,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             binding.name === "GetPublicCommunityThreads" ||
             binding.name === "GetPublicHomeFeed" ||
             binding.name === "GetPublicPostSitemap" ||
+            binding.name === "GetTrendingSongs" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||

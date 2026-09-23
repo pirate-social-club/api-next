@@ -51,7 +51,11 @@ test("generated routes enforce authentication and mark library responses private
     headers: { cookie: "__Host-pirate_session=session" },
   });
   expect(response.status).toBe(200);
-  expect(response.headers.get("cache-control")).toContain("no-store");
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
   expect(await response.json()).toEqual({ songs: [], next_cursor: null });
-  expect((await app.request("https://worker.test/songs/trending")).status).toBe(200);
+  // Anonymous trending must not be cached, so a moderation hide or a re-rating
+  // disappears on the next request, as with the other public feed reads.
+  const trending = await app.request("https://worker.test/songs/trending");
+  expect(trending.status).toBe(200);
+  expect(trending.headers.get("cache-control")).toContain("no-store");
 });

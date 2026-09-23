@@ -33,7 +33,7 @@ export const listPersonaSongs = Effect.fn("listPersonaSongs")(function* (
     try: () => {
       if (input.cursor === undefined) return null;
       const parsed = Schema.decodeUnknownSync(Cursor)(JSON.parse(input.cursor));
-      if (parsed.persona_id !== input.personaId || !Number.isFinite(Date.parse(parsed.at)))
+      if (parsed.persona_id !== input.personaId || !isCursorTimestamp(parsed.at))
         throw new Error("invalid cursor");
       return parsed;
     },
@@ -57,3 +57,14 @@ export const listPersonaSongs = Effect.fn("listPersonaSongs")(function* (
       : null;
   return { songs, next_cursor };
 });
+
+/** A cursor carries the exact microsecond UTC timestamp this read emits. Reject
+ * any other shape, and any calendar-invalid date that Date.parse would roll
+ * over, so a tampered cursor is a 400 rather than a database cast failure. */
+function isCursorTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u.test(value)) return false;
+  const millis = Date.parse(`${value.slice(0, 23)}Z`);
+  return (
+    Number.isFinite(millis) && new Date(millis).toISOString().slice(0, 23) === value.slice(0, 23)
+  );
+}

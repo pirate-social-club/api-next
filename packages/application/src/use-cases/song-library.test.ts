@@ -39,7 +39,15 @@ test("bounded keyset pagination preserves microseconds and rejects a cursor for 
     ),
   );
   expect(next.next_cursor).toBeNull();
-  for (const cursor of ["garbage", page.next_cursor.replace('"persona"', '"other"')]) {
+  const cursorAt = (value: string) =>
+    JSON.stringify({ ...JSON.parse(page.next_cursor ?? "{}"), at: value });
+  for (const cursor of [
+    "garbage",
+    page.next_cursor.replace('"persona"', '"other"'),
+    // Date.parse rolls this over to March; Postgres would reject the cast.
+    cursorAt("2026-02-30T00:00:00.123456Z"),
+    cursorAt("2026-02-01T00:00:00.123Z"),
+  ]) {
     await expect(
       Effect.runPromise(
         listPersonaSongs({ accountId: "account", personaId: "persona", cursor }, store),
