@@ -26,7 +26,9 @@ The first write-path conformance test uses a disposable local Anvil fork at
 Base block 51684323. It checks the pinned block hash and production contract
 attestation, moves USDC only inside the fork from an impersonated holder to an
 Anvil account, executes Circle USDC's real approval method, validates the real
-receipt with the runtime codec, and reads the resulting Jackpot allowance.
+receipt with the runtime codec, reads the resulting Jackpot allowance, buys
+one ticket through the real Jackpot, validates the purchase and NFT mint logs,
+and checks ticket ownership and the exact USDC debit.
 The test refuses any RPC URL except uncredentialed `http://127.0.0.1` and
 requires Anvil's fork metadata before sending a transaction. It is not a
 production approval-coordinator test, custody decision, or activation proof.
@@ -39,6 +41,6 @@ a contract failure.
 
 ```sh
 docker run -d --rm --name api-next-megapot-base-fork --network host ghcr.io/foundry-rs/foundry@sha256:2e4287278639262de76db72477301d5d3212fa1b1cce710d7d148750a46ce9e7 'anvil --fork-url https://mainnet.base.org --fork-block-number 51684323 --chain-id 8453 --host 127.0.0.1 --port 8547 --silent'
-MEGAPOT_BASE_FORK_RPC_URL=http://127.0.0.1:8547 bun test --timeout 60000 packages/platform-cf/src/megapot-mainnet-approval.fork.test.ts
+MEGAPOT_BASE_FORK_RPC_URL=http://127.0.0.1:8547 bun test --timeout 60000 packages/platform-cf/src/megapot-mainnet-contract-flow.fork.test.ts
 docker stop api-next-megapot-base-fork
 ```

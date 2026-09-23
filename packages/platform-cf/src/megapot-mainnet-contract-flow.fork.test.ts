@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
-import type { Hex } from "viem";
+import type { MegapotTicket } from "@pirate/domain";
+import { type Hex, keccak256, toBytes } from "viem";
 import { decodeMegapotMainnetCoreCandidate } from "./megapot-mainnet-core-preflight.ts";
 import {
+  encodeMegapotBuyTickets,
   encodeMegapotUsdcApproval,
   encodeMegapotUsdcTransfer,
+  MEGAPOT_REFERRAL_SPLIT_SCALE,
   type MegapotV2DeploymentAttestation,
+  validateMegapotPurchaseReceipt,
   validateMegapotUsdcApprovalReceipt,
 } from "./megapot-v2.ts";
 import { type MegapotV2RpcClient, makeMegapotV2RpcClient } from "./megapot-v2-rpc.ts";
@@ -69,7 +73,7 @@ async function waitForReceipt(client: MegapotV2RpcClient, transactionHash: strin
 const runForkTest = process.env.MEGAPOT_BASE_FORK_RPC_URL === undefined ? test.skip : test;
 
 runForkTest(
-  "Base mainnet fork executes Circle USDC approval and validates real receipt",
+  "Base mainnet fork executes Circle USDC approval and Megapot ticket purchase",
   async () => {
     const url = localForkUrl();
     const rpc = localRpc(url);
@@ -150,5 +154,40 @@ runForkTest(
     expect(await client.readUsdcAllowance(CUSTODY, deployment.jackpotAddress)).toBe(
       APPROVAL_ATOMIC,
     );
+
+    expect(await client.readTicketPurchasesAllowed()).toBe(true);
+    const { drawingId, state } = await client.readCurrentDrawing();
+    expect(drawingId).toBe(183n);
+    expect(state.ticketPrice).toBe(1_000_000n);
+    const ticket: MegapotTicket = { normals: [1, 2, 3, 4, 5], bonusball: 1 };
+    const source = keccak256(toBytes("pirate.megapot.local-fork.purchase"));
+    const balanceBeforePurchase = await client.readUsdcBalance(CUSTODY);
+    const purchaseHash = (await rpc("eth_sendTransaction", [
+      {
+        from: CUSTODY,
+        to: deployment.jackpotAddress,
+        data: encodeMegapotBuyTickets({
+          tickets: [ticket],
+          recipient: CUSTODY,
+          referrers: [REFERRER],
+          referralSplit: [MEGAPOT_REFERRAL_SPLIT_SCALE],
+          source,
+        }),
+      },
+    ])) as Hex;
+    const purchaseReceipt = await waitForReceipt(client, purchaseHash);
+    const purchaseEvidence = validateMegapotPurchaseReceipt({
+      deployment,
+      receipt: purchaseReceipt,
+      drawingId,
+      source,
+      tickets: [ticket],
+    });
+    expect(purchaseEvidence.transactionHash).toBe(purchaseHash.toLowerCase());
+    expect(purchaseEvidence.ticketIds).toHaveLength(1);
+    const ticketId = purchaseEvidence.ticketIds[0];
+    if (ticketId === undefined) throw new Error("local fork purchase did not mint a ticket");
+    expect(await client.readTicketOwner(ticketId)).toBe(CUSTODY.toLowerCase());
+    expect(balanceBeforePurchase - (await client.readUsdcBalance(CUSTODY))).toBe(state.ticketPrice);
   },
 );
