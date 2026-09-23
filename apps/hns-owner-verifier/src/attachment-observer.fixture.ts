@@ -10,10 +10,28 @@ import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 const encoder = new TextEncoder();
 const genesisHash = "2".repeat(64);
 const anchorHash = "3".repeat(64);
+export const ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS = 2_592_000;
+const ATTACHMENT_FIXTURE_ANCHOR_LAG_SECONDS = 600;
+
+export function attachmentFixtureAnchorMedianTime(nowEpochSeconds: number): number {
+  if (
+    !Number.isSafeInteger(nowEpochSeconds) ||
+    nowEpochSeconds < ATTACHMENT_FIXTURE_ANCHOR_LAG_SECONDS
+  ) {
+    throw new TypeError("HNS attachment fixture clock is invalid");
+  }
+  return nowEpochSeconds - ATTACHMENT_FIXTURE_ANCHOR_LAG_SECONDS;
+}
+
 export function attachmentObserverFixture(
   status: "verified" | "pending" | "rejected" | "unavailable",
   observe = () => {},
+  nowEpochSeconds = Math.floor(Date.now() / 1_000),
 ): HnsTargetObserverRuntime {
+  // Fix this synthetic block's time for the lifetime of the fixture. A dated
+  // literal eventually expires against PostgreSQL's real clock and makes
+  // unrelated required CI shards fail without any source change.
+  const anchorMedianTime = attachmentFixtureAnchorMedianTime(nowEpochSeconds);
   return {
     configuration: {
       provider_id: "hns.owner.v1",
@@ -27,14 +45,14 @@ export function attachmentObserverFixture(
         expected_block_interval_seconds: 600,
         minimum_safe_remaining_blocks: 144,
         expiry_safety_blocks: 144,
-        evidence_lease_seconds: 2592000,
+        evidence_lease_seconds: ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS,
       },
     },
     observer: {
       observe: async ({ request }) => {
         observe();
         expect(request.root_label).toBe("harbor");
-        return innerResult(request, status);
+        return innerResult(request, status, anchorMedianTime);
       },
     },
   };
@@ -42,6 +60,7 @@ export function attachmentObserverFixture(
 async function innerResult(
   requestValue: HnsControlObservationRequestV1,
   status: "verified" | "pending" | "rejected" | "unavailable",
+  anchorMedianTime: number,
 ): Promise<Uint8Array> {
   const requestHash = await hnsControlObservationRequestHash(requestValue);
   const base = {
@@ -94,7 +113,7 @@ async function innerResult(
         chain_genesis_block_hash: genesisHash,
         chain_anchor_height: 123_500,
         chain_anchor_block_hash: anchorHash,
-        chain_anchor_median_time: 1_787_486_400,
+        chain_anchor_median_time: anchorMedianTime,
         expiry_height: status === "pending" ? 200_000 : null,
         provider_evidence_ref: `hns-observer:regtest:attachment-${status}`,
       }),
@@ -129,7 +148,7 @@ async function innerResult(
       chain_genesis_block_hash: genesisHash,
       chain_anchor_height: 123_500,
       chain_anchor_block_hash: anchorHash,
-      chain_anchor_median_time: 1_787_486_400,
+      chain_anchor_median_time: anchorMedianTime,
       expiry_height: 200_000,
       provider_evidence_ref: "hns-observer:regtest:attachment-verified",
     }),
