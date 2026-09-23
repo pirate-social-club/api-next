@@ -43,7 +43,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 22;
+const testCount = 23;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -434,6 +434,67 @@ async function seedTicketReviewCandidate(
 }
 
 suite("Postgres 17 Megapot rewards persistence", () => {
+  test("requires a paired USDC implementation identity for production attestations", async () => {
+    await withSchema(async (admin) => {
+      const insert = (
+        id: string,
+        environment: string,
+        chainId: number,
+        implementationAddress: string | null,
+        implementationCodeHash: string | null,
+      ) =>
+        admin.query(
+          `INSERT INTO megapot_deployment_attestations (
+             attestation_id, environment, chain_id, jackpot_address, usdc_address,
+             ticket_nft_address, custody_address, referrer_address, source_tag,
+             jackpot_code_hash, usdc_code_hash, ticket_nft_code_hash,
+             usdc_implementation_address, usdc_implementation_code_hash,
+             attestation_block_number, attestation_block_hash, abi_version, status, verified_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+             $13, $14, 100, $15, 'megapot_v2', 'active', clock_timestamp())`,
+          [
+            id,
+            environment,
+            chainId,
+            address("2"),
+            address("1"),
+            address("3"),
+            address("4"),
+            address("5"),
+            bytes32("6"),
+            bytes32("7"),
+            bytes32("8"),
+            bytes32("9"),
+            implementationAddress,
+            implementationCodeHash,
+            bytes32("a"),
+          ],
+        );
+      await expect(
+        insert("production-missing", "production", 8453, null, null),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        insert("production-half", "production", 8453, address("a"), null),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        insert("staging-half", "staging", 84532, null, bytes32("b")),
+      ).rejects.toMatchObject({ code: "23514" });
+      await insert("production-complete", "production", 8453, address("a"), bytes32("b"));
+      await insert("staging-optional", "staging", 84532, null, null);
+      const rows = await admin.query<{
+        readonly attestation_id: string;
+        readonly usdc_implementation_address: string | null;
+      }>(
+        `SELECT attestation_id, usdc_implementation_address FROM megapot_deployment_attestations ORDER BY attestation_id`,
+      );
+      expect(rows.rows).toEqual([
+        { attestation_id: "production-complete", usdc_implementation_address: address("a") },
+        { attestation_id: "staging-optional", usdc_implementation_address: null },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
   test("lists only admitted bonus metadata with deterministic pages and no money effects", async () => {
     await withSchema(async (admin, scopedConnection) => {
       await seedMegapotAuthority(admin);

@@ -126,6 +126,7 @@ import {
   type VideoPublicationServices,
 } from "@pirate/platform-cf/media-upload-store";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
+import { megapotImplementationIdentityFromCandidate } from "@pirate/platform-cf/megapot-implementation-projection";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
 import {
@@ -1417,6 +1418,7 @@ export async function createProductionHttpWorker(
               jackpotCodeHash: candidate.jackpotCodeHash,
               ticketNftCodeHash: candidate.ticketNftCodeHash,
               usdcCodeHash: candidate.usdcCodeHash,
+              ...megapotImplementationIdentityFromCandidate(candidate),
             },
           });
           const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);

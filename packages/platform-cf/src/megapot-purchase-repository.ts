@@ -13,6 +13,7 @@ import {
 import { Effect, type Layer } from "effect";
 import { sha256, toBytes } from "viem";
 import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -96,6 +97,7 @@ function candidateFromRow(row: Row): MegapotPurchaseCandidate {
     referrerAddress: text(row, "referrer_address"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
   };
 }
@@ -111,6 +113,7 @@ const PURCHASE_CANDIDATE_SELECT = `
          attestation.usdc_address, attestation.ticket_nft_address,
          attestation.custody_address, attestation.referrer_address,
          attestation.jackpot_code_hash, attestation.usdc_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
          attestation.ticket_nft_code_hash
     FROM megapot_pool_drawings drawing
     JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
@@ -134,6 +137,7 @@ const PURCHASE_PROGRESS_SELECT = `
          attestation.usdc_address, attestation.ticket_nft_address,
          attestation.custody_address, attestation.referrer_address,
          attestation.jackpot_code_hash, attestation.usdc_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
          attestation.ticket_nft_code_hash,
          purchase.normal_one, purchase.normal_two, purchase.normal_three,
          purchase.normal_four, purchase.normal_five, purchase.bonusball,
@@ -174,6 +178,8 @@ function sameCandidate(left: MegapotPurchaseCandidate, right: MegapotPurchaseCan
     left.referrerAddress === right.referrerAddress &&
     left.jackpotCodeHash === right.jackpotCodeHash &&
     left.usdcCodeHash === right.usdcCodeHash &&
+    left.usdcImplementationAddress === right.usdcImplementationAddress &&
+    left.usdcImplementationCodeHash === right.usdcImplementationCodeHash &&
     left.ticketNftCodeHash === right.ticketNftCodeHash
   );
 }

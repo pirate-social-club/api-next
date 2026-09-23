@@ -88,6 +88,9 @@ const erc721Abi = parseAbi([
 
 export const MEGAPOT_REFERRAL_SPLIT_SCALE = 1_000_000_000_000_000_000n;
 export const EVM_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+// Circle FiatTokenProxy uses this ZeppelinOS slot rather than ERC-1967.
+export const CIRCLE_USDC_IMPLEMENTATION_SLOT =
+  "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3" as const;
 
 export type MegapotV2Environment = "test" | "staging" | "production";
 
@@ -102,6 +105,8 @@ export type MegapotV2DeploymentAttestation = Readonly<{
   jackpotCodeHash: string;
   ticketNftCodeHash: string;
   usdcCodeHash: string;
+  usdcImplementationAddress?: string;
+  usdcImplementationCodeHash?: string;
   attestationId: string;
 }>;
 
@@ -292,6 +297,30 @@ export function validateMegapotV2DeploymentAttestation(
   hash(value.jackpotCodeHash);
   hash(value.ticketNftCodeHash);
   hash(value.usdcCodeHash);
+  if (
+    value.environment === "production" &&
+    (value.usdcImplementationAddress === undefined ||
+      value.usdcImplementationCodeHash === undefined)
+  ) {
+    throw new MegapotV2EvidenceInvalid("invalid-attestation");
+  }
+  if (
+    (value.usdcImplementationAddress === undefined) !==
+    (value.usdcImplementationCodeHash === undefined)
+  ) {
+    throw new MegapotV2EvidenceInvalid("invalid-attestation");
+  }
+  const usdcImplementationAddress =
+    value.usdcImplementationAddress === undefined
+      ? undefined
+      : address(value.usdcImplementationAddress);
+  const usdcImplementationCodeHash = value.usdcImplementationCodeHash;
+  if (usdcImplementationAddress === EVM_ZERO_ADDRESS) {
+    throw new MegapotV2EvidenceInvalid("invalid-attestation");
+  }
+  if (usdcImplementationCodeHash !== undefined) {
+    hash(usdcImplementationCodeHash);
+  }
   return {
     ...value,
     jackpotAddress: addresses[0],
@@ -302,6 +331,12 @@ export function validateMegapotV2DeploymentAttestation(
     jackpotCodeHash: value.jackpotCodeHash.toLowerCase(),
     ticketNftCodeHash: value.ticketNftCodeHash.toLowerCase(),
     usdcCodeHash: value.usdcCodeHash.toLowerCase(),
+    ...(usdcImplementationAddress === undefined || usdcImplementationCodeHash === undefined
+      ? {}
+      : {
+          usdcImplementationAddress,
+          usdcImplementationCodeHash: usdcImplementationCodeHash.toLowerCase(),
+        }),
   };
 }
 

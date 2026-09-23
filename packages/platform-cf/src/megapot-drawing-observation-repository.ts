@@ -10,6 +10,7 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -85,6 +86,7 @@ function candidateFromRow(row: Row): MegapotDrawingObserverCandidate {
     sourceTag: text(row, "source_tag"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
     attestationBlockNumber: bigint(row, "attestation_block_number"),
     attestationBlockHash: text(row, "attestation_block_hash"),
@@ -146,7 +148,8 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
             text: `SELECT attestation_id, environment, chain_id, jackpot_address,
                           usdc_address, ticket_nft_address, custody_address,
                           referrer_address, source_tag, jackpot_code_hash,
-                          usdc_code_hash, ticket_nft_code_hash,
+                          usdc_code_hash, usdc_implementation_address,
+                          usdc_implementation_code_hash, ticket_nft_code_hash,
                           attestation_block_number, attestation_block_hash, verified_at
                      FROM megapot_deployment_attestations
                     WHERE attestation_id=$1 AND status='active'`,

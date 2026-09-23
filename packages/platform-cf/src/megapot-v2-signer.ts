@@ -1,12 +1,18 @@
 import { type Hex, keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
 import type { MegapotCommitmentSigner } from "./megapot-commitment-coordinator.ts";
 
 export class MegapotV2SignerFailed extends Error {
   readonly _tag = "MegapotV2SignerFailed";
 
   constructor(
-    readonly reason: "invalid-config" | "invalid-request" | "signer-mismatch" | "unsupported-chain",
+    readonly reason:
+      | "invalid-config"
+      | "invalid-request"
+      | "signer-mismatch"
+      | "unsupported-chain"
+      | "production-disabled",
   ) {
     super(reason);
   }
@@ -32,6 +38,19 @@ export type MegapotV2SignedTransaction = Readonly<{
 export interface MegapotV2TransactionSigner {
   readonly address: string;
   readonly sign: (request: MegapotV2SignRequest) => Promise<MegapotV2SignedTransaction>;
+}
+
+/** No production signing backend is selected or authorized yet. */
+export function makeRefusingProductionMegapotV2Signer(input: {
+  readonly expectedAddress: string;
+}): MegapotV2TransactionSigner {
+  const address = canonicalAddress(input.expectedAddress);
+  return {
+    address,
+    sign: async () => {
+      throw new MegapotV2SignerFailed("production-disabled");
+    },
+  };
 }
 
 const addressPattern = /^0x[0-9a-f]{40}$/u;
@@ -64,7 +83,9 @@ export function makeBaseSepoliaMegapotV2PrivateKeySigner(input: {
   return {
     address: expectedAddress,
     sign: async (request) => {
-      if (request.chainId !== 84_532) throw new MegapotV2SignerFailed("unsupported-chain");
+      if (!isMegapotStepChainAllowed("transaction-signing", "staging", request.chainId)) {
+        throw new MegapotV2SignerFailed("unsupported-chain");
+      }
       if (
         canonicalAddress(request.signerAddress) !== expectedAddress ||
         request.nonce < 0n ||

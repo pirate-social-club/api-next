@@ -189,6 +189,7 @@ export * from "./megapot-cutoff-coordinator.ts";
 export * from "./megapot-cutoff-repository.ts";
 export * from "./megapot-drawing-observation-repository.ts";
 export * from "./megapot-drawing-observer.ts";
+export * from "./megapot-implementation-projection.ts";
 export * from "./megapot-purchase-coordinator.ts";
 export * from "./megapot-purchase-repository.ts";
 export * from "./megapot-sweep-coordinator.ts";

@@ -12,7 +12,7 @@ import {
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { makeCustodySolvencyCoordinator } from "./custody-solvency-coordinator.ts";
-import { encodeMegapotV2ClaimRevert } from "./megapot-v2.ts";
+import { CIRCLE_USDC_IMPLEMENTATION_SLOT, encodeMegapotV2ClaimRevert } from "./megapot-v2.ts";
 import {
   findMegapotV2ClaimRevert,
   type MegapotV2RpcClientOptions,
@@ -22,8 +22,10 @@ import {
 import {
   deriveBaseSepoliaMegapotAddress,
   MegapotV2SignerFailed,
+  type MegapotV2TransactionSigner,
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
+  makeRefusingProductionMegapotV2Signer,
 } from "./megapot-v2-signer.ts";
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -117,6 +119,42 @@ function attestationFetcher(options?: {
       }
     }
     throw new Error("unexpected attestation RPC method");
+  };
+}
+
+function productionAttestationFetcher(options?: {
+  readonly implementationAddress?: string;
+  readonly implementationCode?: Hex;
+  readonly confirmedBlockHash?: string;
+}): (input: string, init?: RequestInit) => Promise<Response> {
+  const stagingFetcher = attestationFetcher();
+  return async (input, init) => {
+    const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+    const params = request.params as readonly unknown[];
+    if (request.method === "eth_chainId") return rpcResponse(request.id, quantity(8_453n));
+    if (request.method === "eth_getBlockByNumber") {
+      expect(params).toEqual([params[0] === "latest" ? "latest" : "0x64", false]);
+      return rpcResponse(request.id, {
+        number: "0x64",
+        hash: params[0] === "latest" ? hash("a") : (options?.confirmedBlockHash ?? hash("a")),
+      });
+    }
+    if (request.method === "eth_getStorageAt") {
+      expect(params).toEqual([address("3"), CIRCLE_USDC_IMPLEMENTATION_SLOT, "0x64"]);
+      return rpcResponse(
+        request.id,
+        `0x${"0".repeat(24)}${(options?.implementationAddress ?? address("6")).slice(2)}`,
+      );
+    }
+    if (request.method === "eth_getCode" && params[0] === address("6")) {
+      expect(params[1]).toBe("0x64");
+      return rpcResponse(request.id, options?.implementationCode ?? code.usdc);
+    }
+    if (request.method === "eth_getCode" || request.method === "eth_call") {
+      expect(params[1]).toBe("0x64");
+      return stagingFetcher(input, init);
+    }
+    throw new Error("unexpected production attestation RPC method");
   };
 }
 
@@ -272,6 +310,45 @@ describe("Megapot v2 Worker runtime adapters", () => {
       "eth_call",
       "eth_call",
     ]);
+  });
+
+  test("pins production deployment identity and USDC implementation to one block", async () => {
+    const mainnet = {
+      ...attestation(),
+      environment: "production" as const,
+      chainId: 8_453,
+      usdcImplementationAddress: address("6"),
+      usdcImplementationCodeHash: keccak256(code.usdc),
+    };
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base.example.invalid",
+      attestation: mainnet,
+      fetcher: productionAttestationFetcher(),
+    });
+    await expect(client.attestDeployment()).resolves.toEqual({
+      jackpotCodeHash: keccak256(code.jackpot),
+      ticketNftCodeHash: keccak256(code.ticket),
+      usdcCodeHash: keccak256(code.usdc),
+    });
+    for (const fetcher of [
+      productionAttestationFetcher({ implementationAddress: address("7") }),
+      productionAttestationFetcher({ implementationCode: "0x6000" }),
+    ]) {
+      await expect(
+        makeMegapotV2RpcClient({
+          rpcUrl: "https://base.example.invalid",
+          attestation: mainnet,
+          fetcher,
+        }).attestDeployment(),
+      ).rejects.toMatchObject({ reason: "invalid-response" });
+    }
+    await expect(
+      makeMegapotV2RpcClient({
+        rpcUrl: "https://base.example.invalid",
+        attestation: mainnet,
+        fetcher: productionAttestationFetcher({ confirmedBlockHash: hash("b") }),
+      }).attestDeployment(),
+    ).rejects.toMatchObject({ reason: "reorg" });
   });
 
   test("reuses one successful deployment attestation per RPC client", async () => {
@@ -526,6 +603,28 @@ describe("Megapot v2 Worker runtime adapters", () => {
       },
     });
     await expect(receiptClient.readReceipt(hash("7"))).rejects.toMatchObject({ reason: "reorg" });
+  });
+
+  test("refuses production signing without a custody backend", async () => {
+    const signer: MegapotV2TransactionSigner = makeRefusingProductionMegapotV2Signer({
+      expectedAddress: address("a"),
+    });
+    expect(signer.address).toBe(address("a"));
+    for (const chainId of [8_453, 84_532]) {
+      await expect(
+        signer.sign({
+          chainId,
+          signerAddress: address("a"),
+          targetAddress: address("1"),
+          nonce: 0n,
+          data: "0x",
+          valueWei: 0n,
+          gas: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 0n,
+        }),
+      ).rejects.toMatchObject({ reason: "production-disabled" });
+    }
   });
 
   test("signs exact EIP-1559 bytes only for the attested Base Sepolia custody key", async () => {

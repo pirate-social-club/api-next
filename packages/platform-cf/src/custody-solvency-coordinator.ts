@@ -5,6 +5,7 @@ import type {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
 import { type MegapotV2RpcClient, MegapotV2RpcFailed } from "./megapot-v2-rpc.ts";
 
 type CustodySolvencyRpcStage =
@@ -104,7 +105,7 @@ export function makeCustodySolvencyCoordinator(input: {
     observe: Effect.fn("CustodySolvencyCoordinator.observe")(
       function* (attestationId, tokenAddress) {
         const candidate = yield* input.store.loadCandidate(attestationId, tokenAddress);
-        if (candidate.environment === "production" || candidate.chainId !== 84_532) {
+        if (!isMegapotStepChainAllowed("solvency", candidate.environment, candidate.chainId)) {
           return yield* failed("production_disabled");
         }
         const attested = yield* rpcEffect("deployment_attestation", () =>

@@ -81,6 +81,7 @@
     "./public-community-threads-repository": "./src/public-community-threads-repository.ts",
     "./identity-repository": "./src/identity-repository.ts",
     "./megapot-v2": "./src/megapot-v2.ts",
+    "./megapot-implementation-projection": "./src/megapot-implementation-projection.ts",
     "./megapot-v2-rpc": "./src/megapot-v2-rpc.ts",
     "./megapot-v2-signer": "./src/megapot-v2-signer.ts",
     "./media-ingress-presigner": "./src/media-ingress-presigner.ts",

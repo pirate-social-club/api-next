@@ -1,5 +1,6 @@
 import { type Hex, keccak256 } from "viem";
 import {
+  CIRCLE_USDC_IMPLEMENTATION_SLOT,
   decodeMegapotCurrentDrawingId,
   decodeMegapotDrawingState,
   decodeMegapotDrawingTierPayouts,
@@ -376,15 +377,85 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       ]),
     );
 
-  const readCodeHash = async (contract: string): Promise<string> => {
-    const code = hexData(await rpc("eth_getCode", [canonicalAddress(contract), "latest"]));
+  const readCodeHash = async (contract: string, blockNumber?: bigint): Promise<string> => {
+    const code = hexData(
+      await rpc("eth_getCode", [
+        canonicalAddress(contract),
+        blockNumber === undefined ? "latest" : quantityHex(blockNumber),
+      ]),
+    );
     if (code === "0x") throw new MegapotV2RpcFailed("invalid-response");
     return keccak256(code).toLowerCase();
   };
 
   const readHead = async () => blockIdentity(await rpc("eth_getBlockByNumber", ["latest", false]));
 
+  const performProductionDeploymentAttestation = async () => {
+    const expectedImplementationAddress = attestation.usdcImplementationAddress;
+    const expectedImplementationCodeHash = attestation.usdcImplementationCodeHash;
+    if (
+      expectedImplementationAddress === undefined ||
+      expectedImplementationCodeHash === undefined
+    ) {
+      throw new MegapotV2RpcFailed("invalid-config");
+    }
+    const [chainId, pinnedBlock] = await Promise.all([
+      rpc("eth_chainId", []).then(quantity),
+      readHead(),
+    ]);
+    if (chainId !== BigInt(attestation.chainId)) {
+      throw new MegapotV2RpcFailed("invalid-response");
+    }
+    const blockNumber = pinnedBlock.blockNumber;
+    const [jackpotCodeHash, ticketNftCodeHash, usdcCodeHash, implementationSlot, ticketNft, usdc] =
+      await Promise.all([
+        readCodeHash(attestation.jackpotAddress, blockNumber),
+        readCodeHash(attestation.ticketNftAddress, blockNumber),
+        readCodeHash(attestation.usdcAddress, blockNumber),
+        rpc("eth_getStorageAt", [
+          attestation.usdcAddress,
+          CIRCLE_USDC_IMPLEMENTATION_SLOT,
+          quantityHex(blockNumber),
+        ]).then(hexData),
+        ethCall(attestation.jackpotAddress, encodeMegapotJackpotTicketNft(), blockNumber).then(
+          decodeMegapotJackpotTicketNft,
+        ),
+        ethCall(attestation.jackpotAddress, encodeMegapotJackpotUsdc(), blockNumber).then(
+          decodeMegapotJackpotUsdc,
+        ),
+      ]);
+    if (!/^0x0{24}[0-9a-f]{40}$/u.test(implementationSlot)) {
+      throw new MegapotV2RpcFailed("invalid-response");
+    }
+    const implementationAddress = canonicalAddress(`0x${implementationSlot.slice(-40)}`);
+    const implementationCodeHash = await readCodeHash(implementationAddress, blockNumber);
+    const confirmedBlock = blockIdentity(
+      await rpc("eth_getBlockByNumber", [quantityHex(blockNumber), false]),
+    );
+    if (
+      confirmedBlock.blockNumber !== blockNumber ||
+      confirmedBlock.blockHash !== pinnedBlock.blockHash
+    ) {
+      throw new MegapotV2RpcFailed("reorg");
+    }
+    if (
+      jackpotCodeHash !== attestation.jackpotCodeHash ||
+      ticketNftCodeHash !== attestation.ticketNftCodeHash ||
+      usdcCodeHash !== attestation.usdcCodeHash ||
+      implementationAddress !== expectedImplementationAddress ||
+      implementationCodeHash !== expectedImplementationCodeHash ||
+      ticketNft !== attestation.ticketNftAddress ||
+      usdc !== attestation.usdcAddress
+    ) {
+      throw new MegapotV2RpcFailed("invalid-response");
+    }
+    return { jackpotCodeHash, ticketNftCodeHash, usdcCodeHash };
+  };
+
   const performDeploymentAttestation = async () => {
+    if (attestation.environment === "production") {
+      return performProductionDeploymentAttestation();
+    }
     const [
       chainId,
       jackpotCodeHash,

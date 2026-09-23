@@ -11,6 +11,7 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -73,6 +74,7 @@ function candidateFromRow(row: Row): MegapotSweepCandidate {
     referrerAddress: text(row, "referrer_address"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
     ticketId: bigint(row, "ticket_id"),
   };
@@ -86,6 +88,7 @@ const CANDIDATE_SELECT = `
          attestation.usdc_address, attestation.ticket_nft_address,
          attestation.custody_address, attestation.referrer_address,
          attestation.jackpot_code_hash, attestation.usdc_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
          attestation.ticket_nft_code_hash
     FROM megapot_pool_drawings drawing
     JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id

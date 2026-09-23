@@ -12,6 +12,7 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -71,6 +72,7 @@ const CANDIDATE_SELECT = `
          attestation.usdc_address, attestation.ticket_nft_address,
          attestation.custody_address, attestation.referrer_address,
          attestation.jackpot_code_hash, attestation.usdc_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
          attestation.ticket_nft_code_hash
     FROM megapot_deployment_attestations attestation`;
 
@@ -90,6 +92,7 @@ function candidateFromRow(row: Row): MegapotApprovalCandidate {
     referrerAddress: text(row, "referrer_address"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
   };
 }
@@ -106,6 +109,8 @@ function sameCandidate(left: MegapotApprovalCandidate, right: MegapotApprovalCan
     left.referrerAddress === right.referrerAddress &&
     left.jackpotCodeHash === right.jackpotCodeHash &&
     left.usdcCodeHash === right.usdcCodeHash &&
+    left.usdcImplementationAddress === right.usdcImplementationAddress &&
+    left.usdcImplementationCodeHash === right.usdcImplementationCodeHash &&
     left.ticketNftCodeHash === right.ticketNftCodeHash
   );
 }
@@ -195,6 +200,7 @@ const PROGRESS_SELECT = `
          attestation.usdc_address, attestation.ticket_nft_address,
          attestation.custody_address, attestation.referrer_address,
          attestation.jackpot_code_hash, attestation.usdc_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash,
          attestation.ticket_nft_code_hash,
          evidence.allowance_after_atomic,
          evidence.block_number AS receipt_block_number,

@@ -8,6 +8,7 @@ import {
   type RewardFundingStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { megapotImplementationIdentityFromRow } from "./megapot-implementation-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -98,7 +99,8 @@ const INTENT_SELECT = `
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
          attestation.referrer_address, attestation.jackpot_code_hash,
-         attestation.usdc_code_hash, attestation.ticket_nft_code_hash
+         attestation.usdc_code_hash, attestation.ticket_nft_code_hash,
+         attestation.usdc_implementation_address, attestation.usdc_implementation_code_hash
     FROM song_reward_leg_funding_effects funding
     JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
     JOIN reward_asset_whitelist asset
@@ -152,6 +154,7 @@ function intentFromRow(row: Row): RewardFundingIntent {
     referrerAddress: text(row, "referrer_address"),
     jackpotCodeHash: text(row, "jackpot_code_hash"),
     usdcCodeHash: text(row, "usdc_code_hash"),
+    ...megapotImplementationIdentityFromRow(row, environment),
     ticketNftCodeHash: text(row, "ticket_nft_code_hash"),
   };
 }

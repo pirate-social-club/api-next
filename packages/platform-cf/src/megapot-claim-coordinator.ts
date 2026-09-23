@@ -9,6 +9,8 @@ import type {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   encodeMegapotClaimWinnings,
   type MegapotTransactionReceipt,
@@ -93,6 +95,7 @@ function deployment(candidate: MegapotClaimCandidate): MegapotV2DeploymentAttest
     jackpotCodeHash: candidate.jackpotCodeHash,
     ticketNftCodeHash: candidate.ticketNftCodeHash,
     usdcCodeHash: candidate.usdcCodeHash,
+    ...megapotImplementationIdentityFromCandidate(candidate),
     attestationId: candidate.attestationId,
   };
 }
@@ -178,7 +181,7 @@ export function makeMegapotClaimCoordinator(input: {
   const attest = Effect.fn("MegapotClaimCoordinator.attest")(function* (
     candidate: MegapotClaimCandidate,
   ) {
-    if (candidate.environment === "production" || candidate.chainId !== 84_532) {
+    if (!isMegapotStepChainAllowed("claim", candidate.environment, candidate.chainId)) {
       return yield* failed("production_disabled", "configuration");
     }
     if (!sameAddress(input.signer.address, candidate.custodyAddress)) {
