@@ -71,6 +71,14 @@ export type PostTelegramBotsWebhookIdUpdatesInput = { readonly body: { readonly 
 export type PostTelegramBotsWebhookIdUpdatesResponse = { readonly ok: true };
 export type PostTelegramBotsWebhookIdUpdatesError = /* PostTelegramBotsWebhookIdUpdates declared errors */ (ApiClientError & { readonly status: 401; readonly code: "auth_error"; readonly declaredName: "AuthError"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 400; readonly code: "bad_request"; readonly declaredName: "BadRequest"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 409; readonly code: "conflict"; readonly declaredName: "Conflict"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 500; readonly code: "internal_error"; readonly declaredName: "InternalError"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 404; readonly code: "not_found"; readonly declaredName: "NotFound"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 502; readonly code: "provider_unavailable"; readonly declaredName: "ProviderUnavailable"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 429; readonly code: "rate_limited"; readonly declaredName: "RateLimited"; readonly retryable: boolean });
 
+export type GetPersonasPersonaIdSongsInput = { readonly path: { readonly personaId: string }; readonly query?: { readonly cursor?: string | null } };
+export type GetPersonasPersonaIdSongsResponse = { readonly songs: ReadonlyArray<{ readonly community_id: string; readonly post_id: string; readonly title: string; readonly artist: string | null; readonly last_activity_at: string; readonly activities: ReadonlyArray<"study" | "karaoke" | "dance"> }>; readonly next_cursor: string | null };
+export type GetPersonasPersonaIdSongsError = /* GetPersonasPersonaIdSongs declared errors */ (ApiClientError & { readonly status: 401; readonly code: "auth_error"; readonly declaredName: "AuthError"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 400; readonly code: "bad_request"; readonly declaredName: "BadRequest"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 404; readonly code: "not_found"; readonly declaredName: "NotFound"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 500; readonly code: "internal_error"; readonly declaredName: "InternalError"; readonly retryable: boolean });
+
+export type GetSongsTrendingInput = undefined;
+export type GetSongsTrendingResponse = { readonly songs: ReadonlyArray<{ readonly community_id: string; readonly post_id: string; readonly title: string; readonly artist: string | null }>; readonly window_days: 7 };
+export type GetSongsTrendingError = /* GetSongsTrending declared errors */ (ApiClientError & { readonly status: 500; readonly code: "internal_error"; readonly declaredName: "InternalError"; readonly retryable: boolean });
+
 export type GetHealthInput = undefined;
 export type GetHealthResponse = { readonly status: "ok" };
 export type GetHealthError = never;
@@ -790,6 +798,14 @@ export type ResolveCommunityTelegramDeliveryError = PostCommunitiesCommunityIdTe
 export type ReceiveTelegramUpdateInput = PostTelegramBotsWebhookIdUpdatesInput;
 export type ReceiveTelegramUpdateResponse = PostTelegramBotsWebhookIdUpdatesResponse;
 export type ReceiveTelegramUpdateError = PostTelegramBotsWebhookIdUpdatesError;
+
+export type ListPersonaSongsInput = GetPersonasPersonaIdSongsInput;
+export type ListPersonaSongsResponse = GetPersonasPersonaIdSongsResponse;
+export type ListPersonaSongsError = GetPersonasPersonaIdSongsError;
+
+export type GetTrendingSongsInput = GetSongsTrendingInput;
+export type GetTrendingSongsResponse = GetSongsTrendingResponse;
+export type GetTrendingSongsError = GetSongsTrendingError;
 
 export type HealthInput = GetHealthInput;
 export type HealthResponse = GetHealthResponse;
@@ -1581,6 +1597,8 @@ const RESPONSE_SCHEMAS: Record<string, JsonSchema> = {
   "get_communitiesCommunityIdTelegramDeliveries": {"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","allOf":[{"minLength":1},{"maxLength":128}]},"kind":{"type":"string","enum":["publication","reply","voice","setup"]},"post_id":{"anyOf":[{"type":"string","allOf":[{"minLength":1},{"maxLength":128}]},{"type":"null"}]},"state":{"type":"string","enum":["pending","sending","delivered","failed","uncertain","withdrawn","cancelled"]},"attempt_count":{"type":"integer","allOf":[{"minimum":0}]},"last_error":{"anyOf":[{"type":"string"},{"type":"null"}]},"created_at":{"type":"string"}},"required":["id","kind","post_id","state","attempt_count","last_error","created_at"],"additionalProperties":false}},"next_cursor":{"anyOf":[{"type":"string","allOf":[{"minLength":1},{"maxLength":128}]},{"type":"null"}]}},"required":["items","next_cursor"],"additionalProperties":false},
   "post_communitiesCommunityIdTelegramDeliveriesDeliveryIdResolve": {"type":"object","properties":{"id":{"type":"string","allOf":[{"minLength":1},{"maxLength":128}]},"kind":{"type":"string","enum":["publication","reply","voice","setup"]},"post_id":{"anyOf":[{"type":"string","allOf":[{"minLength":1},{"maxLength":128}]},{"type":"null"}]},"state":{"type":"string","enum":["pending","sending","delivered","failed","uncertain","withdrawn","cancelled"]},"attempt_count":{"type":"integer","allOf":[{"minimum":0}]},"last_error":{"anyOf":[{"type":"string"},{"type":"null"}]},"created_at":{"type":"string"}},"required":["id","kind","post_id","state","attempt_count","last_error","created_at"],"additionalProperties":false},
   "post_telegramBotsWebhookIdUpdates": {"type":"object","properties":{"ok":{"type":"boolean","enum":[true]}},"required":["ok"],"additionalProperties":false},
+  "get_personasPersonaIdSongs": {"type":"object","properties":{"songs":{"type":"array","items":{"type":"object","properties":{"community_id":{"type":"string"},"post_id":{"type":"string"},"title":{"type":"string"},"artist":{"anyOf":[{"type":"string"},{"type":"null"}]},"last_activity_at":{"type":"string"},"activities":{"type":"array","items":{"type":"string","enum":["study","karaoke","dance"]}}},"required":["community_id","post_id","title","artist","last_activity_at","activities"],"additionalProperties":false}},"next_cursor":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["songs","next_cursor"],"additionalProperties":false},
+  "get_songsTrending": {"type":"object","properties":{"songs":{"type":"array","items":{"type":"object","properties":{"community_id":{"type":"string"},"post_id":{"type":"string"},"title":{"type":"string"},"artist":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["community_id","post_id","title","artist"],"additionalProperties":false}},"window_days":{"type":"number","enum":[7]}},"required":["songs","window_days"],"additionalProperties":false},
   "get_health": {"type":"object","properties":{"status":{"type":"string","enum":["ok"]}},"required":["status"],"additionalProperties":false},
   "post_postsPostIdVideoPlaybackAccess": {"type":"object","properties":{"playback_url":{"type":"string"},"expires_at":{"anyOf":[{"type":"number"},{"type":"string","enum":["Infinity","-Infinity","NaN"]}]},"renew_after":{"anyOf":[{"type":"number"},{"type":"string","enum":["Infinity","-Infinity","NaN"]}]}},"required":["playback_url","expires_at","renew_after"],"additionalProperties":false},
   "get_postsPostIdVideoPoster": {},
@@ -1763,6 +1781,8 @@ const SUCCESS_STATUSES: Record<string, readonly number[]> = {
   "get_communitiesCommunityIdTelegramDeliveries": [200],
   "post_communitiesCommunityIdTelegramDeliveriesDeliveryIdResolve": [200],
   "post_telegramBotsWebhookIdUpdates": [200],
+  "get_personasPersonaIdSongs": [200],
+  "get_songsTrending": [200],
   "get_health": [200],
   "post_postsPostIdVideoPlaybackAccess": [200],
   "get_postsPostIdVideoPoster": [200,304],
@@ -1945,6 +1965,8 @@ const ERROR_DEFINITIONS: Record<string, readonly ApiClientErrorDefinition[]> = {
   "get_communitiesCommunityIdTelegramDeliveries": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":409,"code":"conflict","name":"Conflict","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":502,"code":"provider_unavailable","name":"ProviderUnavailable","retryable":true},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true}],
   "post_communitiesCommunityIdTelegramDeliveriesDeliveryIdResolve": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":409,"code":"conflict","name":"Conflict","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":502,"code":"provider_unavailable","name":"ProviderUnavailable","retryable":true},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true}],
   "post_telegramBotsWebhookIdUpdates": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":409,"code":"conflict","name":"Conflict","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":502,"code":"provider_unavailable","name":"ProviderUnavailable","retryable":true},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true}],
+  "get_personasPersonaIdSongs": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
+  "get_songsTrending": [{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
   "get_health": [],
   "post_postsPostIdVideoPlaybackAccess": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true}],
   "get_postsPostIdVideoPoster": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
@@ -2207,6 +2229,8 @@ export interface PirateApiClient {
   get_communitiesCommunityIdTelegramDeliveries: (input: GetCommunitiesCommunityIdTelegramDeliveriesInput, options?: PirateApiRequestOptions) => Promise<GetCommunitiesCommunityIdTelegramDeliveriesResponse>;
   post_communitiesCommunityIdTelegramDeliveriesDeliveryIdResolve: (input: PostCommunitiesCommunityIdTelegramDeliveriesDeliveryIdResolveInput, options?: PirateApiRequestOptions) => Promise<PostCommunitiesCommunityIdTelegramDeliveriesDeliveryIdResolveResponse>;
   post_telegramBotsWebhookIdUpdates: (input: PostTelegramBotsWebhookIdUpdatesInput, options?: PirateApiRequestOptions) => Promise<PostTelegramBotsWebhookIdUpdatesResponse>;
+  get_personasPersonaIdSongs: (input: GetPersonasPersonaIdSongsInput, options?: PirateApiRequestOptions) => Promise<GetPersonasPersonaIdSongsResponse>;
+  get_songsTrending: (input: GetSongsTrendingInput, options?: PirateApiRequestOptions) => Promise<GetSongsTrendingResponse>;
   get_health: (input: GetHealthInput, options?: PirateApiRequestOptions) => Promise<GetHealthResponse>;
   post_postsPostIdVideoPlaybackAccess: (input: PostPostsPostIdVideoPlaybackAccessInput, options?: PirateApiRequestOptions) => Promise<PostPostsPostIdVideoPlaybackAccessResponse>;
   get_postsPostIdVideoPoster: (input: GetPostsPostIdVideoPosterInput, options?: PirateApiRequestOptions) => Promise<GetPostsPostIdVideoPosterResponse>;
@@ -2506,6 +2530,8 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
   get_communitiesCommunityIdTelegramDeliveries: (input, options) => request("get_communitiesCommunityIdTelegramDeliveries", "GET", "/communities/:communityId/telegram/deliveries", input, options, "json", [], []),
   post_communitiesCommunityIdTelegramDeliveriesDeliveryIdResolve: (input, options) => request("post_communitiesCommunityIdTelegramDeliveriesDeliveryIdResolve", "POST", "/communities/:communityId/telegram/deliveries/:deliveryId/resolve", input, options, "json", [], []),
   post_telegramBotsWebhookIdUpdates: (input, options) => request("post_telegramBotsWebhookIdUpdates", "POST", "/telegram/bots/:webhookId/updates", input, options, "json", [], []),
+  get_personasPersonaIdSongs: (input, options) => request("get_personasPersonaIdSongs", "GET", "/personas/:personaId/songs", input, options, "json", [], []),
+  get_songsTrending: (input, options) => request("get_songsTrending", "GET", "/songs/trending", input, options, "json", [], []),
   get_health: (input, options) => request("get_health", "GET", "/health", input, options, "json", [], []),
   post_postsPostIdVideoPlaybackAccess: (input, options) => request("post_postsPostIdVideoPlaybackAccess", "POST", "/posts/:postId/video/playback-access", input, options, "json", [], []),
   get_postsPostIdVideoPoster: (input, options) => request("get_postsPostIdVideoPoster", "GET", "/posts/:postId/video/poster", input, options, "json", [], []),

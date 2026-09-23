@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.89.0",
+  "sourceBranch": "feat/persona-song-library",
+  "sourceBase": "186fad9a3ca927eabea564e24a22e7beb7951754",
+  "validatedSourceCommit": "pending",
+  "pullRequest": null,
+  "wireContract": "Add two additive reads: GET /personas/{persona_id}/songs lists the selected persona's private song activity library (songs enter on study, karaoke or dance session start, deduplicated, most recent first, paginated), and GET /songs/trending lists public trending songs ranked by distinct active accounts over seven days with a three-account minimum. No existing operation changes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.89.0.tgz",
+    "sha256": "822ee0c0469a0391f081a75a69d8186a161e38b649c771af41c5425471886002"
+  },
+  "validation": {
+    "status": "Rebased local candidate; gates in progress",
+    "passed": [],
+    "remaining": [
+      "Repository check and unit, Node and Workerd tests",
+      "Full PostgreSQL suite",
+      "Hosted required checks on the pull-request head",
+      "Paired Solid 0.89.0 adoption"
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, credential use or live product mutation occurred."
+  }
+}
