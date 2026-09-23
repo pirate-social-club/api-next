@@ -69,6 +69,20 @@ const json = <T>(value: unknown): T => {
   throw new Error("invalid video persistence row");
 };
 
+const sameMultipartManifest = (
+  stored: NonNullable<VideoReservationRecord["manifest"]>,
+  requested: NonNullable<VideoReservationRecord["manifest"]>,
+): boolean =>
+  Array.isArray(stored) &&
+  stored.length === requested.length &&
+  stored.every(
+    (part, index) =>
+      part !== null &&
+      typeof part === "object" &&
+      part.partNumber === requested[index]?.partNumber &&
+      part.etag === requested[index]?.etag,
+  );
+
 function reservationFromRow(row: Row): VideoReservationRecord {
   const contentType = text(row, "expected_content_type");
   if (contentType !== "video/mp4" && contentType !== "video/quicktime")
@@ -775,7 +789,7 @@ export function makeControlPlaneVideoPublicationStore(
                 throw new Error("video finalize fence rejected");
               const reservationResult = yield* tx.execute<Row>({
                 label: "video-publication.finalize-reservation",
-                text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
+                text: `SELECT ${RESERVATION_COLUMNS},multipart_completed_at FROM media_upload_reservations
                         WHERE reservation_id=$1 AND submission_id=$2 AND operation_id=$3
                           AND state IN ('claimed','expired') FOR UPDATE`,
                 values: [
@@ -808,10 +822,7 @@ export function makeControlPlaneVideoPublicationStore(
                     details: { reason_code: "action_expired" },
                   });
               }
-              if (
-                priorManifest !== null &&
-                JSON.stringify(priorManifest) !== JSON.stringify(input.manifest)
-              )
+              if (priorManifest !== null && !sameMultipartManifest(priorManifest, input.manifest))
                 throw new Error("video finalize manifest conflict");
               if (priorManifest === null) {
                 yield* tx.execute({

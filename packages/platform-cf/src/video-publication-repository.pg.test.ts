@@ -22,6 +22,7 @@ import { consumeVideoThumbnail } from "../../application/src/video/thumbnail-enr
 import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
 import {
   attachVideoDecision,
+  createOriginalVideoSubmission,
   decideOriginalAudioVideo,
   type OriginalAudioTrustedAnalysis,
   publishOriginalVideo,
@@ -90,6 +91,98 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
 }
 
 suite("video publication PostgreSQL", () => {
+  test("persisted JSONB multipart manifest replays by ordered part identity, not object key order", async () => {
+    await fixture(async (admin, connection) => {
+      const store = makeControlPlaneVideoPublicationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reservationId = "media-reservation-00000000-0000-4000-8000-000000000020";
+      const replaySubmissionId = "media-submission-video-manifest-replay";
+      const replayOperationId = "media-operation-video-manifest-replay";
+      const expiresAt = "2099-09-04T01:00:00.000Z";
+      await store.createReservation({
+        record: {
+          reservationId,
+          communityId: community,
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "c".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 6 * 1024 * 1024,
+          expectedSha256: videoSha256,
+          ingestPolicyRevision: 1,
+          uploadId: "multipart-upload-replay-fixture",
+          partSizeBytes: 5 * 1024 * 1024,
+          partCount: 2,
+          expiresAt,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: "2026-09-04T00:00:00.000Z",
+        },
+        idempotencyKey: "reserve-manifest-replay",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/${partNumber}`,
+          expiresAt,
+        })),
+      });
+      const initial = createOriginalVideoSubmission({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+        communityId: community,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+        reservationId,
+        caption: null,
+        authorDeclaredRating: "general",
+      });
+      await store.createSubmission({
+        state: initial,
+        idempotencyKey: "create-manifest-replay",
+        requestHash: "d".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
+        responseBytes,
+        responseSha256,
+      });
+      const manifest = [
+        { partNumber: 1, etag: "etag-one" },
+        { partNumber: 2, etag: "etag-two" },
+      ] as const;
+      const input = {
+        submission: initial,
+        expectedCreationRevision: 1,
+        posterTimestampMs: 1_000,
+        manifest,
+      };
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(false);
+      const persisted = await admin.query(
+        "SELECT multipart_manifest::text AS manifest FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      );
+      expect(JSON.parse(persisted.rows[0]?.manifest)).toEqual(manifest);
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(false);
+      await expect(
+        store.beginFinalize({ ...input, manifest: [...manifest].reverse() }),
+      ).rejects.toThrow("video finalize manifest conflict");
+      await expect(
+        store.beginFinalize({
+          ...input,
+          manifest: [{ partNumber: 1, etag: "changed" }, manifest[1]],
+        }),
+      ).rejects.toThrow("video finalize manifest conflict");
+      await expect(store.beginFinalize({ ...input, manifest: [manifest[0]] })).rejects.toThrow(
+        "video finalize manifest conflict",
+      );
+      await store.recordMultipartCompleted({ submission: initial, manifest });
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(true);
+    });
+  });
+
   test("unresolved moderation abandonment is fenced, concurrent, and idempotent", async () => {
     await fixture(async (admin, connection) => {
       const { store, finalized } = await finalizedFixture(connection);
