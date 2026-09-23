@@ -193,7 +193,7 @@ export async function requireSessionPlan(root: string, raw: unknown) {
   if (documentDigest !== response.publish_plan_sha256)
     throw new JourneyRefusal("plan_document_digest_mismatch");
   const plan = await requirePublishablePlan(root, response.publish_plan);
-  // The document hash binds all fields of the response. Rebuilding from the
+  // The document hash binds the complete plan document. Rebuilding from the
   // empty registration, challenge and DS additionally refuses an altered NS
   // or unrelated TXT even if someone recomputes both hashes in a copied file.
   let expectedPlan: Awaited<ReturnType<typeof buildHnsRootImportPublishPlanV1>>;
