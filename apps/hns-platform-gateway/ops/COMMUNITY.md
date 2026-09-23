@@ -68,6 +68,10 @@ credential, authority, origin and registry fields remain mandatory.
 This manifest binds intended configuration; loading it does not observe a
 certificate or prove TLSA agreement. Readiness and acceptance must separately
 compare the actual peer SPKI with the provisioned TLSA and approved manifest.
+Populate `community/deployment-manifest.staging-private-tls.template.json` only
+after the real certificate, protected Solid origin, Access application,
+forwarder registry and read-only database endpoint have been qualified. Reject
+any remaining `__UNRESOLVED_` field before writing compact manifest bytes.
 The Caddy profile lives under the authority provisioner's `ops/staging-host`.
 Its bridge-to-loopback transport and the gateway's read-only database role,
 staging forwarder registry and outbound Access pair must be qualified before

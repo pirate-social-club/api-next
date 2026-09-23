@@ -188,6 +188,37 @@ async function loadCombined(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 describe("community gateway deployment configuration", () => {
+  test("private staging template matches the runtime manifest without binding fixture values", async () => {
+    const template = JSON.parse(
+      await Bun.file(
+        new URL(
+          "../ops/community/deployment-manifest.staging-private-tls.template.json",
+          import.meta.url,
+        ),
+      ).text(),
+    ) as Record<string, unknown>;
+    const fixture = JSON.parse(await manifest("staging-private-tls")) as Record<string, unknown>;
+    expect(Object.keys(template).sort()).toEqual(Object.keys(fixture).sort());
+    const unresolved = [
+      "gateway_certificate_spki_sha256",
+      "solid_origin",
+      "solid_ingress_composition_reference",
+      "solid_access_application_audience",
+      "authority_database_endpoint",
+      "forwarder_key_registry_reference",
+      "forwarder_key_registry_version",
+      "api_next_source_commit",
+      "bundle_sha256",
+    ];
+    for (const [key, value] of Object.entries(template)) {
+      if (unresolved.includes(key)) {
+        expect(value).toStartWith("__UNRESOLVED_");
+      } else {
+        expect(value).toEqual(fixture[key]);
+      }
+    }
+  });
+
   test("binds private staging TLS without accepting synthetic or production manifests", async () => {
     const configuration = await load({ mode: "staging-private-tls" });
     expect(configuration.manifest).toMatchObject({
