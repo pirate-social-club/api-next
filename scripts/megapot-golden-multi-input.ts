@@ -56,6 +56,15 @@ export const MultiGoldenInput = Schema.Struct({
   funding_transaction_hash: Schema.optional(
     Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u)),
   ),
+  app_funded_pool: Schema.optional(
+    Schema.Struct({
+      offer_id: RehearsalId,
+      leg_id: RehearsalId,
+      funding_effect_id: RehearsalId,
+      transaction_hash: Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u)),
+      sender_address: Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u)),
+    }),
+  ),
   authorization: Schema.NullOr(
     Schema.Struct({
       owner_approval_reference: RehearsalId,
@@ -98,6 +107,7 @@ export function parseMultiGoldenInput(value: unknown): MultiGoldenInput {
         (p.activities.includes("karaoke") && !p.karaoke_audio),
     ) ||
     Date.parse(input.starts_at) >= Date.parse(input.ends_at) ||
+    (input.app_funded_pool !== undefined && input.funding_transaction_hash !== undefined) ||
     BigInt(input.max_ticket_price_atomic) < 1n ||
     BigInt(input.funding_amount_atomic) < BigInt(input.max_ticket_price_atomic)
   ) {
