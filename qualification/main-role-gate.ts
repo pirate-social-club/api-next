@@ -95,26 +95,26 @@ async function readback(client: Client, role: string) {
   if (!a.rolcanlogin || !a.rolinherit || a.rolsuper || a.rolcreatedb || a.rolcreaterole ||
       a.rolreplication || a.rolbypassrls || a.database_create || a.schema_create ||
       a.owned_objects !== 0 || a.memberships.length !== 0) fail("managed role has broad authority");
-  const grants = (await client.query<{ grant: string }>(
+  const grants = (await client.query<{ grant_text: string }>(
     `WITH target AS (SELECT oid FROM pg_roles WHERE rolname=$1),
        acl AS (
-         SELECT 'schema:'||n.nspname||':'||x.privilege_type AS grant
-           FROM pg_namespace n CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl,'{}'::aclitem[])) x
+         SELECT 'schema:'||n.nspname||':'||x.privilege_type AS grant_text
+           FROM pg_namespace n CROSS JOIN LATERAL aclexplode(n.nspacl) x
           WHERE n.nspname=$2 AND x.grantee=(SELECT oid FROM target)
          UNION ALL
          SELECT 'table:'||c.relname||':'||x.privilege_type
            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-           CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,'{}'::aclitem[])) x
+           CROSS JOIN LATERAL aclexplode(c.relacl) x
           WHERE n.nspname=$2 AND c.relkind IN ('r','p') AND x.grantee=(SELECT oid FROM target)
          UNION ALL
          SELECT 'column:'||c.relname||'.'||a.attname||':'||x.privilege_type
            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
            JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
-           CROSS JOIN LATERAL aclexplode(coalesce(a.attacl,'{}'::aclitem[])) x
+           CROSS JOIN LATERAL aclexplode(a.attacl) x
           WHERE n.nspname=$2 AND x.grantee=(SELECT oid FROM target)
-       ) SELECT grant FROM acl ORDER BY grant`,
+       ) SELECT grant_text FROM acl ORDER BY grant_text`,
     [role, schema],
-  )).rows.map((row) => row.grant);
+  )).rows.map((row) => row.grant_text);
   if (JSON.stringify(grants) !== JSON.stringify(expected)) {
     console.log(JSON.stringify({ status: "grant_mismatch", expected, actual: grants }));
     fail("managed role grants differ from the reviewed list");
@@ -182,6 +182,7 @@ if (mode === "owner-check" || mode === "grant" || mode === "readback") {
   } finally { await client.end(); }
 } else if (mode === "claim") {
   const dir = process.env.QUAL_PRIVATE_DIR;
-  if (!dir) fail("private credential directory is required");
-  await claim((await readFile(`${dir}/main-host.url`, "utf8")).trim());
+  const url = dir ? await readFile(`${dir}/main-host.url`, "utf8") : await Bun.stdin.text();
+  if (!url.trim()) fail("managed role credential is unavailable");
+  await claim(url.trim());
 } else fail("usage: main-role-gate.ts owner-check|grant|readback|claim [managed-role]");
