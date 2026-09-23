@@ -80,6 +80,34 @@ function verify(value: string, now: number): void {
   if (registry.signingKey(now)?.key_id !== STAGING_FORWARDER_KEY_ID) refuse("registry_not_active");
 }
 
+/** Reads the custody folder itself, by key name only. The process environment
+ * is not evidence of absence: running without `infisical run` would otherwise
+ * let --execute replace the live registry and split gateway and Workers. */
+async function custodiedRegistryExists(): Promise<boolean> {
+  const listing = await infisical([
+    "secrets",
+    "--env=staging",
+    `--path=${PATH}`,
+    `--projectId=${PROJECT}`,
+    "--silent",
+    "-o",
+    "json",
+  ]);
+  let entries: unknown;
+  try {
+    entries = JSON.parse(listing);
+  } catch {
+    refuse("custody_listing_unreadable");
+  }
+  if (!Array.isArray(entries)) refuse("custody_listing_unreadable");
+  return (entries as unknown[]).some(
+    (entry) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      (entry as { secretKey?: unknown }).secretKey === SECRET_NAME,
+  );
+}
+
 async function main(): Promise<void> {
   const mode = process.argv[2];
   if (mode !== "--plan" && mode !== "--execute" && mode !== "--verify") refuse("usage");
@@ -93,7 +121,7 @@ async function main(): Promise<void> {
     );
     return;
   }
-  if (existing) refuse("already_exists");
+  if (existing || (await custodiedRegistryExists())) refuse("already_exists");
   if (mode === "--plan") {
     process.stdout.write(
       `${JSON.stringify({ outcome: "staging_forwarder_plan", reference: STAGING_FORWARDER_REFERENCE, version: STAGING_FORWARDER_VERSION, key_id: STAGING_FORWARDER_KEY_ID, validity_days: 90, secret_name: SECRET_NAME })}\n`,
