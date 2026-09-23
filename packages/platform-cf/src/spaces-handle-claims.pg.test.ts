@@ -7,6 +7,7 @@ import {
   type HandleSalesStore,
   IdGen,
   makeHandleSalesService,
+  type SpacesRegistryStore,
   type SpacesSaleNamespaceStore,
 } from "@pirate/application";
 import type { HandleSpacesClaimV1, HandleSpacesQuoteV1 } from "@pirate/contracts";
@@ -29,6 +30,8 @@ import {
 import { makeControlPlaneHandleSalesStore } from "./handle-sales-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { mintSpacesRegistryCredentialV1 } from "./spaces-registry-credential.ts";
+import { makeControlPlaneSpacesRegistryStore } from "./spaces-registry-repository.ts";
 import {
   configureSpacesNetwork,
   enableSpacesDriverForRoot,
@@ -55,7 +58,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 10;
+const testCount = 15;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -93,6 +96,40 @@ const salesStore = (connection: string): HandleSalesStore =>
 
 const spacesStore = (connection: string): SpacesSaleNamespaceStore =>
   makeControlPlaneSpacesSaleNamespaceStore(makeDirectPostgresControlPlaneLayer(connection));
+
+const registryStore = (connection: string): SpacesRegistryStore =>
+  makeControlPlaneSpacesRegistryStore(makeDirectPostgresControlPlaneLayer(connection));
+
+async function registryCredential(connection: string) {
+  const result = await Effect.runPromise(
+    Effect.provide(makeDirectPostgresControlPlaneLayer(connection))(
+      mintSpacesRegistryCredentialV1({
+        operatorInstanceId: "operator-instance-1",
+        environment: "development",
+        allowedRoots: [spacesRoot],
+        authorizationReference: "spaces-registry-test-authorization",
+        rotationOverlapSeconds: 0,
+      }),
+    ),
+  );
+  const authenticated = await Effect.runPromise(
+    registryStore(connection).authenticate({ token: result.token, environment: "development" }),
+  );
+  if (authenticated === null) throw new Error("minted credential was refused");
+  return { ...result, authenticated };
+}
+
+async function registryClaim(admin: Client, connection: string, label: string, key: string) {
+  const buyer = await seedBuyer(admin, `registry-${key}`);
+  const { reservation } = await reserved(salesStore(connection), buyer, label, key);
+  return spacesClaim(
+    (
+      await Effect.runPromise(
+        salesStore(connection).submitFreeClaim(claimInput(buyer, reservation, key)),
+      )
+    ).claim,
+  );
+}
 
 const failureOf = async <A, E>(effect: Effect.Effect<A, E>): Promise<E | undefined> => {
   const exit = await Effect.runPromiseExit(effect);
@@ -1114,33 +1151,16 @@ suite("Spaces quote, reservation, and atomic claim", () => {
           ),
         ),
       ).toBe("23503");
-      await admin.query(
-        `INSERT INTO spaces_external_conflict_observations (
-           observation_id,family,network,namespace_root,handle_label,evidence_kind,observed_at
-         ) VALUES ('conflict-1','spaces','regtest','charizard','conflictlabel',
-                   'registry_acknowledgment_v1',clock_timestamp())`,
-      );
-      await admin.query(
-        `INSERT INTO handle_key_fences (
-           family,namespace_root,handle_label,external_conflict_observation_id,updated_at
-         ) VALUES ('spaces','charizard','conflictlabel','conflict-1',clock_timestamp())`,
-      );
       expect(
         await sqlState(
           admin.query(
-            `INSERT INTO handle_key_fences (
-               family,namespace_root,handle_label,external_conflict_observation_id,updated_at
-             ) VALUES ('hns','charizard','conflictlabel','conflict-1',clock_timestamp())`,
+            `INSERT INTO spaces_external_conflict_observations (
+               observation_id,family,network,namespace_root,handle_label,evidence_kind,observed_at
+             ) VALUES ('conflict-1','spaces','regtest','charizard','conflictlabel',
+                       'registry_acknowledgment_v1',clock_timestamp())`,
           ),
         ),
       ).toBe("23514");
-      expect(
-        await sqlState(
-          admin.query(
-            "UPDATE spaces_external_conflict_observations SET observed_at=clock_timestamp()",
-          ),
-        ),
-      ).toBe("P0001");
 
       // A quote's recipient is immutable, and the HNS shape never carries one.
       await expect(
@@ -1232,9 +1252,16 @@ suite("Spaces quote, reservation, and atomic claim", () => {
       ).rejects.toThrow("require verified final issuance evidence");
 
       // Registry items move forward only; a delivered item is never withdrawn.
-      await admin.query(
-        "UPDATE spaces_registry_items SET state='delivered',updated_at=clock_timestamp()",
+      const registry = registryStore(connection);
+      const registryAuth = await registryCredential(connection);
+      const delivered = await Effect.runPromise(
+        registry.pending({
+          credential: registryAuth.authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
       );
+      expect(delivered.kind === "handles" && delivered.handles.length === 1).toBe(true);
       for (const state of ["withdrawn", "undelivered"]) {
         await expect(
           admin.query(`UPDATE spaces_registry_items SET state='${state}'`),
@@ -1389,6 +1416,273 @@ suite("Spaces quote, reservation, and atomic claim", () => {
       expect(persona?.handle_grants.map((grant) => grant.display_identifier)).toEqual([
         "hnsnonmember.charizard",
       ]);
+    });
+    completed++;
+  }, 60_000);
+});
+
+suite("Spaces private registry delivery and settlement", () => {
+  test("records delivery before returning a page, accepts a repeat ack, and only schedules verification", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "registrysame", "registry-same");
+      const store = registryStore(connection);
+      const { authenticated } = await registryCredential(connection);
+      const page = await Effect.runPromise(
+        store.pending({
+          credential: authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      expect(page.kind).toBe("handles");
+      if (page.kind !== "handles") throw new Error("expected registry page");
+      expect(page.handles).toHaveLength(1);
+      const handle = page.handles[0]?.handle;
+      if (!handle) throw new Error("missing delivered handle");
+      expect(
+        await count(admin, "spaces_registry_deliveries", "claim_id=$1", [claim.claim_id]),
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT state,delivery_generation FROM spaces_registry_items WHERE claim_id=$1",
+            [claim.claim_id],
+          )
+        ).rows[0],
+      ).toMatchObject({ state: "delivered", delivery_generation: "1" });
+      const ack = { kind: "outcome" as const, handle, outcome: "staged" as const };
+      expect(
+        await Effect.runPromise(store.acknowledge({ credential: authenticated, entry: ack })),
+      ).toBe("applied");
+      expect(
+        await Effect.runPromise(store.acknowledge({ credential: authenticated, entry: ack })),
+      ).toBe("unchanged");
+      expect(
+        await count(admin, "spaces_registry_acknowledgments", "claim_id=$1", [claim.claim_id]),
+      ).toBe(1);
+      expect(
+        await count(admin, "spaces_registry_occupancy_observations", "handle_label='registrysame'"),
+      ).toBe(1);
+      expect(
+        await Effect.runPromise(
+          store.committed({
+            credential: authenticated,
+            commitment_root_hex: "d".repeat(64),
+            handles: [handle],
+          }),
+        ),
+      ).toEqual(["unchanged"]);
+      expect(
+        (
+          await admin.query(
+            "SELECT verification_due FROM spaces_issuance_verifications WHERE claim_id=$1",
+            [claim.claim_id],
+          )
+        ).rows[0]?.verification_due,
+      ).toBe(true);
+      expect(await count(admin, "handle_grants", "claim_id=$1", [claim.claim_id])).toBe(0);
+      expect(
+        (await admin.query("SELECT state FROM handle_claims WHERE claim_id=$1", [claim.claim_id]))
+          .rows[0]?.state,
+      ).toBe("issuance_pending");
+    });
+    completed++;
+  }, 60_000);
+
+  test("different recipient evidence fails the claim and keeps a permanent conflict fence", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "registryconflict", "registry-conflict");
+      const store = registryStore(connection);
+      const { authenticated } = await registryCredential(connection);
+      const page = await Effect.runPromise(
+        store.pending({
+          credential: authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      if (page.kind !== "handles" || !page.handles[0]) throw new Error("missing registry item");
+      expect(
+        await Effect.runPromise(
+          store.acknowledge({
+            credential: authenticated,
+            entry: {
+              kind: "outcome",
+              handle: page.handles[0].handle,
+              outcome: "already_committed_different_spk",
+            },
+          }),
+        ),
+      ).toBe("applied");
+      expect(
+        (
+          await admin.query("SELECT state,safe_reason FROM handle_claims WHERE claim_id=$1", [
+            claim.claim_id,
+          ])
+        ).rows[0],
+      ).toMatchObject({ state: "issuance_failed", safe_reason: "handle_unavailable" });
+      expect(
+        (
+          await admin.query(
+            "SELECT pending_claim_id,external_conflict_observation_id FROM handle_key_fences WHERE handle_label='registryconflict'",
+          )
+        ).rows[0],
+      ).toMatchObject({
+        pending_claim_id: null,
+        external_conflict_observation_id: expect.any(String),
+      });
+      expect(
+        await count(
+          admin,
+          "spaces_external_conflict_observations",
+          "registry_acknowledgment_id IS NOT NULL",
+        ),
+      ).toBe(1);
+      expect(await count(admin, "handle_grants", "claim_id=$1", [claim.claim_id])).toBe(0);
+    });
+    completed++;
+  }, 60_000);
+
+  test("stops undelivered work without sending it, but preserves a delivered fence", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: 2 });
+      const first = await registryClaim(admin, connection, "registryearly", "registry-early");
+      const second = await registryClaim(admin, connection, "registrylate", "registry-late");
+      const store = registryStore(connection);
+      expect(await Effect.runPromise(store.stopClaim({ claimId: first.claim_id }))).toEqual({
+        kind: "withdrawn",
+      });
+      expect(
+        await count(admin, "spaces_registry_deliveries", "claim_id=$1", [first.claim_id]),
+      ).toBe(0);
+      expect(await count(admin, "handle_key_fences", "handle_label='registryearly'")).toBe(0);
+      const { authenticated } = await registryCredential(connection);
+      const page = await Effect.runPromise(
+        store.pending({
+          credential: authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      if (page.kind !== "handles") throw new Error("expected registry page");
+      expect(page.handles).toHaveLength(1);
+      expect(await Effect.runPromise(store.stopClaim({ claimId: second.claim_id }))).toEqual({
+        kind: "redelivery_stopped",
+      });
+      expect(
+        await count(
+          admin,
+          "handle_key_fences",
+          "handle_label='registrylate' AND pending_claim_id=$1",
+          [second.claim_id],
+        ),
+      ).toBe(1);
+      expect(await Effect.runPromise(store.stopClaim({ claimId: second.claim_id }))).toEqual({
+        kind: "unchanged",
+      });
+      const empty = await Effect.runPromise(
+        store.pending({
+          credential: authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      expect(empty).toEqual({ kind: "handles", handles: [] });
+    });
+    completed++;
+  }, 60_000);
+
+  test("refuses wrong environment and unassigned spaces while recording a scope anomaly", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const store = registryStore(connection);
+      const credential = await registryCredential(connection);
+      expect(
+        await Effect.runPromise(
+          store.authenticate({ token: credential.token, environment: "production" }),
+        ),
+      ).toBeNull();
+      expect(
+        await Effect.runPromise(
+          store.authenticate({ token: `${credential.token}x`, environment: "development" }),
+        ),
+      ).toBeNull();
+      expect(
+        await Effect.runPromise(
+          store.pending({
+            credential: credential.authenticated,
+            space: { kind: "numeric", raw: "#2" },
+            capacity: 10,
+          }),
+        ),
+      ).toEqual({ kind: "forbidden" });
+      expect(await count(admin, "spaces_registry_scope_anomalies", "reason='numeric_space'")).toBe(
+        1,
+      );
+      expect(
+        await Effect.runPromise(
+          store.acknowledge({
+            credential: credential.authenticated,
+            entry: { kind: "outcome", handle: `notthere@${spacesRoot}`, outcome: "staged" },
+          }),
+        ),
+      ).toBe("anomaly");
+      expect(
+        await count(admin, "spaces_registry_scope_anomalies", "reason='no_delivered_item'"),
+      ).toBe(1);
+    });
+    completed++;
+  }, 60_000);
+
+  test("fences a callback from an old assignment generation and revokes a rotated credential", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "registrystale", "registry-stale");
+      const store = registryStore(connection);
+      const first = await registryCredential(connection);
+      const page = await Effect.runPromise(
+        store.pending({
+          credential: first.authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      if (page.kind !== "handles" || !page.handles[0]) throw new Error("missing delivery");
+      await seedSpacesOperatorAssignment(admin, {
+        assignmentId: "spaces_operator_assignment_01",
+        generation: 2,
+        delegationAddress: delegation,
+      });
+      expect(
+        await Effect.runPromise(
+          store.acknowledge({
+            credential: first.authenticated,
+            entry: { kind: "outcome", handle: page.handles[0].handle, outcome: "staged" },
+          }),
+        ),
+      ).toBe("stale");
+      expect(
+        await count(admin, "spaces_registry_acknowledgments", "claim_id=$1", [claim.claim_id]),
+      ).toBe(0);
+      expect(
+        (await admin.query("SELECT state FROM handle_claims WHERE claim_id=$1", [claim.claim_id]))
+          .rows[0]?.state,
+      ).toBe("issuance_pending");
+      const rotated = await registryCredential(connection);
+      expect(rotated.retired_credential_id).toBeNull();
+      expect(rotated.revoked_credential_ids).toContain(first.credential_id);
+      expect(
+        await Effect.runPromise(
+          store.authenticate({ token: first.token, environment: "development" }),
+        ),
+      ).toBeNull();
+      expect(
+        await Effect.runPromise(
+          store.authenticate({ token: rotated.token, environment: "development" }),
+        ),
+      ).not.toBeNull();
     });
     completed++;
   }, 60_000);
