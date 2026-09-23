@@ -54,7 +54,6 @@ import {
   ProviderUnavailable,
 } from "@pirate/contracts";
 import { compileAccountAgeVerificationPolicy } from "@pirate/domain";
-import { megapotImplementationIdentityFromCandidate } from "@pirate/platform-cf";
 import { makeControlPlaneAccountAgeVerification } from "@pirate/platform-cf/account-age-verification";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
@@ -127,6 +126,7 @@ import {
   type VideoPublicationServices,
 } from "@pirate/platform-cf/media-upload-store";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
+import { megapotImplementationIdentityFromCandidate } from "@pirate/platform-cf/megapot-implementation-projection";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
 import {
