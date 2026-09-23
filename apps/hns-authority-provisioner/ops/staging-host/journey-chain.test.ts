@@ -9,12 +9,14 @@ import { canonicalJson } from "@pirate/domain";
 import { reservationAccount } from "../../src/powerdns.ts";
 import {
   parseJourneyCommand,
+  requireBoundSessionResponse,
   requirePlanProvenance,
   requirePublishablePlan,
   requireSessionPlan,
 } from "./journey-chain.ts";
 
 const root = "e2eabc123";
+const responseDigest = "a".repeat(64);
 const challenge = "pirate-verification=00000000-0000-4000-8000-000000000000";
 const ds = [
   { key_tag: 1, algorithm: 13, digest_type: 2 as const, digest: "a".repeat(64) },
@@ -65,10 +67,21 @@ describe("staging journey chain command", () => {
       root,
       blocks: 5,
     });
-    expect(parseJourneyCommand(["advance-safe", "--root", root, "--plan", "/p.json"])).toEqual({
+    expect(
+      parseJourneyCommand([
+        "advance-safe",
+        "--root",
+        root,
+        "--plan",
+        "/p.json",
+        "--response-sha256",
+        responseDigest,
+      ]),
+    ).toEqual({
       kind: "advance-safe",
       root,
       plan: "/p.json",
+      responseSha256: responseDigest,
     });
     expect(await code(() => parseJourneyCommand(["mine", "--blocks", "5"]))).toBe("root_invalid");
     expect(await code(() => parseJourneyCommand(["mine", "--root", root, "--blocks", "61"]))).toBe(
@@ -84,8 +97,21 @@ describe("staging journey chain command", () => {
       "option_duplicate",
     );
     expect(
-      await code(() => parseJourneyCommand(["publish", "--root", root, "--plan", "rel"])),
+      await code(() =>
+        parseJourneyCommand([
+          "publish",
+          "--root",
+          root,
+          "--plan",
+          "rel",
+          "--response-sha256",
+          responseDigest,
+        ]),
+      ),
     ).toBe("plan_path_invalid");
+    expect(
+      await code(() => parseJourneyCommand(["publish", "--root", root, "--plan", "/p.json"])),
+    ).toBe("response_digest_invalid");
     expect(await code(() => parseJourneyCommand(["transfer", "--root", root]))).toBe(
       "command_invalid",
     );
@@ -118,6 +144,12 @@ describe("staging journey chain command", () => {
     const plan = await productPlan();
     const response = sessionResponse(plan);
     expect(await code(() => requireSessionPlan(root, response))).toBe("admitted");
+    const bytes = Buffer.from(JSON.stringify(response));
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    expect((await requireBoundSessionResponse(root, bytes, digest)).response_sha256).toBe(digest);
+    expect(await code(() => requireBoundSessionResponse(root, bytes, responseDigest))).toBe(
+      "response_digest_mismatch",
+    );
     const changedNs = {
       ...plan,
       replacement_records: plan.replacement_records.map((record) =>
@@ -182,5 +214,8 @@ describe("staging journey chain command", () => {
     expect(await code(() => run(authority({ account }, keys), "http://10.0.0.5:8081"))).toBe(
       "authority_not_loopback",
     );
+    expect(
+      await code(() => run(authority({ account }, keys), "http://127.evil.example:8081")),
+    ).toBe("authority_not_loopback");
   });
 });

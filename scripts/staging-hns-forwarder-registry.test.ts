@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseHnsForwarderV3KeyRegistry } from "@pirate/platform-cf/hns-forwarder-v3";
 import {
+  custodiedRegistryExists,
   makeStagingForwarderRegistry,
   STAGING_FORWARDER_KEY_ID,
   STAGING_FORWARDER_REFERENCE,
@@ -27,5 +28,22 @@ describe("staging HNS forwarder registry", () => {
   test("refuses wrong key length and invalid time", () => {
     expect(() => makeStagingForwarderRegistry(now, new Uint8Array(31))).toThrow("key_length");
     expect(() => makeStagingForwarderRegistry(0, new Uint8Array(32))).toThrow("time");
+  });
+
+  test("refuses a malformed or wrongly scoped custody listing before any write", async () => {
+    const listing = (keys: readonly unknown[]) => async () => JSON.stringify(keys);
+    const sibling = { secretKey: "CONTROL_PLANE_POSTGRES_RUNTIME_URL" };
+    const registry = { secretKey: "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY" };
+    expect(await custodiedRegistryExists(listing([sibling]))).toBe(false);
+    expect(await custodiedRegistryExists(listing([sibling, registry]))).toBe(true);
+    await expect(custodiedRegistryExists(listing([registry]))).rejects.toThrow(
+      "custody_scope_unproven",
+    );
+    await expect(custodiedRegistryExists(listing([{ secrets: [sibling] }]))).rejects.toThrow(
+      "custody_listing_unreadable",
+    );
+    await expect(custodiedRegistryExists(async () => "{}")).rejects.toThrow(
+      "custody_listing_unreadable",
+    );
   });
 });

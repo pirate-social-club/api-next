@@ -24,8 +24,9 @@ import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
  * Chain leg of the staging HNS onboarding journey, run on the isolated staging
  * host against its loopback regtest node. It never chooses records: `publish`
  * sends exactly the replacement resource from a product session
- * response, after proving its complete plan-document and encoded-resource
- * digests and that the provisioner created a zone for its challenge and DS.
+ * response, after proving the response-byte, complete plan-document and
+ * encoded-resource digests and checking that the provisioner created a zone
+ * for its challenge and DS.
  * The runner supplying FILE must fetch that response through the maintained
  * authenticated API path; a copied file alone cannot prove authentication.
  * Every command first proves the pinned regtest genesis and loopback endpoints.
@@ -34,10 +35,12 @@ import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
  *
  *   begin --root R                      take the exclusive run lease for R
  *   acquire --root R                    register R to the fixture wallet (resumable)
- *   publish --root R --plan FILE        UPDATE R with FILE's session publish_plan
+ *   publish --root R --plan FILE --response-sha256 H
+ *                                       UPDATE R with FILE's session publish_plan
  *   mine --root R --blocks N            1 <= N <= 60
  *   end --root R                        release R's run lease
- *   advance-safe --root R --plan FILE   mine one block at a time (max 60) until the
+ *   advance-safe --root R --plan FILE --response-sha256 H
+ *                                       mine one block at a time (max 60) until the
  *                                       maintained safe view carries FILE's digest
  *   status --root R                     current and safe observation summary
  */
@@ -47,8 +50,8 @@ const SAFE_CONFIRMATIONS = 12;
 // Only journey-generated names; never an operator- or owner-supplied root.
 const ROOT = /^e2e[a-z0-9]{6,40}$/u;
 const LEASE_DIRECTORY = process.env.HNS_JOURNEY_LEASE_DIR ?? "/var/tmp/pirate-hns-staging-journey";
-const AUTHORITY_API = process.env.HNS_JOURNEY_PDNS_API_URL ?? "http://127.0.0.21:8081";
-const AUTHORITY_KEY = process.env.HNS_JOURNEY_PDNS_API_KEY ?? "isolated-hns-authority-fixture-only";
+const AUTHORITY_API = "http://127.0.0.21:8081";
+const AUTHORITY_KEY = "isolated-hns-authority-fixture-only";
 
 class JourneyRefusal extends Error {
   constructor(readonly code: string) {
@@ -60,9 +63,9 @@ export type JourneyCommand =
   | Readonly<{ kind: "begin"; root: string }>
   | Readonly<{ kind: "end"; root: string }>
   | Readonly<{ kind: "acquire"; root: string }>
-  | Readonly<{ kind: "publish"; root: string; plan: string }>
+  | Readonly<{ kind: "publish"; root: string; plan: string; responseSha256: string }>
   | Readonly<{ kind: "mine"; root: string; blocks: number }>
-  | Readonly<{ kind: "advance-safe"; root: string; plan: string }>
+  | Readonly<{ kind: "advance-safe"; root: string; plan: string; responseSha256: string }>
   | Readonly<{ kind: "status"; root: string }>;
 
 export function parseJourneyCommand(argv: readonly string[]): JourneyCommand {
@@ -90,10 +93,13 @@ export function parseJourneyCommand(argv: readonly string[]): JourneyCommand {
     return { kind, root: root() };
   }
   if (kind === "publish" || kind === "advance-safe") {
-    only("--root", "--plan");
+    only("--root", "--plan", "--response-sha256");
     const plan = options.get("--plan");
     if (plan === undefined || !plan.startsWith("/")) throw new JourneyRefusal("plan_path_invalid");
-    return { kind, root: root(), plan };
+    const responseSha256 = options.get("--response-sha256");
+    if (responseSha256 === undefined || !/^[0-9a-f]{64}$/u.test(responseSha256))
+      throw new JourneyRefusal("response_digest_invalid");
+    return { kind, root: root(), plan, responseSha256 };
   }
   if (kind === "mine") {
     only("--root", "--blocks");
@@ -216,6 +222,26 @@ export async function requireSessionPlan(root: string, raw: unknown) {
   };
 }
 
+/** A copied file is admitted only if its exact bytes match the authenticated
+ * fetch receipt supplied by the browser runner. The receipt's provenance is
+ * established outside this host CLI, not inferred from JSON fields. */
+export async function requireBoundSessionResponse(
+  root: string,
+  bytes: Uint8Array,
+  expectedSha256: string,
+) {
+  if (!/^[0-9a-f]{64}$/u.test(expectedSha256)) throw new JourneyRefusal("response_digest_invalid");
+  const actual = createHash("sha256").update(bytes).digest("hex");
+  if (actual !== expectedSha256) throw new JourneyRefusal("response_digest_mismatch");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    throw new JourneyRefusal("session_response_json_invalid");
+  }
+  return { ...(await requireSessionPlan(root, raw)), response_sha256: actual };
+}
+
 type Records = ReturnType<typeof validateHnsRootResourceRecordsV1>;
 
 function planChallenge(records: Records): string {
@@ -258,10 +284,10 @@ function planDs(records: Records): HnsRootDelegationDsV1[] {
 type AuthorityFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /**
- * Provenance without API credentials: the product's provisioner stamps each
- * zone with an account derived from the import challenge and holds its DNSSEC
- * keys. A plan is publishable only if such a zone exists for its exact
- * challenge and its DS set equals the zone's active DS set.
+ * Consistency check without API credentials: the product's provisioner stamps
+ * each zone with an account derived from the import challenge and holds its
+ * DNSSEC keys. This is not proof of authenticated API provenance: a writer
+ * with access to the fixture authority could create the same marker and DS.
  */
 export async function requirePlanProvenance(
   root: string,
@@ -271,8 +297,7 @@ export async function requirePlanProvenance(
   apiKey = AUTHORITY_KEY,
 ): Promise<void> {
   const base = new URL(apiUrl);
-  if (base.protocol !== "http:" || !base.hostname.startsWith("127."))
-    throw new JourneyRefusal("authority_not_loopback");
+  if (base.href !== `${AUTHORITY_API}/`) throw new JourneyRefusal("authority_not_loopback");
   const get = async (path: string) => {
     const response = await fetcher(
       `${base.origin}/api/v1/servers/localhost/zones/${root}.${path}`,
@@ -416,11 +441,9 @@ async function acquire(root: string) {
   return { outcome: "acquired", root, resumed: false, height: await tip() };
 }
 
-async function publish(root: string, planPath: string) {
-  const { records, digest, root_import_session_id, publish_plan_sha256 } = await requireSessionPlan(
-    root,
-    JSON.parse(await readFile(planPath, "utf8")),
-  );
+async function publish(root: string, planPath: string, responseSha256: string) {
+  const { records, digest, root_import_session_id, publish_plan_sha256, response_sha256 } =
+    await requireBoundSessionResponse(root, await readFile(planPath), responseSha256);
   if (!(await ownedByWallet(root))) throw new JourneyRefusal("name_not_owned");
   const current = await observe(root, "current");
   if (current.kind !== "observed") throw new JourneyRefusal("current_unobservable");
@@ -431,6 +454,7 @@ async function publish(root: string, planPath: string) {
       digest,
       root_import_session_id,
       publish_plan_sha256,
+      response_sha256,
       height: await tip(),
     };
   // Only the empty registration resource may be replaced; anything else is
@@ -454,6 +478,7 @@ async function publish(root: string, planPath: string) {
     digest,
     root_import_session_id,
     publish_plan_sha256,
+    response_sha256,
     txid: update.hash,
     inclusion_height: inclusion,
   };
@@ -461,8 +486,12 @@ async function publish(root: string, planPath: string) {
 
 /** Empirical, not computed: the maintained observer decides when the safe view
  * selects a commitment that contains the published resource. */
-async function advanceSafe(root: string, planPath: string) {
-  const { digest } = await requireSessionPlan(root, JSON.parse(await readFile(planPath, "utf8")));
+async function advanceSafe(root: string, planPath: string, responseSha256: string) {
+  const { digest, response_sha256 } = await requireBoundSessionResponse(
+    root,
+    await readFile(planPath),
+    responseSha256,
+  );
   const current = await observe(root, "current");
   if (
     current.kind !== "observed" ||
@@ -479,6 +508,7 @@ async function advanceSafe(root: string, planPath: string) {
         outcome: "safe",
         root,
         digest,
+        response_sha256,
         blocks_mined: mined,
         safe_tip: safe.observation.tip_height,
       };
@@ -521,8 +551,9 @@ async function runJourneyCommand(argv: readonly string[]) {
     return { outcome: "mined", blocks: command.blocks, height: await tip() };
   }
   if (command.kind === "acquire") return acquire(command.root);
-  if (command.kind === "publish") return publish(command.root, command.plan);
-  return advanceSafe(command.root, command.plan);
+  if (command.kind === "publish")
+    return publish(command.root, command.plan, command.responseSha256);
+  return advanceSafe(command.root, command.plan, command.responseSha256);
 }
 
 if (import.meta.main) {

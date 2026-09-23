@@ -6,6 +6,7 @@ export const STAGING_FORWARDER_REFERENCE = "pirate:hns-forwarder-v3:staging-comm
 export const STAGING_FORWARDER_VERSION = "2026-09-23-01";
 export const STAGING_FORWARDER_KEY_ID = "staging-community-app-2026-09-23-01";
 const SECRET_NAME = "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY";
+const CUSTODY_SIBLING = "CONTROL_PLANE_POSTGRES_RUNTIME_URL";
 const PROJECT = "fac45f92-9450-42fb-8c2f-f20d043fdfab";
 const PATH = "/services/api-next/operator";
 const VALIDITY_SECONDS = 90 * 24 * 60 * 60;
@@ -83,16 +84,19 @@ function verify(value: string, now: number): void {
 /** Reads the custody folder itself, by key name only. The process environment
  * is not evidence of absence: running without `infisical run` would otherwise
  * let --execute replace the live registry and split gateway and Workers. */
-async function custodiedRegistryExists(): Promise<boolean> {
-  const listing = await infisical([
-    "secrets",
-    "--env=staging",
-    `--path=${PATH}`,
-    `--projectId=${PROJECT}`,
-    "--silent",
-    "-o",
-    "json",
-  ]);
+export async function custodiedRegistryExists(
+  list: () => Promise<string> = () =>
+    infisical([
+      "secrets",
+      "--env=staging",
+      `--path=${PATH}`,
+      `--projectId=${PROJECT}`,
+      "--silent",
+      "-o",
+      "json",
+    ]),
+): Promise<boolean> {
+  const listing = await list();
   let entries: unknown;
   try {
     entries = JSON.parse(listing);
@@ -100,12 +104,16 @@ async function custodiedRegistryExists(): Promise<boolean> {
     refuse("custody_listing_unreadable");
   }
   if (!Array.isArray(entries)) refuse("custody_listing_unreadable");
-  return (entries as unknown[]).some(
-    (entry) =>
-      typeof entry === "object" &&
-      entry !== null &&
-      (entry as { secretKey?: unknown }).secretKey === SECRET_NAME,
-  );
+  const keys = (entries as unknown[]).map((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry))
+      refuse("custody_listing_unreadable");
+    const key = (entry as { secretKey?: unknown }).secretKey;
+    if (typeof key !== "string" || key.length === 0) refuse("custody_listing_unreadable");
+    return key;
+  });
+  if (!keys.includes(CUSTODY_SIBLING)) refuse("custody_scope_unproven");
+  if (new Set(keys).size !== keys.length) refuse("custody_listing_unreadable");
+  return keys.includes(SECRET_NAME);
 }
 
 async function main(): Promise<void> {
