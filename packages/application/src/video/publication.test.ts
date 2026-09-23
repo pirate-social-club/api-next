@@ -630,4 +630,110 @@ describe("video publication application", () => {
     ).rejects.toBeInstanceOf(BadRequest);
     expect(events).toEqual(["abort", "record"]);
   });
+
+  test("upload inspection mismatch returns an honest terminal snapshot and replays without another inspection", async () => {
+    const state = createOriginalVideoSubmission({
+      submissionId: "media-submission-video",
+      operationId: "media-operation-video",
+      communityId: "community_video",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      reservationId: "media-reservation-video",
+      caption: null,
+      authorDeclaredRating: "general",
+    });
+    let record: VideoSubmissionRecord = {
+      state,
+      eventSequence: 1,
+      authorPersona: {
+        persona_id: persona.persona_id,
+        object: "persona",
+        display_name: persona.profile.display_name,
+        avatar_ref: null,
+        primary_public_handle: persona.profile.primary_public_handle,
+      },
+      updatedAt: "2026-09-04T00:00:00.000Z",
+    };
+    const reservation: VideoReservationRecord = {
+      reservationId: state.reservationId,
+      intent: "original_audio",
+      communityId: state.communityId,
+      actorAccountId: state.actorAccountId,
+      authorPersonaId: state.authorPersonaId,
+      requestHash: "a".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: 20,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload-one",
+      partSizeBytes: 10,
+      partCount: 2,
+      expiresAt: "2099-09-04T01:00:00.000Z",
+      state: "claimed",
+      submissionId: state.submissionId,
+      operationId: state.operationId,
+      manifest: [
+        { partNumber: 1, etag: "one" },
+        { partNumber: 2, etag: "two" },
+      ],
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-04T00:00:00.000Z",
+    };
+    let stored: Uint8Array | null = null;
+    let inspected = 0;
+    const services = servicesWith({
+      store: storeWith({
+        getSubmissionForAccount: async () => record,
+        replayCommand: async () =>
+          stored === null
+            ? { kind: "none" }
+            : { kind: "replay", bytes: stored, entityId: state.submissionId },
+        getReservationForAuthor: async () => reservation,
+        beginFinalize: async () => ({ reservation, alreadyCompleted: true }),
+        abandonExpectationMismatch: async (input) => {
+          stored = input.responseBytes;
+          record = {
+            ...record,
+            state: {
+              ...state,
+              status: "abandoned",
+              phase: null,
+              abandonmentReason: "upload_expectation_mismatch",
+            },
+          };
+          return { kind: "none" };
+        },
+      }),
+      sealer: {
+        inspect: async () => {
+          inspected += 1;
+          return { outcome: "expectation_mismatch" };
+        },
+        seal: unused,
+      },
+    });
+    const input = {
+      submissionId: state.submissionId,
+      actor,
+      body: {
+        persona_id: persona.persona_id,
+        idempotency_key: "finalize-video",
+        expected_creation_revision: 1,
+        reservation_id: state.reservationId,
+        parts: [
+          { part_number: 1, etag: "one" },
+          { part_number: 2, etag: "two" },
+        ],
+      },
+    };
+    expect(await finalizeVideoSubmission(input, services)).toMatchObject({
+      status: "abandoned",
+      reason_code: "upload_expectation_mismatch",
+    });
+    expect(await finalizeVideoSubmission(input, services)).toMatchObject({
+      status: "abandoned",
+      reason_code: "upload_expectation_mismatch",
+    });
+    expect(inspected).toBe(1);
+  });
 });
