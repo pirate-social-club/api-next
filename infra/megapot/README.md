@@ -21,3 +21,24 @@ Run the read-only check from the api-next repository with
 `MEGAPOT_MAINNET_RPC_URL_A` and `MEGAPOT_MAINNET_RPC_URL_B` set to HTTPS URLs
 on distinct origins, then invoke `bun run db:preflight:megapot-base-mainnet`.
 The command reports only block and contract-hash evidence, never the URLs.
+
+The first write-path conformance test uses a disposable local Anvil fork at
+Base block 51684323. It checks the pinned block hash and production contract
+attestation, moves USDC only inside the fork from an impersonated holder to an
+Anvil account, executes Circle USDC's real approval method, validates the real
+receipt with the runtime codec, and reads the resulting Jackpot allowance.
+The test refuses any RPC URL except uncredentialed `http://127.0.0.1` and
+requires Anvil's fork metadata before sending a transaction. It is not a
+production approval-coordinator test, custody decision, or activation proof.
+It is skipped by ordinary CI when `MEGAPOT_BASE_FORK_RPC_URL` is absent.
+
+From api-next, start a fresh fork, run the test, then stop the disposable
+container. The image digest pins Foundry 1.8.3. The public fork source must
+continue to serve historical state for that block; a provider failure is not
+a contract failure.
+
+```sh
+docker run -d --rm --name api-next-megapot-base-fork --network host ghcr.io/foundry-rs/foundry@sha256:2e4287278639262de76db72477301d5d3212fa1b1cce710d7d148750a46ce9e7 'anvil --fork-url https://mainnet.base.org --fork-block-number 51684323 --chain-id 8453 --host 127.0.0.1 --port 8547 --silent'
+MEGAPOT_BASE_FORK_RPC_URL=http://127.0.0.1:8547 bun test --timeout 60000 packages/platform-cf/src/megapot-mainnet-approval.fork.test.ts
+docker stop api-next-megapot-base-fork
+```
