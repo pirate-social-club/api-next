@@ -105,6 +105,10 @@ const alias = {
     "../../packages/application/src/use-cases/handles/sales.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/handles/spaces-registry": new URL(
+    "../../packages/application/src/use-cases/handles/spaces-registry.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/handles/platform-pirate-rename": new URL(
     "../../packages/application/src/use-cases/handles/platform-pirate-rename.ts",
     import.meta.url,

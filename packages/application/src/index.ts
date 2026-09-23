@@ -1,6 +1,7 @@
 export * from "./community-moderation-runtime.ts";
 export * from "./handles/nationality-authoring.ts";
 export * from "./handles/sales.ts";
+export * from "./handles/spaces-registry.ts";
 export * from "./handles/spaces-sale-namespaces.ts";
 export * from "./hns-community-app-api.ts";
 export * from "./hns-community-app-gateway.ts";

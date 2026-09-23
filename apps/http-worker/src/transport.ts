@@ -49,6 +49,10 @@ import {
 } from "./hns-handle-host-api-composition.ts";
 import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
+import {
+  makeSpacesRegistryTransport,
+  type SpacesRegistryTransportOptions,
+} from "./spaces-registry-transport.ts";
 
 export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
@@ -156,6 +160,8 @@ export interface HttpWorkerOptions {
   readonly hnsCommunityAppApi?: HnsCommunityAppApiComposition;
   /** Source-closed public handle-host authority. Production remains disabled and unbound. */
   readonly hnsHandleHostApi?: HnsHandleHostApiComposition;
+  /** Private operator registry; absent in every production composition by default. */
+  readonly spacesRegistry?: SpacesRegistryTransportOptions;
 }
 
 type HttpWorkerEnv = {
@@ -749,6 +755,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   }
   const hnsHandleHostApi =
     options.hnsHandleHostApi ?? disabledProductionHnsHandleHostApiComposition;
+  const spacesRegistry =
+    options.spacesRegistry === undefined
+      ? undefined
+      : makeSpacesRegistryTransport(options.spacesRegistry);
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
     options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
   const sessionExchangeHandler =
@@ -779,6 +789,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const pathname = requestUrl.pathname;
     if (!hnsCommunityAppApi.enabled && requestUrl.origin === configuredHnsProtectedOrigin) {
       return new Response(null, { status: 503, headers: { "cache-control": "no-store" } });
+    }
+    if (spacesRegistry?.matches(pathname)) {
+      return spacesRegistry.serve(context.req.raw);
     }
     if (pathname === "/admin/hns") {
       if (context.req.raw.method !== "GET") {
