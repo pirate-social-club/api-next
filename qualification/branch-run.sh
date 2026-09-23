@@ -157,10 +157,20 @@ sequence)
   [ $RC = 0 ] && python3 -c "import json;import sys;sys.exit(0 if json.load(open('$EV/step-render.json'))['status']=='accepted' else 1)" || fail "render did not conclude accepted"
   bun qualification/branch-helpers.ts sql admin.url "SELECT a.state, a.execution_phase, m.master_sha256, m.master_byte_length::text, m.verified_object_key, m.verified_object_etag FROM api_next.media_song_video_render_attempts a JOIN api_next.media_song_video_masters m ON m.attempt_id=a.attempt_id" > "$EV/render-rows.json"
   log "sequence complete"; cost;;
-seal)
-  load; rm -f "$PRIV"/*.env "$PRIV"/*.json
-  (cd "$EV" && sha256sum $(ls | grep -v -E '^SHA256SUMS$') > SHA256SUMS && sha256sum -c SHA256SUMS > /dev/null) || fail "seal"
-  log "evidence sealed: $(sha256sum "$EV/SHA256SUMS" | cut -c1-64)";;
+verify-evidence)
+  # Option A: the branch may be deleted only after this passes. It checks that
+  # the evidence a completed run must hold exists and parses; it does not seal.
+  load
+  missing=""
+  for f in backup-selected.json branch-show.json role-admin.json role-host.json grants-table.json grants-column.json \
+           branch-ledger.json branch-catalog-digest.json song-checks-branch.json isolation-runtime.json isolation-operator.json \
+           snap-A.json snap-B.json snap-C.json snap-D0.json snap-D.json snap-E.json \
+           diff-timing_request.json diff-measurement.json diff-fixture.json diff-render.json \
+           step-measure.json step-verify-timing.json step-upload.json step-fixture.json step-render.json render-rows.json; do
+    [ -s "$EV/$f" ] && python3 -c "import json;json.load(open('$EV/$f'))" 2>/dev/null || missing="$missing $f"
+  done
+  [ -z "$missing" ] || fail "evidence missing or unparseable:$missing"
+  log "evidence verified before deletion";;
 delete)
   load; [ -n "${BRANCH_ID:-}" ] || fail "no branch recorded"
   rt bun qualification/isolation-check.ts "$BRANCH_ID" --require-hyperdrive > "$EV/isolation-before-delete.json" || fail "isolation before delete"
@@ -169,5 +179,13 @@ delete)
   if pscale branch show $DB $BRANCH --format json > /dev/null 2>&1; then fail "branch still visible after delete"; fi
   pscale branch list $DB --format json | python3 -c "import json,sys;sys.exit(1 if any(b['name']=='$BRANCH' for b in json.load(sys.stdin)) else 0)" || fail "branch still listed"
   rm -f "$PRIV"/*.url; log "branch deleted and confirmed absent";;
-*) echo "usage: branch-run.sh preflight|create|roles|branch-preflight|sequence|seal|delete"; exit 2;;
+seal)
+  # Final action, after deletion or after an early stop: removes the private
+  # material, then hashes and verifies whatever evidence exists. Nothing is
+  # written into the evidence folder after the checksums are computed.
+  rm -rf -- "$PRIV"
+  log "sealing evidence"
+  (cd "$EV" && rm -f SHA256SUMS && sha256sum $(ls | grep -v -E '^SHA256SUMS$') > SHA256SUMS && sha256sum -c --quiet SHA256SUMS) || { echo "STOP: seal failed" >&2; exit 1; }
+  echo "evidence sealed and verified: $(ls "$EV" | grep -vc '^SHA256SUMS$') files, SHA256SUMS $(sha256sum "$EV/SHA256SUMS" | cut -c1-64)";;
+*) echo "usage: branch-run.sh preflight|create|roles|branch-preflight|sequence|verify-evidence|delete|seal"; exit 2;;
 esac
