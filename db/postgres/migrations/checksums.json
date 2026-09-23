@@ -202,6 +202,7 @@
     "0199_video_safety_provider_calls.sql": "e8dfe8d17b52b831e748e4a1a128278ff1ee6e1ac893b0ee1eed0db8305fe8bb",
     "0200_video_moderation_unresolved_abandonment.sql": "8c440362972e34059a595c5551d4fcba0ebe9a08188029fd7e9dc25930ff78ef",
     "0201_song_transform_author_retry.sql": "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c",
-    "0202_spaces_sale_namespace_activation.sql": "095c390e8f851d67db0af48aec61e828aa89e0d807e0490d21e9aaac41d01688"
+    "0202_spaces_sale_namespace_activation.sql": "095c390e8f851d67db0af48aec61e828aa89e0d807e0490d21e9aaac41d01688",
+    "0203_spaces_native_claims.sql": "a99fbbcb064de83bcd03612b492be73cf837a61ab537df745c53595f3cb836f2"
   }
 }
