@@ -48,7 +48,10 @@ import {
   persona,
   responseBytes,
   responseSha256,
+  seedPublishedSongFixture,
+  seedSongOwner,
   seedVideoActors,
+  songReferenceFinalizedFixture,
   submissionId,
   trustedAnalysis,
   videoSha256,
@@ -91,6 +94,118 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
 }
 
 suite("video publication PostgreSQL", () => {
+  test("approved song-reference review wakes render without publishing an unsealed capture", async () => {
+    await fixture(async (admin, connection) => {
+      await seedSongOwner(admin);
+      const song = {
+        songPostId: "post-video-review-song",
+        communityId: community,
+        audioAssetRef: "media://song/video-review-audio",
+        canonicalAudioSha256: "f".repeat(64),
+        durationSamples: 30 * 48_000,
+        title: "Review render fixture",
+        contentRating: "general" as const,
+        derivativeVideo: "allowed" as const,
+        licensePreset: "commercial-remix" as const,
+        commercialRemixShareBps: 1_000,
+      };
+      await seedPublishedSongFixture(admin, song);
+      const { store, finalized } = await songReferenceFinalizedFixture(connection, {
+        identity: {
+          reservationId: "media-reservation-00000000-0000-4000-8000-000000000099",
+          submissionId,
+          operationId,
+        },
+        planId: `song-video-plan:${submissionId}`,
+        song,
+        clipStartSamples: 0,
+        clipDurationSamples: 10 * 48_000,
+        source: { sha256: videoSha256, sizeBytes: 1_024 },
+      });
+      const base = trustedAnalysis();
+      const analysis: VideoTrustedAnalysis = {
+        ...base,
+        audio: { intent: "song_reference" },
+        mediaSafety: "review_required",
+      };
+      const services = {
+        store,
+        nowIso: () => new Date().toISOString(),
+        randomUuid: () => crypto.randomUUID(),
+      };
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "manual_review",
+      });
+      const held = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (held === null) throw new Error("held song video missing");
+      expect(held.state).toMatchObject({ status: "manual_review", phase: null, master: null });
+      expect(
+        await store.moderate({
+          submission: held.state,
+          actor: { kind: "user", userId: actor },
+          expectedCreationRevision: held.state.creationRevision,
+          action: { kind: "approve", hold: "safety", evidenceRef: null },
+          endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+          idempotencyKey: "approve-song-review-render",
+          requestHash: "8".repeat(64),
+          responseBytes,
+          responseSha256,
+        }),
+      ).toEqual({ kind: "none" });
+      const approved = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (approved === null) throw new Error("approved song video missing");
+      expect(approved.state).toMatchObject({
+        status: "processing",
+        phase: "render",
+        master: null,
+        decision: { outcome: { kind: "publish" } },
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM media_video_publication_wakeups WHERE action_id=$1",
+            [`video-moderation:${actor}:approve-song-review-render`],
+          )
+        ).rows[0]?.n,
+      ).toBe(1);
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "processing",
+        phase: "publish",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,phase FROM media_post_submissions WHERE submission_id=$1",
+            [submissionId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "processing", phase: "render" });
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const effectIdentity = `video-analysis:${operationId}:v1:c1`;
+      const claim = await outbox.claim(effectIdentity, "render-recovery-fixture");
+      if (claim === null) throw new Error("render recovery outbox claim missing");
+      expect(await outbox.markLaunched(claim, `vaw-${"a".repeat(64)}`)).toBe(true);
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => `vaw-${"a".repeat(64)}`,
+          },
+        }),
+      ).toMatchObject({ inspected: 1, recovered: 1, terminal: 0 });
+      expect((await outbox.get(effectIdentity))?.continuation).toBe(1);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]
+          ?.n,
+      ).toBe(0);
+      expect(finalized.state.master).toBeNull();
+    });
+  });
+
   test("persisted JSONB multipart manifest replays by ordered part identity, not object key order", async () => {
     await fixture(async (admin, connection) => {
       const store = makeControlPlaneVideoPublicationStore(

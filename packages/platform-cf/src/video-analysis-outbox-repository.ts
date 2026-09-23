@@ -349,7 +349,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             OR EXISTS (SELECT 1 FROM media_post_submissions s
               WHERE s.submission_id=media_video_analysis_outbox.submission_id
                 AND s.creation_revision=media_video_analysis_outbox.creation_revision
-                AND s.status='processing' AND s.phase='publish'))
+                AND s.status='processing' AND s.phase IN ('render','publish')))
           ORDER BY updated_at,effect_identity LIMIT $1`,
           values: [limit],
           readonly: true,
