@@ -29,9 +29,9 @@ export const QUALIFICATION_TABLES = [
   "personas",
 ] as const;
 
-const url = process.argv[2];
+const url = process.env.QUAL_DATABASE_URL ?? process.argv[2];
 const schema = process.argv[3] ?? "api_next";
-if (!url) throw new Error("usage: catalog-digest.ts <database-url> [schema]");
+if (!url) throw new Error("QUAL_DATABASE_URL or a database URL argument is required");
 const parsed = new URL(url);
 const ssl = parsed.searchParams.has("sslrootcert") || parsed.hostname.endsWith("psdb.cloud");
 parsed.search = "";
@@ -66,10 +66,13 @@ try {
         [oid],
       )
     ).rows.map(({ attnum: _ignored, ...rest }) => rest);
+    // PostgreSQL 18 also exposes NOT NULL as contype='n' constraints. Column
+    // attnotnull above already captures the same invariant across PG 17/18;
+    // including both forms would make an unchanged schema hash differently.
     const constraints = (
       await client.query(
         `SELECT conname,contype,pg_get_constraintdef(oid,true) AS def,condeferrable,condeferred
-           FROM pg_constraint WHERE conrelid=$1::oid ORDER BY conname`,
+           FROM pg_constraint WHERE conrelid=$1::oid AND contype<>'n' ORDER BY conname`,
         [oid],
       )
     ).rows.map((row) => ({ ...row, def: normalize(row.def) }));

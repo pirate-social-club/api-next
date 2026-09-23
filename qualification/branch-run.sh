@@ -28,15 +28,17 @@ state() { echo "$1=$2" >> "$STATE"; }
 load() { [ -f "$STATE" ] && . "$STATE" || true; }
 ops() { infisical run --env=staging --path=/services/api-next/operator --silent -- "$@"; }
 rt() { infisical run --env=staging --path=/services/api-next --silent -- "$@"; }
-snap() { QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")" bun qualification/table-snapshot.ts "$(cat "$PRIV/host-data.url")" > "$EV/snap-$1.json"; }
+snap() { QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")" bun qualification/table-snapshot.ts > "$EV/snap-$1.json"; }
 manifest() { local step=$1 from=$2 to=$3; local tables; tables=$(python3 -c "import json;print(' '.join(json.load(open('qualification/manifests.json'))['manifests']['$step']['tables']))"); bun qualification/snapshot-diff.ts "$EV/snap-$from.json" "$EV/snap-$to.json" $tables > "$EV/diff-$step.json" || fail "manifest $step: table outside manifest"; log "manifest $step ok: $(python3 -c "import json;print([(c['table'],(c['before'] or {}).get('rows'),(c['after'] or {}).get('rows')) for c in json.load(open('$EV/diff-$step.json'))['changed']])")"; }
 cost() { load; python3 -c "import datetime as d;c=d.datetime.fromisoformat('$BRANCH_CREATED_AT'.replace('Z','+00:00'));h=(d.datetime.now(d.timezone.utc)-c).total_seconds()/3600;print(f'elapsed {h:.2f} h, estimated cluster cost US\${h*5/730:.4f} at rate 5/month (estimate; invoice is authoritative)')" | tee -a "$EV/run.log"; }
-sessions() { bun qualification/branch-helpers.ts sql host-data.url "SELECT usename, count(*)::int AS n FROM pg_stat_activity WHERE usename IS NOT NULL GROUP BY 1 ORDER BY 1" > "$EV/sessions-$1.json"; load; python3 - "$EV/sessions-$1.json" "$HOST_BASE" <<'PY' || fail "unexpected session on branch ($1)"
+sessions() { bun qualification/branch-helpers.ts sql host-data.url "SELECT usename, application_name, count(*)::int AS n FROM pg_stat_activity WHERE usename IS NOT NULL GROUP BY 1,2 ORDER BY 1,2" > "$EV/sessions-$1-reviewed.json"; load; python3 - "$EV/sessions-$1-reviewed.json" "$HOST_BASE" <<'PY' || fail "unexpected session on branch ($1)"
 import json,sys
-rows=json.load(open(sys.argv[1])); allowed={sys.argv[2]}
-unexpected=[r for r in rows if r['usename'] not in allowed]
-print('sessions:',rows,'unexpected:',unexpected)
-sys.exit(1 if unexpected else 0)
+rows=json.load(open(sys.argv[1])); host=sys.argv[2]
+provider={('pscale_admin',''),('pscale_admin','Patroni heartbeat'),('pscale_admin','Patroni restapi'),('pscale_exporter','')}
+unexpected=[r for r in rows if (r['usename'],r['application_name']) not in provider|{(host,'')}]
+own=sum(r['n'] for r in rows if r['usename']==host)
+print('sessions:',rows,'unexpected:',unexpected,'own:',own)
+sys.exit(1 if unexpected or own!=1 else 0)
 PY
 }
 host() { local envfile=$1; shift; docker run --rm --network host -v "$LANE:/app" -w /app --env-file "$PRIV/$envfile.env" "$@" "$IMG" bun scripts/song-video-render-host.ts; }
@@ -106,7 +108,7 @@ e=sys.argv[1]; led={r['version']:r['checksum'] for r in json.load(open(e+'/branc
 exp=exp.get('migrations',exp) if isinstance(exp,dict) else exp
 print('ledger entries',len(led),'expected',len(exp),'equal',led==exp); sys.exit(0 if led==exp else 1)
 PY
-  bun qualification/catalog-digest.ts "$(cat "$PRIV/host-data.url")" > "$EV/branch-catalog-digest.json"
+  QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")" bun qualification/catalog-digest.ts > "$EV/branch-catalog-digest.json"
   python3 -c "import json;a=json.load(open('$EV/branch-catalog-digest.json'));b=json.load(open('$REF_DIGEST'));d=[k for k in b['digests'] if a['digests'].get(k)!=b['digests'][k]];print('catalog differing objects:',d,'missing',a['missing']);import sys;sys.exit(1 if d or a['missing'] else 0)" || fail "catalog digest differs"
   QUAL_CHECK_URL="$(cat "$PRIV/host-data.url")" bun qualification/song-checks.ts > "$EV/song-checks-branch.json" || fail "song checks on branch"
   python3 -c "import json;f=json.load(open('$EV/song-checks-branch.json'))['facts'];import sys;sys.exit(0 if f['timings']==0 and f['render_attempts']==0 else 1)" || fail "branch timings or attempts not empty"
