@@ -1,4 +1,8 @@
-import { measurePendingSongTimings } from "@pirate/application/video/song-canonical-timing";
+import {
+  measurePendingSongTimings,
+  measureSongTiming,
+  type SongTimingTarget,
+} from "@pirate/application/video/song-canonical-timing";
 import type {
   SongVideoRenderer,
   SongVideoRenderRequest,
@@ -10,7 +14,13 @@ import { makeControlPlaneSongVideoIntervalStore } from "../packages/platform-cf/
 import { makeSongVideoRenderStore } from "../packages/platform-cf/src/song-video-render-store.ts";
 import { makeLocalPinnedFfmpegSongVideoEngine } from "./song-video-ffmpeg.ts";
 import { makeLocalSongVideoRenderer } from "./song-video-local-render.ts";
-import { makeHostR2Adapters, readHostR2Credentials } from "./song-video-render-host-r2.ts";
+import {
+  makeHostMediaReader,
+  makeHostR2Adapters,
+  makeHostR2Transport,
+  readHostR2Credentials,
+  readHostR2ReadCredentials,
+} from "./song-video-render-host-r2.ts";
 
 /**
  * The operator-supervised FFmpeg host on the selected execution path (U.2).
@@ -199,6 +209,50 @@ export async function executeHostRenderAttempt(
     : { status: "refused", reason: sealed.reason };
 }
 
+export type HostMode =
+  | Readonly<{ kind: "loop"; attemptId?: string }>
+  | Readonly<{ kind: "render"; planId: string; attemptId?: string }>
+  | Readonly<{ kind: "measure"; target: SongTimingTarget }>;
+
+/**
+ * Chooses the one operation this invocation performs. A measurement names one
+ * song revision completely and cannot be combined with a render selector, so
+ * an operator never measures and renders, or measures the wrong revision, by
+ * leaving a variable set.
+ */
+export function readHostMode(env: Readonly<Record<string, string | undefined>>): HostMode {
+  const value = (name: string) => {
+    const raw = env[name]?.trim();
+    return raw === undefined || raw.length === 0 ? undefined : raw;
+  };
+  const planId = value("SONG_VIDEO_RENDER_PLAN_ID");
+  const attemptId = value("SONG_VIDEO_RENDER_ATTEMPT_ID");
+  const songPostId = value("SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID");
+  const revision = value("SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION");
+  if (songPostId === undefined && revision === undefined) {
+    const attempt = attemptId === undefined ? {} : { attemptId };
+    return planId === undefined
+      ? { kind: "loop", ...attempt }
+      : { kind: "render", planId, ...attempt };
+  }
+  if (planId !== undefined)
+    throw new Error(
+      "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID conflicts with SONG_VIDEO_RENDER_PLAN_ID",
+    );
+  if (attemptId !== undefined)
+    throw new Error(
+      "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID conflicts with SONG_VIDEO_RENDER_ATTEMPT_ID",
+    );
+  if (songPostId === undefined)
+    throw new Error("SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID is required");
+  if (revision === undefined)
+    throw new Error("SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION is required");
+  const audioRevision = Number(revision);
+  if (!/^[1-9][0-9]*$/u.test(revision) || !Number.isSafeInteger(audioRevision))
+    throw new Error("SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION is invalid");
+  return { kind: "measure", target: { songPostId, audioRevision } };
+}
+
 function required(name: string): string {
   const value = process.env[name]?.trim();
   if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
@@ -244,28 +298,66 @@ function stopSignals(): Readonly<{
 }
 
 async function main(): Promise<void> {
-  const planId = process.env.SONG_VIDEO_RENDER_PLAN_ID?.trim() || undefined;
-  const attemptId = process.env.SONG_VIDEO_RENDER_ATTEMPT_ID?.trim() || undefined;
+  const mode = readHostMode(process.env);
+  const planId = mode.kind === "render" ? mode.planId : undefined;
+  const attemptId = mode.kind === "measure" ? undefined : mode.attemptId;
   const claimId = process.env.SONG_VIDEO_RENDER_HOST_ID?.trim() || crypto.randomUUID();
   const databaseUrl = required("SONG_VIDEO_RENDER_DATABASE_URL");
   const bucket = required("SONG_VIDEO_RENDER_R2_BUCKET");
-  const { output, writer, mediaReader } = makeHostR2Adapters({
-    accountId: required("SONG_VIDEO_RENDER_R2_ACCOUNT_ID"),
-    bucket,
-    credentials: readHostR2Credentials(process.env),
-    ...(process.env.SONG_VIDEO_RENDER_R2_ENDPOINT?.trim()
-      ? { endpoint: process.env.SONG_VIDEO_RENDER_R2_ENDPOINT.trim() }
-      : {}),
-  });
-  const engine = makeLocalPinnedFfmpegSongVideoEngine({
-    mediaReader,
+  const endpoint = process.env.SONG_VIDEO_RENDER_R2_ENDPOINT?.trim()
+    ? { endpoint: process.env.SONG_VIDEO_RENDER_R2_ENDPOINT.trim() }
+    : {};
+  const binaries = {
     ...(process.env.SONG_VIDEO_FFMPEG_BINARY === undefined
       ? {}
       : { ffmpegBinary: process.env.SONG_VIDEO_FFMPEG_BINARY }),
     ...(process.env.SONG_VIDEO_FFPROBE_BINARY === undefined
       ? {}
       : { ffprobeBinary: process.env.SONG_VIDEO_FFPROBE_BINARY }),
+  };
+
+  if (mode.kind === "measure") {
+    // One named revision, read with a read-only credential when one is given.
+    // No render attempt is claimed and no object is written.
+    const mediaReader = makeHostMediaReader({
+      transport: makeHostR2Transport({
+        accountId: required("SONG_VIDEO_RENDER_R2_ACCOUNT_ID"),
+        credentials: readHostR2ReadCredentials(process.env),
+        ...endpoint,
+      }),
+      bucket,
+    });
+    const engine = makeLocalPinnedFfmpegSongVideoEngine({ mediaReader, ...binaries });
+    const outcome = await measureSongTiming(
+      {
+        store: makeControlPlaneSongVideoIntervalStore(
+          makeDirectPostgresControlPlaneLayer(databaseUrl),
+        ),
+        prober: engine.prober,
+      },
+      mode.target,
+    );
+    process.stdout.write(
+      `${JSON.stringify({
+        song_post_id: mode.target.songPostId,
+        audio_revision: mode.target.audioRevision,
+        status: outcome.status,
+        ...(outcome.status === "measured" ? { duration_samples: outcome.durationSamples } : {}),
+        ...(outcome.status === "failed" ? { failure_code: outcome.failureCode } : {}),
+      })}\n`,
+    );
+    // Deferred means still pending, as with a pending render: it is visible,
+    // and a later invocation may measure it once the lease lapses.
+    if (outcome.status === "deferred") process.exitCode = 2;
+    return;
+  }
+  const { output, writer, mediaReader } = makeHostR2Adapters({
+    accountId: required("SONG_VIDEO_RENDER_R2_ACCOUNT_ID"),
+    bucket,
+    credentials: readHostR2Credentials(process.env),
+    ...endpoint,
   });
+  const engine = makeLocalPinnedFfmpegSongVideoEngine({ mediaReader, ...binaries });
   const store = makeSongVideoRenderStore({
     connect: async () => {
       const client = new Client({ connectionString: databaseUrl });
@@ -356,9 +448,13 @@ if (import.meta.main) {
     // Sanitized: provider and connection failures can carry URLs or private
     // configuration, so only operator-supplied names are safe to repeat.
     const message = error instanceof Error ? error.message : "";
-    const safe = /^[A-Z0-9_]+ is required$/u.test(message)
-      ? message
-      : "song video render host failed";
+    const safe =
+      /^[A-Z0-9_]+ is required$/u.test(message) ||
+      /^SONG_VIDEO_RENDER_[A-Z0-9_]+ (is invalid|conflicts with SONG_VIDEO_RENDER_[A-Z0-9_]+)$/u.test(
+        message,
+      )
+        ? message
+        : "song video render host failed";
     process.stderr.write(`${safe}\n`);
     process.exitCode = 1;
   });

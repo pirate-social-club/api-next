@@ -35,6 +35,50 @@ const count = (row: Row, key: string): number => {
 const TIMING_LEASE_SECONDS = 300;
 
 /**
+ * The one claim both the scan and the targeted measurement use, so they share
+ * the pending test, the lease, `SKIP LOCKED` and the returned facts. The
+ * targeted form only narrows the candidate set to one primary key.
+ */
+function timingClaimSql(targeted: boolean): string {
+  return `WITH claimable AS (
+            SELECT song_post_id,audio_revision
+              FROM media_song_canonical_timings
+             WHERE state='pending'
+               AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp())${
+                 targeted ? "\n               AND song_post_id=$3 AND audio_revision=$4" : ""
+}
+             ORDER BY requested_at
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED
+          )
+          UPDATE media_song_canonical_timings t
+             SET attempts = t.attempts + 1,
+                 lease_expires_at = clock_timestamp() + make_interval(secs => $2)
+            FROM claimable c
+           WHERE t.song_post_id = c.song_post_id AND t.audio_revision = c.audio_revision
+          RETURNING t.song_post_id,t.audio_revision,t.canonical_audio_sha256,
+            (SELECT p.audio_asset_ref FROM media_publication_projections p
+              WHERE p.post_id = t.song_post_id AND p.media_kind='song'
+                AND p.audio_revision = t.audio_revision) AS audio_asset_ref`;
+}
+
+function claimedTimings(rows: readonly Row[]): PendingSongTiming[] {
+  const claimed: PendingSongTiming[] = [];
+  for (const row of rows) {
+    // A revision whose song publication has moved on has no bytes to
+    // measure at this revision; it is skipped, not measured elsewhere.
+    if (typeof row.audio_asset_ref !== "string") continue;
+    claimed.push({
+      songPostId: text(row, "song_post_id"),
+      audioRevision: count(row, "audio_revision"),
+      canonicalAudioSha256: text(row, "canonical_audio_sha256"),
+      audioAssetRef: row.audio_asset_ref,
+    });
+  }
+  return claimed;
+}
+
+/**
  * Persistence for the song-backed interval: the published song a video would
  * render from, the owner policy in force, and the canonical timing measured
  * from the song's exact bytes.
@@ -180,40 +224,25 @@ export function makeControlPlaneSongVideoIntervalStore(
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "song-video-interval.timing-claim",
-            text: `WITH claimable AS (
-                     SELECT song_post_id,audio_revision
-                       FROM media_song_canonical_timings
-                      WHERE state='pending'
-                        AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp())
-                      ORDER BY requested_at
-                      LIMIT $1
-                      FOR UPDATE SKIP LOCKED
-                   )
-                   UPDATE media_song_canonical_timings t
-                      SET attempts = t.attempts + 1,
-                          lease_expires_at = clock_timestamp() + make_interval(secs => $2)
-                     FROM claimable c
-                    WHERE t.song_post_id = c.song_post_id AND t.audio_revision = c.audio_revision
-                   RETURNING t.song_post_id,t.audio_revision,t.canonical_audio_sha256,
-                     (SELECT p.audio_asset_ref FROM media_publication_projections p
-                       WHERE p.post_id = t.song_post_id AND p.media_kind='song'
-                         AND p.audio_revision = t.audio_revision) AS audio_asset_ref`,
+            text: timingClaimSql(false),
             values: [limit, TIMING_LEASE_SECONDS],
             readonly: false,
           });
-          const claimed: PendingSongTiming[] = [];
-          for (const row of result.rows) {
-            // A revision whose song publication has moved on has no bytes to
-            // measure at this revision; it is skipped, not measured elsewhere.
-            if (typeof row.audio_asset_ref !== "string") continue;
-            claimed.push({
-              songPostId: text(row, "song_post_id"),
-              audioRevision: count(row, "audio_revision"),
-              canonicalAudioSha256: text(row, "canonical_audio_sha256"),
-              audioAssetRef: row.audio_asset_ref,
-            });
-          }
-          return claimed;
+          return claimedTimings(result.rows);
+        }),
+      ),
+
+    claimPendingFor: (target) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "song-video-interval.timing-claim-target",
+            text: timingClaimSql(true),
+            values: [1, TIMING_LEASE_SECONDS, target.songPostId, target.audioRevision],
+            readonly: false,
+          });
+          return claimedTimings(result.rows)[0] ?? null;
         }),
       ),
 
