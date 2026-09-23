@@ -177,7 +177,17 @@ const pageLimit = (value: number | undefined): number => {
   return resolved;
 };
 
-const activationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
+/**
+ * Decodes only the HNS activation shape. A Spaces activation shares the table
+ * but is a checked sibling (spec 012 §5.3.13.3) with its own decoder, so an
+ * HNS read path fails closed on it instead of serializing it as HNS.
+ */
+const activationFromRow = (row: Row): SaleNamespaceActivationV1 => {
+  if (row.family !== "hns") throw new Error("invalid HNS sale-namespace activation family");
+  return hnsActivationFromRow(row);
+};
+
+const hnsActivationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
   sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
   sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
   sale_namespace_activation_hash: text(row, "sale_namespace_activation_hash"),
@@ -631,6 +641,15 @@ const mutationReplay = (
     readonly: false,
   });
 
+/**
+ * The seller offering mutation serves the HNS hosted-persona wire. Its SQL and
+ * these literals stay HNS-only until the Spaces offering compiler path and
+ * contract unions land (spec 012 §5.3.13.11-§5.3.13.12).
+ */
+const OFFERING_MUTATION_FAMILY = "hns" as const;
+const OFFERING_MUTATION_GRAMMAR_ID = "hns_ascii_ldh_1_63_v1" as const;
+const OFFERING_MUTATION_FULFILLMENT = "hosted_persona_v1" as const;
+
 type OfferingMutationInput = Parameters<HandleSalesStore["createOffering"]>[0] &
   Partial<{
     offeringId: string;
@@ -710,6 +729,13 @@ const mutateOffering = (
     });
     const activationRow = activationResult.rows[0];
     if (activationRow === undefined) return yield* reject("sale_namespace_inactive", true);
+    // The offering command, grammar, driver, and family literals below are the
+    // HNS wire. A Spaces offering is admitted only by its own compiler path
+    // once the public contract unions exist, so a Spaces activation is refused
+    // here before any write.
+    if (activationRow.family !== OFFERING_MUTATION_FAMILY) {
+      return yield* reject("offering_unavailable");
+    }
     const requestedStatus = isCreate ? "active" : input.requestedStatus;
     if (requestedStatus === undefined) return yield* reject("offering_unavailable");
     if (requestedStatus === "active") {
@@ -795,11 +821,16 @@ const mutateOffering = (
     const policyRow = one(policy.rows, "qualification policy");
     const pricingRow = one(pricing.rows, "pricing");
     const driverRow = one(driver.rows, "issuance driver");
+    // The platform members-only policy is admitted only on spaces_native_v1
+    // offerings (spec 012 §5.3.13.12); HNS offerings keep §5.3.3 unchanged.
+    if (policyRow.policy_kind === "spaces_membership_v1") {
+      return yield* reject("offering_unavailable");
+    }
     const labelScope =
       input.terms.label_scope.kind === "exact_label_v2"
         ? {
             kind: "exact_label_v2" as const,
-            label_grammar_id: "hns_ascii_ldh_1_63_v1" as const,
+            label_grammar_id: OFFERING_MUTATION_GRAMMAR_ID,
             handle_label: input.terms.label_scope.handle_label,
             reserved_labels_id: input.terms.label_scope.reserved_labels_id,
             reserved_labels_revision: input.terms.label_scope.expected_reserved_labels_revision,
@@ -807,7 +838,7 @@ const mutateOffering = (
           }
         : {
             kind: "label_rule_v2" as const,
-            label_grammar_id: "hns_ascii_ldh_1_63_v1" as const,
+            label_grammar_id: OFFERING_MUTATION_GRAMMAR_ID,
             reserved_labels_id: input.terms.label_scope.reserved_labels_id,
             reserved_labels_revision: input.terms.label_scope.expected_reserved_labels_revision,
             reserved_labels_hash: text(reservedRow, "reserved_labels_hash"),
@@ -854,7 +885,7 @@ const mutateOffering = (
         });
         if (
           text(driverRow, "fulfillment_kind") !== input.terms.fulfillment_kind ||
-          input.terms.fulfillment_kind !== "hosted_persona_v1"
+          input.terms.fulfillment_kind !== OFFERING_MUTATION_FULFILLMENT
         ) {
           throw new Error("driver mismatch");
         }
@@ -890,7 +921,7 @@ const mutateOffering = (
       offering_id: offeringId,
       offering_revision: revision,
       community_id: input.communityId,
-      family: "hns" as const,
+      family: OFFERING_MUTATION_FAMILY,
       namespace_root: activation.canonical_root,
       sale_namespace_activation_id: activation.sale_namespace_activation_id,
       sale_namespace_activation_generation: activation.sale_namespace_activation_generation,
