@@ -204,6 +204,7 @@
     "0201_song_transform_author_retry.sql": "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c",
     "0202_spaces_sale_namespace_activation.sql": "095c390e8f851d67db0af48aec61e828aa89e0d807e0490d21e9aaac41d01688",
     "0203_spaces_native_claims.sql": "a99fbbcb064de83bcd03612b492be73cf837a61ab537df745c53595f3cb836f2",
-    "0204_spaces_registry.sql": "728abd7b19dec3742f90d14fd6b184bf532a6e7fcdc9a74ebde73c06ea529021"
+    "0204_spaces_registry.sql": "728abd7b19dec3742f90d14fd6b184bf532a6e7fcdc9a74ebde73c06ea529021",
+    "0205_spaces_final_issuance.sql": "fced1b843285f39042128dce2d0ebd9ae387a97df4e7dfb9f14bc2ed306a675d"
   }
 }
