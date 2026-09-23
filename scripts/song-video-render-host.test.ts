@@ -389,6 +389,98 @@ describe("host operation mode", () => {
   });
 });
 
+describe("host R2 temporary credentials", () => {
+  const pairs = {
+    SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "output-key",
+    SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "output-secret",
+    SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "input-key",
+    SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "input-secret",
+  };
+
+  test("carries each session token with its own pair", () => {
+    expect(
+      readHostR2Credentials({
+        ...pairs,
+        SONG_VIDEO_RENDER_R2_SESSION_TOKEN: "output-session",
+        SONG_VIDEO_RENDER_R2_INPUT_SESSION_TOKEN: "input-session",
+      }),
+    ).toEqual({
+      output: {
+        accessKeyId: "output-key",
+        secretAccessKey: "output-secret",
+        sessionToken: "output-session",
+      },
+      input: {
+        accessKeyId: "input-key",
+        secretAccessKey: "input-secret",
+        sessionToken: "input-session",
+      },
+    });
+    expect(readHostR2Credentials(pairs)).toEqual({
+      output: { accessKeyId: "output-key", secretAccessKey: "output-secret" },
+      input: { accessKeyId: "input-key", secretAccessKey: "input-secret" },
+    });
+  });
+
+  test("a measurement reads with the input session token", () => {
+    expect(
+      readHostR2ReadCredentials({
+        SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "input-key",
+        SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "input-secret",
+        SONG_VIDEO_RENDER_R2_INPUT_SESSION_TOKEN: "input-session",
+      }),
+    ).toEqual({
+      accessKeyId: "input-key",
+      secretAccessKey: "input-secret",
+      sessionToken: "input-session",
+    });
+  });
+
+  test("refuses an input session token without its pair", () => {
+    expect(() =>
+      readHostR2Credentials({
+        SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "output-key",
+        SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "output-secret",
+        SONG_VIDEO_RENDER_R2_INPUT_SESSION_TOKEN: "input-session",
+      }),
+    ).toThrow("SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID is required");
+  });
+
+  test("signs input requests with the input session token and output requests with the output one", async () => {
+    const seen: { key: string; token: string | null }[] = [];
+    const adapters = makeHostR2Adapters({
+      accountId: "account-1",
+      bucket,
+      credentials: {
+        output: {
+          accessKeyId: "output-key",
+          secretAccessKey: "output-secret",
+          sessionToken: "output-session",
+        },
+        input: {
+          accessKeyId: "input-key",
+          secretAccessKey: "input-secret",
+          sessionToken: "input-session",
+        },
+      },
+      fetch: async (_url, init) => {
+        const headers = new Headers(init.headers);
+        seen.push({
+          key: /Credential=([^/]+)\//u.exec(headers.get("authorization") ?? "")?.[1] ?? "",
+          token: headers.get("x-amz-security-token"),
+        });
+        return new Response(bytes, { status: 200, headers: { etag: '"etag-7"' } });
+      },
+    });
+    await adapters.mediaReader.read("media://immutable/operation-1/video/1");
+    await adapters.output.read(masterRef);
+    expect(seen).toEqual([
+      { key: "input-key", token: "input-session" },
+      { key: "output-key", token: "output-session" },
+    ]);
+  });
+});
+
 describe("host render attempt", () => {
   test("plans the render request from the frozen attempt facts", () => {
     expect(planHostRenderRequest(facts)).toEqual({

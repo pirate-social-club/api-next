@@ -48,6 +48,12 @@ a read-only credential and scope the output credential to the master prefix,
 so the host cannot write any input object. Setting only one half of the input
 pair is refused at startup; it never falls back to the output pair.
 
+R2 temporary access credentials also carry a session token. Set
+`SONG_VIDEO_RENDER_R2_SESSION_TOKEN` with the output pair and
+`SONG_VIDEO_RENDER_R2_INPUT_SESSION_TOKEN` with the input pair; each is signed
+as `x-amz-security-token` on that pair's requests. An input session token
+without its pair is refused.
+
 ## Running
 
 Two runnable paths are provided. The mounted-checkout invocation checks the
