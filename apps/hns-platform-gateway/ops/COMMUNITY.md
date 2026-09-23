@@ -87,6 +87,17 @@ same exact registry reference and version installed at both Worker consumers.
 The Access pair is outbound only and is added solely to the configured Solid
 protected origin.
 
+For the isolated staging target, `scripts/staging-hns-gateway-role-cli.ts`
+prints the exact dependency grant plan and digest with `--role <sql-role>`.
+Execution additionally requires `--execute --approve-plan-sha256 <digest>`
+and an administrator URL supplied through the approved secret wrapper. It
+verifies the provider database and branch, applies the grants transactionally,
+and refuses any extra table read or table write privilege at readback. The
+credential itself is not an argument or receipt. The operator must first
+create a dedicated role without inherited broad roles and retain its
+connection URL in staging-only custody. The command does not create a role,
+install credentials, start a gateway, or make a product state change.
+
 The production, shadow, and rollback unit names are respectively
 `pirate-hns-community-app-gateway.service`,
 `pirate-hns-community-app-gateway-shadow.service`, and
