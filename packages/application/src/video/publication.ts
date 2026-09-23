@@ -641,7 +641,9 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
         reason_code:
           state.abandonmentReason === "author_abandoned_unresolved_provider"
             ? "author_abandoned_unresolved_provider"
-            : "author_cancelled_before_finalize",
+            : state.abandonmentReason === "upload_expectation_mismatch"
+              ? "upload_expectation_mismatch"
+              : "author_cancelled_before_finalize",
       };
   }
 }
@@ -1159,7 +1161,12 @@ export async function finalizeVideoSubmission(
     throw new InternalError({ message: "Video upload inspection failed" });
   }
   if (inspection.outcome !== "ready") {
-    const abandoned: VideoSubmissionState = { ...record.state, status: "abandoned", phase: null };
+    const abandoned: VideoSubmissionState = {
+      ...record.state,
+      status: "abandoned",
+      phase: null,
+      abandonmentReason: "upload_expectation_mismatch",
+    };
     const response = await snapshot(
       projectVideoSubmission({ ...record, state: abandoned, updatedAt: services.nowIso() }),
     );

@@ -300,6 +300,7 @@ export type VideoSubmissionState = Readonly<{
   abandonmentReason?:
     | "author_cancelled_before_finalize"
     | "author_abandoned_unresolved_provider"
+    | "upload_expectation_mismatch"
     | null;
   postId: string | null;
 }>;
