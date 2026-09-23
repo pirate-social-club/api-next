@@ -5,8 +5,11 @@ deployment is changed. Use only after the dated authorization package is
 complete and explicitly approved. The original single-Study CLI remains intact.
 
 The v2 input schema is `MultiGoldenInput` in
-`scripts/megapot-golden-multi-input.ts`. It requires at least two eligible
-accounts covering Study and Karaoke, plus a distinct unverified negative.
+`scripts/megapot-golden-multi-input.ts`. It requires at least one eligible
+account covering Study and Karaoke, plus a distinct unverified negative.
+One eligible account may complete both activities and receive one share.
+Several eligible accounts remain supported to exercise a multi-beneficiary
+split. The one-account mode does not prove a live split among distinct people.
 Every participant names a v2 preflight artifact and its own environment-variable
 credential prefix. Artifacts are reviewed ceremony evidence, not authority to
 seed receipts. Their exact wallet and Very witness are rechecked read-only
