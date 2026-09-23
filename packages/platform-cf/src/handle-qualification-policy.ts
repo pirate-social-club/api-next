@@ -38,6 +38,16 @@ export function handleQualificationPolicyRefFromRow(row: Row): HandleQualificati
         identity.policy_id,
         handleNationalityPolicyFromRow(row),
       );
+    // The platform members-only Spaces policy keeps the public five-member
+    // curated reference; its provider_binding_hash member binds the local
+    // Spec 016 membership source and authorizes no provider call
+    // (spec 012 §5.3.13.12).
+    case "spaces_membership_v1":
+      return {
+        kind: "curated_policy_v1",
+        ...identity,
+        provider_binding_hash: text(row, "provider_binding_hash"),
+      };
     default:
       throw new Error("Invalid qualification policy kind");
   }

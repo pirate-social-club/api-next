@@ -2,6 +2,7 @@ import type {
   CommunityHandleOffering,
   CommunityHandleOfferingManagementItemV2,
   CreateHandleQuoteResultV3,
+  CreateHandleSpacesQuoteResultV1,
   HandleClaimV2,
   HandleCuratedQualificationPolicyRefV1,
   HandleGrantPrivateV2,
@@ -11,6 +12,8 @@ import type {
   HandleSafeReasonV2,
   HandleSaleNamespaceManagementItemV1,
   HandleSalesManagementContextV1,
+  HandleSpacesClaimV1,
+  HandleSpacesReservationV1,
   PublicHandleGrantV3,
   PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
@@ -143,6 +146,18 @@ export type CreateHandleQuoteResultV2 =
       reason: "evidence_required" | "qualification_unsatisfied";
     }>;
 
+/**
+ * Store results widen with the native Spaces successors (spec 012 §5.3.13.6),
+ * which are discriminated by `fulfillment.kind` and include the ruling-Q2
+ * `recipient_wallet_required` quote refusal. The public endpoint unions that
+ * serialize them are not wired yet, so no Spaces result reaches the wire.
+ */
+export type CreateHandleQuoteStoreResult =
+  | CreateHandleQuoteResultV3
+  | CreateHandleSpacesQuoteResultV1;
+export type HandleReservationStoreResult = HandleReservationV2 | HandleSpacesReservationV1;
+export type HandleClaimStoreResult = HandleClaimV2 | HandleSpacesClaimV1;
+
 export type HandleRecipientTokenPersistenceResultV1 = Readonly<{
   sealed: HandleRecipientTokenSealedV1;
   associatedData: string;
@@ -257,7 +272,7 @@ export interface HandleSalesStore {
       quoteId: string;
       actionId: string;
     }>,
-  ) => Effect.Effect<CreateHandleQuoteResultV3, HandleSalesFailure>;
+  ) => Effect.Effect<CreateHandleQuoteStoreResult, HandleSalesFailure>;
   readonly createReservation: (
     input: Readonly<{
       accountId: string;
@@ -269,7 +284,7 @@ export interface HandleSalesStore {
       actionId: string;
     }>,
   ) => Effect.Effect<
-    Readonly<{ reservation: HandleReservationV2; replayed: boolean }>,
+    Readonly<{ reservation: HandleReservationStoreResult; replayed: boolean }>,
     HandleSalesFailure
   >;
   readonly submitFreeClaim: (
@@ -281,14 +296,23 @@ export interface HandleSalesStore {
       idempotencyKey: string;
       claimId: string;
       grantId: string;
-      issuanceOperationId: string;
       actionId: string;
+      /**
+       * Ignored. The store derives the one issuance operation of the claim from
+       * the reserved offering's fulfillment with `handleIssuanceOperationIdV1`
+       * (spec 012 §5.3.13.7); the HNS operation id is unchanged. Accepted only
+       * so existing callers compile.
+       */
+      issuanceOperationId?: string;
     }>,
-  ) => Effect.Effect<Readonly<{ claim: HandleClaimV2; replayed: boolean }>, HandleSalesFailure>;
+  ) => Effect.Effect<
+    Readonly<{ claim: HandleClaimStoreResult; replayed: boolean }>,
+    HandleSalesFailure
+  >;
   readonly getClaim: (input: {
     readonly accountId: string;
     readonly claimId: string;
-  }) => Effect.Effect<HandleClaimV2 | null, HandleSalesStorageFailed>;
+  }) => Effect.Effect<HandleClaimStoreResult | null, HandleSalesStorageFailed>;
   readonly listPersonaGrants: (
     input: Readonly<{ personaId: string }> & PageInput,
   ) => Effect.Effect<
@@ -449,12 +473,10 @@ export function makeHandleSalesService(store: HandleSalesStore) {
       readonly idempotencyKey: string;
     }) =>
       Effect.gen(function* () {
-        const claimId = yield* nextId("handle_claim");
         return yield* store.submitFreeClaim({
           ...input,
-          claimId,
+          claimId: yield* nextId("handle_claim"),
           grantId: yield* nextId("handle_grant"),
-          issuanceOperationId: `issuance:hns-hosted:${claimId}`,
           actionId: yield* nextId("handle_claim_action"),
         });
       }),
