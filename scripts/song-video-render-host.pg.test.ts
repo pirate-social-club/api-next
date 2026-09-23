@@ -65,6 +65,8 @@ const SONG_POST = "post-son-video-host";
 const SONG_ASSET = "media://immutable/media-operation-song-host/audio/1";
 const LOOP_SONG_POST = "post-son-video-host-loop";
 const LOOP_SONG_ASSET = "media://immutable/media-operation-song-host-loop/audio/1";
+const MEASURE_SONG_POST = "post-son-video-host-measure";
+const MEASURE_SONG_ASSET = "media://immutable/media-operation-song-host-measure/audio/1";
 const LOOP_RESERVATION = "media-reservation-00000000-0000-4000-8000-0000000000e2";
 const LOOP_SUBMISSION = "media-submission-host-loop";
 const LOOP_OPERATION = "media-operation-host-loop";
@@ -400,7 +402,7 @@ suite("song-video render host entry point", () => {
     await admin.end().catch(() => undefined);
     if (directory.length > 0) await rm(directory, { recursive: true, force: true });
     if (cleanupError !== undefined) throw cleanupError;
-    if (completedTestCount === 3) await Bun.write(sentinelPath, sentinelContents);
+    if (completedTestCount === 4) await Bun.write(sentinelPath, sentinelContents);
   });
 
   function hostEnv(): Record<string, string> {
@@ -678,6 +680,122 @@ suite("song-video render host entry point", () => {
     expect((await gateway(new Request(captureGrant.url, { method: "HEAD" }))).status).toBe(409);
     completedTestCount += 1;
   }, 600_000);
+
+  test("a targeted measurement measures only the named song and replays as nothing", async () => {
+    await seedPublishedSongFixture(admin, {
+      songPostId: MEASURE_SONG_POST,
+      communityId: videoCommunity,
+      audioAssetRef: MEASURE_SONG_ASSET,
+      canonicalAudioSha256: songSha,
+      durationSamples: null,
+      title: "Host suite measured song",
+      contentRating: "general",
+      derivativeVideo: "allowed",
+      licensePreset: "commercial-remix",
+      commercialRemixShareBps: 1_000,
+    });
+    await admin.query(
+      `INSERT INTO media_song_canonical_timings
+         (song_post_id,audio_revision,song_community_id,canonical_audio_sha256,state)
+       VALUES ($1,1,$2,$3,'pending')`,
+      [MEASURE_SONG_POST, videoCommunity, songSha],
+    );
+    const songObject = objects.get(SONG_ASSET.replace("media://immutable/", "immutable/"));
+    if (songObject === undefined) throw new Error("song object missing");
+    const measureKey = MEASURE_SONG_ASSET.replace("media://immutable/", "immutable/");
+    objects.set(measureKey, { ...songObject, etag: "measure-song-etag" });
+
+    const timing = async (postId: string) =>
+      (
+        await client.query("SELECT * FROM media_song_canonical_timings WHERE song_post_id=$1", [
+          postId,
+        ])
+      ).rows[0];
+    const snapshot = async () => ({
+      loop: await timing(LOOP_SONG_POST),
+      attempts: (
+        await client.query("SELECT * FROM media_song_video_render_attempts ORDER BY attempt_id")
+      ).rows,
+      masters: (
+        await client.query("SELECT * FROM media_song_video_masters ORDER BY master_revision_id")
+      ).rows,
+    });
+    const unrelated = await snapshot();
+    expect(unrelated.loop.state).toBe("pending");
+    // The render selectors from the shared environment are cleared, and only
+    // a read credential is given: measuring needs no writing credential.
+    const measureEnv = {
+      SONG_VIDEO_RENDER_PLAN_ID: "",
+      SONG_VIDEO_RENDER_ATTEMPT_ID: "",
+      SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "",
+      SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "",
+      SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "test-input-access-key",
+      SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "test-input-secret-key",
+      SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID: MEASURE_SONG_POST,
+      SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION: "1",
+    };
+    const signedBefore = signedBy.length;
+    const putsBefore = putCount;
+    const first = await runHost(measureEnv);
+    expect(first.exit).toBe(0);
+    expect(JSON.parse(first.stdout)).toEqual({
+      song_post_id: MEASURE_SONG_POST,
+      audio_revision: 1,
+      status: "measured",
+      duration_samples: songDurationSamples,
+    });
+    const measured = await timing(MEASURE_SONG_POST);
+    expect(measured).toMatchObject({
+      state: "ready",
+      duration_samples: String(songDurationSamples),
+      canonical_audio_sha256: songSha,
+      attempts: 1,
+      lease_expires_at: null,
+    });
+    const requests = signedBy.slice(signedBefore);
+    expect(requests.length).toBeGreaterThan(0);
+    expect(
+      requests.every(
+        (request) =>
+          request.method === "GET" &&
+          request.key === measureKey &&
+          request.accessKeyId === "test-input-access-key",
+      ),
+    ).toBe(true);
+    expect(putCount).toBe(putsBefore);
+    expect(await snapshot()).toEqual(unrelated);
+
+    // Replay: the revision is concluded, so nothing is claimed, read or written.
+    const signedBeforeReplay = signedBy.length;
+    const replay = await runHost(measureEnv);
+    expect(replay.exit).toBe(0);
+    expect(JSON.parse(replay.stdout)).toEqual({
+      song_post_id: MEASURE_SONG_POST,
+      audio_revision: 1,
+      status: "not_claimed",
+    });
+    expect(await timing(MEASURE_SONG_POST)).toEqual(measured);
+    expect(signedBy.length).toBe(signedBeforeReplay);
+    expect(await snapshot()).toEqual(unrelated);
+
+    // A measurement combined with a render selector is refused before any
+    // database or bucket access, with the operator-facing reason intact.
+    const conflict = Bun.spawn([process.execPath, "scripts/song-video-render-host.ts"], {
+      env: { ...hostEnv(), ...measureEnv, SONG_VIDEO_RENDER_PLAN_ID: planId },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [conflictExit, conflictErr] = await Promise.all([
+      conflict.exited,
+      new Response(conflict.stderr).text(),
+    ]);
+    expect(conflictExit).toBe(1);
+    expect(conflictErr.trim()).toBe(
+      "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID conflicts with SONG_VIDEO_RENDER_PLAN_ID",
+    );
+    expect(signedBy.length).toBe(signedBeforeReplay);
+    completedTestCount += 1;
+  }, 300_000);
 
   test("the loop measures a pending song and claims without a plan id until signalled", async () => {
     const result = await runHostLoop();

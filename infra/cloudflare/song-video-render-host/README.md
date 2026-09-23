@@ -80,6 +80,22 @@ holds the claim or the attempt is concluded, and exit 2 when that execution
 stayed pending. A pending attempt is never retried by another pass; it is
 resolved by reconciliation.
 
+## Measuring one song
+
+Setting `SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID` and
+`SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION` runs one targeted measurement instead
+of rendering. It claims only that song revision's pending canonical timing,
+with the same 300-second lease and `SKIP LOCKED` claim the loop uses, measures
+it, prints one JSON line and exits. No other pending timing is read or changed,
+and no render attempt is claimed. The outcome is `measured` with
+`duration_samples`, `failed` with `failure_code`, `not_claimed` when the
+revision is absent, already concluded, leased or locked, or `deferred` when the
+prober was unavailable and the revision stays pending. It exits 0, or 2 when
+deferred. Only a read credential is needed: the input pair when set, otherwise
+the output pair. Naming only one of the two variables, or combining them with
+`SONG_VIDEO_RENDER_PLAN_ID` or `SONG_VIDEO_RENDER_ATTEMPT_ID`, is refused at
+startup.
+
 ## What this does not authorize
 
 Host, cost ceiling, window and execution each still require their separate

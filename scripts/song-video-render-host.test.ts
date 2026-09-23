@@ -7,6 +7,7 @@ import {
   executeHostRenderAttempt,
   type HostRenderFacts,
   planHostRenderRequest,
+  readHostMode,
 } from "./song-video-render-host.ts";
 import {
   type HostR2Transport,
@@ -15,6 +16,7 @@ import {
   makeHostMediaReader,
   makeHostR2Adapters,
   readHostR2Credentials,
+  readHostR2ReadCredentials,
 } from "./song-video-render-host-r2.ts";
 
 const bucket = "media-immutable-originals";
@@ -301,6 +303,89 @@ describe("host R2 credentials", () => {
     await adapters.mediaReader.read("media://immutable/operation-1/video/1");
     await adapters.output.read(masterRef);
     expect(keys).toEqual(["output-key", "output-key"]);
+  });
+});
+
+describe("host operation mode", () => {
+  const measure = {
+    SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID: "song-post-1",
+    SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION: "2",
+  };
+
+  test("keeps the existing loop and targeted render selections", () => {
+    expect(readHostMode({})).toEqual({ kind: "loop" });
+    expect(readHostMode({ SONG_VIDEO_RENDER_PLAN_ID: " plan-1 " })).toEqual({
+      kind: "render",
+      planId: "plan-1",
+    });
+    expect(
+      readHostMode({
+        SONG_VIDEO_RENDER_PLAN_ID: "plan-1",
+        SONG_VIDEO_RENDER_ATTEMPT_ID: "attempt-1",
+      }),
+    ).toEqual({ kind: "render", planId: "plan-1", attemptId: "attempt-1" });
+    expect(readHostMode({ SONG_VIDEO_RENDER_ATTEMPT_ID: "attempt-1" })).toEqual({
+      kind: "loop",
+      attemptId: "attempt-1",
+    });
+  });
+
+  test("measures one completely named song revision", () => {
+    expect(readHostMode(measure)).toEqual({
+      kind: "measure",
+      target: { songPostId: "song-post-1", audioRevision: 2 },
+    });
+  });
+
+  test("refuses an incomplete or malformed measurement selector", () => {
+    expect(() => readHostMode({ SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID: "song-post-1" })).toThrow(
+      "SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION is required",
+    );
+    expect(() => readHostMode({ SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION: "2" })).toThrow(
+      "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID is required",
+    );
+    for (const revision of ["0", "-1", "1.5", "01", "2e3", "9007199254740993"]) {
+      expect(() =>
+        readHostMode({ ...measure, SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION: revision }),
+      ).toThrow("SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION is invalid");
+    }
+  });
+
+  test("refuses a measurement combined with a render selector", () => {
+    expect(() => readHostMode({ ...measure, SONG_VIDEO_RENDER_PLAN_ID: "plan-1" })).toThrow(
+      "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID conflicts with SONG_VIDEO_RENDER_PLAN_ID",
+    );
+    expect(() => readHostMode({ ...measure, SONG_VIDEO_RENDER_ATTEMPT_ID: "attempt-1" })).toThrow(
+      "SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID conflicts with SONG_VIDEO_RENDER_ATTEMPT_ID",
+    );
+    expect(() =>
+      readHostMode({
+        SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION: "2",
+        SONG_VIDEO_RENDER_PLAN_ID: "p",
+      }),
+    ).toThrow("SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID conflicts with SONG_VIDEO_RENDER_PLAN_ID");
+  });
+
+  test("a measurement reads with the input pair and needs no writing credential", () => {
+    expect(
+      readHostR2ReadCredentials({
+        SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "input-key",
+        SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY: "input-secret",
+      }),
+    ).toEqual({ accessKeyId: "input-key", secretAccessKey: "input-secret" });
+    expect(
+      readHostR2ReadCredentials({
+        SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "output-key",
+        SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "output-secret",
+      }),
+    ).toEqual({ accessKeyId: "output-key", secretAccessKey: "output-secret" });
+    expect(() =>
+      readHostR2ReadCredentials({
+        SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID: "output-key",
+        SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY: "output-secret",
+        SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID: "input-key",
+      }),
+    ).toThrow("SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY is required");
   });
 });
 
