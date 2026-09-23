@@ -192,6 +192,10 @@
         {
           "pattern": "api-next-staging.pirate.sc",
           "custom_domain": true
+        },
+        {
+          "pattern": "hns-community-api-staging.pirate.sc",
+          "custom_domain": true
         }
       ],
       "durable_objects": {
@@ -310,14 +314,14 @@
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_COMMUNITY_APP_API_ENABLED": "false",
         "HNS_HANDLE_HOST_API_ENABLED": "false",
-        "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE": "",
-        "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE": "",
-        "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "",
-        "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "0",
-        "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "-1",
+        "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api-staging.pirate.sc",
+        "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "https://piratesocialclub.cloudflareaccess.com",
+        "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
+        "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE": "f077cbaec4e7c6ff9ceaf0ebf5b3c5f4ec9d01a35fb4275deb05e33179143818",
+        "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE": "pirate:hns-forwarder-v3:staging-community-app:v1",
+        "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "2026-09-23-01",
+        "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "300",
+        "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "5",
         "HNS_EDGE_STATUS_ENABLED": "false",
         "HNS_EDGE_STATUS_ACCESS_ISSUER": "",
         "HNS_EDGE_STATUS_ACCESS_JWKS_URL": "",
