@@ -4,22 +4,27 @@
   "package": "@pirate/api-client",
   "version": "0.89.0",
   "sourceBranch": "feat/persona-song-library",
-  "sourceBase": "186fad9a3ca927eabea564e24a22e7beb7951754",
-  "validatedSourceCommit": "pending",
-  "pullRequest": null,
+  "sourceBase": "90df0c764fa614f27fc92c74c96c15e87f9e0367",
+  "validatedSourceCommit": "a71f61245c3b923cf9f6c05f148cb94e54f8b92b",
+  "pullRequest": 414,
   "wireContract": "Add two additive reads: GET /personas/{persona_id}/songs lists the selected persona's private song activity library (songs enter on study, karaoke or dance session start, deduplicated, most recent first, paginated), and GET /songs/trending lists public trending songs ranked by distinct active accounts over seven days with a three-account minimum. No existing operation changes.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.89.0.tgz",
     "sha256": "822ee0c0469a0391f081a75a69d8186a161e38b649c771af41c5425471886002"
   },
   "validation": {
-    "status": "Rebased local candidate; gates in progress",
-    "passed": [],
+    "status": "Rebased candidate passed required local repository and PostgreSQL gates and all hosted required checks; exact-head review findings addressed",
+    "passed": [
+      "Contract generation",
+      "PostgreSQL baseline regeneration with migration 0202 after current main through 0201",
+      "Immutable package creation from the generated 0.89.0 client",
+      "Repository check and complete unit, Node and Workerd test graph",
+      "Baseline-backed preparation of every song library statement",
+      "Hosted required checks including PostgreSQL 17 general shards 0-3, namespace, recovery and PostgreSQL 18 shape"
+    ],
     "remaining": [
-      "Repository check and unit, Node and Workerd tests",
-      "Full PostgreSQL suite",
-      "Hosted required checks on the pull-request head",
-      "Paired Solid 0.89.0 adoption"
+      "Paired Solid 0.89.0 adoption and local browser qualification",
+      "Guarded staging HTTP release"
     ],
     "operationalBoundary": "No package registry publication, migration execution, deployment, credential use or live product mutation occurred."
   }
