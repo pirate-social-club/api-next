@@ -30,6 +30,7 @@ import {
 import { makeControlPlaneHandleSalesStore } from "./handle-sales-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneSpacesReconciliationStore } from "./spaces-reconciliation-repository.ts";
 import { mintSpacesRegistryCredentialV1 } from "./spaces-registry-credential.ts";
 import { makeControlPlaneSpacesRegistryStore } from "./spaces-registry-repository.ts";
 import {
@@ -58,7 +59,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 15;
+const testCount = 20;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -99,6 +100,9 @@ const spacesStore = (connection: string): SpacesSaleNamespaceStore =>
 
 const registryStore = (connection: string): SpacesRegistryStore =>
   makeControlPlaneSpacesRegistryStore(makeDirectPostgresControlPlaneLayer(connection));
+
+const reconciliationStore = (connection: string) =>
+  makeControlPlaneSpacesReconciliationStore(makeDirectPostgresControlPlaneLayer(connection));
 
 async function registryCredential(connection: string) {
   const result = await Effect.runPromise(
@@ -1249,7 +1253,7 @@ suite("Spaces quote, reservation, and atomic claim", () => {
                FROM handle_claims AS claim WHERE claim.claim_id='claim-shape'`,
           [communityId],
         ),
-      ).rejects.toThrow("require verified final issuance evidence");
+      ).rejects.toThrow("requires matching final issuance evidence");
 
       // Registry items move forward only; a delivered item is never withdrawn.
       const registry = registryStore(connection);
@@ -1683,6 +1687,231 @@ suite("Spaces private registry delivery and settlement", () => {
           store.authenticate({ token: rotated.token, environment: "development" }),
         ),
       ).not.toBeNull();
+    });
+    completed++;
+  }, 60_000);
+});
+
+suite("Spaces final issuance reconciliation", () => {
+  const finalEvidence = () => ({
+    certificate_sha256_hex: "a".repeat(64),
+    commitment_txid_hex: "b".repeat(64),
+    commitment_root_hex: "c".repeat(64),
+    mined_height: 100,
+    verified_tip_height: 245,
+    verifier_id: "independent-regtest-verifier",
+    verifier_version: "fixture-v1",
+    observed_at: new Date(Date.now() - 1_000).toISOString(),
+  });
+
+  test("leases a claim without callbacks and finalizes evidence, grant, fence and cap once", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "verifiedname", "verified-name");
+      const store = reconciliationStore(connection);
+      const due = await Effect.runPromise(store.leaseDue(8));
+      expect(due).toHaveLength(1);
+      const target = due[0];
+      if (target === undefined) throw new Error("missing due claim");
+      expect(target.claim_id).toBe(claim.claim_id);
+      expect(await Effect.runPromise(store.finalize(target, finalEvidence()))).toBe("issued");
+      expect(await Effect.runPromise(store.finalize(target, finalEvidence()))).toBe("stale");
+      expect(await Effect.runPromise(store.leaseDue(8))).toEqual([]);
+      expect(
+        (
+          await admin.query("SELECT state,grant_id FROM handle_claims WHERE claim_id=$1", [
+            claim.claim_id,
+          ])
+        ).rows[0],
+      ).toMatchObject({ state: "issued", grant_id: expect.any(String) });
+      expect(
+        (
+          await admin.query("SELECT state FROM spaces_registry_items WHERE claim_id=$1", [
+            claim.claim_id,
+          ])
+        ).rows[0]?.state,
+      ).toBe("withdrawn");
+      expect(
+        (
+          await admin.query(
+            "SELECT status,lease_token FROM spaces_issuance_verifications WHERE claim_id=$1",
+            [claim.claim_id],
+          )
+        ).rows[0],
+      ).toMatchObject({ status: "verified", lease_token: null });
+      expect(
+        await count(admin, "spaces_final_issuance_evidence", "claim_id=$1", [claim.claim_id]),
+      ).toBe(1);
+      expect(
+        await count(
+          admin,
+          "handle_grants",
+          "claim_id=$1 AND spaces_final_evidence_id IS NOT NULL",
+          [claim.claim_id],
+        ),
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT pending_issuance_count,active_grant_count FROM handle_account_offering_grant_counters WHERE offering_id=$1",
+            [offeringId],
+          )
+        ).rows[0],
+      ).toMatchObject({ pending_issuance_count: "0", active_grant_count: "1" });
+      const publicGrant = await Effect.runPromise(
+        salesStore(connection).getPublicGrant({
+          family: "spaces",
+          namespaceRoot: spacesRoot,
+          handleLabel: "verifiedname",
+        }),
+      );
+      expect(publicGrant?.host).toEqual({ kind: "not_applicable" });
+    });
+    completed++;
+  }, 60_000);
+
+  test("refuses non-final heights and stale leases without writing a grant", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "leasefenced", "lease-fenced");
+      const store = reconciliationStore(connection);
+      const first = (await Effect.runPromise(store.leaseDue(8)))[0];
+      if (first === undefined) throw new Error("missing first lease");
+      expect(
+        await failureOf(store.finalize(first, { ...finalEvidence(), verified_tip_height: 244 })),
+      ).toMatchObject({ reason: "invalid-row" });
+      await admin.query(
+        `UPDATE spaces_issuance_verifications
+            SET leased_until=clock_timestamp()-interval '1 second',updated_at=clock_timestamp()
+          WHERE claim_id=$1`,
+        [claim.claim_id],
+      );
+      const second = (await Effect.runPromise(store.leaseDue(8)))[0];
+      if (second === undefined) throw new Error("missing second lease");
+      expect(second.lease_token).not.toBe(first.lease_token);
+      expect(await Effect.runPromise(store.finalize(first, finalEvidence()))).toBe("stale");
+      expect(await count(admin, "handle_grants", "claim_id=$1", [claim.claim_id])).toBe(0);
+      expect(await Effect.runPromise(store.retryLater(second))).toBe("scheduled");
+    });
+    completed++;
+  }, 60_000);
+
+  test("a verified final name held by another script becomes a permanent conflict", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "otherowner", "other-owner");
+      const store = reconciliationStore(connection);
+      const target = (await Effect.runPromise(store.leaseDue(8)))[0];
+      if (target === undefined) throw new Error("missing due claim");
+      expect(
+        await Effect.runPromise(
+          store.recordConflict(target, `5120${"2".repeat(64)}`, finalEvidence()),
+        ),
+      ).toBe("conflict");
+      expect(
+        (
+          await admin.query("SELECT state,safe_reason FROM handle_claims WHERE claim_id=$1", [
+            claim.claim_id,
+          ])
+        ).rows[0],
+      ).toMatchObject({ state: "issuance_failed", safe_reason: "handle_unavailable" });
+      expect(
+        (
+          await admin.query(
+            "SELECT pending_claim_id,external_conflict_observation_id FROM handle_key_fences WHERE family='spaces' AND namespace_root=$1 AND handle_label='otherowner'",
+            [spacesRoot],
+          )
+        ).rows[0],
+      ).toMatchObject({
+        pending_claim_id: null,
+        external_conflict_observation_id: expect.any(String),
+      });
+      expect(
+        await count(admin, "spaces_final_conflict_evidence", "claim_id=$1", [claim.claim_id]),
+      ).toBe(1);
+      expect(await count(admin, "handle_grants", "claim_id=$1", [claim.claim_id])).toBe(0);
+      expect(
+        await Effect.runPromise(
+          store.recordConflict(target, `5120${"2".repeat(64)}`, finalEvidence()),
+        ),
+      ).toBe("stale");
+    });
+    completed++;
+  }, 60_000);
+
+  test("marks a pending claim overdue and durably acknowledges a scope alert", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "overduename", "overdue");
+      const store = reconciliationStore(connection);
+      const credential = await registryCredential(connection);
+      await Effect.runPromise(
+        registryStore(connection).pending({
+          credential: credential.authenticated,
+          space: { kind: "numeric", raw: "#3" },
+          capacity: 8,
+        }),
+      );
+      const anomalies = await Effect.runPromise(store.unalertedScopeAnomalies(8));
+      expect(anomalies).toHaveLength(1);
+      expect(anomalies[0]?.reason).toBe("numeric_space");
+      if (anomalies[0] === undefined) throw new Error("missing scope anomaly");
+      await Effect.runPromise(store.markScopeAnomalyAlerted(anomalies[0].anomaly_id));
+      expect(await Effect.runPromise(store.unalertedScopeAnomalies(8))).toEqual([]);
+      await Bun.sleep(1_100);
+      expect(await Effect.runPromise(store.markOverdue(1, 8))).toEqual([claim.claim_id]);
+      expect(await Effect.runPromise(store.markOverdue(1, 8))).toEqual([]);
+      expect(await Effect.runPromise(store.unalertedOverdue(8))).toEqual([claim.claim_id]);
+      await Effect.runPromise(store.markOverdueAlerted(claim.claim_id));
+      expect(await Effect.runPromise(store.unalertedOverdue(8))).toEqual([]);
+      expect(
+        (await admin.query("SELECT state FROM handle_claims WHERE claim_id=$1", [claim.claim_id]))
+          .rows[0]?.state,
+      ).toBe("issuance_pending");
+      const read = await Effect.runPromise(
+        salesStore(connection).getClaim({
+          accountId: "registry-overdue",
+          claimId: claim.claim_id,
+        }),
+      );
+      expect(read?.fulfillment.kind).toBe("spaces_native_v1");
+      expect(spacesClaim(read).delayed).toBe(true);
+    });
+    completed++;
+  }, 60_000);
+
+  test("tombstones a grant if its persona retires while issuance is pending", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const claim = await registryClaim(admin, connection, "retiredname", "retired-name");
+      const store = reconciliationStore(connection);
+      const target = (await Effect.runPromise(store.leaseDue(8)))[0];
+      if (target === undefined) throw new Error("missing due claim");
+      await admin.query("BEGIN");
+      await admin.query(
+        `UPDATE persona_wallet_assignments
+            SET status='tombstoned',tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+          WHERE persona_id=$1 AND status IN ('active','pending')`,
+        [claim.owner_persona_id],
+      );
+      await admin.query(
+        "UPDATE personas SET status='retired',retired_at=clock_timestamp() WHERE persona_id=$1",
+        [claim.owner_persona_id],
+      );
+      await admin.query("COMMIT");
+      expect(await Effect.runPromise(store.finalize(target, finalEvidence()))).toBe("issued");
+      expect(
+        (await admin.query("SELECT status FROM handle_grants WHERE claim_id=$1", [claim.claim_id]))
+          .rows[0]?.status,
+      ).toBe("tombstoned");
+      expect(
+        (
+          await admin.query(
+            "SELECT pending_issuance_count,active_grant_count FROM handle_account_offering_grant_counters WHERE offering_id=$1",
+            [offeringId],
+          )
+        ).rows[0],
+      ).toMatchObject({ pending_issuance_count: "0", active_grant_count: "0" });
     });
     completed++;
   }, 60_000);

@@ -248,14 +248,17 @@ const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
       handle_label: handleLabel,
     },
     display_identifier: text(row, "display_identifier"),
-    host: activationEffective
-      ? {
-          kind: "available",
-          normalized_host: `${handleLabel}.${namespaceRoot}`,
-          sale_namespace_activation_generation: activationGeneration,
-          grant_generation: grantGeneration,
-        }
-      : { kind: "unavailable", reason: "sale_namespace_inactive" },
+    host:
+      row.family === "spaces"
+        ? { kind: "not_applicable" }
+        : activationEffective
+          ? {
+              kind: "available",
+              normalized_host: `${handleLabel}.${namespaceRoot}`,
+              sale_namespace_activation_generation: activationGeneration,
+              grant_generation: grantGeneration,
+            }
+          : { kind: "unavailable", reason: "sale_namespace_inactive" },
     issued_at: instant(row.issued_at),
   };
 };
@@ -3758,7 +3761,7 @@ export function makeControlPlaneHandleSalesRepository() {
       }),
     getPublicGrant: (input: Parameters<HandleSalesStore["getPublicGrant"]>[0]) =>
       Effect.gen(function* () {
-        if (input.family !== "hns" || input.namespaceRoot === "pirate") return null;
+        if (input.family === "hns" && input.namespaceRoot === "pirate") return null;
         const db = yield* ControlPlaneDb;
         const result = yield* mapped(
           db.execute<Row>({
@@ -3786,10 +3789,10 @@ export function makeControlPlaneHandleSalesRepository() {
                           ) AS activation_effective
                      FROM handle_grants AS handle_grant
                      JOIN personas AS persona ON persona.persona_id=handle_grant.owner_persona_id
-                    WHERE handle_grant.family='hns' AND handle_grant.namespace_root=$1
+                    WHERE handle_grant.family=$3 AND handle_grant.namespace_root=$1
                       AND handle_grant.handle_label=$2
                       AND handle_grant.status='active' AND persona.status='active'`,
-            values: [input.namespaceRoot, input.handleLabel],
+            values: [input.namespaceRoot, input.handleLabel, input.family],
             readonly: true,
           }),
         );
