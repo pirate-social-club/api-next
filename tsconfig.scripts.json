@@ -25,6 +25,8 @@
     "scripts/megapot-golden-preflight-v2.test.ts",
     "scripts/staging-hns-cutover-probe-seed.ts",
     "scripts/staging-hns-cutover-probe-seed.test.ts",
+    "scripts/staging-hns-provisioner-grants.ts",
+    "scripts/staging-hns-provisioner-grants.test.ts",
     "scripts/staging-karaoke-participant.test.ts",
     "scripts/megapot-base-sepolia-preflight.ts",
     "scripts/postgres-baseline-normalization.ts",
