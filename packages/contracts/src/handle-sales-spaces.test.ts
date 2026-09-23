@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { SaleNamespaceActivationV1 } from "./handle-sales.ts";
+import { HandleClaimV2, HandleQuoteV2, SaleNamespaceActivationV1 } from "./handle-sales.ts";
 import {
+  CreateHandleSpacesQuoteResultV1,
   CreateSpacesSaleNamespaceActivationV1,
+  HandleSpacesClaimV1,
+  HandleSpacesQuoteV1,
+  HandleSpacesReservationV1,
   SpacesOperatorFundingV1,
   SpacesSaleNamespaceActivationV1,
   SpacesSaleReadinessV1,
@@ -113,5 +117,164 @@ describe("Spaces sale-namespace activation contract", () => {
     expect(decodes(SpacesOperatorFundingV1, { ...funding, wallet_reference: "wallet" })).toBe(
       false,
     );
+  });
+});
+
+/** The ratified quote_v3 vector members (spec 012 §5.3.13.6), as the owner sees them. */
+const recipient = {
+  kind: "persona_taproot_v1",
+  network: "mainnet",
+  script_pubkey_hex: "512050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+} as const;
+const quote = {
+  quote_id: "quote_spaces_01",
+  quote_hash: "7b07f6abd5ddbc68e09349189083cb867be12bc8dfcf29cf911970cacc5e65a6",
+  offering_id: "offering_spaces_free_01",
+  offering_revision: 1,
+  offering_hash: "6e65d5999e7a5143e3d440375aeaffd9f2f98a3f4fbc317033925e5850f47051",
+  sale_namespace_activation_id: "sale_namespace_activation_spaces_01",
+  sale_namespace_activation_generation: 2,
+  fulfillment: { kind: "spaces_native_v1" },
+  owner_persona_id: "persona_public_01",
+  recipient,
+  handle: { family: "spaces", namespace_root: "charizard", handle_label: "longname" },
+  display_identifier: "longname@charizard",
+  pricing: {
+    kind: "free_v1",
+    pricing_id: "platform_free_handles_v1",
+    pricing_revision: 1,
+    pricing_hash: "cb24f410dbe3ea268df0ea438d56c48dc060f2319794ab2913717585b74809f8",
+    atomic_amount: "0",
+  },
+  eligibility: {
+    policy_revision: 1,
+    policy_hash: "f834457fe6eef0f6c4762d043d976c3662baa87281e3c13864e79c969cd06482",
+    decision: "passed",
+    evidence_use_ids: [],
+    evaluated_at: "2026-09-23T16:00:00.000Z",
+  },
+  status: "quoted",
+  quoted_at: "2026-09-23T16:00:00.000Z",
+  expires_at: "2026-09-23T16:02:00.000Z",
+} as const;
+
+describe("Spaces quote, reservation, and claim contracts", () => {
+  test("carries the owner-only recipient and never cross-decodes with the HNS quote", () => {
+    expect(decodes(HandleSpacesQuoteV1, quote)).toBe(true);
+    expect(decodes(HandleQuoteV2, quote)).toBe(false);
+    for (const invalid of [
+      { ...quote, recipient: { ...recipient, taproot_assignment_id: "taproot_assignment_01" } },
+      { ...quote, recipient: { ...recipient, script_pubkey_hex: `0014${"a".repeat(40)}` } },
+      { ...quote, recipient: { ...recipient, network: "signet" } },
+      { ...quote, fulfillment: { kind: "hosted_persona_v1" } },
+      { ...quote, handle: { ...quote.handle, family: "hns" } },
+      { ...quote, handle: { ...quote.handle, handle_label: "xn--longname" } },
+      { ...quote, handle: { ...quote.handle, handle_label: "a".repeat(63) } },
+      { ...quote, handle: { ...quote.handle, handle_label: "Longname" } },
+    ]) {
+      expect(decodes(HandleSpacesQuoteV1, invalid), JSON.stringify(invalid)).toBe(false);
+    }
+  });
+
+  test("decodes the Spaces reservation and a private pending claim with a derived delay", () => {
+    const reservation = {
+      reservation_id: "reservation_spaces_01",
+      reservation_hash: "1d05880ef120befd4df1978c4cd5d3506ff4feb2ff419e58ecfe3b169051a1a5",
+      quote_id: quote.quote_id,
+      quote_hash: quote.quote_hash,
+      offering_id: quote.offering_id,
+      offering_hash: quote.offering_hash,
+      sale_namespace_activation_id: quote.sale_namespace_activation_id,
+      sale_namespace_activation_generation: 2,
+      fulfillment: { kind: "spaces_native_v1" },
+      owner_persona_id: quote.owner_persona_id,
+      recipient,
+      handle: quote.handle,
+      status: "consumed",
+      reserved_at: "2026-09-23T16:00:30.000Z",
+      expires_at: "2026-09-23T16:05:30.000Z",
+    } as const;
+    expect(decodes(HandleSpacesReservationV1, reservation)).toBe(true);
+    const claim = {
+      claim_id: "claim_spaces_01",
+      owner_persona_id: quote.owner_persona_id,
+      offering_id: quote.offering_id,
+      offering_hash: quote.offering_hash,
+      quote_id: quote.quote_id,
+      reservation_id: reservation.reservation_id,
+      reservation_hash: reservation.reservation_hash,
+      sale_namespace_activation_id: quote.sale_namespace_activation_id,
+      sale_namespace_activation_generation: 2,
+      fulfillment: { kind: "spaces_native_v1" },
+      recipient,
+      handle: quote.handle,
+      display_identifier: quote.display_identifier,
+      payment: {
+        kind: "not_required_v1",
+        pricing_revision: 1,
+        pricing_hash: quote.pricing.pricing_hash,
+        atomic_amount: "0",
+        status: "not_applicable",
+      },
+      state: "issuance_pending",
+      delayed: true,
+      safe_reason: "issuance_pending",
+      grant: null,
+      created_at: "2026-09-23T16:01:00.000Z",
+      updated_at: "2026-09-23T16:01:00.000Z",
+    } as const;
+    expect(decodes(HandleSpacesClaimV1, claim)).toBe(true);
+    expect(
+      decodes(HandleSpacesClaimV1, { ...claim, safe_reason: "recipient_wallet_required" }),
+    ).toBe(true);
+    expect(decodes(HandleClaimV2, claim)).toBe(false);
+    for (const invalid of [
+      { ...claim, state: "blocked" },
+      { ...claim, delayed: undefined },
+      { ...claim, safe_reason: "commits_paused" },
+      { ...claim, recipient: { ...recipient, taproot_assignment_id: "taproot_assignment_01" } },
+    ]) {
+      expect(decodes(HandleSpacesClaimV1, invalid), JSON.stringify(invalid)).toBe(false);
+    }
+  });
+
+  test("refuses a quote without a recipient wallet or membership before any quote exists", () => {
+    const base = { offering_id: quote.offering_id, owner_persona_id: quote.owner_persona_id };
+    expect(
+      decodes(CreateHandleSpacesQuoteResultV1, {
+        kind: "recipient_wallet_required",
+        ...base,
+        reason: "recipient_wallet_required",
+      }),
+    ).toBe(true);
+    expect(
+      decodes(CreateHandleSpacesQuoteResultV1, {
+        kind: "eligibility_required",
+        ...base,
+        reason: "qualification_unsatisfied",
+      }),
+    ).toBe(true);
+    for (const invalid of [
+      { kind: "eligibility_required", ...base, reason: "evidence_required" },
+      {
+        kind: "recipient_wallet_required",
+        ...base,
+        reason: "recipient_wallet_required",
+        address: "bc1p",
+      },
+      {
+        kind: "nationality_required",
+        ...base,
+        qualification_intent_id: "intent",
+        reason: "evidence_required",
+      },
+    ]) {
+      expect(decodes(CreateHandleSpacesQuoteResultV1, invalid), JSON.stringify(invalid)).toBe(
+        false,
+      );
+    }
+    expect(
+      decodes(CreateHandleSpacesQuoteResultV1, { kind: "quoted", quote, replayed: false }),
+    ).toBe(true);
   });
 });

@@ -19,6 +19,8 @@ import type {
   HandleSaleNamespaceCandidateV1,
   HandleSaleNamespaceManagementItemV1,
   HandleSalesManagementContextV1,
+  HandleSpacesQuoteV1,
+  HandleSpacesReservationV1,
   PublicHandleGrantV3,
   PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
@@ -35,6 +37,7 @@ import {
   handleDirectGrantRecipientTokenRequestHash,
   handleFreePricingRevisionHash,
   handleGrantFinalizeV2Hash,
+  handleIssuanceOperationIdV1,
   handleOfferingRevisionV2Hash,
   handleOfferingRevisionV3Hash,
   handlePersonaLinkConfirmationRequestHash,
@@ -68,6 +71,14 @@ import {
   text,
 } from "./handle-sales-internals.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
+import {
+  createSpacesQuote,
+  createSpacesReservation,
+  readSpacesClaim,
+  spacesQuoteFromRow,
+  spacesReservationFromRow,
+  submitSpacesClaim,
+} from "./spaces-handle-claims.ts";
 
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -249,7 +260,13 @@ const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
   };
 };
 
+/**
+ * Decodes only the HNS offering wire. A Spaces offering pins the members-only
+ * policy and the Spaces grammar, so an HNS read path fails closed on it
+ * instead of serializing it with the HNS grammar id.
+ */
 const offeringFromRow = (row: Row): CommunityHandleOffering => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle offering family");
   const exactLabel = nullableText(row, "exact_label");
   const labelScope =
     text(row, "label_scope_kind") === "exact_label_v2"
@@ -389,6 +406,7 @@ const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagem
 };
 
 const quoteFromRow = (row: Row): HandleQuote => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle quote family");
   const quote: HandleQuoteV2 = {
     quote_id: text(row, "quote_id"),
     quote_hash: text(row, "quote_hash"),
@@ -430,7 +448,19 @@ const quoteFromRow = (row: Row): HandleQuote => {
   return { ...quote, eligibility: { kind: "curated_nationality_v1", snapshot: pin.eligibility } };
 };
 
-const reservationFromRow = (row: Row): HandleReservationV2 => ({
+const reservationFromRow = (row: Row): HandleReservationV2 => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle reservation family");
+  return hnsReservationFromRow(row);
+};
+
+/** Quotes, reservations, and claims are decoded by their own family. */
+const anyQuoteFromRow = (row: Row): HandleQuote | HandleSpacesQuoteV1 =>
+  row.family === "spaces" ? spacesQuoteFromRow(row) : quoteFromRow(row);
+
+const anyReservationFromRow = (row: Row): HandleReservationV2 | HandleSpacesReservationV1 =>
+  row.family === "spaces" ? spacesReservationFromRow(row) : reservationFromRow(row);
+
+const hnsReservationFromRow = (row: Row): HandleReservationV2 => ({
   reservation_id: text(row, "reservation_id"),
   reservation_hash: text(row, "reservation_hash"),
   quote_id: text(row, "quote_id"),
@@ -475,7 +505,12 @@ const grantFromRow = (row: Row, prefix = ""): HandleGrantPrivateV2 => ({
   issued_at: instant(row[`${prefix}issued_at`]),
 });
 
-const claimFromRow = (row: Row): HandleClaimV2 => ({
+const claimFromRow = (row: Row): HandleClaimV2 => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle claim family");
+  return hnsClaimFromRow(row);
+};
+
+const hnsClaimFromRow = (row: Row): HandleClaimV2 => ({
   claim_id: text(row, "claim_id"),
   owner_persona_id: text(row, "owner_persona_id"),
   offering_id: text(row, "offering_id"),
@@ -2532,7 +2567,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 });
                 return {
                   kind: "quoted" as const,
-                  quote: quoteFromRow(one(quote.rows, "quote replay")),
+                  quote: anyQuoteFromRow(one(quote.rows, "quote replay")),
                   replayed: true,
                 };
               }
@@ -2561,6 +2596,14 @@ export function makeControlPlaneHandleSalesRepository() {
                 readonly: false,
               });
               if (requested.rows[0] === undefined) return yield* reject("persona_unavailable");
+              if (requested.rows[0].family === "spaces") {
+                return yield* createSpacesQuote(transaction, {
+                  input,
+                  offering: requested.rows[0],
+                  endpoint,
+                  requestHash: hash,
+                });
+              }
               const requestedOffering = offeringFromRow(requested.rows[0]);
               const activationEffective = yield* transaction.execute<Row>({
                 label: "handle-sales.quote.activation-effective.read",
@@ -2911,7 +2954,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   return yield* reject("idempotency_conflict");
                 }
                 return {
-                  reservation: reservationFromRow(replay.rows[0]),
+                  reservation: anyReservationFromRow(replay.rows[0]),
                   replayed: true,
                 };
               }
@@ -2990,6 +3033,15 @@ export function makeControlPlaneHandleSalesRepository() {
                 readonly: false,
               });
               if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
+              if (quoteRow.family === "spaces") {
+                return yield* createSpacesReservation(transaction, {
+                  input,
+                  quote: quoteRow,
+                  now,
+                  endpoint,
+                  requestHash: hash,
+                });
+              }
               const policyKind = text(quoteRow, "policy_kind");
               const nationality =
                 policyKind === "curated_nationality_v1"
@@ -3230,6 +3282,14 @@ export function makeControlPlaneHandleSalesRepository() {
                 if (text(replay.rows[0], "request_hash") !== hash) {
                   return yield* reject("idempotency_conflict");
                 }
+                if (replay.rows[0].family === "spaces") {
+                  const spacesClaim = yield* readSpacesClaim(transaction, {
+                    claimId: text(replay.rows[0], "claim_id"),
+                    accountId: input.accountId,
+                  });
+                  if (spacesClaim === null) throw new Error("replayed Spaces claim is missing");
+                  return { claim: spacesClaim, replayed: true };
+                }
                 return { claim: claimFromRow(replay.rows[0]), replayed: true };
               }
               const reservationResult = yield* transaction.execute<Row>({
@@ -3281,6 +3341,15 @@ export function makeControlPlaneHandleSalesRepository() {
                   });
                 }
                 return yield* reject("reservation_expired");
+              }
+              if (row.family === "spaces") {
+                return yield* submitSpacesClaim(transaction, {
+                  input,
+                  reservation: row,
+                  now,
+                  endpoint,
+                  requestHash: hash,
+                });
               }
               const currentOffering = yield* transaction.execute<Row>({
                 label: "handle-sales.claim.offering-current.read",
@@ -3388,6 +3457,10 @@ export function makeControlPlaneHandleSalesRepository() {
               ) {
                 return yield* reject("account_grant_limit_reached");
               }
+              const issuanceOperationId = handleIssuanceOperationIdV1({
+                fulfillment_kind: "hosted_persona_v1",
+                claim_id: input.claimId,
+              });
               const finalizeHash = handleGrantFinalizeV2Hash({
                 claim_id: input.claimId,
                 reservation_id: input.reservationId,
@@ -3404,7 +3477,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 namespace_root: text(row, "namespace_root"),
                 handle_label: text(row, "handle_label"),
                 owner_persona_id: input.personaId,
-                issuance_operation_id: input.issuanceOperationId,
+                issuance_operation_id: issuanceOperationId,
                 claim_request_hash: hash,
               }).sha256;
               yield* transaction.execute({
@@ -3438,7 +3511,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   text(row, "display_identifier"),
                   integer(row, "pricing_revision"),
                   text(row, "pricing_hash"),
-                  input.issuanceOperationId,
+                  issuanceOperationId,
                   finalizeHash,
                   input.grantId,
                   now,
@@ -3548,6 +3621,15 @@ export function makeControlPlaneHandleSalesRepository() {
           }),
         );
         if (result.rows[0] === undefined) return null;
+        if (result.rows[0].family === "spaces") {
+          return yield* mapped(
+            readSpacesClaim(db, {
+              claimId: input.claimId,
+              accountId: input.accountId,
+              readonly: true,
+            }),
+          ).pipe(Effect.catchDefect(() => Effect.fail(storage("invalid-row"))));
+        }
         return yield* Effect.try({
           try: () => claimFromRow(one(result.rows, "owner claim")),
           catch: () => storage("invalid-row"),
