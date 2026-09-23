@@ -13516,6 +13516,146 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_spaces_registry_acknowledgment_insert_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  item spaces_registry_items%ROWTYPE;
+  delivery spaces_registry_deliveries%ROWTYPE;
+  current_assignment spaces_operator_assignment_current%ROWTYPE;
+  credential spaces_registry_credentials%ROWTYPE;
+BEGIN
+  SELECT * INTO item FROM spaces_registry_items WHERE claim_id = NEW.claim_id FOR SHARE;
+  SELECT * INTO delivery
+    FROM spaces_registry_deliveries
+   WHERE claim_id = NEW.claim_id
+     AND delivery_generation = NEW.delivery_generation;
+  SELECT * INTO current_assignment
+    FROM spaces_operator_assignment_current
+   WHERE operator_assignment_id = NEW.operator_assignment_id
+   FOR SHARE;
+  SELECT * INTO credential
+    FROM spaces_registry_credentials
+   WHERE credential_id = NEW.credential_id
+   FOR SHARE;
+  IF item.claim_id IS NULL
+    OR item.state NOT IN ('delivered', 'redelivery_stopped')
+    OR item.delivery_generation IS DISTINCT FROM NEW.delivery_generation
+    OR delivery.claim_id IS NULL
+    OR delivery.network IS DISTINCT FROM NEW.network
+    OR delivery.namespace_root IS DISTINCT FROM NEW.namespace_root
+    OR delivery.handle_label IS DISTINCT FROM NEW.handle_label
+    OR delivery.operator_instance_id IS DISTINCT FROM NEW.operator_instance_id
+    OR delivery.operator_assignment_id IS DISTINCT FROM NEW.operator_assignment_id
+    OR delivery.operator_assignment_generation IS DISTINCT FROM NEW.operator_assignment_generation
+    OR current_assignment.current_generation IS DISTINCT FROM NEW.operator_assignment_generation
+    OR current_assignment.status IS DISTINCT FROM 'active'
+    OR credential.operator_instance_id IS DISTINCT FROM NEW.operator_instance_id
+    OR credential.status NOT IN ('active', 'retiring')
+    OR NEW.received_at < delivery.delivered_at THEN
+    RAISE EXCEPTION 'Spaces registry acknowledgment must answer the latest delivery under the current assignment';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_registry_credential_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  instance spaces_operator_instances%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Spaces registry credential cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO instance
+      FROM spaces_operator_instances
+     WHERE operator_instance_id = NEW.operator_instance_id
+     FOR SHARE;
+    IF instance.operator_instance_id IS NULL
+      OR instance.status <> 'active'
+      OR NEW.status <> 'active' THEN
+      RAISE EXCEPTION 'Spaces registry credential must begin active on a live operator instance';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(
+    NEW.credential_id,
+    NEW.operator_instance_id,
+    NEW.environment,
+    NEW.allowed_roots,
+    NEW.verifier_sha256_hex,
+    NEW.authorization_reference,
+    NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.credential_id,
+    OLD.operator_instance_id,
+    OLD.environment,
+    OLD.allowed_roots,
+    OLD.verifier_sha256_hex,
+    OLD.authorization_reference,
+    OLD.created_at
+  )
+    OR OLD.status = 'revoked'
+    OR NEW.status = 'active'
+    OR (OLD.status = 'retiring' AND NEW.status <> 'revoked')
+    OR (OLD.status = 'retiring' AND (
+      NEW.retiring_at IS DISTINCT FROM OLD.retiring_at
+      OR NEW.accept_until IS DISTINCT FROM OLD.accept_until
+    )) THEN
+    RAISE EXCEPTION 'Spaces registry credential transition is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_registry_delivery_insert_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  item spaces_registry_items%ROWTYPE;
+  assignment spaces_operator_assignment_revisions%ROWTYPE;
+  current_assignment spaces_operator_assignment_current%ROWTYPE;
+  credential spaces_registry_credentials%ROWTYPE;
+BEGIN
+  SELECT * INTO item FROM spaces_registry_items WHERE claim_id = NEW.claim_id FOR SHARE;
+  SELECT * INTO assignment
+    FROM spaces_operator_assignment_revisions
+   WHERE operator_assignment_id = NEW.operator_assignment_id
+     AND operator_assignment_generation = NEW.operator_assignment_generation;
+  SELECT * INTO current_assignment
+    FROM spaces_operator_assignment_current
+   WHERE operator_assignment_id = NEW.operator_assignment_id
+   FOR SHARE;
+  SELECT * INTO credential
+    FROM spaces_registry_credentials
+   WHERE credential_id = NEW.credential_id
+   FOR SHARE;
+  IF item.claim_id IS NULL
+    OR item.state IS DISTINCT FROM 'delivered'
+    OR item.delivery_generation IS DISTINCT FROM NEW.delivery_generation
+    OR item.last_delivered_at IS DISTINCT FROM NEW.delivered_at
+    OR item.network IS DISTINCT FROM NEW.network
+    OR item.namespace_root IS DISTINCT FROM NEW.namespace_root
+    OR item.handle_label IS DISTINCT FROM NEW.handle_label
+    OR assignment.operator_assignment_id IS NULL
+    OR assignment.status IS DISTINCT FROM 'active'
+    OR assignment.network IS DISTINCT FROM NEW.network
+    OR assignment.canonical_root IS DISTINCT FROM NEW.namespace_root
+    OR assignment.operator_instance_id IS DISTINCT FROM NEW.operator_instance_id
+    OR current_assignment.current_generation IS DISTINCT FROM NEW.operator_assignment_generation
+    OR current_assignment.status IS DISTINCT FROM 'active'
+    OR credential.credential_id IS NULL
+    OR credential.operator_instance_id IS DISTINCT FROM NEW.operator_instance_id
+    OR credential.status NOT IN ('active', 'retiring')
+    OR NOT (NEW.namespace_root = ANY (credential.allowed_roots)) THEN
+    RAISE EXCEPTION 'Spaces registry delivery must match its item, current assignment, and credential scope';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_spaces_registry_item_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13536,20 +13676,109 @@ BEGIN
       OR claim.namespace_root <> NEW.namespace_root
       OR claim.handle_label <> NEW.handle_label
       OR NEW.state <> 'undelivered'
+      OR NEW.delivery_generation <> 0
+      OR NEW.last_delivered_at IS NOT NULL
       OR NEW.created_at <> claim.created_at
       OR NEW.updated_at <> claim.created_at THEN
       RAISE EXCEPTION 'Spaces registry item must match its pending claim';
     END IF;
     RETURN NEW;
   END IF;
-  IF to_jsonb(NEW) - ARRAY['state','updated_at']
-       IS DISTINCT FROM to_jsonb(OLD) - ARRAY['state','updated_at']
+  IF to_jsonb(NEW) - ARRAY['state','updated_at','delivery_generation','last_delivered_at']
+       IS DISTINCT FROM
+     to_jsonb(OLD) - ARRAY['state','updated_at','delivery_generation','last_delivered_at']
     OR NEW.updated_at < OLD.updated_at
     OR OLD.state IN ('settled_same_spk', 'settled_different_spk', 'settled_invalid', 'withdrawn')
+    OR NEW.delivery_generation NOT IN (OLD.delivery_generation, OLD.delivery_generation + 1)
+    OR (NEW.delivery_generation = OLD.delivery_generation
+      AND NEW.last_delivered_at IS DISTINCT FROM OLD.last_delivered_at)
+    OR (NEW.delivery_generation = OLD.delivery_generation + 1 AND (
+      NEW.state <> 'delivered'
+      OR OLD.state NOT IN ('undelivered', 'delivered')
+      OR NEW.last_delivered_at IS NULL
+      OR NEW.last_delivered_at < COALESCE(OLD.last_delivered_at, OLD.created_at)))
     OR (NEW.state = 'undelivered' AND OLD.state <> 'undelivered')
-    OR (NEW.state = 'withdrawn' AND OLD.state <> 'undelivered')
-    OR (NEW.state = 'delivered' AND OLD.state NOT IN ('undelivered', 'delivered')) THEN
+    OR (NEW.state = 'delivered' AND NEW.delivery_generation = OLD.delivery_generation)
+    OR (NEW.state = 'withdrawn' AND (OLD.state <> 'undelivered' OR OLD.delivery_generation <> 0))
+    OR (NEW.state = 'redelivery_stopped' AND OLD.state <> 'delivered')
+    OR (NEW.state IN ('settled_same_spk', 'settled_different_spk', 'settled_invalid')
+      AND OLD.state NOT IN ('delivered', 'redelivery_stopped')) THEN
     RAISE EXCEPTION 'Spaces registry item transition is invalid';
+  END IF;
+  IF NEW.state IN ('settled_same_spk', 'settled_different_spk', 'settled_invalid')
+    AND NOT EXISTS (
+      SELECT 1
+        FROM spaces_registry_acknowledgments AS acknowledgment
+       WHERE acknowledgment.claim_id = NEW.claim_id
+         AND acknowledgment.delivery_generation = NEW.delivery_generation
+         AND NEW.state = CASE
+           WHEN acknowledgment.outcome IN (
+             'staged',
+             'already_staged_same_spk',
+             'already_committed_same_spk'
+           ) THEN 'settled_same_spk'
+           WHEN acknowledgment.outcome IN (
+             'already_staged_different_spk',
+             'already_committed_different_spk'
+           ) THEN 'settled_different_spk'
+           ELSE 'settled_invalid'
+         END
+    ) THEN
+    RAISE EXCEPTION 'Spaces registry item settles only with its acknowledgment';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_registry_occupancy_insert_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  acknowledgment spaces_registry_acknowledgments%ROWTYPE;
+  item spaces_registry_items%ROWTYPE;
+BEGIN
+  SELECT * INTO acknowledgment
+    FROM spaces_registry_acknowledgments
+   WHERE acknowledgment_id = NEW.registry_acknowledgment_id;
+  SELECT * INTO item FROM spaces_registry_items WHERE claim_id = acknowledgment.claim_id;
+  IF acknowledgment.acknowledgment_id IS NULL
+    OR acknowledgment.outcome = 'invalid'
+    OR NEW.occupancy IS DISTINCT FROM (CASE
+      WHEN acknowledgment.outcome IN (
+        'staged',
+        'already_staged_same_spk',
+        'already_staged_different_spk'
+      ) THEN 'staged'
+      ELSE 'committed'
+    END)
+    OR NEW.owner_relation IS DISTINCT FROM (CASE
+      WHEN acknowledgment.outcome IN (
+        'already_staged_different_spk',
+        'already_committed_different_spk'
+      ) THEN 'different_script'
+      ELSE 'same_script'
+    END)
+    OR NEW.compared_script_pubkey_hex IS DISTINCT FROM item.script_pubkey_hex
+    OR NEW.observed_at IS DISTINCT FROM acknowledgment.received_at THEN
+    RAISE EXCEPTION 'Spaces registry occupancy must restate its acknowledgment';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_registry_scope_anomaly_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Spaces registry scope anomaly cannot be deleted';
+  END IF;
+  IF to_jsonb(NEW) - ARRAY['last_seen_at','occurrence_count','alerted_at']
+       IS DISTINCT FROM to_jsonb(OLD) - ARRAY['last_seen_at','occurrence_count','alerted_at']
+    OR NEW.last_seen_at < OLD.last_seen_at
+    OR NEW.occurrence_count < OLD.occurrence_count
+    OR (OLD.alerted_at IS NOT NULL AND NEW.alerted_at IS DISTINCT FROM OLD.alerted_at) THEN
+    RAISE EXCEPTION 'Spaces registry scope anomaly transition is invalid';
   END IF;
   RETURN NEW;
 END;
@@ -19182,6 +19411,19 @@ BEGIN
   RETURN 'set';
 END;
 $_$;
+
+CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT input_roots IS NOT NULL
+     AND array_ndims(input_roots) = 1
+     AND cardinality(input_roots) BETWEEN 1 AND 64
+     AND array_position(input_roots, NULL) IS NULL
+     AND (SELECT bool_and(is_community_route_root_label('spaces', root) IS TRUE)
+            FROM unnest(input_roots) AS root)
+     AND (SELECT count(DISTINCT root) FROM unnest(input_roots) AS root)
+           = cardinality(input_roots)
+$$;
 
 CREATE FUNCTION spaces_sale_namespace_readiness_facts_v1(input_network text, input_canonical_root text, input_community_id text, input_namespace_authority_reference text, input_namespace_authority_generation bigint, input_operator_assignment_id text, input_operator_assignment_generation bigint, database_now timestamp with time zone) RETURNS TABLE(namespace_authority_current boolean, owner_challenge_current boolean, anchor_covers_root_outpoint boolean, publication_verified boolean, delegation_observed boolean, operator_capability_observed boolean, commitment_history_verified boolean, driver_enabled boolean)
     LANGUAGE sql STABLE
@@ -34157,6 +34399,9 @@ CREATE TABLE spaces_external_conflict_observations (
     evidence_kind text NOT NULL,
     observed_at timestamp with time zone NOT NULL,
     recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    registry_acknowledgment_id text,
+    occupancy_observation_id text,
+    CONSTRAINT spaces_external_conflict_evidence_shape CHECK (((((evidence_kind = 'registry_acknowledgment_v1'::text) AND (registry_acknowledgment_id IS NOT NULL) AND (occupancy_observation_id IS NULL)) IS TRUE) OR (((evidence_kind = 'occupancy_observation_v1'::text) AND (occupancy_observation_id IS NOT NULL) AND (registry_acknowledgment_id IS NULL)) IS TRUE))),
     CONSTRAINT spaces_external_conflict_identity_check CHECK ((is_handle_sales_identifier_v1(observation_id, 128) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (observed_at <= recorded_at))),
     CONSTRAINT spaces_external_conflict_observations_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['registry_acknowledgment_v1'::text, 'occupancy_observation_v1'::text]))),
     CONSTRAINT spaces_external_conflict_observations_family_check CHECK ((family = 'spaces'::text))
@@ -34323,6 +34568,71 @@ CREATE TABLE spaces_operator_instances (
     CONSTRAINT spaces_operator_instances_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))
 );
 
+CREATE TABLE spaces_registry_acknowledgments (
+    acknowledgment_id text NOT NULL,
+    claim_id text NOT NULL,
+    delivery_generation bigint NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    outcome text NOT NULL,
+    credential_id text NOT NULL,
+    operator_instance_id text NOT NULL,
+    operator_assignment_id text NOT NULL,
+    operator_assignment_generation bigint NOT NULL,
+    received_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_registry_acknowledgment_identity_check CHECK ((acknowledgment_id ~ '^srack_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_registry_acknowledgments_outcome_check CHECK ((outcome = ANY (ARRAY['staged'::text, 'already_staged_same_spk'::text, 'already_committed_same_spk'::text, 'already_staged_different_spk'::text, 'already_committed_different_spk'::text, 'invalid'::text])))
+);
+
+CREATE TABLE spaces_registry_commit_hint_claims (
+    commit_hint_id text NOT NULL,
+    claim_id text NOT NULL
+);
+
+CREATE TABLE spaces_registry_commit_hints (
+    commit_hint_id text NOT NULL,
+    credential_id text NOT NULL,
+    operator_instance_id text NOT NULL,
+    network text NOT NULL,
+    commitment_root_hex text NOT NULL,
+    reported_handle_count bigint NOT NULL,
+    received_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_registry_commit_hint_identity_check CHECK (((commit_hint_id ~ '^srhint_[0-9a-f]{32}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND ((reported_handle_count >= 0) AND (reported_handle_count <= 10000))))
+);
+
+CREATE TABLE spaces_registry_credentials (
+    credential_id text NOT NULL,
+    operator_instance_id text NOT NULL,
+    environment text NOT NULL,
+    allowed_roots text[] NOT NULL,
+    verifier_sha256_hex text NOT NULL,
+    status text NOT NULL,
+    authorization_reference text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    retiring_at timestamp with time zone,
+    accept_until timestamp with time zone,
+    revoked_at timestamp with time zone,
+    CONSTRAINT spaces_registry_credential_identity_check CHECK (((credential_id ~ '^srcred_[0-9a-f]{32}$'::text) AND (verifier_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND spaces_registry_allowed_roots_valid_v1(allowed_roots) AND is_handle_sales_identifier_v1(authorization_reference, 512))),
+    CONSTRAINT spaces_registry_credential_status_shape CHECK ((((status = 'active'::text) AND (retiring_at IS NULL) AND (accept_until IS NULL) AND (revoked_at IS NULL)) OR (((status = 'retiring'::text) AND (retiring_at >= created_at) AND (accept_until > retiring_at) AND (revoked_at IS NULL)) IS TRUE) OR (((status = 'revoked'::text) AND (revoked_at >= created_at) AND ((retiring_at IS NULL) OR (revoked_at >= retiring_at))) IS TRUE))),
+    CONSTRAINT spaces_registry_credentials_environment_check CHECK ((environment = ANY (ARRAY['development'::text, 'staging'::text, 'production'::text]))),
+    CONSTRAINT spaces_registry_credentials_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retiring'::text, 'revoked'::text])))
+);
+
+CREATE TABLE spaces_registry_deliveries (
+    claim_id text NOT NULL,
+    delivery_generation bigint NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    credential_id text NOT NULL,
+    operator_instance_id text NOT NULL,
+    operator_assignment_id text NOT NULL,
+    operator_assignment_generation bigint NOT NULL,
+    delivered_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_registry_delivery_generation_check CHECK (((delivery_generation >= 1) AND (delivery_generation <= '9007199254740991'::bigint)))
+);
+
 CREATE TABLE spaces_registry_items (
     claim_id text NOT NULL,
     issuance_operation_id text NOT NULL,
@@ -34335,9 +34645,47 @@ CREATE TABLE spaces_registry_items (
     state text NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
+    delivery_generation bigint DEFAULT 0 NOT NULL,
+    last_delivered_at timestamp with time zone,
+    CONSTRAINT spaces_registry_item_delivery_shape CHECK (((delivery_generation >= 0) AND (delivery_generation <= '9007199254740991'::bigint) AND ((delivery_generation = 0) = (last_delivered_at IS NULL)) AND ((state = ANY (ARRAY['undelivered'::text, 'withdrawn'::text])) = (delivery_generation = 0)) AND ((last_delivered_at IS NULL) OR (last_delivered_at >= created_at)))),
     CONSTRAINT spaces_registry_item_identity_check CHECK ((is_handle_sales_identifier_v1(claim_id, 128) AND (issuance_operation_id = ('issuance:spaces-native:'::text || claim_id)) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (handle = ((handle_label || '@'::text) || namespace_root)) AND (script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (updated_at >= created_at))),
     CONSTRAINT spaces_registry_items_family_check CHECK ((family = 'spaces'::text)),
     CONSTRAINT spaces_registry_items_state_check CHECK ((state = ANY (ARRAY['undelivered'::text, 'delivered'::text, 'redelivery_stopped'::text, 'settled_same_spk'::text, 'settled_different_spk'::text, 'settled_invalid'::text, 'withdrawn'::text])))
+);
+
+CREATE TABLE spaces_registry_occupancy_observations (
+    occupancy_observation_id text NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    source_kind text NOT NULL,
+    registry_acknowledgment_id text NOT NULL,
+    occupancy text NOT NULL,
+    owner_relation text NOT NULL,
+    compared_script_pubkey_hex text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT spaces_registry_occupancy_identity_check CHECK (((occupancy_observation_id ~ '^srocc_[0-9a-f]{32}$'::text) AND (compared_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_at <= recorded_at))),
+    CONSTRAINT spaces_registry_occupancy_observations_occupancy_check CHECK ((occupancy = ANY (ARRAY['staged'::text, 'committed'::text]))),
+    CONSTRAINT spaces_registry_occupancy_observations_owner_relation_check CHECK ((owner_relation = ANY (ARRAY['same_script'::text, 'different_script'::text]))),
+    CONSTRAINT spaces_registry_occupancy_observations_source_kind_check CHECK ((source_kind = 'registry_acknowledgment_v1'::text))
+);
+
+CREATE TABLE spaces_registry_scope_anomalies (
+    anomaly_id text NOT NULL,
+    credential_id text NOT NULL,
+    operator_instance_id text NOT NULL,
+    endpoint text NOT NULL,
+    reason text NOT NULL,
+    subject_digest text NOT NULL,
+    subject_text text,
+    first_seen_at timestamp with time zone NOT NULL,
+    last_seen_at timestamp with time zone NOT NULL,
+    occurrence_count bigint NOT NULL,
+    alerted_at timestamp with time zone,
+    CONSTRAINT spaces_registry_scope_anomalies_endpoint_check CHECK ((endpoint = ANY (ARRAY['pending'::text, 'ack'::text, 'committed'::text]))),
+    CONSTRAINT spaces_registry_scope_anomalies_reason_check CHECK ((reason = ANY (ARRAY['numeric_space'::text, 'invalid_space'::text, 'space_not_assigned'::text, 'malformed_entry'::text, 'handle_unparseable'::text, 'handle_out_of_scope'::text, 'no_delivered_item'::text, 'contradicts_recorded_outcome'::text, 'claim_terminal'::text]))),
+    CONSTRAINT spaces_registry_scope_anomaly_identity_check CHECK (((anomaly_id ~ '^sranom_[0-9a-f]{32}$'::text) AND (subject_digest ~ '^[0-9a-f]{64}$'::text) AND ((subject_text IS NULL) OR ((char_length(subject_text) >= 1) AND (char_length(subject_text) <= 300) AND (subject_text ~ '^[!-~]+$'::text))) AND ((occurrence_count >= 1) AND (occurrence_count <= '9007199254740991'::bigint)) AND (last_seen_at >= first_seen_at) AND ((alerted_at IS NULL) OR (alerted_at >= first_seen_at))))
 );
 
 CREATE TABLE spaces_root_observations (
@@ -37565,11 +37913,50 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_pkey PRIMARY KEY (operator_instance_id);
 
+ALTER TABLE ONLY spaces_registry_acknowledgments
+    ADD CONSTRAINT spaces_registry_acknowledgment_key_unique UNIQUE (acknowledgment_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_registry_acknowledgments
+    ADD CONSTRAINT spaces_registry_acknowledgments_claim_id_key UNIQUE (claim_id);
+
+ALTER TABLE ONLY spaces_registry_acknowledgments
+    ADD CONSTRAINT spaces_registry_acknowledgments_pkey PRIMARY KEY (acknowledgment_id);
+
+ALTER TABLE ONLY spaces_registry_commit_hint_claims
+    ADD CONSTRAINT spaces_registry_commit_hint_claims_pk PRIMARY KEY (commit_hint_id, claim_id);
+
+ALTER TABLE ONLY spaces_registry_commit_hints
+    ADD CONSTRAINT spaces_registry_commit_hints_pkey PRIMARY KEY (commit_hint_id);
+
+ALTER TABLE ONLY spaces_registry_credentials
+    ADD CONSTRAINT spaces_registry_credentials_pkey PRIMARY KEY (credential_id);
+
+ALTER TABLE ONLY spaces_registry_credentials
+    ADD CONSTRAINT spaces_registry_credentials_verifier_sha256_hex_key UNIQUE (verifier_sha256_hex);
+
+ALTER TABLE ONLY spaces_registry_deliveries
+    ADD CONSTRAINT spaces_registry_deliveries_pk PRIMARY KEY (claim_id, delivery_generation);
+
 ALTER TABLE ONLY spaces_registry_items
     ADD CONSTRAINT spaces_registry_items_issuance_operation_id_key UNIQUE (issuance_operation_id);
 
 ALTER TABLE ONLY spaces_registry_items
     ADD CONSTRAINT spaces_registry_items_pkey PRIMARY KEY (claim_id);
+
+ALTER TABLE ONLY spaces_registry_occupancy_observations
+    ADD CONSTRAINT spaces_registry_occupancy_key_unique UNIQUE (occupancy_observation_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_registry_occupancy_observations
+    ADD CONSTRAINT spaces_registry_occupancy_observ_registry_acknowledgment_id_key UNIQUE (registry_acknowledgment_id);
+
+ALTER TABLE ONLY spaces_registry_occupancy_observations
+    ADD CONSTRAINT spaces_registry_occupancy_observations_pkey PRIMARY KEY (occupancy_observation_id);
+
+ALTER TABLE ONLY spaces_registry_scope_anomalies
+    ADD CONSTRAINT spaces_registry_scope_anomalies_pkey PRIMARY KEY (anomaly_id);
+
+ALTER TABLE ONLY spaces_registry_scope_anomalies
+    ADD CONSTRAINT spaces_registry_scope_anomaly_subject_unique UNIQUE (credential_id, endpoint, reason, subject_digest);
 
 ALTER TABLE ONLY spaces_root_observations
     ADD CONSTRAINT spaces_root_observations_pk PRIMARY KEY (network, canonical_root, observation_generation);
@@ -38250,7 +38637,19 @@ CREATE UNIQUE INDEX spaces_namespace_authority_evidence_root_uidx ON spaces_name
 
 CREATE UNIQUE INDEX spaces_operator_assignment_live_root_uidx ON spaces_operator_assignment_current USING btree (network, canonical_root) WHERE (status = 'active'::text);
 
+CREATE INDEX spaces_registry_commit_hint_claims_claim_idx ON spaces_registry_commit_hint_claims USING btree (claim_id);
+
+CREATE UNIQUE INDEX spaces_registry_credentials_active_uidx ON spaces_registry_credentials USING btree (operator_instance_id, environment) WHERE (status = 'active'::text);
+
+CREATE UNIQUE INDEX spaces_registry_credentials_retiring_uidx ON spaces_registry_credentials USING btree (operator_instance_id, environment) WHERE (status = 'retiring'::text);
+
+CREATE INDEX spaces_registry_deliveries_key_idx ON spaces_registry_deliveries USING btree (network, namespace_root, handle_label, operator_assignment_id);
+
+CREATE INDEX spaces_registry_items_pending_idx ON spaces_registry_items USING btree (network, namespace_root, created_at, claim_id) WHERE (state = ANY (ARRAY['undelivered'::text, 'delivered'::text]));
+
 CREATE UNIQUE INDEX spaces_registry_items_unresolved_key_uidx ON spaces_registry_items USING btree (network, namespace_root, handle_label) WHERE (state = ANY (ARRAY['undelivered'::text, 'delivered'::text, 'redelivery_stopped'::text]));
+
+CREATE INDEX spaces_registry_scope_anomalies_unalerted_idx ON spaces_registry_scope_anomalies USING btree (last_seen_at, anomaly_id) WHERE (alerted_at IS NULL);
 
 CREATE INDEX study_lesson_item_state_queue_idx ON study_lesson_item_state_v2 USING btree (session_id, lesson_resolved, presentation_count, last_queue_ordinal, original_ordinal);
 
@@ -39454,7 +39853,27 @@ CREATE TRIGGER spaces_operator_funding_observations_append_only BEFORE DELETE OR
 
 CREATE TRIGGER spaces_operator_instance_change_guard BEFORE DELETE OR UPDATE ON spaces_operator_instances FOR EACH ROW EXECUTE FUNCTION guard_spaces_operator_instance_change_v1();
 
+CREATE TRIGGER spaces_registry_acknowledgment_insert_guard BEFORE INSERT ON spaces_registry_acknowledgments FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_acknowledgment_insert_v1();
+
+CREATE TRIGGER spaces_registry_acknowledgments_append_only BEFORE DELETE OR UPDATE ON spaces_registry_acknowledgments FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_registry_commit_hint_claims_append_only BEFORE DELETE OR UPDATE ON spaces_registry_commit_hint_claims FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_registry_commit_hints_append_only BEFORE DELETE OR UPDATE ON spaces_registry_commit_hints FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_registry_credential_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_registry_credentials FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_credential_v1();
+
+CREATE TRIGGER spaces_registry_deliveries_append_only BEFORE DELETE OR UPDATE ON spaces_registry_deliveries FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_registry_delivery_insert_guard BEFORE INSERT ON spaces_registry_deliveries FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_delivery_insert_v1();
+
 CREATE TRIGGER spaces_registry_item_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_registry_items FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_item_v1();
+
+CREATE TRIGGER spaces_registry_occupancy_insert_guard BEFORE INSERT ON spaces_registry_occupancy_observations FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_occupancy_insert_v1();
+
+CREATE TRIGGER spaces_registry_occupancy_observations_append_only BEFORE DELETE OR UPDATE ON spaces_registry_occupancy_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_registry_scope_anomaly_change_guard BEFORE DELETE OR UPDATE ON spaces_registry_scope_anomalies FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_scope_anomaly_change_v1();
 
 CREATE TRIGGER spaces_root_observation_insert_guard BEFORE INSERT ON spaces_root_observations FOR EACH ROW EXECUTE FUNCTION guard_spaces_observation_insert_v1();
 
@@ -41995,7 +42414,13 @@ ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_driver_root_enablement_driver_fk FOREIGN KEY (driver_family, driver_id, driver_version) REFERENCES handle_issuance_driver_revisions(family, driver_id, driver_version);
 
 ALTER TABLE ONLY spaces_external_conflict_observations
+    ADD CONSTRAINT spaces_external_conflict_acknowledgment_fk FOREIGN KEY (registry_acknowledgment_id, network, namespace_root, handle_label) REFERENCES spaces_registry_acknowledgments(acknowledgment_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_external_conflict_observations
     ADD CONSTRAINT spaces_external_conflict_observations_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_external_conflict_observations
+    ADD CONSTRAINT spaces_external_conflict_occupancy_fk FOREIGN KEY (occupancy_observation_id, network, namespace_root, handle_label) REFERENCES spaces_registry_occupancy_observations(occupancy_observation_id, network, namespace_root, handle_label);
 
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_issuance_driver_root_enablements_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
@@ -42036,11 +42461,59 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
 
+ALTER TABLE ONLY spaces_registry_acknowledgments
+    ADD CONSTRAINT spaces_registry_acknowledgment_delivery_fk FOREIGN KEY (claim_id, delivery_generation) REFERENCES spaces_registry_deliveries(claim_id, delivery_generation);
+
+ALTER TABLE ONLY spaces_registry_acknowledgments
+    ADD CONSTRAINT spaces_registry_acknowledgments_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES spaces_registry_credentials(credential_id);
+
+ALTER TABLE ONLY spaces_registry_commit_hint_claims
+    ADD CONSTRAINT spaces_registry_commit_hint_claims_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES spaces_registry_items(claim_id);
+
+ALTER TABLE ONLY spaces_registry_commit_hint_claims
+    ADD CONSTRAINT spaces_registry_commit_hint_claims_commit_hint_id_fkey FOREIGN KEY (commit_hint_id) REFERENCES spaces_registry_commit_hints(commit_hint_id);
+
+ALTER TABLE ONLY spaces_registry_commit_hints
+    ADD CONSTRAINT spaces_registry_commit_hints_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES spaces_registry_credentials(credential_id);
+
+ALTER TABLE ONLY spaces_registry_commit_hints
+    ADD CONSTRAINT spaces_registry_commit_hints_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_registry_commit_hints
+    ADD CONSTRAINT spaces_registry_commit_hints_operator_instance_id_fkey FOREIGN KEY (operator_instance_id) REFERENCES spaces_operator_instances(operator_instance_id);
+
+ALTER TABLE ONLY spaces_registry_credentials
+    ADD CONSTRAINT spaces_registry_credentials_operator_instance_id_fkey FOREIGN KEY (operator_instance_id) REFERENCES spaces_operator_instances(operator_instance_id);
+
+ALTER TABLE ONLY spaces_registry_deliveries
+    ADD CONSTRAINT spaces_registry_deliveries_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES spaces_registry_items(claim_id);
+
+ALTER TABLE ONLY spaces_registry_deliveries
+    ADD CONSTRAINT spaces_registry_deliveries_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES spaces_registry_credentials(credential_id);
+
+ALTER TABLE ONLY spaces_registry_deliveries
+    ADD CONSTRAINT spaces_registry_deliveries_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_registry_deliveries
+    ADD CONSTRAINT spaces_registry_deliveries_operator_instance_id_fkey FOREIGN KEY (operator_instance_id) REFERENCES spaces_operator_instances(operator_instance_id);
+
+ALTER TABLE ONLY spaces_registry_deliveries
+    ADD CONSTRAINT spaces_registry_delivery_assignment_fk FOREIGN KEY (operator_assignment_id, operator_assignment_generation) REFERENCES spaces_operator_assignment_revisions(operator_assignment_id, operator_assignment_generation);
+
 ALTER TABLE ONLY spaces_registry_items
     ADD CONSTRAINT spaces_registry_item_claim_fk FOREIGN KEY (claim_id, family, namespace_root, handle_label) REFERENCES handle_claims(claim_id, family, namespace_root, handle_label);
 
 ALTER TABLE ONLY spaces_registry_items
     ADD CONSTRAINT spaces_registry_items_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_registry_occupancy_observations
+    ADD CONSTRAINT spaces_registry_occupancy_acknowledgment_fk FOREIGN KEY (registry_acknowledgment_id, network, namespace_root, handle_label) REFERENCES spaces_registry_acknowledgments(acknowledgment_id, network, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_registry_scope_anomalies
+    ADD CONSTRAINT spaces_registry_scope_anomalies_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES spaces_registry_credentials(credential_id);
+
+ALTER TABLE ONLY spaces_registry_scope_anomalies
+    ADD CONSTRAINT spaces_registry_scope_anomalies_operator_instance_id_fkey FOREIGN KEY (operator_instance_id) REFERENCES spaces_operator_instances(operator_instance_id);
 
 ALTER TABLE ONLY spaces_root_observations
     ADD CONSTRAINT spaces_root_observations_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
