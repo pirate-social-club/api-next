@@ -29,6 +29,19 @@ load() { [ -f "$STATE" ] && . "$STATE" || true; }
 ops() { infisical run --env=staging --path=/services/api-next/operator --silent -- "$@"; }
 rt() { infisical run --env=staging --path=/services/api-next --silent -- "$@"; }
 snap() { QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")" bun qualification/table-snapshot.ts > "$EV/snap-$1.json"; }
+json_result() { python3 - "$1" "$2" <<'PY'
+import json,sys
+raw=open(sys.argv[1]).read(); decoder=json.JSONDecoder()
+for index,char in enumerate(raw):
+    if char!='{': continue
+    try: value,end=decoder.raw_decode(raw[index:])
+    except json.JSONDecodeError: continue
+    if isinstance(value,dict) and not raw[index+end:].strip():
+        with open(sys.argv[2],'w') as output: json.dump(value,output)
+        break
+else: raise SystemExit('no final JSON result in '+sys.argv[1])
+PY
+}
 manifest() { local step=$1 from=$2 to=$3; local tables; tables=$(python3 -c "import json;print(' '.join(json.load(open('qualification/manifests.json'))['manifests']['$step']['tables']))"); bun qualification/snapshot-diff.ts "$EV/snap-$from.json" "$EV/snap-$to.json" $tables > "$EV/diff-$step.json" || fail "manifest $step: table outside manifest"; log "manifest $step ok: $(python3 -c "import json;print([(c['table'],(c['before'] or {}).get('rows'),(c['after'] or {}).get('rows')) for c in json.load(open('$EV/diff-$step.json'))['changed']])")"; }
 cost() { load; python3 -c "import datetime as d;c=d.datetime.fromisoformat('$BRANCH_CREATED_AT'.replace('Z','+00:00'));h=(d.datetime.now(d.timezone.utc)-c).total_seconds()/3600;print(f'elapsed {h:.2f} h, estimated cluster cost US\${h*5/730:.4f} at rate 5/month (estimate; invoice is authoritative)')" | tee -a "$EV/run.log"; }
 sessions() { bun qualification/branch-helpers.ts sql host-data.url "SELECT usename, application_name, count(*)::int AS n FROM pg_stat_activity WHERE usename IS NOT NULL GROUP BY 1,2 ORDER BY 1,2" > "$EV/sessions-$1-reviewed.json"; load; python3 - "$EV/sessions-$1-reviewed.json" "$HOST_BASE" <<'PY' || fail "unexpected session on branch ($1)"
@@ -126,29 +139,40 @@ sequence)
   bun qualification/render-qualification.ts eligibility --song-post $SONG --audio-revision 1 > "$EV/step-eligibility.json" || fail "eligibility"
   bun qualification/branch-helpers.ts host-env measure host-data.url input - SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID=$SONG SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION=1 > /dev/null
   host measure > "$EV/step-measure.json" || fail "measurement exited non-zero"
-  python3 -c "import json;d=json.load(open('$EV/step-measure.json'));import sys;sys.exit(0 if d['status']=='measured' else 1)" || fail "measurement status $(cat $EV/step-measure.json)"
+  bash qualification/branch-run.sh sequence-after-measure;;
+sequence-after-measure)
+  # Resume only after a concluded measurement. Never redispatch it because a
+  # host diagnostic preceded its JSON result on stdout.
+  load; [ -f "$EV/step-measure.json" ] || fail "measurement result missing"
+  export QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")"
+  json_result "$EV/step-measure.json" "$EV/step-measure-result.json" || fail "measurement result unparseable"
+  python3 -c "import json;d=json.load(open('$EV/step-measure-result.json'));import sys;sys.exit(0 if d['status']=='measured' and d['song_post_id']=='$SONG' and d['audio_revision']==1 else 1)" || fail "measurement result is not the named song revision"
   snap C; manifest measurement B C
   bun qualification/render-qualification.ts verify-timing --song-post $SONG --audio-revision 1 --expect-sha256 $SONG_SHA --min-samples $((CLIP_START+CLIP_DURATION)) --expect-prober ffmpeg-6.1.1-song-video-v1 > "$EV/step-verify-timing.json" || fail "timing verification"
-  log "timing ready: $(python3 -c "import json;print(json.load(open('$EV/step-verify-timing.json'))['row']['duration_samples'])")"
+  json_result "$EV/step-verify-timing.json" "$EV/step-verify-timing-result.json" || fail "timing verification output unparseable"
+  log "timing ready: $(python3 -c "import json;print(json.load(open('$EV/step-verify-timing-result.json'))['row']['duration_samples'])")"
   snap D0
   ops bun qualification/branch-helpers.ts mint upload object-read-write 3600 --object "$SOURCE_KEY" > "$EV/mint-upload.json" || fail "mint upload"
   bun qualification/branch-helpers.ts upload-env upload > /dev/null
   set -a; . "$PRIV/upload.env"; set +a
   bun qualification/render-qualification.ts upload-source --account 08a4c22cf52e2ecae883e36f80a33f4a --bucket pirate-media-immutable-staging --file "$EV/capture.mp4" > "$EV/step-upload.json" || fail "source upload"
+  json_result "$EV/step-upload.json" "$EV/step-upload-result.json" || fail "source upload output unparseable"
   unset QUAL_R2_ACCESS_KEY_ID QUAL_R2_SECRET_ACCESS_KEY QUAL_R2_SESSION_TOKEN
-  ETAG=$(python3 -c "import json;print(json.load(open('$EV/step-upload.json'))['etag'])")
+  ETAG=$(python3 -c "import json;print(json.load(open('$EV/step-upload-result.json'))['etag'])")
   bun qualification/render-qualification.ts create-fixture --song-post $SONG --file "$EV/capture.mp4" --etag "$ETAG" --clip-start $CLIP_START --clip-duration $CLIP_DURATION > "$EV/step-fixture.json" || fail "fixture creation"
+  json_result "$EV/step-fixture.json" "$EV/step-fixture-result.json" || fail "fixture output unparseable"
   snap D; manifest fixture D0 D
-  PLAN=$(python3 -c "import json;print(json.load(open('$EV/step-fixture.json'))['attempt']['planId'])"); ATT=$(python3 -c "import json;print(json.load(open('$EV/step-fixture.json'))['attempt']['attemptId'])")
+  PLAN=$(python3 -c "import json;print(json.load(open('$EV/step-fixture-result.json'))['attempt']['planId'])"); ATT=$(python3 -c "import json;print(json.load(open('$EV/step-fixture-result.json'))['attempt']['attemptId'])")
   [ "$ATT" = "$(python3 -c "import json;print(json.load(open('qualification/manifests.json'))['identities']['attempt_id'])")" ] || fail "attempt id $ATT differs from the bound id"
   sessions before-render
   ops bun qualification/branch-helpers.ts mint output object-read-write 7200 --prefix "$MASTER_PREFIX" > "$EV/mint-output.json" || fail "mint output"
   bun qualification/branch-helpers.ts host-env render host-data.url input output SONG_VIDEO_RENDER_PLAN_ID=$PLAN SONG_VIDEO_RENDER_ATTEMPT_ID=$ATT SONG_VIDEO_RENDER_HOST_ID=song-video-render-host-qualification-20260921-01 > /dev/null
   set +e; host render > "$EV/step-render.json" 2> "$EV/step-render.err"; RC=$?; set -e
-  log "render exit $RC: $(cat $EV/step-render.json)"
+  json_result "$EV/step-render.json" "$EV/step-render-result.json" || fail "render output unparseable"
+  log "render exit $RC: $(cat $EV/step-render-result.json)"
   snap E; manifest render D E
   sessions after-render
-  [ $RC = 0 ] && python3 -c "import json;import sys;sys.exit(0 if json.load(open('$EV/step-render.json'))['status']=='accepted' else 1)" || fail "render did not conclude accepted"
+  [ $RC = 0 ] && python3 -c "import json;import sys;sys.exit(0 if json.load(open('$EV/step-render-result.json'))['status']=='accepted' else 1)" || fail "render did not conclude accepted"
   bun qualification/branch-helpers.ts sql host-data.url "SELECT a.state, a.execution_phase, m.master_sha256, m.master_byte_length::text, m.verified_object_key, m.verified_object_etag FROM api_next.media_song_video_render_attempts a JOIN api_next.media_song_video_masters m ON m.attempt_id=a.attempt_id" > "$EV/render-rows.json"
   log "sequence complete"; cost;;
 verify-evidence)
@@ -160,7 +184,7 @@ verify-evidence)
            branch-ledger.json branch-catalog-digest.json song-checks-branch.json isolation-runtime.json isolation-operator.json \
            snap-A.json snap-B.json snap-C.json snap-D0.json snap-D.json snap-E.json \
            diff-timing_request.json diff-measurement.json diff-fixture.json diff-render.json \
-           step-measure.json step-verify-timing.json step-upload.json step-fixture.json step-render.json render-rows.json; do
+           step-measure-result.json step-verify-timing-result.json step-upload-result.json step-fixture-result.json step-render-result.json render-rows.json; do
     [ -s "$EV/$f" ] && python3 -c "import json;json.load(open('$EV/$f'))" 2>/dev/null || missing="$missing $f"
   done
   [ -z "$missing" ] || fail "evidence missing or unparseable:$missing"
