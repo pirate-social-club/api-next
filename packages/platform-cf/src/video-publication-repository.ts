@@ -69,6 +69,20 @@ const json = <T>(value: unknown): T => {
   throw new Error("invalid video persistence row");
 };
 
+const sameMultipartManifest = (
+  stored: NonNullable<VideoReservationRecord["manifest"]>,
+  requested: NonNullable<VideoReservationRecord["manifest"]>,
+): boolean =>
+  Array.isArray(stored) &&
+  stored.length === requested.length &&
+  stored.every(
+    (part, index) =>
+      part !== null &&
+      typeof part === "object" &&
+      part.partNumber === requested[index]?.partNumber &&
+      part.etag === requested[index]?.etag,
+  );
+
 function reservationFromRow(row: Row): VideoReservationRecord {
   const contentType = text(row, "expected_content_type");
   if (contentType !== "video/mp4" && contentType !== "video/quicktime")
@@ -775,7 +789,7 @@ export function makeControlPlaneVideoPublicationStore(
                 throw new Error("video finalize fence rejected");
               const reservationResult = yield* tx.execute<Row>({
                 label: "video-publication.finalize-reservation",
-                text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
+                text: `SELECT ${RESERVATION_COLUMNS},multipart_completed_at FROM media_upload_reservations
                         WHERE reservation_id=$1 AND submission_id=$2 AND operation_id=$3
                           AND state IN ('claimed','expired') FOR UPDATE`,
                 values: [
@@ -808,10 +822,7 @@ export function makeControlPlaneVideoPublicationStore(
                     details: { reason_code: "action_expired" },
                   });
               }
-              if (
-                priorManifest !== null &&
-                JSON.stringify(priorManifest) !== JSON.stringify(input.manifest)
-              )
+              if (priorManifest !== null && !sameMultipartManifest(priorManifest, input.manifest))
                 throw new Error("video finalize manifest conflict");
               if (priorManifest === null) {
                 yield* tx.execute({
@@ -875,6 +886,7 @@ export function makeControlPlaneVideoPublicationStore(
                 ...input.submission,
                 status: "abandoned",
                 phase: null,
+                abandonmentReason: "upload_expectation_mismatch",
               };
               yield* tx.execute({
                 label: "video-publication.manifest-abort",
@@ -887,7 +899,12 @@ export function makeControlPlaneVideoPublicationStore(
                 values: [input.evidenceRef, input.reservation.reservationId],
                 readonly: false,
               });
-              yield* updateSubmissionSnapshot(tx, { prior: input.submission, next });
+              yield* updateSubmissionSnapshot(tx, {
+                prior: input.submission,
+                next,
+                extraSql: ",abandonment_reason=$10,retention_disposition=$11",
+                extraValues: ["upload_expectation_mismatch", "retain_for_reconciliation"],
+              });
             }),
           );
         }),
@@ -1021,10 +1038,33 @@ export function makeControlPlaneVideoPublicationStore(
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
+              yield* lock(
+                tx,
+                `video-finalize:${input.submission.operationId}:${input.idempotencyKey}`,
+              );
+              const prior = yield* commandReplay(tx, {
+                actorAccountId: input.submission.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+              });
+              if (prior.kind !== "none") return prior;
+              const current = yield* findSubmission(tx, {
+                clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+                values: [input.submission.submissionId, input.submission.operationId],
+              });
+              if (
+                current === null ||
+                current.state.status !== "processing" ||
+                current.state.phase !== "finalize" ||
+                current.state.creationRevision !== input.submission.creationRevision
+              )
+                throw new Error("video finalization mismatch fence rejected");
               const next: VideoSubmissionState = {
-                ...input.submission,
+                ...current.state,
                 status: "abandoned",
                 phase: null,
+                abandonmentReason: "upload_expectation_mismatch",
               };
               yield* tx.execute({
                 label: "video-publication.expectation-mismatch",
@@ -1037,10 +1077,16 @@ export function makeControlPlaneVideoPublicationStore(
                 readonly: false,
               });
               yield* updateSubmissionSnapshot(tx, {
-                prior: input.submission,
+                prior: current.state,
                 next,
-                extraSql: ",response_snapshot_bytes=$10,response_snapshot_sha256=$11",
-                extraValues: [input.responseBytes, input.responseSha256],
+                extraSql:
+                  ",abandonment_reason=$10,retention_disposition=$11,response_snapshot_bytes=$12,response_snapshot_sha256=$13",
+                extraValues: [
+                  "upload_expectation_mismatch",
+                  "retain_for_reconciliation",
+                  input.responseBytes,
+                  input.responseSha256,
+                ],
               });
               yield* storeCommand(tx, {
                 state: input.submission,

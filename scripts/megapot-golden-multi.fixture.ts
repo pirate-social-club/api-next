@@ -1,4 +1,4 @@
-import { parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
+import { type MultiGoldenInput, parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
 import type { GoldenObservation } from "./megapot-golden-reconciliation.ts";
 
 export const rehearsalTime = Date.parse("2026-09-21T10:00:00.000Z");
@@ -78,8 +78,28 @@ export const rehearsalInput = () =>
     },
   });
 
-export function rehearsalObservation(): GoldenObservation {
-  const input = rehearsalInput();
+export function onePalmRehearsalInput(): MultiGoldenInput {
+  const base = rehearsalInput();
+  const verified = base.participants[0];
+  const karaoke = base.participants[1];
+  const unverified = base.participants[2];
+  if (!verified || !karaoke?.karaoke_audio || !unverified) throw new Error("fixture");
+  return parseMultiGoldenInput({
+    ...base,
+    participants: [
+      {
+        ...verified,
+        activities: ["study", "karaoke"],
+        karaoke_audio: karaoke.karaoke_audio,
+      },
+      unverified,
+    ],
+  });
+}
+
+export function rehearsalObservation(
+  input: MultiGoldenInput = rehearsalInput(),
+): GoldenObservation {
   const positives = input.participants.filter((p) => p.expected_admission === "eligible");
   return {
     leg_id: "leg",
@@ -114,13 +134,19 @@ export function rehearsalObservation(): GoldenObservation {
       account_id: p.account_id,
       persona_id: p.persona_id,
     })),
-    decisions: input.participants.map((p) => ({
-      account_id: p.account_id,
-      persona_id: p.persona_id,
-      activity_key: p.activities[0],
-      outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
-      reason: p.expected_admission === "eligible" ? null : "verification_missing",
-    })),
+    // Mirrors migration 0134: an admitted account gets one decision, for its
+    // first qualifying activity; a refused account gets one per qualification.
+    decisions: input.participants.flatMap((p) =>
+      (p.expected_admission === "eligible" ? p.activities.slice(0, 1) : p.activities).map(
+        (activity_key) => ({
+          account_id: p.account_id,
+          persona_id: p.persona_id,
+          activity_key,
+          outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
+          reason: p.expected_admission === "eligible" ? null : "verification_missing",
+        }),
+      ),
+    ),
     credits: [],
   };
 }

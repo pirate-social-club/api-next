@@ -62,6 +62,50 @@ export const GoldenObservation = Schema.Struct({
 });
 export type GoldenObservation = typeof GoldenObservation.Type;
 
+type GoldenParticipant = MultiGoldenInput["participants"][number];
+
+function participantDecisions(p: GoldenParticipant, observation: GoldenObservation) {
+  return observation.decisions.filter(
+    (d) => d.account_id === p.account_id && d.persona_id === p.persona_id,
+  );
+}
+
+/**
+ * Every planned activity must qualify. The share projection (migration 0134)
+ * emits one eligibility decision per account, leg and drawing: only the first
+ * qualifying activity of an admitted account gets a decision, and later ones
+ * are skipped once the share exists. A refused account gets one decision per
+ * qualification because no share ever stops the projection.
+ */
+function participantAdmissionSatisfied(
+  p: GoldenParticipant,
+  observation: GoldenObservation,
+): boolean {
+  const qualified = p.activities.every((activity) =>
+    observation.qualifications.some(
+      (q) =>
+        q.account_id === p.account_id &&
+        q.persona_id === p.persona_id &&
+        q.activity_key === activity,
+    ),
+  );
+  if (!qualified) return false;
+  const decisions = participantDecisions(p, observation);
+  if (p.expected_admission === "eligible")
+    return decisions.some(
+      (d) =>
+        d.outcome === "eligible" && p.activities.includes(d.activity_key as "study" | "karaoke"),
+    );
+  return p.activities.every((activity) =>
+    decisions.some(
+      (d) =>
+        d.activity_key === activity &&
+        d.outcome === "ineligible" &&
+        d.reason === "verification_missing",
+    ),
+  );
+}
+
 export function assertGoldenAdmission(
   input: MultiGoldenInput,
   observation: GoldenObservation,
@@ -78,40 +122,58 @@ export function assertGoldenAdmission(
           (s) => s.account_id === p.account_id && s.persona_id === p.persona_id,
         ).length !== 1,
     ) ||
-    input.participants.some((p) =>
-      p.activities.some(
-        (activity) =>
-          !observation.qualifications.some(
-            (q) =>
-              q.account_id === p.account_id &&
-              q.persona_id === p.persona_id &&
-              q.activity_key === activity,
-          ),
-      ),
-    ) ||
-    input.participants.some((p) =>
-      p.expected_admission === "eligible"
-        ? !observation.decisions.some(
-            (d) =>
-              d.account_id === p.account_id &&
-              d.persona_id === p.persona_id &&
-              d.outcome === "eligible",
-          )
-        : p.activities.some(
-            (activity) =>
-              !observation.decisions.some(
-                (d) =>
-                  d.account_id === p.account_id &&
-                  d.persona_id === p.persona_id &&
-                  d.activity_key === activity &&
-                  d.outcome === "ineligible" &&
-                  d.reason === "verification_missing",
-              ),
-          ),
-    )
+    input.participants.some((p) => !participantAdmissionSatisfied(p, observation)) ||
+    positives.some((p) => participantDecisions(p, observation).length !== 1)
   ) {
     throw new Error("Admission does not match the exact participant expectations.");
   }
+}
+
+/** Missing rows may arrive from ordinary jobs; contradictory rows fail immediately. */
+export function goldenAdmissionProgress(
+  input: MultiGoldenInput,
+  observation: GoldenObservation,
+): "pending" | "complete" {
+  if (
+    observation.community_id !== input.community_id ||
+    observation.post_id !== input.post_id ||
+    observation.audio_revision !== input.audio_revision
+  )
+    throw new Error("Observed drawing scope changed.");
+  const eligible = input.participants.filter((p) => p.expected_admission === "eligible");
+  if (
+    observation.shares.length > eligible.length ||
+    observation.shares.some(
+      (s) =>
+        eligible.filter((p) => p.account_id === s.account_id && p.persona_id === s.persona_id)
+          .length !== 1,
+    ) ||
+    new Set(observation.shares.map((s) => `${s.account_id}:${s.persona_id}`)).size !==
+      observation.shares.length ||
+    observation.decisions.some((d) => {
+      const participant = input.participants.find(
+        (p) => p.account_id === d.account_id && p.persona_id === d.persona_id,
+      );
+      return (
+        participant !== undefined &&
+        participant.activities.includes(d.activity_key as "study" | "karaoke") &&
+        (d.outcome !==
+          (participant.expected_admission === "eligible" ? "eligible" : "ineligible") ||
+          (participant.expected_admission === "verification_missing" &&
+            d.reason !== "verification_missing"))
+      );
+    })
+  )
+    throw new Error("Admission contains an unexpected share or decision.");
+  if (eligible.some((p) => participantDecisions(p, observation).length > 1))
+    throw new Error("Admission contains an unexpected share or decision.");
+  if (
+    observation.shares.length < eligible.length ||
+    input.participants.some((p) => !participantAdmissionSatisfied(p, observation))
+  )
+    return "pending";
+  assertGoldenAdmission(input, observation);
+  return "complete";
 }
 
 export function evaluateGoldenSettlement(

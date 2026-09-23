@@ -217,7 +217,7 @@ function harness(
             if (!query || expiredTasks.has(token)) return { state: "not_started" };
             if (
               terminalFrameFailure &&
-              query.format.some((format) => String(format.user_tag).includes("frame"))
+              query.format.some((format) => String(format.tag).includes("frame"))
             )
               return {
                 state: "failed",
@@ -226,7 +226,7 @@ function harness(
             return {
               state: "completed",
               outputs: query.format.map((format) => {
-                const tag = String(format.user_tag);
+                const tag = String(format.tag);
                 const kind = tag.includes("probe")
                   ? ("metadata" as const)
                   : tag.includes("audio") || tag.includes("acr-")

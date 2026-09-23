@@ -38,6 +38,7 @@ export type RehearsalParticipant = typeof RehearsalParticipant.Type;
 
 export const MultiGoldenInput = Schema.Struct({
   object: Schema.Literal("megapot_base_sepolia_golden_v2"),
+  activity_mode: Schema.optional(Schema.Literal("observe_app")),
   run_id: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,35}$/u)),
   community_id: RehearsalId,
   post_id: RehearsalId,
@@ -50,11 +51,20 @@ export const MultiGoldenInput = Schema.Struct({
   max_ticket_price_atomic: RehearsalAtomic,
   entry_cutoff_seconds: Positive,
   participants: Schema.Array(RehearsalParticipant).check(
-    Schema.isMinLength(3),
+    Schema.isMinLength(2),
     Schema.isMaxLength(8),
   ),
   funding_transaction_hash: Schema.optional(
     Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u)),
+  ),
+  app_funded_pool: Schema.optional(
+    Schema.Struct({
+      offer_id: RehearsalId,
+      leg_id: RehearsalId,
+      funding_effect_id: RehearsalId,
+      transaction_hash: Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u)),
+      sender_address: Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u)),
+    }),
   ),
   authorization: Schema.NullOr(
     Schema.Struct({
@@ -87,17 +97,26 @@ export function parseMultiGoldenInput(value: unknown): MultiGoldenInput {
     new Set(input.participants.map((p) => p.account_id)).size !== input.participants.length ||
     new Set(input.participants.map((p) => p.persona_id)).size !== input.participants.length ||
     new Set(input.participants.map((p) => p.credential_key)).size !== input.participants.length ||
-    positives.length < 2 ||
+    positives.length < 1 ||
     !positives.some((p) => p.activities.includes("study")) ||
     !positives.some((p) => p.activities.includes("karaoke")) ||
     !input.participants.some((p) => p.expected_admission === "verification_missing") ||
-    input.participants.some(
-      (p) =>
-        new Set(p.activities).size !== p.activities.length ||
-        (p.activities.includes("study") && !p.accepted_lyrics) ||
-        (p.activities.includes("karaoke") && !p.karaoke_audio),
-    ) ||
+    input.participants.some((p) => new Set(p.activities).size !== p.activities.length) ||
     Date.parse(input.starts_at) >= Date.parse(input.ends_at) ||
+    (input.app_funded_pool !== undefined && input.funding_transaction_hash !== undefined) ||
+    (input.activity_mode === "observe_app" &&
+      (!input.app_funded_pool ||
+        input.participants.some((p) =>
+          p.expected_admission === "verification_missing"
+            ? p.activities.length !== 1 || p.activities[0] !== "study" || !p.accepted_lyrics
+            : false,
+        ))) ||
+    (input.activity_mode !== "observe_app" &&
+      input.participants.some(
+        (p) =>
+          (p.activities.includes("study") && !p.accepted_lyrics) ||
+          (p.activities.includes("karaoke") && !p.karaoke_audio),
+      )) ||
     BigInt(input.max_ticket_price_atomic) < 1n ||
     BigInt(input.funding_amount_atomic) < BigInt(input.max_ticket_price_atomic)
   ) {

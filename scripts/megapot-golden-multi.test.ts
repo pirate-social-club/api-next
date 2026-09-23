@@ -6,6 +6,7 @@ import { runMultiGolden } from "./megapot-base-sepolia-golden-multi.ts";
 import { endpoint } from "./megapot-golden-http.ts";
 import { withGoldenJournal } from "./megapot-golden-journal.ts";
 import {
+  onePalmRehearsalInput,
   rehearsalInput,
   rehearsalObservation,
   rehearsalTime,
@@ -18,10 +19,140 @@ import {
 import {
   assertGoldenAdmission,
   evaluateGoldenSettlement,
+  goldenAdmissionProgress,
   waitForGoldenSettlement,
 } from "./megapot-golden-reconciliation.ts";
 
 describe("multi-participant golden boundaries", () => {
+  test("observe_app accepts human activities without runner audio and requires an app-funded pool", () => {
+    const base = onePalmRehearsalInput();
+    const input = parseMultiGoldenInput({
+      ...base,
+      activity_mode: "observe_app",
+      app_funded_pool: {
+        offer_id: "offer",
+        leg_id: "leg",
+        funding_effect_id: "funding",
+        transaction_hash: `0x${"a".repeat(64)}`,
+        sender_address: `0x${"b".repeat(40)}`,
+      },
+      participants: base.participants.map((p) =>
+        p.expected_admission === "eligible"
+          ? { ...p, accepted_lyrics: undefined, karaoke_audio: undefined }
+          : p,
+      ),
+    });
+    expect(input.activity_mode).toBe("observe_app");
+    expect(() => parseMultiGoldenInput({ ...input, app_funded_pool: undefined })).toThrow();
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: input.participants.map((p) =>
+          p.expected_admission === "verification_missing" ? { ...p, activities: ["karaoke"] } : p,
+        ),
+      }),
+    ).toThrow();
+    const observation = rehearsalObservation(input);
+    expect(goldenAdmissionProgress(input, observation)).toBe("complete");
+    const verified = input.participants.find((p) => p.expected_admission === "eligible");
+    if (!verified) throw new Error("fixture needs a verified participant");
+    expect(observation.decisions.filter((d) => d.account_id === verified.account_id)).toHaveLength(
+      1,
+    );
+    expect(
+      goldenAdmissionProgress(input, {
+        ...observation,
+        decisions: observation.decisions.filter((d) => d.account_id !== verified.account_id),
+      }),
+    ).toBe("pending");
+    expect(
+      goldenAdmissionProgress(input, {
+        ...observation,
+        qualifications: observation.qualifications.filter(
+          (q) => !(q.account_id === verified.account_id && q.activity_key === "karaoke"),
+        ),
+      }),
+    ).toBe("pending");
+    expect(() =>
+      goldenAdmissionProgress(input, {
+        ...observation,
+        decisions: [
+          ...observation.decisions,
+          {
+            account_id: verified.account_id,
+            persona_id: verified.persona_id,
+            activity_key: "karaoke",
+            outcome: "eligible",
+            reason: null,
+          },
+        ],
+      }),
+    ).toThrow("unexpected share or decision");
+    expect(() =>
+      goldenAdmissionProgress(input, {
+        ...observation,
+        shares: [...observation.shares, ...observation.shares],
+      }),
+    ).toThrow("unexpected share");
+    expect(() =>
+      goldenAdmissionProgress(input, {
+        ...observation,
+        decisions: [
+          ...observation.decisions,
+          {
+            account_id: "negative",
+            persona_id: "negative-persona",
+            activity_key: "study",
+            outcome: "eligible",
+            reason: null,
+          },
+        ],
+      }),
+    ).toThrow("unexpected share or decision");
+  });
+  test("one verified account can do both activities beside an unverified negative", async () => {
+    const input = onePalmRehearsalInput();
+    expect(input.participants).toHaveLength(2);
+    expect(
+      await runMultiGolden(
+        { ...input, authorization: null },
+        { execute: false, reconcileOnly: false, environment: {} },
+      ),
+    ).toMatchObject({ mode: "dry-run", expected_shares: 1, live_calls: 0 });
+
+    const observation = rehearsalObservation(input);
+    expect(observation.qualifications).toHaveLength(3);
+    expect(observation.shares).toHaveLength(1);
+    expect(() => assertGoldenAdmission(input, observation)).not.toThrow();
+    expect(evaluateGoldenSettlement(input, observation, rehearsalTime).state).toBe(
+      "reconciled_no_win",
+    );
+
+    const beneficiary = observation.beneficiaries[0];
+    if (!beneficiary) throw new Error("fixture");
+    expect(
+      evaluateGoldenSettlement(
+        input,
+        {
+          ...observation,
+          drawing_status: "credited",
+          net_winnings_atomic: "101",
+          claim_receipt_atomic: "101",
+          credits: [
+            {
+              ...beneficiary,
+              amount_atomic: "101",
+              paid_atomic: "101",
+              reserved_atomic: "0",
+              state: "sent",
+              receipt_confirmed: true,
+            },
+          ],
+        },
+        rehearsalTime,
+      ).state,
+    ).toBe("reconciled_win");
+  });
   test("dry run needs no credentials, files, provider, or authorization", async () => {
     const input = { ...rehearsalInput(), authorization: null };
     expect(
@@ -54,6 +185,31 @@ describe("multi-participant golden boundaries", () => {
       parseMultiGoldenInput({
         ...input,
         authorization: { ...input.authorization, max_tickets: 2 },
+      }),
+    ).toThrow();
+  });
+  test("one-palm mode still requires both activities and a distinct negative", () => {
+    const input = onePalmRehearsalInput();
+    const verified = input.participants[0];
+    const unverified = input.participants[1];
+    if (!verified || !unverified) throw new Error("fixture");
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: [{ ...verified, activities: ["study"] }, unverified],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: [{ ...verified, activities: ["karaoke"] }, unverified],
+      }),
+    ).toThrow();
+    expect(() => parseMultiGoldenInput({ ...input, participants: [verified] })).toThrow();
+    expect(() =>
+      parseMultiGoldenInput({
+        ...input,
+        participants: [{ ...verified, expected_admission: "verification_missing" }, unverified],
       }),
     ).toThrow();
   });
@@ -218,7 +374,7 @@ describe("golden settlement acceptance", () => {
       ),
     ).toThrow("split");
   });
-  test("dual completion requires two qualifications but one share and one admission decision", () => {
+  test("dual completion requires two qualifications, one decision and one share", () => {
     const base = rehearsalInput();
     const first = base.participants[0];
     const karaoke = base.participants[1];
@@ -236,6 +392,8 @@ describe("golden settlement acceptance", () => {
     };
     const observation = rehearsalObservation();
     expect(() => assertGoldenAdmission(input, observation)).toThrow();
+    // Migration 0134 skips the decision for the second qualifying activity
+    // once the account holds a share, so only the qualification is added.
     const updated = {
       ...observation,
       qualifications: [
@@ -244,6 +402,21 @@ describe("golden settlement acceptance", () => {
       ],
     };
     expect(() => assertGoldenAdmission(input, updated)).not.toThrow();
+    expect(() =>
+      assertGoldenAdmission(input, {
+        ...updated,
+        decisions: [
+          ...updated.decisions,
+          {
+            account_id: first.account_id,
+            persona_id: first.persona_id,
+            activity_key: "karaoke",
+            outcome: "eligible",
+            reason: null,
+          },
+        ],
+      }),
+    ).toThrow();
     expect(() =>
       assertGoldenAdmission(input, {
         ...updated,

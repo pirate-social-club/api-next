@@ -22,6 +22,7 @@ import { consumeVideoThumbnail } from "../../application/src/video/thumbnail-enr
 import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
 import {
   attachVideoDecision,
+  createOriginalVideoSubmission,
   decideOriginalAudioVideo,
   type OriginalAudioTrustedAnalysis,
   publishOriginalVideo,
@@ -90,6 +91,268 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
 }
 
 suite("video publication PostgreSQL", () => {
+  test("persisted JSONB multipart manifest replays by ordered part identity, not object key order", async () => {
+    await fixture(async (admin, connection) => {
+      const store = makeControlPlaneVideoPublicationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reservationId = "media-reservation-00000000-0000-4000-8000-000000000020";
+      const replaySubmissionId = "media-submission-video-manifest-replay";
+      const replayOperationId = "media-operation-video-manifest-replay";
+      const expiresAt = "2099-09-04T01:00:00.000Z";
+      await store.createReservation({
+        record: {
+          reservationId,
+          communityId: community,
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "c".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 6 * 1024 * 1024,
+          expectedSha256: videoSha256,
+          ingestPolicyRevision: 1,
+          uploadId: "multipart-upload-replay-fixture",
+          partSizeBytes: 5 * 1024 * 1024,
+          partCount: 2,
+          expiresAt,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: "2026-09-04T00:00:00.000Z",
+        },
+        idempotencyKey: "reserve-manifest-replay",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/${partNumber}`,
+          expiresAt,
+        })),
+      });
+      const initial = createOriginalVideoSubmission({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+        communityId: community,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+        reservationId,
+        caption: null,
+        authorDeclaredRating: "general",
+      });
+      await store.createSubmission({
+        state: initial,
+        idempotencyKey: "create-manifest-replay",
+        requestHash: "d".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
+        responseBytes,
+        responseSha256,
+      });
+      const manifest = [
+        { partNumber: 1, etag: "etag-one" },
+        { partNumber: 2, etag: "etag-two" },
+      ] as const;
+      const input = {
+        submission: initial,
+        expectedCreationRevision: 1,
+        posterTimestampMs: 1_000,
+        manifest,
+      };
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(false);
+      const persisted = await admin.query(
+        "SELECT multipart_manifest::text AS manifest FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      );
+      expect(JSON.parse(persisted.rows[0]?.manifest)).toEqual(manifest);
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(false);
+      await expect(
+        store.beginFinalize({ ...input, manifest: [...manifest].reverse() }),
+      ).rejects.toThrow("video finalize manifest conflict");
+      await expect(
+        store.beginFinalize({
+          ...input,
+          manifest: [{ partNumber: 1, etag: "changed" }, manifest[1]],
+        }),
+      ).rejects.toThrow("video finalize manifest conflict");
+      await expect(store.beginFinalize({ ...input, manifest: [manifest[0]] })).rejects.toThrow(
+        "video finalize manifest conflict",
+      );
+      await store.recordMultipartCompleted({ submission: initial, manifest });
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(true);
+      const completed = await store.getSubmissionByOperation({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+      });
+      expect(completed?.state.phase).toBe("finalize");
+      if (!completed) throw new Error("completed-source fixture missing");
+      const mismatch = {
+        submission: completed.state,
+        evidenceRef: `video-upload-expectation:${reservationId}`,
+        responseBytes,
+        responseSha256,
+        endpointTemplate: "/media-post-submissions/:submissionId/finalize",
+        idempotencyKey: "finalize-manifest-replay",
+        requestHash: "e".repeat(64),
+      };
+      const concurrent = await Promise.all([
+        store.abandonExpectationMismatch(mismatch),
+        store.abandonExpectationMismatch(mismatch),
+      ]);
+      expect(concurrent.map((result) => result.kind).sort()).toEqual(["none", "replay"]);
+      const terminal = await store.getSubmissionByOperation({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+      });
+      expect(terminal?.state.status).toBe("abandoned");
+      expect(terminal?.state.phase).toBeNull();
+      expect(terminal?.state.abandonmentReason).toBe("upload_expectation_mismatch");
+      if (terminal) {
+        expect(projectVideoSubmission(terminal)).toMatchObject({
+          status: "abandoned",
+          reason_code: "upload_expectation_mismatch",
+        });
+      }
+      const terminalRow = await admin.query(
+        "SELECT state,terminal_reason FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      );
+      expect(terminalRow.rows[0]).toEqual({
+        state: "rejected",
+        terminal_reason: "expectation_mismatch",
+      });
+      const submissionRow = await admin.query(
+        `SELECT abandonment_reason,retention_disposition,response_snapshot_bytes IS NOT NULL AS has_response
+         FROM media_post_submissions WHERE submission_id=$1`,
+        [replaySubmissionId],
+      );
+      expect(submissionRow.rows[0]).toEqual({
+        abandonment_reason: "upload_expectation_mismatch",
+        retention_disposition: "retain_for_reconciliation",
+        has_response: true,
+      });
+      const outbox = await admin.query(
+        "SELECT count(*)::int AS count FROM media_video_analysis_outbox WHERE submission_id=$1",
+        [replaySubmissionId],
+      );
+      expect(outbox.rows[0]?.count).toBe(0);
+      const replay = await store.replayCommand({
+        submission: terminal?.state ?? initial,
+        actorAccountId: actor,
+        actorPersonaId: persona,
+        endpointTemplate: "/media-post-submissions/:submissionId/finalize",
+        idempotencyKey: "finalize-manifest-replay",
+        requestHash: "e".repeat(64),
+      });
+      expect(replay.kind).toBe("replay");
+      await expect(
+        store.abandonExpectationMismatch({ ...mismatch, idempotencyKey: "other-finalize-key" }),
+      ).rejects.toThrow("video finalization mismatch fence rejected");
+      const afterStale = await store.getSubmissionByOperation({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+      });
+      expect(afterStale?.eventSequence).toBe(terminal?.eventSequence);
+    });
+  });
+
+  test("invalid multipart manifest persists a terminal, non-publishable upload mismatch", async () => {
+    await fixture(async (admin, connection) => {
+      const store = makeControlPlaneVideoPublicationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reservationId = "media-reservation-00000000-0000-4000-8000-000000000021";
+      const invalidSubmissionId = "media-submission-video-invalid-manifest";
+      const invalidOperationId = "media-operation-video-invalid-manifest";
+      const expiresAt = "2099-09-04T01:00:00.000Z";
+      await store.createReservation({
+        record: {
+          reservationId,
+          communityId: community,
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "c".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 6 * 1024 * 1024,
+          expectedSha256: videoSha256,
+          ingestPolicyRevision: 1,
+          uploadId: "multipart-upload-invalid-manifest",
+          partSizeBytes: 5 * 1024 * 1024,
+          partCount: 2,
+          expiresAt,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: "2026-09-04T00:00:00.000Z",
+        },
+        idempotencyKey: "reserve-invalid-manifest",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/${partNumber}`,
+          expiresAt,
+        })),
+      });
+      const initial = createOriginalVideoSubmission({
+        submissionId: invalidSubmissionId,
+        operationId: invalidOperationId,
+        communityId: community,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+        reservationId,
+        caption: null,
+        authorDeclaredRating: "general",
+      });
+      await store.createSubmission({
+        state: initial,
+        idempotencyKey: "create-invalid-manifest",
+        requestHash: "d".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
+        responseBytes,
+        responseSha256,
+      });
+      const reservation = await store.getReservationForAuthor({
+        reservationId,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+      });
+      if (!reservation) throw new Error("invalid-manifest fixture reservation missing");
+      await store.abandonInvalidManifest({
+        submission: initial,
+        reservation,
+        evidenceRef: `video-invalid-manifest:${reservationId}`,
+      });
+      const terminal = await store.getSubmissionByOperation({
+        submissionId: invalidSubmissionId,
+        operationId: invalidOperationId,
+      });
+      expect(terminal?.state.status).toBe("abandoned");
+      expect(terminal?.state.abandonmentReason).toBe("upload_expectation_mismatch");
+      const rows = await admin.query(
+        `SELECT s.abandonment_reason,s.retention_disposition,r.state AS reservation_state,
+                r.terminal_reason,r.multipart_aborted_at IS NOT NULL AS multipart_aborted
+         FROM media_post_submissions s JOIN media_upload_reservations r
+           ON r.reservation_id=s.audio_reservation_id WHERE s.submission_id=$1`,
+        [invalidSubmissionId],
+      );
+      expect(rows.rows[0]).toEqual({
+        abandonment_reason: "upload_expectation_mismatch",
+        retention_disposition: "retain_for_reconciliation",
+        reservation_state: "rejected",
+        terminal_reason: "expectation_mismatch",
+        multipart_aborted: true,
+      });
+      const outbox = await admin.query(
+        "SELECT count(*)::int AS count FROM media_video_analysis_outbox WHERE submission_id=$1",
+        [invalidSubmissionId],
+      );
+      expect(outbox.rows[0]?.count).toBe(0);
+    });
+  });
+
   test("unresolved moderation abandonment is fenced, concurrent, and idempotent", async () => {
     await fixture(async (admin, connection) => {
       const { store, finalized } = await finalizedFixture(connection);
