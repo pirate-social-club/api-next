@@ -134,14 +134,18 @@ export function rehearsalObservation(
       account_id: p.account_id,
       persona_id: p.persona_id,
     })),
+    // Mirrors migration 0134: an admitted account gets one decision, for its
+    // first qualifying activity; a refused account gets one per qualification.
     decisions: input.participants.flatMap((p) =>
-      p.activities.map((activity_key) => ({
-        account_id: p.account_id,
-        persona_id: p.persona_id,
-        activity_key,
-        outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
-        reason: p.expected_admission === "eligible" ? null : "verification_missing",
-      })),
+      (p.expected_admission === "eligible" ? p.activities.slice(0, 1) : p.activities).map(
+        (activity_key) => ({
+          account_id: p.account_id,
+          persona_id: p.persona_id,
+          activity_key,
+          outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
+          reason: p.expected_admission === "eligible" ? null : "verification_missing",
+        }),
+      ),
     ),
     credits: [],
   };

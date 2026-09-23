@@ -101,9 +101,14 @@ confirmed transfer to one open drawing with enough cutoff time. Any mismatch
 stops before Study or Karaoke writes. Replaying the same journal repeats only
 these reads, never a funding or offer POST.
 
-In `observe_app`, the runner waits for both verified qualifications, their
-independent eligible decisions, exactly one share, and the negative Study
-qualification with `verification_missing` and no share. Each poll uses a new
+In `observe_app`, the runner waits for both verified qualifications, exactly
+one eligible decision and exactly one share for that account, and the negative
+Study qualification with `verification_missing` and no share. The share
+projection records a decision only for an admitted account's first qualifying
+activity in a drawing; once the share exists, the second activity qualifies
+without a decision. A second eligible decision for the same account is a
+contradiction and stops the run. A refused account still gets one decision per
+qualification. Each poll uses a new
 read-only database transaction scoped to the adopted leg and drawing. The
 earlier of the approved qualification deadline and the drawing's actual entry
 cutoff ends the wait. Missing rows then return nonterminal

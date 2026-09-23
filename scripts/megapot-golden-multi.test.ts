@@ -54,12 +54,40 @@ describe("multi-participant golden boundaries", () => {
     ).toThrow();
     const observation = rehearsalObservation(input);
     expect(goldenAdmissionProgress(input, observation)).toBe("complete");
+    const verified = input.participants.find((p) => p.expected_admission === "eligible");
+    if (!verified) throw new Error("fixture needs a verified participant");
+    expect(observation.decisions.filter((d) => d.account_id === verified.account_id)).toHaveLength(
+      1,
+    );
     expect(
       goldenAdmissionProgress(input, {
         ...observation,
-        decisions: observation.decisions.filter((d) => d.activity_key !== "karaoke"),
+        decisions: observation.decisions.filter((d) => d.account_id !== verified.account_id),
       }),
     ).toBe("pending");
+    expect(
+      goldenAdmissionProgress(input, {
+        ...observation,
+        qualifications: observation.qualifications.filter(
+          (q) => !(q.account_id === verified.account_id && q.activity_key === "karaoke"),
+        ),
+      }),
+    ).toBe("pending");
+    expect(() =>
+      goldenAdmissionProgress(input, {
+        ...observation,
+        decisions: [
+          ...observation.decisions,
+          {
+            account_id: verified.account_id,
+            persona_id: verified.persona_id,
+            activity_key: "karaoke",
+            outcome: "eligible",
+            reason: null,
+          },
+        ],
+      }),
+    ).toThrow("unexpected share or decision");
     expect(() =>
       goldenAdmissionProgress(input, {
         ...observation,
@@ -346,7 +374,7 @@ describe("golden settlement acceptance", () => {
       ),
     ).toThrow("split");
   });
-  test("dual completion requires two qualifications and decisions but one share", () => {
+  test("dual completion requires two qualifications, one decision and one share", () => {
     const base = rehearsalInput();
     const first = base.participants[0];
     const karaoke = base.participants[1];
@@ -364,24 +392,31 @@ describe("golden settlement acceptance", () => {
     };
     const observation = rehearsalObservation();
     expect(() => assertGoldenAdmission(input, observation)).toThrow();
+    // Migration 0134 skips the decision for the second qualifying activity
+    // once the account holds a share, so only the qualification is added.
     const updated = {
       ...observation,
       qualifications: [
         ...observation.qualifications,
         { account_id: first.account_id, persona_id: first.persona_id, activity_key: "karaoke" },
       ],
-      decisions: [
-        ...observation.decisions,
-        {
-          account_id: first.account_id,
-          persona_id: first.persona_id,
-          activity_key: "karaoke",
-          outcome: "eligible",
-          reason: null,
-        },
-      ],
     };
     expect(() => assertGoldenAdmission(input, updated)).not.toThrow();
+    expect(() =>
+      assertGoldenAdmission(input, {
+        ...updated,
+        decisions: [
+          ...updated.decisions,
+          {
+            account_id: first.account_id,
+            persona_id: first.persona_id,
+            activity_key: "karaoke",
+            outcome: "eligible",
+            reason: null,
+          },
+        ],
+      }),
+    ).toThrow();
     expect(() =>
       assertGoldenAdmission(input, {
         ...updated,
