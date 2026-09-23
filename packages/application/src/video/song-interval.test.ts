@@ -20,7 +20,9 @@ import {
   type VideoReservationRecord,
 } from "./publication.ts";
 import {
+  type CanonicalSongProbe,
   measurePendingSongTimings,
+  measureSongTiming,
   type SongCanonicalTimingStore,
 } from "./song-canonical-timing.ts";
 import {
@@ -648,6 +650,9 @@ describe("measuring a song's canonical duration", () => {
           canonicalAudioSha256: "d".repeat(64),
           audioAssetRef: `asset_${index}`,
         })),
+      claimPendingFor: async () => {
+        throw new Error("a pass never claims a named revision");
+      },
       complete: async (input) => {
         log.push(`complete:${input.songPostId}:${input.durationSamples}:${input.proberIdentity}`);
       },
@@ -694,5 +699,107 @@ describe("measuring a song's canonical duration", () => {
       },
     });
     expect(log).toEqual(["fail:post_0:undecodable_audio"]);
+  });
+});
+
+describe("measuring one named song revision", () => {
+  const target = { songPostId: "post_target", audioRevision: 3 };
+
+  function targetStore(claimable: boolean) {
+    const log: string[] = [];
+    const store: SongCanonicalTimingStore = {
+      claimPending: async () => {
+        throw new Error("a targeted measurement never scans");
+      },
+      claimPendingFor: async (requested) => {
+        log.push(`claim:${requested.songPostId}:${requested.audioRevision}`);
+        return claimable
+          ? {
+              songPostId: requested.songPostId,
+              audioRevision: requested.audioRevision,
+              canonicalAudioSha256: "d".repeat(64),
+              audioAssetRef: "asset_target",
+            }
+          : null;
+      },
+      complete: async (input) => {
+        log.push(`complete:${input.songPostId}:${input.durationSamples}`);
+      },
+      fail: async (input) => {
+        log.push(`fail:${input.songPostId}:${input.failureCode}`);
+      },
+    };
+    return { store, log };
+  }
+
+  const prober = (probe: () => Promise<CanonicalSongProbe>) => {
+    const measured: string[] = [];
+    return {
+      measured,
+      prober: {
+        identity: "ffmpeg-pinned-test",
+        policyRevision: 1,
+        measure: async (input: { songPostId: string }) => {
+          measured.push(input.songPostId);
+          return probe();
+        },
+      },
+    };
+  };
+
+  test("claims only the named revision and records its measurement", async () => {
+    const { store, log } = targetStore(true);
+    const probe = prober(async () => ({ ok: true, durationSamples: 720_000 }));
+    expect(await measureSongTiming({ store, prober: probe.prober }, target)).toEqual({
+      status: "measured",
+      durationSamples: 720_000,
+    });
+    expect(log).toEqual(["claim:post_target:3", "complete:post_target:720000"]);
+    expect(probe.measured).toEqual(["post_target"]);
+  });
+
+  test("records a permanent failure and leaves a transient one pending", async () => {
+    const permanent = targetStore(true);
+    expect(
+      await measureSongTiming(
+        {
+          store: permanent.store,
+          prober: prober(async () => ({
+            ok: false,
+            permanent: true,
+            failureCode: "source_digest_mismatch",
+          })).prober,
+        },
+        target,
+      ),
+    ).toEqual({ status: "failed", failureCode: "source_digest_mismatch" });
+    expect(permanent.log).toEqual([
+      "claim:post_target:3",
+      "fail:post_target:source_digest_mismatch",
+    ]);
+
+    const transient = targetStore(true);
+    expect(
+      await measureSongTiming(
+        {
+          store: transient.store,
+          prober: prober(async () => {
+            throw new Error("prober crashed");
+          }).prober,
+        },
+        target,
+      ),
+    ).toEqual({ status: "deferred" });
+    expect(transient.log).toEqual(["claim:post_target:3"]);
+  });
+
+  test("an unclaimable revision is reported without probing or writing", async () => {
+    const { store, log } = targetStore(false);
+    const probe = prober(async () => ({ ok: true, durationSamples: 1 }));
+    expect(await measureSongTiming({ store, prober: probe.prober }, target)).toEqual({
+      status: "not_claimed",
+    });
+    expect(log).toEqual(["claim:post_target:3"]);
+    expect(probe.measured).toEqual([]);
   });
 });
