@@ -49,6 +49,7 @@ async function sentinelSet(): Promise<{
     "hns-host-persistence",
     "handle-sales",
     "spaces-sale-namespace",
+    "spaces-handle-claims",
     "community-moderation",
     "dance-reference",
     "public-post-slug",
@@ -197,6 +198,23 @@ describe("Postgres suite sentinel verification", () => {
     expect(
       workflow.match(
         /\/tmp\/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete/gu,
+      ),
+    ).toHaveLength(2);
+  });
+
+  test("keeps Spaces handle claim persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete",
+    );
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-spaces-handle-claims-suite-complete/gu,
       ),
     ).toHaveLength(2);
   });
