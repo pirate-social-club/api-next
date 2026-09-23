@@ -355,6 +355,10 @@ export {
 } from "./session-tokens";
 export * from "./song-owner-video-policy-repository.ts";
 export * from "./song-reward-offer-repository.ts";
+export {
+  makeControlPlaneSpacesSaleNamespaceRepository,
+  makeControlPlaneSpacesSaleNamespaceStore,
+} from "./spaces-sale-namespace-repository.ts";
 export * from "./study-spoken-answer-recovery.ts";
 export * from "./study-translation-repository.ts";
 export {

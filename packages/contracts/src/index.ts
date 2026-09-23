@@ -17,6 +17,7 @@ export * from "./endpoint.ts";
 export * from "./errors.ts";
 export * from "./handle-nationality.ts";
 export * from "./handle-sales.ts";
+export * from "./handle-sales-spaces.ts";
 export * from "./hns-edge-alerts.ts";
 export * from "./hns-edge-status.ts";
 export * from "./hns-owner-recovery.ts";
