@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { RouteAttachmentOwnershipProviderStartInput } from "@pirate/application/namespace-ownership";
+import {
+  deriveHnsEvidenceLease,
+  type RouteAttachmentOwnershipProviderStartInput,
+} from "@pirate/application/namespace-ownership";
 import { Effect } from "effect";
 import { makeHnsOwnerServiceBindingTransport } from "../../../packages/platform-cf/src/namespace-ownership/hns-owner-service-binding.ts";
-import { attachmentObserverFixture } from "./attachment-observer.fixture.ts";
+import {
+  ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS,
+  attachmentFixtureAnchorMedianTime,
+  attachmentObserverFixture,
+} from "./attachment-observer.fixture.ts";
 import { type Env, handleRequest } from "./index.ts";
 import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 
@@ -68,6 +75,31 @@ function request(body: unknown, poll = false) {
   );
 }
 describe("community attachment transport and verifier contract", () => {
+  test("anchors synthetic evidence to a controlled current clock without extending the lease", () => {
+    const nowEpochSeconds = 1_787_486_400 + ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS + 1;
+    const chainAnchorMedianTime = attachmentFixtureAnchorMedianTime(nowEpochSeconds);
+    const lease = deriveHnsEvidenceLease(
+      {
+        chain_anchor_median_time: chainAnchorMedianTime,
+        chain_anchor_height: 123_500,
+        expiry_height: 200_000,
+      },
+      {
+        expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
+        expiry_safety_blocks: 144,
+        evidence_lease_seconds: ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS,
+      },
+    );
+    expect(1_787_486_400 + ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS).toBeLessThan(nowEpochSeconds);
+    expect(chainAnchorMedianTime).toBe(nowEpochSeconds - 600);
+    expect(Date.parse(lease.expires_at) / 1_000).toBe(
+      chainAnchorMedianTime + ATTACHMENT_FIXTURE_EVIDENCE_LEASE_SECONDS,
+    );
+    expect(Date.parse(lease.expires_at) / 1_000).toBeGreaterThan(nowEpochSeconds);
+    expect(() => attachmentFixtureAnchorMedianTime(Number.NaN)).toThrow();
+  });
+
   test("decodes the actual transport start bytes without a creation intent", async () => {
     const wire = transport(attachmentObserverFixture("pending"));
     const bytes = await Effect.runPromise(wire.startRouteAttachment({ input, context }));
