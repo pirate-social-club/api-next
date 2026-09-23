@@ -78,36 +78,34 @@ create)
 roles)
   load; [ -n "${BRANCH_ID:-}" ] || fail "no branch"
   pscale role create $DB $BRANCH qual-admin --inherited-roles postgres --ttl 12h --format json | bun qualification/branch-helpers.ts save-role admin > "$EV/role-admin.json"
-  pscale role create $DB $BRANCH qual-render-host --ttl 12h --format json | bun qualification/branch-helpers.ts save-role host > "$EV/role-host.json"
-  ADMIN_BASE=$(python3 -c "import json;print(json.load(open('$EV/role-admin.json'))['base_username'])"); HOST_BASE=$(python3 -c "import json;print(json.load(open('$EV/role-host.json'))['base_username'])")
-  for r in admin host; do [ "$(python3 -c "import json;print(json.load(open('$EV/role-$r.json'))['branch_suffix'])")" = "$BRANCH_ID" ] || fail "$r role not on the qualification branch"; done
-  [[ $HOST_BASE =~ ^pscale_api_[a-z0-9]+$ ]] || fail "host role name unexpected"
-  state ADMIN_BASE "$ADMIN_BASE"; state HOST_BASE "$HOST_BASE"
-  H="\"$HOST_BASE\""
-  bun qualification/branch-helpers.ts sql admin.url "BEGIN; SET LOCAL ROLE postgres;
-    GRANT USAGE ON SCHEMA api_next TO $H;
-    GRANT SELECT ON api_next.media_song_video_render_attempts, api_next.media_song_video_render_plans, api_next.media_post_submissions, api_next.media_video_reservation_song_plans, api_next.media_video_revisions, api_next.media_immutable_objects, api_next.media_song_video_masters, api_next.media_song_video_accepted_masters, api_next.media_publication_projections, api_next.media_song_canonical_timings TO $H;
-    GRANT UPDATE ON api_next.media_song_video_render_attempts, api_next.media_song_canonical_timings TO $H;
-    GRANT UPDATE (etag) ON api_next.media_immutable_objects TO $H;
-    GRANT INSERT ON api_next.media_song_video_masters, api_next.media_song_video_accepted_masters TO $H;
-    COMMIT;" > /dev/null || fail "grants"
-  bun qualification/branch-helpers.ts sql admin.url "SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee='$HOST_BASE' ORDER BY 1,2" > "$EV/grants-table.json"
-  bun qualification/branch-helpers.ts sql admin.url "SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges WHERE grantee='$HOST_BASE' AND table_name='media_immutable_objects' AND privilege_type<>'SELECT' ORDER BY 1,2,3" > "$EV/grants-column.json"
-  bun qualification/branch-helpers.ts sql admin.url "SELECT count(*)::int AS memberships FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member WHERE r.rolname='$HOST_BASE'" > "$EV/host-memberships.json"
-  python3 - "$EV" <<'PY' || fail "grant readback differs from the reviewed list"
-import json,sys
-e=sys.argv[1]
-t=sorted((r['table_name'],r['privilege_type']) for r in json.load(open(e+'/grants-table.json')))
-sel=['media_immutable_objects','media_post_submissions','media_publication_projections','media_song_canonical_timings','media_song_video_accepted_masters','media_song_video_masters','media_song_video_render_attempts','media_song_video_render_plans','media_video_reservation_song_plans','media_video_revisions']
-want=sorted([(x,'SELECT') for x in sel]+[('media_song_video_render_attempts','UPDATE'),('media_song_canonical_timings','UPDATE'),('media_song_video_masters','INSERT'),('media_song_video_accepted_masters','INSERT')])
-col=[(r['column_name'],r['privilege_type']) for r in json.load(open(e+'/grants-column.json'))]
-mem=json.load(open(e+'/host-memberships.json'))[0]['memberships']
-print('table grants match:',t==want,'| column grants:',col,'| inherited roles:',mem)
-sys.exit(0 if t==want and col==[('etag','UPDATE')] and mem==0 else 1)
-PY
-  log "roles and grants ok";;
+  ADMIN_BASE=$(python3 -c "import json;print(json.load(open('$EV/role-admin.json'))['base_username'])")
+  [ "$(python3 -c "import json;print(json.load(open('$EV/role-admin.json'))['branch_suffix'])")" = "$BRANCH_ID" ] || fail "admin role not on the qualification branch"
+  state ADMIN_BASE "$ADMIN_BASE"
+  log "branch admin role ready; host role is a separate phase";;
+branch-host-role)
+  # A restored PlanetScale branch has no login for the source table owner, so
+  # exact table grants cannot be issued here. This data-only role is confined
+  # to the disposable branch. Staging main still requires exact grants.
+  load; [ -n "${BRANCH_ID:-}" ] && [ -n "${ADMIN_BASE:-}" ] || fail "branch admin role is not ready"
+  [ -f "$PRIV/admin.url" ] || fail "branch admin credential is missing"
+  [ ! -e "$EV/role-host-data.json" ] || fail "branch data role already recorded"
+  pscale role create $DB $BRANCH qual-render-host-data --inherited-roles pg_read_all_data,pg_write_all_data --ttl 12h --format json | bun qualification/branch-helpers.ts save-role host-data > "$EV/role-host-data.json"
+  HOST_BASE=$(python3 -c "import json;print(json.load(open('$EV/role-host-data.json'))['base_username'])")
+  [ "$(python3 -c "import json;print(json.load(open('$EV/role-host-data.json'))['branch_suffix'])")" = "$BRANCH_ID" ] || fail "host data role not on the qualification branch"
+  [[ $HOST_BASE =~ ^pscale_api_[a-z0-9]+$ ]] || fail "host data role name unexpected"
+  bun qualification/branch-helpers.ts sql admin.url "SELECT r.rolname, r.rolsuper, r.rolinherit, r.rolcreatedb, r.rolcreaterole, r.rolreplication, r.rolbypassrls, r.rolcanlogin,
+    has_database_privilege(r.rolname,current_database(),'CREATE') AS database_create,
+    has_schema_privilege(r.rolname,'api_next','CREATE') AS schema_create,
+    (SELECT coalesce(json_agg(p.rolname ORDER BY p.rolname),'[]'::json) FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid WHERE m.member=r.oid) AS inherited_roles,
+    (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='api_next' AND c.relowner=r.oid) AS owned_objects
+    FROM pg_roles r WHERE r.rolname='$HOST_BASE'" > "$EV/role-host-data-readback.json"
+  bun qualification/branch-role-policy.ts "$EV/role-host-data-readback.json" "$HOST_BASE" || fail "branch data role has unexpected privileges"
+  state HOST_BASE "$HOST_BASE"
+  log "branch host data-only role verified";;
 branch-preflight)
   load
+  [ -n "${HOST_BASE:-}" ] && [ -f "$EV/role-host-data-readback.json" ] || fail "branch host role is not verified"
+  bun qualification/branch-role-policy.ts "$EV/role-host-data-readback.json" "$HOST_BASE" > "$EV/role-host-data-policy.json" || fail "branch host role policy changed"
   bun qualification/branch-helpers.ts sql admin.url "SELECT version, checksum FROM api_next.schema_migrations ORDER BY version" > "$EV/branch-ledger.json"
   git show $MAIN_SHA:db/postgres/migrations/checksums.json > "$EV/expected-checksums.json"
   python3 - "$EV" <<'PY' || fail "branch ledger differs from $MAIN_SHA"
@@ -132,7 +130,7 @@ sequence)
   bun qualification/render-qualification.ts request-timing --song-post $SONG > "$EV/step-timing-request.json" || fail "timing request"
   snap B; manifest timing_request A B
   bun qualification/render-qualification.ts eligibility --song-post $SONG --audio-revision 1 > "$EV/step-eligibility.json" || fail "eligibility"
-  bun qualification/branch-helpers.ts host-env measure host.url input - SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID=$SONG SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION=1 > /dev/null
+  bun qualification/branch-helpers.ts host-env measure host-data.url input - SONG_VIDEO_RENDER_MEASURE_SONG_POST_ID=$SONG SONG_VIDEO_RENDER_MEASURE_AUDIO_REVISION=1 > /dev/null
   host measure > "$EV/step-measure.json" || fail "measurement exited non-zero"
   python3 -c "import json;d=json.load(open('$EV/step-measure.json'));import sys;sys.exit(0 if d['status']=='measured' else 1)" || fail "measurement status $(cat $EV/step-measure.json)"
   snap C; manifest measurement B C
@@ -151,7 +149,7 @@ sequence)
   [ "$ATT" = "$(python3 -c "import json;print(json.load(open('qualification/manifests.json'))['identities']['attempt_id'])")" ] || fail "attempt id $ATT differs from the bound id"
   sessions before-render
   bun qualification/branch-helpers.ts mint output object-read-write 7200 --prefix "$MASTER_PREFIX" > "$EV/mint-output.json" || fail "mint output"
-  bun qualification/branch-helpers.ts host-env render host.url input output SONG_VIDEO_RENDER_PLAN_ID=$PLAN SONG_VIDEO_RENDER_ATTEMPT_ID=$ATT SONG_VIDEO_RENDER_HOST_ID=song-video-render-host-qualification-20260921-01 > /dev/null
+  bun qualification/branch-helpers.ts host-env render host-data.url input output SONG_VIDEO_RENDER_PLAN_ID=$PLAN SONG_VIDEO_RENDER_ATTEMPT_ID=$ATT SONG_VIDEO_RENDER_HOST_ID=song-video-render-host-qualification-20260921-01 > /dev/null
   set +e; host render > "$EV/step-render.json" 2> "$EV/step-render.err"; RC=$?; set -e
   log "render exit $RC: $(cat $EV/step-render.json)"
   snap E; manifest render D E
@@ -164,7 +162,7 @@ verify-evidence)
   # the evidence a completed run must hold exists and parses; it does not seal.
   load
   missing=""
-  for f in backup-selected.json branch-show.json role-admin.json role-host.json grants-table.json grants-column.json \
+  for f in backup-selected.json branch-show.json role-admin.json role-host-data.json role-host-data-readback.json role-host-data-policy.json \
            branch-ledger.json branch-catalog-digest.json song-checks-branch.json isolation-runtime.json isolation-operator.json \
            snap-A.json snap-B.json snap-C.json snap-D0.json snap-D.json snap-E.json \
            diff-timing_request.json diff-measurement.json diff-fixture.json diff-render.json \
@@ -189,5 +187,5 @@ seal)
   log "sealing evidence"
   (cd "$EV" && rm -f SHA256SUMS && sha256sum $(ls | grep -v -E '^SHA256SUMS$') > SHA256SUMS && sha256sum -c --quiet SHA256SUMS) || { echo "STOP: seal failed" >&2; exit 1; }
   echo "evidence sealed and verified: $(ls "$EV" | grep -vc '^SHA256SUMS$') files, SHA256SUMS $(sha256sum "$EV/SHA256SUMS" | cut -c1-64)";;
-*) echo "usage: branch-run.sh preflight|create|roles|branch-preflight|sequence|verify-evidence|delete|seal"; exit 2;;
+*) echo "usage: branch-run.sh preflight|create|roles|branch-host-role|branch-preflight|sequence|verify-evidence|delete|seal"; exit 2;;
 esac
