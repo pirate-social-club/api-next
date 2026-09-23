@@ -68,6 +68,9 @@ const Identity = Schema.String.check(
   Schema.isMaxLength(256),
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u),
 );
+const SolidStagingIngressIdentity = Schema.String.check(
+  Schema.isPattern(/^solid-hns-ingress-sha256:[0-9a-f]{64}$/u),
+);
 const Sha256 = Schema.String.check(
   Schema.isMinLength(64),
   Schema.isMaxLength(64),
@@ -172,6 +175,7 @@ const PrivateTlsStagingDeploymentManifestV1 = Schema.Struct({
   public_tls_termination: Schema.Literal(false),
   gateway_certificate_spki_sha256: Sha256,
   ...commonDeploymentManifestFields,
+  solid_ingress_composition_reference: SolidStagingIngressIdentity,
 });
 
 type HnsCommunityAppGatewayDeploymentManifestV1 = Schema.Schema.Type<typeof DeploymentManifestV1>;

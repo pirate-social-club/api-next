@@ -40,7 +40,10 @@ async function manifest(
     profile_utf8_bytes: 622,
     profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
     solid_origin: "https://hns-solid-staging.pirate.sc",
-    solid_ingress_composition_reference: "solid-hns-ingress-staging-01",
+    solid_ingress_composition_reference:
+      mode === "staging-private-tls"
+        ? `solid-hns-ingress-sha256:${"a".repeat(64)}`
+        : "solid-hns-ingress-staging-01",
     solid_access_application_audience: "solid-hns-staging-aud",
     solid_access_client_id_credential: HNS_COMMUNITY_APP_GATEWAY_SOLID_ACCESS_CLIENT_ID_CREDENTIAL,
     solid_access_client_secret_credential:
@@ -225,6 +228,7 @@ describe("community gateway deployment configuration", () => {
       mode: "staging-private-tls",
       private_tls_listener: "172.31.254.2:443",
       gateway_certificate_spki_sha256: "c".repeat(64),
+      solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"a".repeat(64)}`,
       public_tls_termination: false,
     });
     const changed = await load({
@@ -232,6 +236,15 @@ describe("community gateway deployment configuration", () => {
       manifest_overrides: { gateway_certificate_spki_sha256: "d".repeat(64) },
     });
     expect(changed.gateway_deployment_reference).not.toBe(
+      configuration.gateway_deployment_reference,
+    );
+    const changedComposition = await load({
+      mode: "staging-private-tls",
+      manifest_overrides: {
+        solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"b".repeat(64)}`,
+      },
+    });
+    expect(changedComposition.gateway_deployment_reference).not.toBe(
       configuration.gateway_deployment_reference,
     );
     for (const other of ["production", "shadow", "staging-shadow"] as const) {
@@ -246,6 +259,8 @@ describe("community gateway deployment configuration", () => {
       { gateway_certificate_spki_sha256: "c".repeat(63) },
       { synthetic_certificate_spki_sha256: "c".repeat(64) },
       { tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT },
+      { solid_ingress_composition_reference: "solid-hns-ingress-staging-01" },
+      { solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"A".repeat(64)}` },
     ]) {
       await expect(load({ mode: "staging-private-tls", manifest_overrides })).rejects.toThrow();
     }
