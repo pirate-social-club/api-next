@@ -28,12 +28,12 @@ state() { echo "$1=$2" >> "$STATE"; }
 load() { [ -f "$STATE" ] && . "$STATE" || true; }
 ops() { infisical run --env=staging --path=/services/api-next/operator --silent -- "$@"; }
 rt() { infisical run --env=staging --path=/services/api-next --silent -- "$@"; }
-snap() { QUAL_DATABASE_URL="$(cat "$PRIV/admin.url")" bun qualification/table-snapshot.ts "$(cat "$PRIV/admin.url")" > "$EV/snap-$1.json"; }
+snap() { QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")" bun qualification/table-snapshot.ts "$(cat "$PRIV/host-data.url")" > "$EV/snap-$1.json"; }
 manifest() { local step=$1 from=$2 to=$3; local tables; tables=$(python3 -c "import json;print(' '.join(json.load(open('qualification/manifests.json'))['manifests']['$step']['tables']))"); bun qualification/snapshot-diff.ts "$EV/snap-$from.json" "$EV/snap-$to.json" $tables > "$EV/diff-$step.json" || fail "manifest $step: table outside manifest"; log "manifest $step ok: $(python3 -c "import json;print([(c['table'],(c['before'] or {}).get('rows'),(c['after'] or {}).get('rows')) for c in json.load(open('$EV/diff-$step.json'))['changed']])")"; }
 cost() { load; python3 -c "import datetime as d;c=d.datetime.fromisoformat('$BRANCH_CREATED_AT'.replace('Z','+00:00'));h=(d.datetime.now(d.timezone.utc)-c).total_seconds()/3600;print(f'elapsed {h:.2f} h, estimated cluster cost US\${h*5/730:.4f} at rate 5/month (estimate; invoice is authoritative)')" | tee -a "$EV/run.log"; }
-sessions() { bun qualification/branch-helpers.ts sql admin.url "SELECT usename, count(*)::int AS n FROM pg_stat_activity WHERE usename IS NOT NULL GROUP BY 1 ORDER BY 1" > "$EV/sessions-$1.json"; load; python3 - "$EV/sessions-$1.json" "$ADMIN_BASE" "$HOST_BASE" <<'PY' || fail "unexpected session on branch ($1)"
+sessions() { bun qualification/branch-helpers.ts sql host-data.url "SELECT usename, count(*)::int AS n FROM pg_stat_activity WHERE usename IS NOT NULL GROUP BY 1 ORDER BY 1" > "$EV/sessions-$1.json"; load; python3 - "$EV/sessions-$1.json" "$HOST_BASE" <<'PY' || fail "unexpected session on branch ($1)"
 import json,sys
-rows=json.load(open(sys.argv[1])); allowed={sys.argv[2],sys.argv[3]}
+rows=json.load(open(sys.argv[1])); allowed={sys.argv[2]}
 unexpected=[r for r in rows if r['usename'] not in allowed]
 print('sessions:',rows,'unexpected:',unexpected)
 sys.exit(1 if unexpected else 0)
@@ -75,25 +75,17 @@ create)
   DELETE_BY=$(python3 -c "import datetime as d;c=d.datetime.fromisoformat('$CREATED'.replace('Z','+00:00'));h=d.datetime.fromisoformat('$HARD_DEADLINE'.replace('Z','+00:00'));print(min(c+d.timedelta(hours=72),h).strftime('%Y-%m-%dT%H:%M:%SZ'))")
   state BRANCH_ID "$BRANCH_ID"; state BRANCH_CREATED_AT "$CREATED"; state DELETE_BY "$DELETE_BY"
   log "branch $BRANCH id $BRANCH_ID created $CREATED; delete by $DELETE_BY"; cost;;
-roles)
-  load; [ -n "${BRANCH_ID:-}" ] || fail "no branch"
-  pscale role create $DB $BRANCH qual-admin --inherited-roles postgres --ttl 12h --format json | bun qualification/branch-helpers.ts save-role admin > "$EV/role-admin.json"
-  ADMIN_BASE=$(python3 -c "import json;print(json.load(open('$EV/role-admin.json'))['base_username'])")
-  [ "$(python3 -c "import json;print(json.load(open('$EV/role-admin.json'))['branch_suffix'])")" = "$BRANCH_ID" ] || fail "admin role not on the qualification branch"
-  state ADMIN_BASE "$ADMIN_BASE"
-  log "branch admin role ready; host role is a separate phase";;
 branch-host-role)
   # A restored PlanetScale branch has no login for the source table owner, so
   # exact table grants cannot be issued here. This data-only role is confined
   # to the disposable branch. Staging main still requires exact grants.
-  load; [ -n "${BRANCH_ID:-}" ] && [ -n "${ADMIN_BASE:-}" ] || fail "branch admin role is not ready"
-  [ -f "$PRIV/admin.url" ] || fail "branch admin credential is missing"
+  load; [ -n "${BRANCH_ID:-}" ] || fail "no branch"
   [ ! -e "$EV/role-host-data.json" ] || fail "branch data role already recorded"
   pscale role create $DB $BRANCH qual-render-host-data --inherited-roles pg_read_all_data,pg_write_all_data --ttl 12h --format json | bun qualification/branch-helpers.ts save-role host-data > "$EV/role-host-data.json"
   HOST_BASE=$(python3 -c "import json;print(json.load(open('$EV/role-host-data.json'))['base_username'])")
   [ "$(python3 -c "import json;print(json.load(open('$EV/role-host-data.json'))['branch_suffix'])")" = "$BRANCH_ID" ] || fail "host data role not on the qualification branch"
   [[ $HOST_BASE =~ ^pscale_api_[a-z0-9]+$ ]] || fail "host data role name unexpected"
-  bun qualification/branch-helpers.ts sql admin.url "SELECT r.rolname, r.rolsuper, r.rolinherit, r.rolcreatedb, r.rolcreaterole, r.rolreplication, r.rolbypassrls, r.rolcanlogin,
+  bun qualification/branch-helpers.ts sql host-data.url "SELECT r.rolname, r.rolsuper, r.rolinherit, r.rolcreatedb, r.rolcreaterole, r.rolreplication, r.rolbypassrls, r.rolcanlogin,
     has_database_privilege(r.rolname,current_database(),'CREATE') AS database_create,
     has_schema_privilege(r.rolname,'api_next','CREATE') AS schema_create,
     (SELECT coalesce(json_agg(p.rolname ORDER BY p.rolname),'[]'::json) FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid WHERE m.member=r.oid) AS inherited_roles,
@@ -106,7 +98,7 @@ branch-preflight)
   load
   [ -n "${HOST_BASE:-}" ] && [ -f "$EV/role-host-data-readback.json" ] || fail "branch host role is not verified"
   bun qualification/branch-role-policy.ts "$EV/role-host-data-readback.json" "$HOST_BASE" > "$EV/role-host-data-policy.json" || fail "branch host role policy changed"
-  bun qualification/branch-helpers.ts sql admin.url "SELECT version, checksum FROM api_next.schema_migrations ORDER BY version" > "$EV/branch-ledger.json"
+  bun qualification/branch-helpers.ts sql host-data.url "SELECT version, checksum FROM api_next.schema_migrations ORDER BY version" > "$EV/branch-ledger.json"
   git show $MAIN_SHA:db/postgres/migrations/checksums.json > "$EV/expected-checksums.json"
   python3 - "$EV" <<'PY' || fail "branch ledger differs from $MAIN_SHA"
 import json,sys
@@ -114,9 +106,9 @@ e=sys.argv[1]; led={r['version']:r['checksum'] for r in json.load(open(e+'/branc
 exp=exp.get('migrations',exp) if isinstance(exp,dict) else exp
 print('ledger entries',len(led),'expected',len(exp),'equal',led==exp); sys.exit(0 if led==exp else 1)
 PY
-  bun qualification/catalog-digest.ts "$(cat "$PRIV/admin.url")" > "$EV/branch-catalog-digest.json"
+  bun qualification/catalog-digest.ts "$(cat "$PRIV/host-data.url")" > "$EV/branch-catalog-digest.json"
   python3 -c "import json;a=json.load(open('$EV/branch-catalog-digest.json'));b=json.load(open('$REF_DIGEST'));d=[k for k in b['digests'] if a['digests'].get(k)!=b['digests'][k]];print('catalog differing objects:',d,'missing',a['missing']);import sys;sys.exit(1 if d or a['missing'] else 0)" || fail "catalog digest differs"
-  QUAL_CHECK_URL="$(cat "$PRIV/admin.url")" bun qualification/song-checks.ts > "$EV/song-checks-branch.json" || fail "song checks on branch"
+  QUAL_CHECK_URL="$(cat "$PRIV/host-data.url")" bun qualification/song-checks.ts > "$EV/song-checks-branch.json" || fail "song checks on branch"
   python3 -c "import json;f=json.load(open('$EV/song-checks-branch.json'))['facts'];import sys;sys.exit(0 if f['timings']==0 and f['render_attempts']==0 else 1)" || fail "branch timings or attempts not empty"
   rt bun qualification/isolation-check.ts "$BRANCH_ID" --require-hyperdrive > "$EV/isolation-runtime.json" || fail "isolation (runtime path)"
   ops bun qualification/isolation-check.ts "$BRANCH_ID" > "$EV/isolation-operator.json" || fail "isolation (operator path)"
@@ -125,7 +117,7 @@ PY
 sequence)
   load
   bun qualification/branch-helpers.ts mint input object-read-only 7200 --object "$SOURCE_KEY" --object "$SONG_KEY" > "$EV/mint-input.json" 2>&1 < /dev/null || fail "mint input"
-  export QUAL_DATABASE_URL="$(cat "$PRIV/admin.url")"
+  export QUAL_DATABASE_URL="$(cat "$PRIV/host-data.url")"
   snap A
   bun qualification/render-qualification.ts request-timing --song-post $SONG > "$EV/step-timing-request.json" || fail "timing request"
   snap B; manifest timing_request A B
@@ -155,14 +147,14 @@ sequence)
   snap E; manifest render D E
   sessions after-render
   [ $RC = 0 ] && python3 -c "import json;import sys;sys.exit(0 if json.load(open('$EV/step-render.json'))['status']=='accepted' else 1)" || fail "render did not conclude accepted"
-  bun qualification/branch-helpers.ts sql admin.url "SELECT a.state, a.execution_phase, m.master_sha256, m.master_byte_length::text, m.verified_object_key, m.verified_object_etag FROM api_next.media_song_video_render_attempts a JOIN api_next.media_song_video_masters m ON m.attempt_id=a.attempt_id" > "$EV/render-rows.json"
+  bun qualification/branch-helpers.ts sql host-data.url "SELECT a.state, a.execution_phase, m.master_sha256, m.master_byte_length::text, m.verified_object_key, m.verified_object_etag FROM api_next.media_song_video_render_attempts a JOIN api_next.media_song_video_masters m ON m.attempt_id=a.attempt_id" > "$EV/render-rows.json"
   log "sequence complete"; cost;;
 verify-evidence)
   # Option A: the branch may be deleted only after this passes. It checks that
   # the evidence a completed run must hold exists and parses; it does not seal.
   load
   missing=""
-  for f in backup-selected.json branch-show.json role-admin.json role-host-data.json role-host-data-readback.json role-host-data-policy.json \
+  for f in backup-selected.json branch-show.json role-host-data.json role-host-data-readback.json role-host-data-policy.json \
            branch-ledger.json branch-catalog-digest.json song-checks-branch.json isolation-runtime.json isolation-operator.json \
            snap-A.json snap-B.json snap-C.json snap-D0.json snap-D.json snap-E.json \
            diff-timing_request.json diff-measurement.json diff-fixture.json diff-render.json \
@@ -187,5 +179,5 @@ seal)
   log "sealing evidence"
   (cd "$EV" && rm -f SHA256SUMS && sha256sum $(ls | grep -v -E '^SHA256SUMS$') > SHA256SUMS && sha256sum -c --quiet SHA256SUMS) || { echo "STOP: seal failed" >&2; exit 1; }
   echo "evidence sealed and verified: $(ls "$EV" | grep -vc '^SHA256SUMS$') files, SHA256SUMS $(sha256sum "$EV/SHA256SUMS" | cut -c1-64)";;
-*) echo "usage: branch-run.sh preflight|create|roles|branch-host-role|branch-preflight|sequence|verify-evidence|delete|seal"; exit 2;;
+*) echo "usage: branch-run.sh preflight|create|branch-host-role|branch-preflight|sequence|verify-evidence|delete|seal"; exit 2;;
 esac
