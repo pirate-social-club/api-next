@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  buildHnsRootImportPublishPlanV1,
+  type HnsRootDelegationDsV1,
   hnsObservedResourceMatchesEncodedPlanV1,
   validateHnsRootResourceRecordsV1,
 } from "@pirate/application/namespace-ownership";
+import { canonicalJson } from "@pirate/domain";
 import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Schema } from "effect";
 import {
@@ -19,16 +23,18 @@ import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
 /**
  * Chain leg of the staging HNS onboarding journey, run on the isolated staging
  * host against its loopback regtest node. It never chooses records: `publish`
- * sends exactly the replacement resource the product returned, after proving
- * it matches the product's encoded digest and that the product's provisioner
- * created a zone for its exact challenge with the same DNSSEC DS set. Every
- * command first proves the pinned regtest genesis and loopback endpoints.
+ * sends exactly the replacement resource from a product session
+ * response, after proving its complete plan-document and encoded-resource
+ * digests and that the provisioner created a zone for its challenge and DS.
+ * The runner supplying FILE must fetch that response through the maintained
+ * authenticated API path; a copied file alone cannot prove authentication.
+ * Every command first proves the pinned regtest genesis and loopback endpoints.
  * Mutating commands require the host-wide run lease naming their root; a
  * stale lease is never evicted automatically. Output is one JSON line.
  *
  *   begin --root R                      take the exclusive run lease for R
  *   acquire --root R                    register R to the fixture wallet (resumable)
- *   publish --root R --plan FILE        UPDATE R with FILE's replacement_records
+ *   publish --root R --plan FILE        UPDATE R with FILE's session publish_plan
  *   mine --root R --blocks N            1 <= N <= 60
  *   end --root R                        release R's run lease
  *   advance-safe --root R --plan FILE   mine one block at a time (max 60) until the
@@ -100,13 +106,31 @@ export function parseJourneyCommand(argv: readonly string[]): JourneyCommand {
 }
 
 const Plan = Schema.Struct({
-  root_label: Schema.String,
+  version: Schema.Literal("pirate-hns-root-import-publish-plan-v1"),
+  replacement_semantics: Schema.Literal("complete_resource"),
+  current_records: Schema.Array(Schema.Unknown),
+  preserved_records: Schema.Array(Schema.Unknown),
+  removed_conflicts: Schema.Array(Schema.Unknown),
+  added_records: Schema.Array(Schema.Unknown),
+  root_label: Schema.optional(Schema.String),
   replacement_records: Schema.Array(Schema.Unknown),
+  preserved_unknown_record_types: Schema.Array(Schema.String),
   encoded_resource_sha256: Schema.String,
+  acknowledgement_required: Schema.Literal(true),
 });
 type JourneyPlan = Schema.Schema.Type<typeof Plan>;
 
-/** The plan must name this root and its records must encode to the product's digest. */
+const SessionPlanResponse = Schema.Struct({
+  community_id: Schema.String,
+  root_import_session_id: Schema.String,
+  root_label: Schema.String,
+  status: Schema.String,
+  publish_plan: Schema.Unknown,
+  publish_plan_sha256: Schema.String,
+});
+
+/** The plan must have complete-resource semantics and encode to its digest.
+ * Root binding comes from the surrounding product session response. */
 export async function requirePublishablePlan(root: string, raw: unknown) {
   let plan: JourneyPlan;
   try {
@@ -114,7 +138,15 @@ export async function requirePublishablePlan(root: string, raw: unknown) {
   } catch {
     throw new JourneyRefusal("plan_shape");
   }
-  if (plan.root_label !== root) throw new JourneyRefusal("plan_root_mismatch");
+  if (plan.root_label !== undefined && plan.root_label !== root)
+    throw new JourneyRefusal("plan_root_mismatch");
+  if (
+    plan.current_records.length !== 0 ||
+    plan.preserved_records.length !== 0 ||
+    plan.removed_conflicts.length !== 0 ||
+    canonicalJson(plan.replacement_records) !== canonicalJson(plan.added_records)
+  )
+    throw new JourneyRefusal("plan_not_for_empty_registration");
   if (!/^[0-9a-f]{64}$/u.test(plan.encoded_resource_sha256))
     throw new JourneyRefusal("plan_digest_invalid");
   let records: ReturnType<typeof validateHnsRootResourceRecordsV1>;
@@ -130,6 +162,60 @@ export async function requirePublishablePlan(root: string, raw: unknown) {
   return { records, digest: plan.encoded_resource_sha256 };
 }
 
+/** Bind every plan field to the product's session response, not merely its
+ * challenge and DS records. The caller must obtain this response via the
+ * authenticated API; the chain CLI cannot authenticate a local file. */
+export async function requireSessionPlan(root: string, raw: unknown) {
+  let response: Schema.Schema.Type<typeof SessionPlanResponse>;
+  try {
+    response = Schema.decodeUnknownSync(SessionPlanResponse)(raw);
+  } catch {
+    throw new JourneyRefusal("session_response_shape");
+  }
+  if (
+    response.root_label !== root ||
+    response.community_id.length === 0 ||
+    response.root_import_session_id.length === 0
+  )
+    throw new JourneyRefusal("session_identity_mismatch");
+  if (response.status !== "awaiting_owner_update" && response.status !== "observing")
+    throw new JourneyRefusal("session_not_awaiting_update");
+  if (!/^[0-9a-f]{64}$/u.test(response.publish_plan_sha256))
+    throw new JourneyRefusal("plan_document_digest_invalid");
+  let documentDigest: string;
+  try {
+    documentDigest = createHash("sha256")
+      .update(canonicalJson(response.publish_plan))
+      .digest("hex");
+  } catch {
+    throw new JourneyRefusal("plan_document_invalid");
+  }
+  if (documentDigest !== response.publish_plan_sha256)
+    throw new JourneyRefusal("plan_document_digest_mismatch");
+  const plan = await requirePublishablePlan(root, response.publish_plan);
+  // The document hash binds all fields of the response. Rebuilding from the
+  // empty registration, challenge and DS additionally refuses an altered NS
+  // or unrelated TXT even if someone recomputes both hashes in a copied file.
+  let expectedPlan: Awaited<ReturnType<typeof buildHnsRootImportPublishPlanV1>>;
+  try {
+    expectedPlan = await buildHnsRootImportPublishPlanV1({
+      current_records: [],
+      challenge_txt_value: planChallenge(plan.records),
+      ds_records: planDs(plan.records),
+    });
+  } catch {
+    throw new JourneyRefusal("plan_not_product_build");
+  }
+  if (canonicalJson(expectedPlan) !== canonicalJson(response.publish_plan))
+    throw new JourneyRefusal("plan_not_product_build");
+  return {
+    ...plan,
+    community_id: response.community_id,
+    root_import_session_id: response.root_import_session_id,
+    publish_plan_sha256: documentDigest,
+  };
+}
+
 type Records = ReturnType<typeof validateHnsRootResourceRecordsV1>;
 
 function planChallenge(records: Records): string {
@@ -142,18 +228,24 @@ function planChallenge(records: Records): string {
   return challenges[0] as string;
 }
 
-function planDs(records: Records) {
+function planDs(records: Records): HnsRootDelegationDsV1[] {
   const ds = records.flatMap((record) => {
     if (record.type !== "DS") return [];
     const { keyTag, algorithm, digestType, digest } = record as Record<string, unknown>;
     if (
       typeof keyTag !== "number" ||
       typeof algorithm !== "number" ||
-      typeof digestType !== "number" ||
+      (digestType !== 2 && digestType !== 4) ||
       typeof digest !== "string"
     )
       throw new JourneyRefusal("plan_ds_invalid");
-    return [{ key_tag: keyTag, algorithm, digest_type: digestType, digest: digest.toLowerCase() }];
+    const entry: HnsRootDelegationDsV1 = {
+      key_tag: keyTag,
+      algorithm,
+      digest_type: digestType,
+      digest: digest.toLowerCase(),
+    };
+    return [entry];
   });
   return ds.sort(
     (left, right) =>
@@ -325,7 +417,7 @@ async function acquire(root: string) {
 }
 
 async function publish(root: string, planPath: string) {
-  const { records, digest } = await requirePublishablePlan(
+  const { records, digest, root_import_session_id, publish_plan_sha256 } = await requireSessionPlan(
     root,
     JSON.parse(await readFile(planPath, "utf8")),
   );
@@ -333,7 +425,14 @@ async function publish(root: string, planPath: string) {
   const current = await observe(root, "current");
   if (current.kind !== "observed") throw new JourneyRefusal("current_unobservable");
   if (await hnsObservedResourceMatchesEncodedPlanV1(current.observation.records, digest))
-    return { outcome: "already_current", root, digest, height: await tip() };
+    return {
+      outcome: "already_current",
+      root,
+      digest,
+      root_import_session_id,
+      publish_plan_sha256,
+      height: await tip(),
+    };
   // Only the empty registration resource may be replaced; anything else is
   // someone else's state and is reconciled by a person, not overwritten.
   if (current.observation.records.length !== 0)
@@ -349,16 +448,21 @@ async function publish(root: string, planPath: string) {
     throw new JourneyRefusal("not_an_update");
   await mine(1);
   const inclusion = await tip();
-  return { outcome: "published", root, digest, txid: update.hash, inclusion_height: inclusion };
+  return {
+    outcome: "published",
+    root,
+    digest,
+    root_import_session_id,
+    publish_plan_sha256,
+    txid: update.hash,
+    inclusion_height: inclusion,
+  };
 }
 
 /** Empirical, not computed: the maintained observer decides when the safe view
  * selects a commitment that contains the published resource. */
 async function advanceSafe(root: string, planPath: string) {
-  const { digest } = await requirePublishablePlan(
-    root,
-    JSON.parse(await readFile(planPath, "utf8")),
-  );
+  const { digest } = await requireSessionPlan(root, JSON.parse(await readFile(planPath, "utf8")));
   const current = await observe(root, "current");
   if (
     current.kind !== "observed" ||
