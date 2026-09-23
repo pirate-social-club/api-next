@@ -8,11 +8,10 @@ import {
 } from "@pirate/application";
 import { Effect } from "effect";
 import { sha256, toBytes } from "viem";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import type { MegapotV2DeploymentAttestation } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
-
-const BASE_SEPOLIA_CHAIN_ID = 84_532;
 
 const rejected = (reason: MegapotDrawingObservationRejected["reason"]) =>
   new MegapotDrawingObservationRejected({ reason });
@@ -132,7 +131,9 @@ export function makeMegapotDrawingObserver(input: {
         return yield* storage("invalid-row");
       }
       const candidate = yield* input.store.loadCandidate(attestationId);
-      if (candidate.environment === "production" || candidate.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+      if (
+        !isMegapotStepChainAllowed("drawing-observation", candidate.environment, candidate.chainId)
+      ) {
         return yield* rejected("production-disabled");
       }
       const expectedDeployment = deployment(candidate);

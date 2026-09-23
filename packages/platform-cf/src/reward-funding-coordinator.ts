@@ -5,6 +5,7 @@ import type {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   type MegapotTransactionReceipt,
@@ -146,7 +147,7 @@ export function makeRewardFundingCoordinator(input: {
   const attest = Effect.fn("RewardFundingCoordinator.attest")(function* (
     intent: RewardFundingIntent,
   ) {
-    if (intent.environment === "production" || intent.chainId !== 84_532) {
+    if (!isMegapotStepChainAllowed("funding", intent.environment, intent.chainId)) {
       return yield* failed("production_disabled");
     }
     yield* rpcEffect(() => input.rpc.attestDeployment());

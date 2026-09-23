@@ -9,6 +9,7 @@ import type {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   encodeMegapotUsdcTransfer,
@@ -175,7 +176,7 @@ export function makeRewardRefundCoordinator(input: {
   const attest = Effect.fn("RewardRefundCoordinator.attest")(function* (
     candidate: RewardRefundCandidate,
   ) {
-    if (candidate.environment === "production" || candidate.chainId !== 84_532) {
+    if (!isMegapotStepChainAllowed("refund", candidate.environment, candidate.chainId)) {
       return yield* failed("production_disabled", "configuration");
     }
     if (!sameAddress(input.signer.address, candidate.custodyAddress)) {

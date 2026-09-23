@@ -5,6 +5,7 @@ import type {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
+import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
 import { MEGAPOT_REFERRAL_SPLIT_SCALE } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
@@ -96,7 +97,7 @@ export function makeMegapotSweepCoordinator(input: {
     const existing = yield* input.store.findResult(sweepId);
     if (existing !== null) return completed(existing);
     const candidate = yield* input.store.loadCandidate(command);
-    if (candidate.environment === "production" || candidate.chainId !== 84_532) {
+    if (!isMegapotStepChainAllowed("sweep", candidate.environment, candidate.chainId)) {
       return yield* failed("production_disabled");
     }
     yield* rpcEffect(() => input.rpc.attestDeployment()).pipe(
