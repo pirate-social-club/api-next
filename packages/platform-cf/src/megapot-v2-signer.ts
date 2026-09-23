@@ -7,7 +7,12 @@ export class MegapotV2SignerFailed extends Error {
   readonly _tag = "MegapotV2SignerFailed";
 
   constructor(
-    readonly reason: "invalid-config" | "invalid-request" | "signer-mismatch" | "unsupported-chain",
+    readonly reason:
+      | "invalid-config"
+      | "invalid-request"
+      | "signer-mismatch"
+      | "unsupported-chain"
+      | "production-disabled",
   ) {
     super(reason);
   }
@@ -33,6 +38,19 @@ export type MegapotV2SignedTransaction = Readonly<{
 export interface MegapotV2TransactionSigner {
   readonly address: string;
   readonly sign: (request: MegapotV2SignRequest) => Promise<MegapotV2SignedTransaction>;
+}
+
+/** No production signing backend is selected or authorized yet. */
+export function makeRefusingProductionMegapotV2Signer(input: {
+  readonly expectedAddress: string;
+}): MegapotV2TransactionSigner {
+  const address = canonicalAddress(input.expectedAddress);
+  return {
+    address,
+    sign: async () => {
+      throw new MegapotV2SignerFailed("production-disabled");
+    },
+  };
 }
 
 const addressPattern = /^0x[0-9a-f]{40}$/u;

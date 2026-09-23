@@ -22,8 +22,10 @@ import {
 import {
   deriveBaseSepoliaMegapotAddress,
   MegapotV2SignerFailed,
+  type MegapotV2TransactionSigner,
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
+  makeRefusingProductionMegapotV2Signer,
 } from "./megapot-v2-signer.ts";
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -601,6 +603,28 @@ describe("Megapot v2 Worker runtime adapters", () => {
       },
     });
     await expect(receiptClient.readReceipt(hash("7"))).rejects.toMatchObject({ reason: "reorg" });
+  });
+
+  test("refuses production signing without a custody backend", async () => {
+    const signer: MegapotV2TransactionSigner = makeRefusingProductionMegapotV2Signer({
+      expectedAddress: address("a"),
+    });
+    expect(signer.address).toBe(address("a"));
+    for (const chainId of [8_453, 84_532]) {
+      await expect(
+        signer.sign({
+          chainId,
+          signerAddress: address("a"),
+          targetAddress: address("1"),
+          nonce: 0n,
+          data: "0x",
+          valueWei: 0n,
+          gas: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 0n,
+        }),
+      ).rejects.toMatchObject({ reason: "production-disabled" });
+    }
   });
 
   test("signs exact EIP-1559 bytes only for the attested Base Sepolia custody key", async () => {
