@@ -47,10 +47,12 @@ preflight)
   [ "$(docker image inspect $IMG --format '{{.Id}}')" = "$IMG_ID" ] || fail "image digest differs"
   git fetch -q origin; [ -z "$(git diff --name-only $MAIN_SHA HEAD -- . ':!qualification')" ] || fail "lane tree differs from $MAIN_SHA"
   pscale backup list $DB main --format json > "$EV/backups.json"
-  python3 - "$EV/backups.json" "$MERGED_AT" > "$EV/backup-selected.json" <<'PY' || fail "no eligible backup yet"
+  python3 - "$EV/backups.json" "$MERGED_AT" "${QUAL_BACKUP_ID:-}" > "$EV/backup-selected.json" <<'PY' || fail "no eligible backup yet"
 import json,sys,datetime as d
 merged=d.datetime.fromisoformat(sys.argv[2].replace('Z','+00:00'))
 bs=[b for b in json.load(open(sys.argv[1])) if b.get('state')=='success' and b.get('completed_at') and d.datetime.fromisoformat(b['completed_at'].replace('Z','+00:00'))>merged and d.datetime.fromisoformat(b['expires_at'].replace('Z','+00:00'))>d.datetime.now(d.timezone.utc)]
+# An explicitly named backup (the owner-directed manual backup) must itself meet the same rules.
+if sys.argv[3]: bs=[b for b in bs if b['id']==sys.argv[3]]
 bs.sort(key=lambda b:b['completed_at'])
 if not bs: sys.exit(1)
 b=bs[0]; print(json.dumps({k:b[k] for k in ('id','name','created_at','completed_at','expires_at','size')}))
