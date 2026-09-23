@@ -27,6 +27,8 @@
     "scripts/staging-hns-cutover-probe-seed.test.ts",
     "scripts/staging-hns-access-setup.ts",
     "scripts/staging-hns-access-setup.test.ts",
+    "scripts/staging-hns-forwarder-registry.ts",
+    "scripts/staging-hns-forwarder-registry.test.ts",
     "scripts/staging-hns-provisioner-grants.ts",
     "scripts/staging-hns-provisioner-grants.test.ts",
     "scripts/staging-karaoke-participant.test.ts",
