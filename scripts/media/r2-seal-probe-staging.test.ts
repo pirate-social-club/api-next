@@ -969,3 +969,32 @@ describe("staging R2 probe safety", () => {
     expect(redactStagingEvidence(transcript)).toEqual(transcript);
   });
 });
+
+describe("R2 temporary credential signing", () => {
+  const base = {
+    accountId: "a".repeat(32),
+    bucket: "bucket",
+    key: "immutable/object",
+    method: "GET" as const,
+    now: new Date("2026-09-23T09:00:00Z"),
+  };
+
+  test("signs a session token as x-amz-security-token", async () => {
+    const withToken = await signR2Request({
+      ...base,
+      credentials: { accessKeyId: "key", secretAccessKey: "secret", sessionToken: "session" },
+    });
+    const without = await signR2Request({
+      ...base,
+      credentials: { accessKeyId: "key", secretAccessKey: "secret" },
+    });
+    expect(withToken.headers["x-amz-security-token"]).toBe("session");
+    expect(withToken.headers.authorization).toContain("x-amz-security-token");
+    expect(without.headers["x-amz-security-token"]).toBeUndefined();
+    expect(without.headers.authorization).not.toContain("x-amz-security-token");
+    const signature = (value: string) => /Signature=([0-9a-f]+)/u.exec(value)?.[1];
+    expect(signature(withToken.headers.authorization ?? "")).not.toBe(
+      signature(without.headers.authorization ?? ""),
+    );
+  });
+});
