@@ -204,7 +204,10 @@ import {
   validVeryWebOptions,
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
-import { makeR2VideoMultipartGateway } from "@pirate/platform-cf/video-multipart-r2";
+import {
+  makeR2VideoMultipartGateway,
+  type R2VideoMultipartControl,
+} from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect, Redacted, Schema } from "effect";
 import {
@@ -407,7 +410,7 @@ export interface HttpWorkerBindings
   readonly MEDIA_INGRESS_R2_BUCKET_NAME?: string;
   readonly MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID?: string;
   readonly MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY?: string;
-  readonly MEDIA_INGRESS?: MediaSealBuckets["ingress"];
+  readonly MEDIA_INGRESS?: MediaSealBuckets["ingress"] & R2VideoMultipartControl;
   readonly MEDIA_IMMUTABLE_ORIGINALS?: MediaSealBuckets["immutableOriginals"];
   readonly LEARNER_AUDIO?: StudyAudioBucket & LearnerAudioDeletionBucket;
 }
@@ -903,6 +906,7 @@ export async function createProductionHttpWorker(
         bucket,
         accessKeyId,
         secretAccessKey,
+        bucketBinding: ingress,
       }),
       sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
       personaServices: {

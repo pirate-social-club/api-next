@@ -220,6 +220,8 @@ describe("HTTP production composition", () => {
       MEDIA_INGRESS: {
         head: async () => null,
         get: async () => null,
+        createMultipartUpload: async () => ({ uploadId: "fixture-upload" }),
+        resumeMultipartUpload: () => ({ complete: async () => ({}), abort: async () => {} }),
       },
       MEDIA_IMMUTABLE_ORIGINALS: {
         head: async () => null,
@@ -265,7 +267,12 @@ describe("HTTP production composition", () => {
         MEDIA_INGRESS_R2_BUCKET_NAME: "fixture",
         MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "fixture",
         MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "fixture",
-        MEDIA_INGRESS: { head: async () => null, get: async () => null },
+        MEDIA_INGRESS: {
+          head: async () => null,
+          get: async () => null,
+          createMultipartUpload: async () => ({ uploadId: "fixture-upload" }),
+          resumeMultipartUpload: () => ({ complete: async () => ({}), abort: async () => {} }),
+        },
         MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null, put: async () => null },
       },
       runtime,

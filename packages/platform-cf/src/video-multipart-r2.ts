@@ -1,7 +1,4 @@
-import type {
-  VideoMultipartManifestPart,
-  VideoMultipartUploadGateway,
-} from "@pirate/application/video/publication";
+import type { VideoMultipartUploadGateway } from "@pirate/application/video/publication";
 
 const encoder = new TextEncoder();
 const accountIdPattern = /^[0-9a-f]{32}$/u;
@@ -14,12 +11,28 @@ export const VIDEO_MULTIPART_CORS_REQUIREMENTS = Object.freeze({
   exposeHeaders: ["ETag"] as const,
 });
 
+/** The only R2 binding operations used by the multipart control plane. */
+export type R2VideoMultipartControl = Readonly<{
+  head: (key: string) => Promise<unknown | null>;
+  createMultipartUpload: (
+    key: string,
+    options: Readonly<{ httpMetadata: Readonly<{ contentType: string }> }>,
+  ) => Promise<Readonly<{ uploadId: string }>>;
+  resumeMultipartUpload: (
+    key: string,
+    uploadId: string,
+  ) => Readonly<{
+    complete: (parts: Array<{ partNumber: number; etag: string }>) => Promise<unknown>;
+    abort: () => Promise<void>;
+  }>;
+}>;
+
 export type R2VideoMultipartOptions = Readonly<{
   accountId: string;
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
-  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  bucketBinding: R2VideoMultipartControl;
   now?: () => Date;
 }>;
 
@@ -96,82 +109,6 @@ function validTarget(key: string, uploadId?: string): boolean {
   );
 }
 
-async function authorization(input: {
-  options: R2VideoMultipartOptions;
-  method: string;
-  path: string;
-  query: string;
-  bodyHash: string;
-  date: Readonly<{ short: string; full: string }>;
-  host: string;
-}): Promise<string> {
-  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
-  const canonicalRequest = [
-    input.method,
-    input.path,
-    input.query,
-    `host:${input.host}\nx-amz-content-sha256:${input.bodyHash}\nx-amz-date:${input.date.full}\n`,
-    signedHeaders,
-    input.bodyHash,
-  ].join("\n");
-  const scope = `${input.date.short}/auto/s3/aws4_request`;
-  const stringToSign = [
-    "AWS4-HMAC-SHA256",
-    input.date.full,
-    scope,
-    await sha256Hex(encoder.encode(canonicalRequest)),
-  ].join("\n");
-  const signature = Array.from(
-    await hmac(await signingKey(input.options.secretAccessKey, input.date.short), stringToSign),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return `AWS4-HMAC-SHA256 Credential=${input.options.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-}
-
-async function signedRequest(
-  options: R2VideoMultipartOptions,
-  input: Readonly<{
-    method: "POST" | "DELETE" | "HEAD";
-    key: string;
-    query: readonly (readonly [string, string])[];
-    body?: Uint8Array;
-  }>,
-): Promise<Response> {
-  if (!validOptions(options) || !validTarget(input.key))
-    throw new Error("invalid multipart target");
-  const now = options.now?.() ?? new Date();
-  if (!Number.isFinite(now.getTime())) throw new Error("invalid multipart clock");
-  const host = `${options.accountId}.r2.cloudflarestorage.com`;
-  const path = objectPath(options.bucket, input.key);
-  const query = canonicalQuery(input.query);
-  const body = input.body ?? new Uint8Array();
-  const bodyHash = await sha256Hex(body);
-  const date = dateParts(now);
-  const headers = new Headers({
-    host,
-    "x-amz-content-sha256": bodyHash,
-    "x-amz-date": date.full,
-    authorization: await authorization({
-      options,
-      method: input.method,
-      path,
-      query,
-      bodyHash,
-      date,
-      host,
-    }),
-  });
-  if (input.body !== undefined) headers.set("content-type", "application/xml");
-  return (options.fetch ?? fetch)(
-    `https://${host}${path}${query.length === 0 ? "" : `?${query}`}`,
-    {
-      method: input.method,
-      headers,
-      ...(input.body === undefined ? {} : { body }),
-    },
-  );
-}
-
 async function presignedPartUrl(
   options: R2VideoMultipartOptions,
   input: Readonly<{
@@ -222,34 +159,6 @@ async function presignedPartUrl(
   return `https://${host}${path}?${query}&X-Amz-Signature=${signature}`;
 }
 
-function parseUploadId(xml: string): string {
-  const match = /<UploadId>([^<]+)<\/UploadId>/u.exec(xml);
-  const value = match?.[1]
-    ?.replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">");
-  if (value === undefined || !uploadIdPattern.test(value))
-    throw new Error("invalid multipart response");
-  return value;
-}
-
-const escapeXml = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-function completeBody(parts: readonly VideoMultipartManifestPart[]): Uint8Array {
-  const entries = parts
-    .map(
-      (part) =>
-        `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${escapeXml(part.etag)}</ETag></Part>`,
-    )
-    .join("");
-  return encoder.encode(`<CompleteMultipartUpload>${entries}</CompleteMultipartUpload>`);
-}
-
 export function makeR2VideoMultipartGateway(
   options: R2VideoMultipartOptions,
 ): VideoMultipartUploadGateway {
@@ -275,23 +184,29 @@ export function makeR2VideoMultipartGateway(
       })),
     );
   };
-  const objectExists = async (key: string): Promise<boolean> => {
-    const response = await signedRequest(options, { method: "HEAD", key, query: [] });
-    if (response.ok) return true;
-    if (response.status === 404) return false;
-    throw new Error("multipart object inspection failed");
-  };
+  const objectExists = async (key: string): Promise<boolean> =>
+    (await options.bucketBinding.head(key)) !== null;
   return {
     create: async ({ objectKey, contentType, partSizeBytes, partCount, expiresInSeconds }) => {
-      if (!validTarget(objectKey) || !["video/mp4", "video/quicktime"].includes(contentType))
+      if (
+        !validOptions(options) ||
+        !validTarget(objectKey) ||
+        !["video/mp4", "video/quicktime"].includes(contentType) ||
+        !Number.isSafeInteger(partSizeBytes) ||
+        partSizeBytes < 1 ||
+        !Number.isSafeInteger(partCount) ||
+        partCount < 1 ||
+        partCount > 10_000 ||
+        !Number.isSafeInteger(expiresInSeconds) ||
+        expiresInSeconds < 1 ||
+        expiresInSeconds > 604_800
+      )
         throw new Error("invalid multipart target");
-      const response = await signedRequest(options, {
-        method: "POST",
-        key: objectKey,
-        query: [["uploads", ""]],
+      const upload = await options.bucketBinding.createMultipartUpload(objectKey, {
+        httpMetadata: { contentType },
       });
-      if (!response.ok) throw new Error("multipart creation failed");
-      const uploadId = parseUploadId(await response.text());
+      const uploadId = upload.uploadId;
+      if (!uploadIdPattern.test(uploadId)) throw new Error("invalid multipart response");
       const parts = await partUrls({
         key: objectKey,
         uploadId,
@@ -309,18 +224,13 @@ export function makeR2VideoMultipartGateway(
     renew: ({ objectKey, uploadId, partNumbers, expiresInSeconds }) =>
       partUrls({ key: objectKey, uploadId, partNumbers, expiresInSeconds }),
     completeOrInspect: async ({ objectKey, uploadId, parts }) => {
+      if (!validTarget(objectKey, uploadId)) throw new Error("invalid multipart target");
       if (await objectExists(objectKey)) return { completed: true };
-      const body = completeBody(parts);
       try {
-        const response = await signedRequest(options, {
-          method: "POST",
-          key: objectKey,
-          query: [["uploadId", uploadId]],
-          body,
-        });
-        if (response.ok) return { completed: true };
-        if (response.status !== 404 || !(await objectExists(objectKey)))
-          throw new Error("multipart completion failed");
+        // R2 permits cross-API resume, including uploads initiated by the former S3 path.
+        await options.bucketBinding
+          .resumeMultipartUpload(objectKey, uploadId)
+          .complete(parts.map((part) => ({ partNumber: part.partNumber, etag: part.etag })));
         return { completed: true };
       } catch (error) {
         if (await objectExists(objectKey)) return { completed: true };
@@ -329,12 +239,7 @@ export function makeR2VideoMultipartGateway(
     },
     abort: async ({ objectKey, uploadId }) => {
       if (!validTarget(objectKey, uploadId)) throw new Error("invalid multipart target");
-      const response = await signedRequest(options, {
-        method: "DELETE",
-        key: objectKey,
-        query: [["uploadId", uploadId]],
-      });
-      if (!response.ok && response.status !== 404) throw new Error("multipart abort failed");
+      await options.bucketBinding.resumeMultipartUpload(objectKey, uploadId).abort();
     },
   };
 }
