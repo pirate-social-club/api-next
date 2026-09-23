@@ -39,9 +39,18 @@ export interface CanonicalSongProber {
   readonly measure: (input: PendingSongTiming) => Promise<CanonicalSongProbe>;
 }
 
+/** One song revision named by an operator for measurement. */
+export type SongTimingTarget = Readonly<{ songPostId: string; audioRevision: number }>;
+
 export interface SongCanonicalTimingStore {
   /** Claims up to `limit` pending revisions, skipping any another worker holds. */
   readonly claimPending: (limit: number) => Promise<readonly PendingSongTiming[]>;
+  /**
+   * Claims exactly the named revision under the same lease and locking as
+   * `claimPending`, or returns null when it is absent, not pending, leased or
+   * locked by another worker. No other revision is read or changed.
+   */
+  readonly claimPendingFor: (target: SongTimingTarget) => Promise<PendingSongTiming | null>;
   /** Records a measured fact. Idempotent for an identical measurement. */
   readonly complete: (
     input: PendingSongTiming &
@@ -56,6 +65,44 @@ export type SongTimingMeasurementOutcome = Readonly<{
   deferred: number;
 }>;
 
+type ClaimedMeasurement =
+  | Readonly<{ status: "measured"; durationSamples: number }>
+  | Readonly<{ status: "failed"; failureCode: string }>
+  | Readonly<{ status: "deferred" }>;
+
+/** Measures one claimed revision and records the fact, a permanent failure, or nothing. */
+async function measureClaimed(
+  services: Readonly<{ store: SongCanonicalTimingStore; prober: CanonicalSongProber }>,
+  pending: PendingSongTiming,
+): Promise<ClaimedMeasurement> {
+  let probe: CanonicalSongProbe;
+  try {
+    probe = await services.prober.measure(pending);
+  } catch {
+    // An unexplained prober fault is treated as transient: the revision stays
+    // pending and is retried, rather than being declared unusable on a guess.
+    probe = { ok: false, permanent: false, failureCode: "probe_unavailable" };
+  }
+  if (probe.ok) {
+    if (!Number.isSafeInteger(probe.durationSamples) || probe.durationSamples < 1) {
+      await services.store.fail({ ...pending, failureCode: "undecodable_audio" });
+      return { status: "failed", failureCode: "undecodable_audio" };
+    }
+    await services.store.complete({
+      ...pending,
+      durationSamples: probe.durationSamples,
+      proberIdentity: services.prober.identity,
+      proberPolicyRevision: services.prober.policyRevision,
+    });
+    return { status: "measured", durationSamples: probe.durationSamples };
+  }
+  if (probe.permanent) {
+    await services.store.fail({ ...pending, failureCode: probe.failureCode });
+    return { status: "failed", failureCode: probe.failureCode };
+  }
+  return { status: "deferred" };
+}
+
 /** One pass over pending revisions. Safe to run concurrently and to repeat. */
 export async function measurePendingSongTimings(
   services: Readonly<{
@@ -69,33 +116,27 @@ export async function measurePendingSongTimings(
   let failed = 0;
   let deferred = 0;
   for (const pending of claimed) {
-    let probe: CanonicalSongProbe;
-    try {
-      probe = await services.prober.measure(pending);
-    } catch {
-      // An unexplained prober fault is treated as transient: the revision stays
-      // pending and is retried, rather than being declared unusable on a guess.
-      probe = { ok: false, permanent: false, failureCode: "probe_unavailable" };
-    }
-    if (probe.ok) {
-      if (!Number.isSafeInteger(probe.durationSamples) || probe.durationSamples < 1) {
-        await services.store.fail({ ...pending, failureCode: "undecodable_audio" });
-        failed += 1;
-        continue;
-      }
-      await services.store.complete({
-        ...pending,
-        durationSamples: probe.durationSamples,
-        proberIdentity: services.prober.identity,
-        proberPolicyRevision: services.prober.policyRevision,
-      });
-      measured += 1;
-    } else if (probe.permanent) {
-      await services.store.fail({ ...pending, failureCode: probe.failureCode });
-      failed += 1;
-    } else {
-      deferred += 1;
-    }
+    const outcome = await measureClaimed(services, pending);
+    if (outcome.status === "measured") measured += 1;
+    else if (outcome.status === "failed") failed += 1;
+    else deferred += 1;
   }
   return { measured, failed, deferred };
+}
+
+export type SongTimingTargetOutcome = ClaimedMeasurement | Readonly<{ status: "not_claimed" }>;
+
+/**
+ * Measures only the named revision. Nothing else is claimed, so an operator can
+ * measure one song without draining whatever else is pending. `not_claimed`
+ * covers an absent, already concluded, leased or locked revision; a repeat
+ * after a completed measurement is therefore a no-op.
+ */
+export async function measureSongTiming(
+  services: Readonly<{ store: SongCanonicalTimingStore; prober: CanonicalSongProber }>,
+  target: SongTimingTarget,
+): Promise<SongTimingTargetOutcome> {
+  const pending = await services.store.claimPendingFor(target);
+  if (pending === null) return { status: "not_claimed" };
+  return measureClaimed(services, pending);
 }

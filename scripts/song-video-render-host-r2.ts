@@ -237,28 +237,38 @@ export type HostR2Credentials = Readonly<{
 export function readHostR2Credentials(
   env: Readonly<Record<string, string | undefined>>,
 ): HostR2Credentials {
-  const value = (name: string) => {
-    const raw = env[name]?.trim();
-    return raw === undefined || raw.length === 0 ? undefined : raw;
-  };
-  const required = (name: string) => {
-    const present = value(name);
-    if (present === undefined) throw new Error(`${name} is required`);
-    return present;
-  };
-  const output = {
-    accessKeyId: required("SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
-    secretAccessKey: required("SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
-  };
-  const inputKey = value("SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID");
-  const inputSecret = value("SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY");
-  if (inputKey === undefined && inputSecret === undefined) return { output, input: null };
   return {
-    output,
-    input: {
-      accessKeyId: required("SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID"),
-      secretAccessKey: required("SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY"),
+    output: {
+      accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_ACCESS_KEY_ID"),
+      secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_SECRET_ACCESS_KEY"),
     },
+    input: readInputPair(env),
+  };
+}
+
+function optionalEnv(env: Readonly<Record<string, string | undefined>>, name: string) {
+  const raw = env[name]?.trim();
+  return raw === undefined || raw.length === 0 ? undefined : raw;
+}
+
+function requiredEnv(env: Readonly<Record<string, string | undefined>>, name: string) {
+  const present = optionalEnv(env, name);
+  if (present === undefined) throw new Error(`${name} is required`);
+  return present;
+}
+
+/** The optional input pair, complete or absent; half a pair is refused. */
+function readInputPair(
+  env: Readonly<Record<string, string | undefined>>,
+): StagingCredentials | null {
+  if (
+    optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID") === undefined &&
+    optionalEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY") === undefined
+  )
+    return null;
+  return {
+    accessKeyId: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_ACCESS_KEY_ID"),
+    secretAccessKey: requiredEnv(env, "SONG_VIDEO_RENDER_R2_INPUT_SECRET_ACCESS_KEY"),
   };
 }
 
@@ -298,4 +308,15 @@ export function makeHostR2Adapters(
     writer: makeHostMasterOutputWriter({ transport: outputTransport, bucket: input.bucket }),
     mediaReader: makeHostMediaReader({ transport: inputTransport, bucket: input.bucket }),
   };
+}
+
+/**
+ * The single read credential a measurement-only run needs: the input pair when
+ * configured, otherwise the output pair. Measuring reads the canonical song and
+ * writes no object, so it never requires a credential that can write.
+ */
+export function readHostR2ReadCredentials(
+  env: Readonly<Record<string, string | undefined>>,
+): StagingCredentials {
+  return readInputPair(env) ?? readHostR2Credentials(env).output;
 }
