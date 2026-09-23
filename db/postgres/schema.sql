@@ -907,6 +907,138 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION is_handle_sales_identifier_v1(input_value text, maximum_bytes integer) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT input_value IS NOT NULL
+    AND btrim(input_value) <> ''
+    AND input_value = btrim(input_value)
+    AND octet_length(input_value) <= maximum_bytes
+    AND input_value !~ '[[:cntrl:]]'
+$$;
+
+CREATE TABLE handle_claims (
+    claim_id text NOT NULL,
+    request_hash text NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_hash text NOT NULL,
+    quote_id text NOT NULL,
+    reservation_id text NOT NULL,
+    reservation_hash text NOT NULL,
+    sale_namespace_activation_id text NOT NULL,
+    sale_namespace_activation_generation bigint NOT NULL,
+    fulfillment_kind text NOT NULL,
+    family text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    display_identifier text NOT NULL,
+    pricing_revision bigint NOT NULL,
+    pricing_hash text NOT NULL,
+    atomic_amount numeric(78,0) NOT NULL,
+    payment_status text NOT NULL,
+    state text NOT NULL,
+    safe_reason text,
+    issuance_operation_id text NOT NULL,
+    grant_finalize_hash text NOT NULL,
+    grant_id text,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    nationality_decision_id text,
+    recipient_kind text,
+    recipient_network text,
+    recipient_taproot_assignment_id text,
+    recipient_script_pubkey_hex text,
+    CONSTRAINT handle_claim_family_shape CHECK ((((family = 'hns'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (recipient_kind IS NULL) AND (recipient_network IS NULL) AND (recipient_taproot_assignment_id IS NULL) AND (recipient_script_pubkey_hex IS NULL)) OR (((family = 'spaces'::text) AND (fulfillment_kind = 'spaces_native_v1'::text) AND (recipient_kind = 'persona_taproot_v1'::text) AND (recipient_network = ANY (ARRAY['mainnet'::text, 'testnet4'::text, 'regtest'::text])) AND is_handle_sales_identifier_v1(recipient_taproot_assignment_id, 128) AND (recipient_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (state = ANY (ARRAY['issuance_pending'::text, 'issued'::text, 'issuance_failed'::text])) AND (issuance_operation_id = ('issuance:spaces-native:'::text || claim_id)) AND (nationality_decision_id IS NULL)) IS TRUE))),
+    CONSTRAINT handle_claim_state_shape CHECK ((((state = 'issued'::text) AND (grant_id IS NOT NULL) AND (safe_reason IS NULL)) OR ((state = 'issuance_pending'::text) AND (grant_id IS NULL) AND (safe_reason = 'issuance_pending'::text)) OR ((state = ANY (ARRAY['blocked'::text, 'issuance_failed'::text])) AND (grant_id IS NULL) AND is_handle_sales_identifier_v1(safe_reason, 64)))),
+    CONSTRAINT handle_claims_atomic_amount_check CHECK ((atomic_amount = (0)::numeric)),
+    CONSTRAINT handle_claims_grant_finalize_hash_check CHECK ((grant_finalize_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_claims_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_claims_payment_status_check CHECK ((payment_status = 'not_applicable'::text)),
+    CONSTRAINT handle_claims_pricing_hash_check CHECK ((pricing_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_claims_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_claims_reservation_hash_check CHECK ((reservation_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_claims_state_check CHECK ((state = ANY (ARRAY['issuance_pending'::text, 'issued'::text, 'blocked'::text, 'issuance_failed'::text])))
+);
+
+CREATE FUNCTION assert_spaces_handle_claim_insert_v1(candidate handle_claims) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  reservation handle_reservations%ROWTYPE;
+  quote handle_quotes%ROWTYPE;
+  offering community_handle_offering_revisions%ROWTYPE;
+  activation community_handle_sale_namespace_activation_revisions%ROWTYPE;
+BEGIN
+  SELECT * INTO reservation
+    FROM handle_reservations
+   WHERE reservation_id = candidate.reservation_id
+   FOR SHARE;
+  SELECT * INTO quote FROM handle_quotes WHERE quote_id = reservation.quote_id FOR SHARE;
+  SELECT * INTO offering
+    FROM community_handle_offering_revisions
+   WHERE offering_id = quote.offering_id
+     AND offering_revision = quote.offering_revision
+   FOR SHARE;
+  SELECT * INTO activation
+    FROM community_handle_sale_namespace_activation_revisions
+   WHERE sale_namespace_activation_id = reservation.sale_namespace_activation_id
+     AND sale_namespace_activation_generation = reservation.sale_namespace_activation_generation
+   FOR SHARE;
+  IF reservation.reservation_id IS NULL
+    OR activation.sale_namespace_activation_id IS NULL
+    OR reservation.status <> 'reserved'
+    OR reservation.reservation_hash <> candidate.reservation_hash
+    OR reservation.actor_account_id <> candidate.actor_account_id
+    OR reservation.owner_persona_id <> candidate.owner_persona_id
+    OR reservation.quote_id <> candidate.quote_id
+    OR reservation.offering_id <> candidate.offering_id
+    OR reservation.offering_hash <> candidate.offering_hash
+    OR reservation.sale_namespace_activation_id <> candidate.sale_namespace_activation_id
+    OR reservation.sale_namespace_activation_generation
+         <> candidate.sale_namespace_activation_generation
+    OR reservation.fulfillment_kind <> candidate.fulfillment_kind
+    OR reservation.family <> candidate.family
+    OR reservation.namespace_root <> candidate.namespace_root
+    OR reservation.handle_label <> candidate.handle_label
+    OR quote.display_identifier <> candidate.display_identifier
+    OR quote.pricing_revision <> candidate.pricing_revision
+    OR quote.pricing_hash <> candidate.pricing_hash
+    OR quote.atomic_amount <> candidate.atomic_amount
+    OR candidate.state <> 'issuance_pending'
+    OR candidate.grant_id IS NOT NULL THEN
+    RAISE EXCEPTION 'Spaces handle claim does not match its immutable reservation';
+  END IF;
+  IF ROW(
+      candidate.recipient_kind,
+      candidate.recipient_network,
+      candidate.recipient_taproot_assignment_id,
+      candidate.recipient_script_pubkey_hex
+    ) IS DISTINCT FROM ROW(
+      reservation.recipient_kind,
+      reservation.recipient_network,
+      reservation.recipient_taproot_assignment_id,
+      reservation.recipient_script_pubkey_hex
+    )
+    OR is_spaces_handle_recipient_live_v1(
+      candidate.actor_account_id,
+      candidate.owner_persona_id,
+      activation.spaces_network,
+      candidate.recipient_kind,
+      candidate.recipient_network,
+      candidate.recipient_taproot_assignment_id,
+      candidate.recipient_script_pubkey_hex
+    ) IS NOT TRUE THEN
+    RAISE EXCEPTION 'Spaces handle claim recipient changed since its reservation';
+  END IF;
+  IF handle_spaces_membership_satisfied_v1(offering.community_id, candidate.actor_account_id)
+       IS NOT TRUE THEN
+    RAISE EXCEPTION 'Spaces handle claim requires an active community membership';
+  END IF;
+END;
+$$;
+
 CREATE TABLE community_handle_offering_revisions (
     offering_id text NOT NULL,
     offering_revision bigint NOT NULL,
@@ -1115,6 +1247,222 @@ BEGIN
 END;
 $$;
 
+CREATE TABLE handle_quotes (
+    quote_id text NOT NULL,
+    quote_hash text NOT NULL,
+    request_hash text NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    offering_id text NOT NULL,
+    offering_revision bigint NOT NULL,
+    offering_hash text NOT NULL,
+    sale_namespace_activation_id text NOT NULL,
+    sale_namespace_activation_generation bigint NOT NULL,
+    fulfillment_kind text NOT NULL,
+    family text NOT NULL,
+    namespace_root text NOT NULL,
+    display_root text NOT NULL,
+    handle_label text NOT NULL,
+    display_identifier text NOT NULL,
+    pricing_id text NOT NULL,
+    pricing_revision bigint NOT NULL,
+    pricing_hash text NOT NULL,
+    atomic_amount numeric(78,0) NOT NULL,
+    eligibility_policy_revision bigint NOT NULL,
+    eligibility_policy_hash text NOT NULL,
+    evidence_use_ids text[] NOT NULL,
+    evaluated_at timestamp with time zone NOT NULL,
+    public_link_confirmation_id text,
+    public_link_confirmation_hash text,
+    status text NOT NULL,
+    quoted_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    nationality_qualification_pin jsonb,
+    nationality_decision_id text,
+    recipient_kind text,
+    recipient_network text,
+    recipient_taproot_assignment_id text,
+    recipient_script_pubkey_hex text,
+    CONSTRAINT handle_nationality_quote_pin_pair CHECK ((((nationality_qualification_pin IS NULL) AND (nationality_decision_id IS NULL)) OR ((nationality_qualification_pin IS NOT NULL) AND (nationality_decision_id IS NOT NULL) AND (jsonb_typeof(nationality_qualification_pin) = 'object'::text)))),
+    CONSTRAINT handle_quote_family_shape CHECK ((((family = 'hns'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (recipient_kind IS NULL) AND (recipient_network IS NULL) AND (recipient_taproot_assignment_id IS NULL) AND (recipient_script_pubkey_hex IS NULL)) OR (((family = 'spaces'::text) AND (fulfillment_kind = 'spaces_native_v1'::text) AND (recipient_kind = 'persona_taproot_v1'::text) AND (recipient_network = ANY (ARRAY['mainnet'::text, 'testnet4'::text, 'regtest'::text])) AND is_handle_sales_identifier_v1(recipient_taproot_assignment_id, 128) AND (recipient_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (cardinality(evidence_use_ids) = 0) AND (nationality_qualification_pin IS NULL) AND (nationality_decision_id IS NULL)) IS TRUE))),
+    CONSTRAINT handle_quote_link_shape CHECK ((((public_link_confirmation_id IS NULL) AND (public_link_confirmation_hash IS NULL)) OR ((public_link_confirmation_id IS NOT NULL) AND (public_link_confirmation_hash ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT handle_quote_state_shape CHECK ((((status = 'quoted'::text) AND (consumed_at IS NULL)) OR ((status = 'consumed'::text) AND (consumed_at IS NOT NULL)) OR ((status = 'expired'::text) AND (consumed_at IS NULL)))),
+    CONSTRAINT handle_quote_time_order CHECK (((expires_at > quoted_at) AND (evaluated_at = quoted_at))),
+    CONSTRAINT handle_quotes_atomic_amount_check CHECK ((atomic_amount = (0)::numeric)),
+    CONSTRAINT handle_quotes_eligibility_policy_hash_check CHECK ((eligibility_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_quotes_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_quotes_pricing_hash_check CHECK ((pricing_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_quotes_quote_hash_check CHECK ((quote_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_quotes_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_quotes_status_check CHECK ((status = ANY (ARRAY['quoted'::text, 'consumed'::text, 'expired'::text])))
+);
+
+CREATE FUNCTION assert_spaces_handle_quote_insert_v1(candidate handle_quotes) RETURNS void
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE
+  offering community_handle_offering_revisions%ROWTYPE;
+  activation community_handle_sale_namespace_activation_revisions%ROWTYPE;
+BEGIN
+  SELECT * INTO offering
+    FROM community_handle_offering_revisions
+   WHERE offering_id = candidate.offering_id
+     AND offering_revision = candidate.offering_revision
+   FOR SHARE;
+  SELECT * INTO activation
+    FROM community_handle_sale_namespace_activation_revisions
+   WHERE sale_namespace_activation_id = candidate.sale_namespace_activation_id
+     AND sale_namespace_activation_generation = candidate.sale_namespace_activation_generation
+   FOR SHARE;
+  IF offering.offering_id IS NULL
+    OR activation.sale_namespace_activation_id IS NULL
+    OR activation.family <> 'spaces'
+    OR offering.offering_hash <> candidate.offering_hash
+    OR offering.sale_namespace_activation_id <> candidate.sale_namespace_activation_id
+    OR offering.sale_namespace_activation_generation <> candidate.sale_namespace_activation_generation
+    OR offering.fulfillment_kind <> candidate.fulfillment_kind
+    OR offering.family <> candidate.family
+    OR offering.namespace_root <> candidate.namespace_root
+    OR offering.display_root <> candidate.display_root
+    OR offering.pricing_id <> candidate.pricing_id
+    OR offering.pricing_revision <> candidate.pricing_revision
+    OR offering.pricing_hash <> candidate.pricing_hash
+    OR offering.atomic_amount <> candidate.atomic_amount
+    OR offering.qualification_policy_revision <> candidate.eligibility_policy_revision
+    OR offering.qualification_policy_hash <> candidate.eligibility_policy_hash
+    OR candidate.status <> 'quoted'
+    OR candidate.expires_at <> candidate.quoted_at + make_interval(secs => offering.quote_ttl_seconds)
+    OR candidate.display_identifier <> candidate.handle_label || '@' || offering.display_root
+    OR offering.label_scope_kind <> 'label_rule_v2'
+    OR octet_length(candidate.handle_label)
+         NOT BETWEEN offering.min_label_length AND offering.max_label_length
+    OR candidate.handle_label !~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+    OR candidate.handle_label ~ '^xn--'
+    OR octet_length(candidate.handle_label) > 62 THEN
+    RAISE EXCEPTION 'Spaces handle quote does not match its immutable offering';
+  END IF;
+  IF is_spaces_handle_recipient_live_v1(
+    candidate.actor_account_id,
+    candidate.owner_persona_id,
+    activation.spaces_network,
+    candidate.recipient_kind,
+    candidate.recipient_network,
+    candidate.recipient_taproot_assignment_id,
+    candidate.recipient_script_pubkey_hex
+  ) IS NOT TRUE THEN
+    RAISE EXCEPTION 'Spaces handle quote requires the persona''s live Taproot recipient';
+  END IF;
+  IF handle_spaces_membership_satisfied_v1(offering.community_id, candidate.actor_account_id)
+       IS NOT TRUE THEN
+    RAISE EXCEPTION 'Spaces handle quote requires an active community membership';
+  END IF;
+END;
+$_$;
+
+CREATE TABLE handle_reservations (
+    reservation_id text NOT NULL,
+    reservation_hash text NOT NULL,
+    request_hash text NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    quote_id text NOT NULL,
+    quote_hash text NOT NULL,
+    offering_id text NOT NULL,
+    offering_hash text NOT NULL,
+    sale_namespace_activation_id text NOT NULL,
+    sale_namespace_activation_generation bigint NOT NULL,
+    fulfillment_kind text NOT NULL,
+    family text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    status text NOT NULL,
+    reserved_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    transitioned_at timestamp with time zone,
+    nationality_decision_id text,
+    recipient_kind text,
+    recipient_network text,
+    recipient_taproot_assignment_id text,
+    recipient_script_pubkey_hex text,
+    CONSTRAINT handle_reservation_family_shape CHECK ((((family = 'hns'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (recipient_kind IS NULL) AND (recipient_network IS NULL) AND (recipient_taproot_assignment_id IS NULL) AND (recipient_script_pubkey_hex IS NULL)) OR (((family = 'spaces'::text) AND (fulfillment_kind = 'spaces_native_v1'::text) AND (recipient_kind = 'persona_taproot_v1'::text) AND (recipient_network = ANY (ARRAY['mainnet'::text, 'testnet4'::text, 'regtest'::text])) AND is_handle_sales_identifier_v1(recipient_taproot_assignment_id, 128) AND (recipient_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (nationality_decision_id IS NULL)) IS TRUE))),
+    CONSTRAINT handle_reservation_state_shape CHECK ((((status = 'reserved'::text) AND (transitioned_at IS NULL)) OR ((status <> 'reserved'::text) AND (transitioned_at IS NOT NULL)))),
+    CONSTRAINT handle_reservation_time_order CHECK ((expires_at > reserved_at)),
+    CONSTRAINT handle_reservations_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_reservations_quote_hash_check CHECK ((quote_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_reservations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_reservations_reservation_hash_check CHECK ((reservation_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_reservations_status_check CHECK ((status = ANY (ARRAY['reserved'::text, 'consumed'::text, 'expired'::text, 'cancelled'::text, 'blocked'::text])))
+);
+
+CREATE FUNCTION assert_spaces_handle_reservation_insert_v1(candidate handle_reservations) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  quote handle_quotes%ROWTYPE;
+  offering community_handle_offering_revisions%ROWTYPE;
+  activation community_handle_sale_namespace_activation_revisions%ROWTYPE;
+BEGIN
+  SELECT * INTO quote FROM handle_quotes WHERE quote_id = candidate.quote_id FOR SHARE;
+  SELECT * INTO offering
+    FROM community_handle_offering_revisions
+   WHERE offering_id = quote.offering_id
+     AND offering_revision = quote.offering_revision
+   FOR SHARE;
+  SELECT * INTO activation
+    FROM community_handle_sale_namespace_activation_revisions
+   WHERE sale_namespace_activation_id = quote.sale_namespace_activation_id
+     AND sale_namespace_activation_generation = quote.sale_namespace_activation_generation
+   FOR SHARE;
+  IF quote.quote_id IS NULL
+    OR activation.sale_namespace_activation_id IS NULL
+    OR quote.status <> 'quoted'
+    OR quote.quote_hash <> candidate.quote_hash
+    OR quote.actor_account_id <> candidate.actor_account_id
+    OR quote.owner_persona_id <> candidate.owner_persona_id
+    OR quote.offering_id <> candidate.offering_id
+    OR quote.offering_hash <> candidate.offering_hash
+    OR quote.sale_namespace_activation_id <> candidate.sale_namespace_activation_id
+    OR quote.sale_namespace_activation_generation <> candidate.sale_namespace_activation_generation
+    OR quote.fulfillment_kind <> candidate.fulfillment_kind
+    OR quote.family <> candidate.family
+    OR quote.namespace_root <> candidate.namespace_root
+    OR quote.handle_label <> candidate.handle_label
+    OR candidate.status <> 'reserved'
+    OR candidate.expires_at
+         <> candidate.reserved_at + make_interval(secs => offering.reservation_ttl_seconds)
+    OR candidate.reserved_at >= quote.expires_at THEN
+    RAISE EXCEPTION 'Spaces handle reservation does not match its immutable quote';
+  END IF;
+  IF ROW(
+      candidate.recipient_kind,
+      candidate.recipient_network,
+      candidate.recipient_taproot_assignment_id,
+      candidate.recipient_script_pubkey_hex
+    ) IS DISTINCT FROM ROW(
+      quote.recipient_kind,
+      quote.recipient_network,
+      quote.recipient_taproot_assignment_id,
+      quote.recipient_script_pubkey_hex
+    )
+    OR is_spaces_handle_recipient_live_v1(
+      candidate.actor_account_id,
+      candidate.owner_persona_id,
+      activation.spaces_network,
+      candidate.recipient_kind,
+      candidate.recipient_network,
+      candidate.recipient_taproot_assignment_id,
+      candidate.recipient_script_pubkey_hex
+    ) IS NOT TRUE THEN
+    RAISE EXCEPTION 'Spaces handle reservation recipient changed since its quote';
+  END IF;
+  IF handle_spaces_membership_satisfied_v1(offering.community_id, candidate.actor_account_id)
+       IS NOT TRUE THEN
+    RAISE EXCEPTION 'Spaces handle reservation requires an active community membership';
+  END IF;
+END;
+$$;
+
 CREATE FUNCTION is_community_route_root_label(route_family text, root_label text) RETURNS boolean
     LANGUAGE sql IMMUTABLE STRICT
     AS $_$
@@ -1146,16 +1494,6 @@ CREATE FUNCTION is_community_route_root_label_display(root_label_display text) R
     AND position('%' IN root_label_display) = 0
     AND position('/' IN root_label_display) = 0
     AND position(E'\\' IN root_label_display) = 0;
-$$;
-
-CREATE FUNCTION is_handle_sales_identifier_v1(input_value text, maximum_bytes integer) RETURNS boolean
-    LANGUAGE sql IMMUTABLE
-    AS $$
-  SELECT input_value IS NOT NULL
-    AND btrim(input_value) <> ''
-    AND input_value = btrim(input_value)
-    AND octet_length(input_value) <= maximum_bytes
-    AND input_value !~ '[[:cntrl:]]'
 $$;
 
 CREATE TABLE community_handle_sale_namespace_activation_revisions (
@@ -8408,6 +8746,27 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_handle_claim_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'handle claim cannot be deleted';
+  END IF;
+  IF OLD.family <> 'spaces' THEN
+    RAISE EXCEPTION 'HNS handle claim is immutable';
+  END IF;
+  IF to_jsonb(NEW) - ARRAY['state','safe_reason','grant_id','updated_at']
+       IS DISTINCT FROM to_jsonb(OLD) - ARRAY['state','safe_reason','grant_id','updated_at']
+    OR OLD.state <> 'issuance_pending'
+    OR NEW.state NOT IN ('issued', 'issuance_failed')
+    OR NEW.updated_at < OLD.updated_at THEN
+    RAISE EXCEPTION 'Spaces handle claim transition is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_handle_grant_change_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12917,6 +13276,48 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_spaces_issuance_verification_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim handle_claims%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Spaces issuance verification cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO claim FROM handle_claims WHERE claim_id = NEW.claim_id FOR SHARE;
+    IF claim.claim_id IS NULL
+      OR claim.family <> 'spaces'
+      OR claim.state <> 'issuance_pending'
+      OR claim.issuance_operation_id <> NEW.issuance_operation_id
+      OR NEW.status <> 'pending'
+      OR NEW.verification_due
+      OR NEW.attempt_count <> 0
+      OR NEW.last_attempted_at IS NOT NULL
+      OR NEW.overdue_marked_at IS NOT NULL
+      OR NEW.created_at <> claim.created_at
+      OR NEW.updated_at <> claim.created_at
+      OR NEW.next_verification_at < claim.created_at THEN
+      RAISE EXCEPTION 'Spaces issuance verification must start pending with its claim';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.claim_id IS DISTINCT FROM OLD.claim_id
+    OR NEW.issuance_operation_id IS DISTINCT FROM OLD.issuance_operation_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.updated_at < OLD.updated_at
+    OR NEW.attempt_count < OLD.attempt_count
+    OR (OLD.overdue_marked_at IS NOT NULL
+      AND NEW.overdue_marked_at IS DISTINCT FROM OLD.overdue_marked_at)
+    OR OLD.status <> 'pending'
+    OR NEW.status NOT IN ('pending', 'verified', 'closed') THEN
+    RAISE EXCEPTION 'Spaces issuance verification transition is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_spaces_namespace_authority_evidence_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13110,6 +13511,45 @@ BEGIN
     OR OLD.status <> 'active'
     OR NEW.status <> 'retired' THEN
     RAISE EXCEPTION 'Spaces operator instance may only be retired once';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_registry_item_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim handle_claims%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Spaces registry item cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO claim FROM handle_claims WHERE claim_id = NEW.claim_id FOR SHARE;
+    IF claim.claim_id IS NULL
+      OR claim.family <> 'spaces'
+      OR claim.state <> 'issuance_pending'
+      OR claim.issuance_operation_id <> NEW.issuance_operation_id
+      OR claim.recipient_network <> NEW.network
+      OR claim.recipient_script_pubkey_hex <> NEW.script_pubkey_hex
+      OR claim.namespace_root <> NEW.namespace_root
+      OR claim.handle_label <> NEW.handle_label
+      OR NEW.state <> 'undelivered'
+      OR NEW.created_at <> claim.created_at
+      OR NEW.updated_at <> claim.created_at THEN
+      RAISE EXCEPTION 'Spaces registry item must match its pending claim';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF to_jsonb(NEW) - ARRAY['state','updated_at']
+       IS DISTINCT FROM to_jsonb(OLD) - ARRAY['state','updated_at']
+    OR NEW.updated_at < OLD.updated_at
+    OR OLD.state IN ('settled_same_spk', 'settled_different_spk', 'settled_invalid', 'withdrawn')
+    OR (NEW.state = 'undelivered' AND OLD.state <> 'undelivered')
+    OR (NEW.state = 'withdrawn' AND OLD.state <> 'undelivered')
+    OR (NEW.state = 'delivered' AND OLD.state NOT IN ('undelivered', 'delivered')) THEN
+    RAISE EXCEPTION 'Spaces registry item transition is invalid';
   END IF;
   RETURN NEW;
 END;
@@ -13511,6 +13951,18 @@ CREATE FUNCTION handle_spaces_membership_policy_hash_v1(input_policy_id text, in
       'UTF8'
     )),
     'hex'
+  )
+$$;
+
+CREATE FUNCTION handle_spaces_membership_satisfied_v1(input_community_id text, input_account_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM community_memberships AS membership
+     WHERE membership.community_id = input_community_id
+       AND membership.user_id = input_account_id
+       AND membership.status = 'member'
   )
 $$;
 
@@ -14700,6 +15152,24 @@ EXCEPTION WHEN OTHERS THEN
   RETURN FALSE;
 END;
 $_$;
+
+CREATE FUNCTION is_spaces_handle_recipient_live_v1(input_account_id text, input_persona_id text, input_network text, input_recipient_kind text, input_recipient_network text, input_taproot_assignment_id text, input_script_pubkey_hex text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT input_recipient_kind = 'persona_taproot_v1'
+     AND input_recipient_network = input_network
+     AND EXISTS (
+       SELECT 1
+         FROM persona_wallet_assignments AS assignment
+        WHERE assignment.assignment_id = input_taproot_assignment_id
+          AND assignment.account_id = input_account_id
+          AND assignment.persona_id = input_persona_id
+          AND assignment.chain_account_kind = 'bitcoin-taproot'
+          AND assignment.status = 'active'
+          AND assignment.bitcoin_network = input_network
+          AND assignment.output_script_hex = input_script_pubkey_hex
+     )
+$$;
 
 CREATE FUNCTION lock_hns_root_zone_mutation_v1(input_root_label text, input_challenge_txt_value text, input_teardown boolean, input_job_id text, input_executor_id text, input_lease_fence bigint) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -21148,6 +21618,11 @@ DECLARE
   reservation handle_reservations%ROWTYPE;
   quote handle_quotes%ROWTYPE;
 BEGIN
+  IF NEW.family = 'spaces' THEN
+    PERFORM assert_spaces_handle_claim_insert_v1(NEW);
+    RETURN NEW;
+  END IF;
+
   SELECT * INTO reservation
     FROM handle_reservations
    WHERE reservation_id = NEW.reservation_id
@@ -21184,6 +21659,10 @@ DECLARE
   claim handle_claims%ROWTYPE;
   offering community_handle_offering_revisions%ROWTYPE;
 BEGIN
+  IF NEW.family = 'spaces' THEN
+    RAISE EXCEPTION 'Spaces handle grants require verified final issuance evidence';
+  END IF;
+
   SELECT * INTO claim FROM handle_claims WHERE claim_id = NEW.claim_id FOR SHARE;
   SELECT * INTO offering
     FROM community_handle_offering_revisions
@@ -21332,6 +21811,11 @@ CREATE FUNCTION validate_handle_quote_insert_v2() RETURNS trigger
 DECLARE
   offering community_handle_offering_revisions%ROWTYPE;
 BEGIN
+  IF NEW.family = 'spaces' THEN
+    PERFORM assert_spaces_handle_quote_insert_v1(NEW);
+    RETURN NEW;
+  END IF;
+
   SELECT * INTO offering
     FROM community_handle_offering_revisions
    WHERE offering_id = NEW.offering_id
@@ -21373,6 +21857,11 @@ DECLARE
   quote handle_quotes%ROWTYPE;
   offering community_handle_offering_revisions%ROWTYPE;
 BEGIN
+  IF NEW.family = 'spaces' THEN
+    PERFORM assert_spaces_handle_reservation_insert_v1(NEW);
+    RETURN NEW;
+  END IF;
+
   SELECT * INTO quote FROM handle_quotes WHERE quote_id = NEW.quote_id FOR SHARE;
   SELECT * INTO offering
     FROM community_handle_offering_revisions
@@ -28881,7 +29370,9 @@ CREATE TABLE handle_account_offering_grant_counters (
     offering_id text NOT NULL,
     active_grant_count bigint DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone NOT NULL,
-    CONSTRAINT handle_account_offering_grant_counters_active_grant_count_check CHECK ((active_grant_count >= 0))
+    pending_issuance_count bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT handle_account_offering_grant_counters_active_grant_count_check CHECK ((active_grant_count >= 0)),
+    CONSTRAINT handle_account_offering_pending_issuance_count_check CHECK ((pending_issuance_count >= 0))
 );
 
 CREATE TABLE handle_claim_actions (
@@ -28894,48 +29385,6 @@ CREATE TABLE handle_claim_actions (
     committed_at timestamp with time zone NOT NULL,
     CONSTRAINT handle_claim_actions_endpoint_template_check CHECK ((endpoint_template = '/handle-claims'::text)),
     CONSTRAINT handle_claim_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
-);
-
-CREATE TABLE handle_claims (
-    claim_id text NOT NULL,
-    request_hash text NOT NULL,
-    actor_account_id text NOT NULL,
-    owner_persona_id text NOT NULL,
-    offering_id text NOT NULL,
-    offering_hash text NOT NULL,
-    quote_id text NOT NULL,
-    reservation_id text NOT NULL,
-    reservation_hash text NOT NULL,
-    sale_namespace_activation_id text NOT NULL,
-    sale_namespace_activation_generation bigint NOT NULL,
-    fulfillment_kind text NOT NULL,
-    family text NOT NULL,
-    namespace_root text NOT NULL,
-    handle_label text NOT NULL,
-    display_identifier text NOT NULL,
-    pricing_revision bigint NOT NULL,
-    pricing_hash text NOT NULL,
-    atomic_amount numeric(78,0) NOT NULL,
-    payment_status text NOT NULL,
-    state text NOT NULL,
-    safe_reason text,
-    issuance_operation_id text NOT NULL,
-    grant_finalize_hash text NOT NULL,
-    grant_id text,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    nationality_decision_id text,
-    CONSTRAINT handle_claim_state_shape CHECK ((((state = 'issued'::text) AND (grant_id IS NOT NULL) AND (safe_reason IS NULL)) OR ((state = 'issuance_pending'::text) AND (grant_id IS NULL) AND (safe_reason = 'issuance_pending'::text)) OR ((state = ANY (ARRAY['blocked'::text, 'issuance_failed'::text])) AND (grant_id IS NULL) AND is_handle_sales_identifier_v1(safe_reason, 64)))),
-    CONSTRAINT handle_claims_atomic_amount_check CHECK ((atomic_amount = (0)::numeric)),
-    CONSTRAINT handle_claims_family_check CHECK ((family = 'hns'::text)),
-    CONSTRAINT handle_claims_fulfillment_kind_check CHECK ((fulfillment_kind = 'hosted_persona_v1'::text)),
-    CONSTRAINT handle_claims_grant_finalize_hash_check CHECK ((grant_finalize_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_claims_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_claims_payment_status_check CHECK ((payment_status = 'not_applicable'::text)),
-    CONSTRAINT handle_claims_pricing_hash_check CHECK ((pricing_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_claims_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_claims_reservation_hash_check CHECK ((reservation_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_claims_state_check CHECK ((state = ANY (ARRAY['issuance_pending'::text, 'issued'::text, 'blocked'::text, 'issuance_failed'::text])))
 );
 
 CREATE TABLE handle_direct_grant_recipient_token_actions (
@@ -28997,8 +29446,11 @@ CREATE TABLE handle_grants (
     status text NOT NULL,
     issued_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
-    CONSTRAINT handle_grants_family_check CHECK ((family = 'hns'::text)),
-    CONSTRAINT handle_grants_fulfillment_kind_check CHECK ((fulfillment_kind = 'hosted_persona_v1'::text)),
+    recipient_kind text,
+    recipient_network text,
+    recipient_taproot_assignment_id text,
+    recipient_script_pubkey_hex text,
+    CONSTRAINT handle_grant_family_shape CHECK ((((family = 'hns'::text) AND (fulfillment_kind = 'hosted_persona_v1'::text) AND (recipient_kind IS NULL) AND (recipient_network IS NULL) AND (recipient_taproot_assignment_id IS NULL) AND (recipient_script_pubkey_hex IS NULL)) OR (((family = 'spaces'::text) AND (fulfillment_kind = 'spaces_native_v1'::text) AND (recipient_kind = 'persona_taproot_v1'::text) AND (recipient_network = ANY (ARRAY['mainnet'::text, 'testnet4'::text, 'regtest'::text])) AND is_handle_sales_identifier_v1(recipient_taproot_assignment_id, 128) AND (recipient_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text)) IS TRUE))),
     CONSTRAINT handle_grants_grant_generation_check CHECK ((grant_generation = 1)),
     CONSTRAINT handle_grants_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT handle_grants_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text, 'tombstoned'::text])))
@@ -29024,8 +29476,10 @@ CREATE TABLE handle_key_fences (
     live_reservation_id text,
     permanent_grant_id text,
     updated_at timestamp with time zone NOT NULL,
+    pending_claim_id text,
+    external_conflict_observation_id text,
     CONSTRAINT handle_key_fence_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
-    CONSTRAINT handle_key_fence_shape CHECK (((live_reservation_id IS NOT NULL) OR (permanent_grant_id IS NOT NULL)))
+    CONSTRAINT handle_key_fence_shape CHECK ((((family = 'hns'::text) AND ((live_reservation_id IS NOT NULL) OR (permanent_grant_id IS NOT NULL)) AND (pending_claim_id IS NULL) AND (external_conflict_observation_id IS NULL)) OR (((family = 'spaces'::text) AND (num_nonnulls(live_reservation_id, permanent_grant_id, pending_claim_id, external_conflict_observation_id) = 1)) IS TRUE)))
 );
 
 CREATE TABLE handle_nationality_decisions (
@@ -29222,54 +29676,6 @@ CREATE TABLE handle_quote_actions (
     CONSTRAINT handle_quote_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['quoted'::text, 'eligibility_required'::text, 'nationality_required'::text])))
 );
 
-CREATE TABLE handle_quotes (
-    quote_id text NOT NULL,
-    quote_hash text NOT NULL,
-    request_hash text NOT NULL,
-    actor_account_id text NOT NULL,
-    owner_persona_id text NOT NULL,
-    offering_id text NOT NULL,
-    offering_revision bigint NOT NULL,
-    offering_hash text NOT NULL,
-    sale_namespace_activation_id text NOT NULL,
-    sale_namespace_activation_generation bigint NOT NULL,
-    fulfillment_kind text NOT NULL,
-    family text NOT NULL,
-    namespace_root text NOT NULL,
-    display_root text NOT NULL,
-    handle_label text NOT NULL,
-    display_identifier text NOT NULL,
-    pricing_id text NOT NULL,
-    pricing_revision bigint NOT NULL,
-    pricing_hash text NOT NULL,
-    atomic_amount numeric(78,0) NOT NULL,
-    eligibility_policy_revision bigint NOT NULL,
-    eligibility_policy_hash text NOT NULL,
-    evidence_use_ids text[] NOT NULL,
-    evaluated_at timestamp with time zone NOT NULL,
-    public_link_confirmation_id text,
-    public_link_confirmation_hash text,
-    status text NOT NULL,
-    quoted_at timestamp with time zone NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    consumed_at timestamp with time zone,
-    nationality_qualification_pin jsonb,
-    nationality_decision_id text,
-    CONSTRAINT handle_nationality_quote_pin_pair CHECK ((((nationality_qualification_pin IS NULL) AND (nationality_decision_id IS NULL)) OR ((nationality_qualification_pin IS NOT NULL) AND (nationality_decision_id IS NOT NULL) AND (jsonb_typeof(nationality_qualification_pin) = 'object'::text)))),
-    CONSTRAINT handle_quote_link_shape CHECK ((((public_link_confirmation_id IS NULL) AND (public_link_confirmation_hash IS NULL)) OR ((public_link_confirmation_id IS NOT NULL) AND (public_link_confirmation_hash ~ '^[0-9a-f]{64}$'::text)))),
-    CONSTRAINT handle_quote_state_shape CHECK ((((status = 'quoted'::text) AND (consumed_at IS NULL)) OR ((status = 'consumed'::text) AND (consumed_at IS NOT NULL)) OR ((status = 'expired'::text) AND (consumed_at IS NULL)))),
-    CONSTRAINT handle_quote_time_order CHECK (((expires_at > quoted_at) AND (evaluated_at = quoted_at))),
-    CONSTRAINT handle_quotes_atomic_amount_check CHECK ((atomic_amount = (0)::numeric)),
-    CONSTRAINT handle_quotes_eligibility_policy_hash_check CHECK ((eligibility_policy_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quotes_family_check CHECK ((family = 'hns'::text)),
-    CONSTRAINT handle_quotes_fulfillment_kind_check CHECK ((fulfillment_kind = 'hosted_persona_v1'::text)),
-    CONSTRAINT handle_quotes_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quotes_pricing_hash_check CHECK ((pricing_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quotes_quote_hash_check CHECK ((quote_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quotes_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_quotes_status_check CHECK ((status = ANY (ARRAY['quoted'::text, 'consumed'::text, 'expired'::text])))
-);
-
 CREATE TABLE handle_reservation_actions (
     action_id text NOT NULL,
     actor_account_id text NOT NULL,
@@ -29280,38 +29686,6 @@ CREATE TABLE handle_reservation_actions (
     committed_at timestamp with time zone NOT NULL,
     CONSTRAINT handle_reservation_actions_endpoint_template_check CHECK ((endpoint_template = '/handle-reservations'::text)),
     CONSTRAINT handle_reservation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
-);
-
-CREATE TABLE handle_reservations (
-    reservation_id text NOT NULL,
-    reservation_hash text NOT NULL,
-    request_hash text NOT NULL,
-    actor_account_id text NOT NULL,
-    owner_persona_id text NOT NULL,
-    quote_id text NOT NULL,
-    quote_hash text NOT NULL,
-    offering_id text NOT NULL,
-    offering_hash text NOT NULL,
-    sale_namespace_activation_id text NOT NULL,
-    sale_namespace_activation_generation bigint NOT NULL,
-    fulfillment_kind text NOT NULL,
-    family text NOT NULL,
-    namespace_root text NOT NULL,
-    handle_label text NOT NULL,
-    status text NOT NULL,
-    reserved_at timestamp with time zone NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    transitioned_at timestamp with time zone,
-    nationality_decision_id text,
-    CONSTRAINT handle_reservation_state_shape CHECK ((((status = 'reserved'::text) AND (transitioned_at IS NULL)) OR ((status <> 'reserved'::text) AND (transitioned_at IS NOT NULL)))),
-    CONSTRAINT handle_reservation_time_order CHECK ((expires_at > reserved_at)),
-    CONSTRAINT handle_reservations_family_check CHECK ((family = 'hns'::text)),
-    CONSTRAINT handle_reservations_fulfillment_kind_check CHECK ((fulfillment_kind = 'hosted_persona_v1'::text)),
-    CONSTRAINT handle_reservations_offering_hash_check CHECK ((offering_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_reservations_quote_hash_check CHECK ((quote_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_reservations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_reservations_reservation_hash_check CHECK ((reservation_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT handle_reservations_status_check CHECK ((status = ANY (ARRAY['reserved'::text, 'consumed'::text, 'expired'::text, 'cancelled'::text, 'blocked'::text])))
 );
 
 CREATE TABLE handle_reserved_label_revisions (
@@ -33774,6 +34148,20 @@ CREATE TABLE song_streaks (
     CONSTRAINT song_streaks_day_order CHECK ((last_day >= started_day))
 );
 
+CREATE TABLE spaces_external_conflict_observations (
+    observation_id text NOT NULL,
+    family text NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    evidence_kind text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT spaces_external_conflict_identity_check CHECK ((is_handle_sales_identifier_v1(observation_id, 128) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (observed_at <= recorded_at))),
+    CONSTRAINT spaces_external_conflict_observations_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['registry_acknowledgment_v1'::text, 'occupancy_observation_v1'::text]))),
+    CONSTRAINT spaces_external_conflict_observations_family_check CHECK ((family = 'spaces'::text))
+);
+
 CREATE TABLE spaces_issuance_driver_root_enablements (
     enablement_id text NOT NULL,
     network text NOT NULL,
@@ -33789,6 +34177,22 @@ CREATE TABLE spaces_issuance_driver_root_enablements (
     CONSTRAINT spaces_driver_root_enablement_status_shape CHECK ((((status = 'enabled'::text) AND (disabled_at IS NULL)) OR ((status = 'disabled'::text) AND (disabled_at IS NOT NULL) AND (disabled_at >= enabled_at)))),
     CONSTRAINT spaces_issuance_driver_root_enablements_driver_family_check CHECK ((driver_family = 'spaces'::text)),
     CONSTRAINT spaces_issuance_driver_root_enablements_status_check CHECK ((status = ANY (ARRAY['enabled'::text, 'disabled'::text])))
+);
+
+CREATE TABLE spaces_issuance_verifications (
+    claim_id text NOT NULL,
+    issuance_operation_id text NOT NULL,
+    status text NOT NULL,
+    verification_due boolean NOT NULL,
+    next_verification_at timestamp with time zone NOT NULL,
+    attempt_count bigint NOT NULL,
+    last_attempted_at timestamp with time zone,
+    overdue_marked_at timestamp with time zone,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_issuance_verification_identity_check CHECK (((issuance_operation_id = ('issuance:spaces-native:'::text || claim_id)) AND (updated_at >= created_at) AND ((last_attempted_at IS NULL) OR (last_attempted_at >= created_at)) AND ((overdue_marked_at IS NULL) OR (overdue_marked_at >= created_at)))),
+    CONSTRAINT spaces_issuance_verifications_attempt_count_check CHECK (((attempt_count >= 0) AND (attempt_count <= '9007199254740991'::bigint))),
+    CONSTRAINT spaces_issuance_verifications_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'verified'::text, 'closed'::text])))
 );
 
 CREATE TABLE spaces_namespace_authority_evidence (
@@ -33917,6 +34321,23 @@ CREATE TABLE spaces_operator_instances (
     CONSTRAINT spaces_operator_instance_identity_check CHECK (is_handle_sales_identifier_v1(operator_instance_id, 128)),
     CONSTRAINT spaces_operator_instance_status_shape CHECK ((((status = 'active'::text) AND (retired_at IS NULL)) OR ((status = 'retired'::text) AND (retired_at IS NOT NULL) AND (retired_at >= created_at)))),
     CONSTRAINT spaces_operator_instances_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))
+);
+
+CREATE TABLE spaces_registry_items (
+    claim_id text NOT NULL,
+    issuance_operation_id text NOT NULL,
+    family text NOT NULL,
+    network text NOT NULL,
+    namespace_root text NOT NULL,
+    handle_label text NOT NULL,
+    handle text NOT NULL,
+    script_pubkey_hex text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_registry_item_identity_check CHECK ((is_handle_sales_identifier_v1(claim_id, 128) AND (issuance_operation_id = ('issuance:spaces-native:'::text || claim_id)) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (handle = ((handle_label || '@'::text) || namespace_root)) AND (script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (updated_at >= created_at))),
+    CONSTRAINT spaces_registry_items_family_check CHECK ((family = 'spaces'::text)),
+    CONSTRAINT spaces_registry_items_state_check CHECK ((state = ANY (ARRAY['undelivered'::text, 'delivered'::text, 'redelivery_stopped'::text, 'settled_same_spk'::text, 'settled_different_spk'::text, 'settled_invalid'::text, 'withdrawn'::text])))
 );
 
 CREATE TABLE spaces_root_observations (
@@ -35714,6 +36135,9 @@ ALTER TABLE ONLY handle_claim_actions
     ADD CONSTRAINT handle_claim_actions_pkey PRIMARY KEY (action_id);
 
 ALTER TABLE ONLY handle_claims
+    ADD CONSTRAINT handle_claim_key_identity_unique UNIQUE (claim_id, family, namespace_root, handle_label);
+
+ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claims_issuance_operation_id_key UNIQUE (issuance_operation_id);
 
 ALTER TABLE ONLY handle_claims
@@ -37093,8 +37517,20 @@ ALTER TABLE ONLY song_streak_days
 ALTER TABLE ONLY song_streaks
     ADD CONSTRAINT song_streaks_pkey PRIMARY KEY (account_id, post_id);
 
+ALTER TABLE ONLY spaces_external_conflict_observations
+    ADD CONSTRAINT spaces_external_conflict_key_unique UNIQUE (observation_id, family, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_external_conflict_observations
+    ADD CONSTRAINT spaces_external_conflict_observations_pkey PRIMARY KEY (observation_id);
+
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_issuance_driver_root_enablements_pkey PRIMARY KEY (enablement_id);
+
+ALTER TABLE ONLY spaces_issuance_verifications
+    ADD CONSTRAINT spaces_issuance_verifications_issuance_operation_id_key UNIQUE (issuance_operation_id);
+
+ALTER TABLE ONLY spaces_issuance_verifications
+    ADD CONSTRAINT spaces_issuance_verifications_pkey PRIMARY KEY (claim_id);
 
 ALTER TABLE ONLY spaces_namespace_authority_evidence
     ADD CONSTRAINT spaces_namespace_authority_evidence_pk PRIMARY KEY (namespace_authority_reference, namespace_authority_generation);
@@ -37128,6 +37564,12 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_pkey PRIMARY KEY (operator_instance_id);
+
+ALTER TABLE ONLY spaces_registry_items
+    ADD CONSTRAINT spaces_registry_items_issuance_operation_id_key UNIQUE (issuance_operation_id);
+
+ALTER TABLE ONLY spaces_registry_items
+    ADD CONSTRAINT spaces_registry_items_pkey PRIMARY KEY (claim_id);
 
 ALTER TABLE ONLY spaces_root_observations
     ADD CONSTRAINT spaces_root_observations_pk PRIMARY KEY (network, canonical_root, observation_generation);
@@ -37712,6 +38154,8 @@ CREATE UNIQUE INDEX persona_wallet_assignments_one_live_kind_uidx ON persona_wal
 
 CREATE UNIQUE INDEX persona_wallet_assignments_output_script_uidx ON persona_wallet_assignments USING btree (output_script_hex) WHERE (output_script_hex IS NOT NULL);
 
+CREATE UNIQUE INDEX persona_wallet_assignments_recipient_binding_uidx ON persona_wallet_assignments USING btree (assignment_id, persona_id, bitcoin_network, output_script_hex);
+
 CREATE INDEX personas_account_status_idx ON personas USING btree (account_id, status, created_at, persona_id);
 
 CREATE UNIQUE INDEX personas_one_first_per_account_uidx ON personas USING btree (account_id) WHERE is_first_persona;
@@ -37800,9 +38244,13 @@ CREATE INDEX song_streaks_live_leaderboard_idx ON song_streaks USING btree (comm
 
 CREATE UNIQUE INDEX spaces_driver_root_enablement_live_uidx ON spaces_issuance_driver_root_enablements USING btree (network, canonical_root) WHERE (status = 'enabled'::text);
 
+CREATE INDEX spaces_issuance_verifications_due_idx ON spaces_issuance_verifications USING btree (next_verification_at, claim_id) WHERE (status = 'pending'::text);
+
 CREATE UNIQUE INDEX spaces_namespace_authority_evidence_root_uidx ON spaces_namespace_authority_evidence USING btree (network, canonical_root) WHERE (namespace_authority_generation = 1);
 
 CREATE UNIQUE INDEX spaces_operator_assignment_live_root_uidx ON spaces_operator_assignment_current USING btree (network, canonical_root) WHERE (status = 'active'::text);
+
+CREATE UNIQUE INDEX spaces_registry_items_unresolved_key_uidx ON spaces_registry_items USING btree (network, namespace_root, handle_label) WHERE (state = ANY (ARRAY['undelivered'::text, 'delivered'::text, 'redelivery_stopped'::text]));
 
 CREATE INDEX study_lesson_item_state_queue_idx ON study_lesson_item_state_v2 USING btree (session_id, lesson_resolved, presentation_count, last_queue_ordinal, original_ordinal);
 
@@ -38277,6 +38725,8 @@ CREATE TRIGGER fallback_cutoff_evidence_append_only BEFORE DELETE OR UPDATE ON m
 CREATE TRIGGER handle_account_directory_bindings_append_only BEFORE DELETE OR UPDATE ON handle_account_directory_bindings FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER handle_claim_actions_append_only BEFORE DELETE OR UPDATE ON handle_claim_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER handle_claim_change_guard BEFORE DELETE OR UPDATE ON handle_claims FOR EACH ROW EXECUTE FUNCTION guard_handle_claim_change_v1();
 
 CREATE TRIGGER handle_claim_insert_guard BEFORE INSERT ON handle_claims FOR EACH ROW EXECUTE FUNCTION validate_handle_claim_insert_v2();
 
@@ -38974,6 +39424,10 @@ CREATE TRIGGER song_streaks_change_guard BEFORE DELETE OR UPDATE ON song_streaks
 
 CREATE TRIGGER spaces_driver_root_enablement_change_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_issuance_driver_root_enablements FOR EACH ROW EXECUTE FUNCTION guard_spaces_issuance_driver_root_enablement_v1();
 
+CREATE TRIGGER spaces_external_conflict_observations_append_only BEFORE DELETE OR UPDATE ON spaces_external_conflict_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_issuance_verification_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_issuance_verifications FOR EACH ROW EXECUTE FUNCTION guard_spaces_issuance_verification_v1();
+
 CREATE TRIGGER spaces_namespace_authority_evidence_append_only BEFORE DELETE OR UPDATE ON spaces_namespace_authority_evidence FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER spaces_namespace_authority_evidence_insert_guard BEFORE INSERT ON spaces_namespace_authority_evidence FOR EACH ROW EXECUTE FUNCTION guard_spaces_namespace_authority_evidence_insert_v1();
@@ -38999,6 +39453,8 @@ CREATE TRIGGER spaces_operator_funding_observation_insert_guard BEFORE INSERT ON
 CREATE TRIGGER spaces_operator_funding_observations_append_only BEFORE DELETE OR UPDATE ON spaces_operator_funding_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER spaces_operator_instance_change_guard BEFORE DELETE OR UPDATE ON spaces_operator_instances FOR EACH ROW EXECUTE FUNCTION guard_spaces_operator_instance_change_v1();
+
+CREATE TRIGGER spaces_registry_item_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_registry_items FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_item_v1();
 
 CREATE TRIGGER spaces_root_observation_insert_guard BEFORE INSERT ON spaces_root_observations FOR EACH ROW EXECUTE FUNCTION guard_spaces_observation_insert_v1();
 
@@ -40060,6 +40516,9 @@ ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claim_owner_fk FOREIGN KEY (actor_account_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY handle_claims
+    ADD CONSTRAINT handle_claim_recipient_fk FOREIGN KEY (recipient_taproot_assignment_id, owner_persona_id, recipient_network, recipient_script_pubkey_hex) REFERENCES persona_wallet_assignments(assignment_id, persona_id, bitcoin_network, output_script_hex);
+
+ALTER TABLE ONLY handle_claims
     ADD CONSTRAINT handle_claims_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_claims
@@ -40093,6 +40552,9 @@ ALTER TABLE ONLY handle_grants
     ADD CONSTRAINT handle_grant_owner_fk FOREIGN KEY (owner_account_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY handle_grants
+    ADD CONSTRAINT handle_grant_recipient_fk FOREIGN KEY (recipient_taproot_assignment_id, owner_persona_id, recipient_network, recipient_script_pubkey_hex) REFERENCES persona_wallet_assignments(assignment_id, persona_id, bitcoin_network, output_script_hex);
+
+ALTER TABLE ONLY handle_grants
     ADD CONSTRAINT handle_grants_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES handle_claims(claim_id);
 
 ALTER TABLE ONLY handle_grants
@@ -40100,6 +40562,12 @@ ALTER TABLE ONLY handle_grants
 
 ALTER TABLE ONLY handle_grants
     ADD CONSTRAINT handle_grants_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY handle_key_fences
+    ADD CONSTRAINT handle_key_fence_external_conflict_fk FOREIGN KEY (external_conflict_observation_id, family, namespace_root, handle_label) REFERENCES spaces_external_conflict_observations(observation_id, family, namespace_root, handle_label);
+
+ALTER TABLE ONLY handle_key_fences
+    ADD CONSTRAINT handle_key_fence_pending_claim_fk FOREIGN KEY (pending_claim_id, family, namespace_root, handle_label) REFERENCES handle_claims(claim_id, family, namespace_root, handle_label);
 
 ALTER TABLE ONLY handle_key_fences
     ADD CONSTRAINT handle_key_fence_permanent_grant_fk FOREIGN KEY (permanent_grant_id) REFERENCES handle_grants(grant_id) DEFERRABLE INITIALLY DEFERRED;
@@ -40201,6 +40669,9 @@ ALTER TABLE ONLY handle_quotes
     ADD CONSTRAINT handle_quote_owner_fk FOREIGN KEY (actor_account_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY handle_quotes
+    ADD CONSTRAINT handle_quote_recipient_fk FOREIGN KEY (recipient_taproot_assignment_id, owner_persona_id, recipient_network, recipient_script_pubkey_hex) REFERENCES persona_wallet_assignments(assignment_id, persona_id, bitcoin_network, output_script_hex);
+
+ALTER TABLE ONLY handle_quotes
     ADD CONSTRAINT handle_quotes_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY handle_quotes
@@ -40217,6 +40688,9 @@ ALTER TABLE ONLY handle_reservation_actions
 
 ALTER TABLE ONLY handle_reservations
     ADD CONSTRAINT handle_reservation_owner_fk FOREIGN KEY (actor_account_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY handle_reservations
+    ADD CONSTRAINT handle_reservation_recipient_fk FOREIGN KEY (recipient_taproot_assignment_id, owner_persona_id, recipient_network, recipient_script_pubkey_hex) REFERENCES persona_wallet_assignments(assignment_id, persona_id, bitcoin_network, output_script_hex);
 
 ALTER TABLE ONLY handle_reservations
     ADD CONSTRAINT handle_reservations_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
@@ -41520,8 +41994,14 @@ ALTER TABLE ONLY media_video_reservation_song_plans
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_driver_root_enablement_driver_fk FOREIGN KEY (driver_family, driver_id, driver_version) REFERENCES handle_issuance_driver_revisions(family, driver_id, driver_version);
 
+ALTER TABLE ONLY spaces_external_conflict_observations
+    ADD CONSTRAINT spaces_external_conflict_observations_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_issuance_driver_root_enablements_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_issuance_verifications
+    ADD CONSTRAINT spaces_issuance_verifications_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES spaces_registry_items(claim_id);
 
 ALTER TABLE ONLY spaces_namespace_authority_evidence
     ADD CONSTRAINT spaces_namespace_authority_evidence_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
@@ -41555,6 +42035,12 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_registry_items
+    ADD CONSTRAINT spaces_registry_item_claim_fk FOREIGN KEY (claim_id, family, namespace_root, handle_label) REFERENCES handle_claims(claim_id, family, namespace_root, handle_label);
+
+ALTER TABLE ONLY spaces_registry_items
+    ADD CONSTRAINT spaces_registry_items_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
 
 ALTER TABLE ONLY spaces_root_observations
     ADD CONSTRAINT spaces_root_observations_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
