@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { makeVideoSourceUrl } from "./video-source-gateway.ts";
-import { makeVideoStreamTransport } from "./video-stream-transport.ts";
+import {
+  makeVideoStreamTransport,
+  type VideoStreamTransportEvent,
+} from "./video-stream-transport.ts";
 
 const gateway = "https://video-source-staging.pirate.sc";
 const grantUrl = makeVideoSourceUrl(gateway, "g".repeat(43));
@@ -31,6 +34,7 @@ const video = {
 function fixture(issuedUrl = grantUrl) {
   const calls: { url: string; init: RequestInit | undefined }[] = [];
   const grants: unknown[] = [];
+  const events: VideoStreamTransportEvent[] = [];
   let reply: (url: string) => Response = (url) =>
     Response.json({
       success: true,
@@ -54,11 +58,13 @@ function fixture(issuedUrl = grantUrl) {
       calls.push({ url: String(url), init });
       return reply(String(url));
     }) as typeof fetch,
+    log: (event) => events.push(event),
   });
   return {
     transport,
     calls,
     grants,
+    events,
     reply: (fn: typeof reply) => {
       reply = fn;
     },
@@ -262,4 +268,41 @@ test("provider ignoring the two-result limit cannot create unbounded download lo
   f.reply(() => Response.json({ success: true, result: [video, video, video] }));
   await expect(f.transport.observe(identity)).rejects.toThrow("Stream observation unavailable");
   expect(f.calls).toHaveLength(1);
+});
+
+test("a refused copy logs its status, codes and sanitized message, never the grant or token", async () => {
+  const f = fixture();
+  f.reply(() =>
+    Response.json(
+      {
+        success: false,
+        errors: [{ code: 10005, message: "Bad Request: The request was invalid." }],
+        messages: [{ code: 10005, message: `Could not determine the size of ${grantUrl}` }],
+      },
+      { status: 400 },
+    ),
+  );
+  await expect(f.transport.copy(source)).rejects.toThrow("Stream transport unavailable");
+  expect(f.events).toEqual([
+    {
+      event: "stream_step_failed",
+      step: "copy",
+      status: 400,
+      codes: [10005, 10005],
+      messages: ["Bad Request: The request was invalid.", "Could not determine the size of <url>"],
+    },
+  ]);
+  const logged = JSON.stringify(f.events);
+  expect(logged).not.toContain("g".repeat(43));
+  expect(logged).not.toContain("fixture-token");
+  expect(logged).not.toContain("video-source-staging");
+});
+
+test("a network failure logs only the step and error name", async () => {
+  const f = fixture();
+  f.reply(() => {
+    throw new TypeError("connect ECONNREFUSED https://api.cloudflare.com fixture-token");
+  });
+  await expect(f.transport.copy(source)).rejects.toThrow("Stream transport unavailable");
+  expect(f.events).toEqual([{ event: "stream_step_failed", step: "copy", error: "TypeError" }]);
 });
