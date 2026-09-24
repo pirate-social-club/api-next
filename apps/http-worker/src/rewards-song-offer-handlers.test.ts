@@ -531,19 +531,13 @@ describe("song reward offer HTTP handlers", () => {
     expect(await pinned.json()).toMatchObject({
       funding: { sender_address: intent.senderAddress },
     });
-    // A caller-supplied sender is not part of the contract and cannot steer it.
+    // A caller-supplied sender is not part of the contract and is rejected.
     const steered = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
       method: "POST",
       headers,
       body: body("persona_1", { sender_address: address("9") }),
     });
-    if (steered.status === 201) {
-      expect(await steered.json()).toMatchObject({
-        funding: { sender_address: intent.senderAddress },
-      });
-    } else {
-      expect(steered.status).toBe(400);
-    }
+    expect(steered.status).toBe(400);
     const foreign = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
       method: "POST",
       headers,
