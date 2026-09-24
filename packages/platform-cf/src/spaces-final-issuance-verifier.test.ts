@@ -8,7 +8,7 @@ const target: SpacesVerificationTargetV1 = {
   lease_token: "lease-1",
   network: "mainnet",
   namespace_root: "xn--fn8h",
-  handle_label: "alice",
+  handle_label: "membername",
   script_pubkey_hex: `5120${"1".repeat(64)}`,
 };
 const credentials = {
@@ -19,7 +19,7 @@ const credentials = {
 const finalEvidence = {
   contract: "spaces-verifier-v1",
   network: "mainnet",
-  name: "alice@xn--fn8h",
+  name: "membername@xn--fn8h",
   root: "@xn--fn8h",
   recipient_script_pubkey_hex: target.script_pubkey_hex,
   tip_height: 1000,
@@ -41,7 +41,7 @@ describe("Spaces final issuance verifier adapter", () => {
       });
       expect(JSON.parse(String(init.body))).toEqual({
         root: "@xn--fn8h",
-        name: "alice@xn--fn8h",
+        name: "membername@xn--fn8h",
         recipient_script_pubkey_hex: target.script_pubkey_hex,
       });
       return Response.json(finalEvidence);
@@ -64,7 +64,7 @@ describe("Spaces final issuance verifier adapter", () => {
 
   test("refuses stale, wrong-recipient, and nonfinal evidence", async () => {
     for (const evidence of [
-      { ...finalEvidence, name: "bob@xn--fn8h" },
+      { ...finalEvidence, name: "othername@xn--fn8h" },
       { ...finalEvidence, recipient_script_pubkey_hex: `5120${"2".repeat(64)}` },
       { ...finalEvidence, commitment_height: 856 },
       { ...finalEvidence, tip_age_seconds: 10_801 },
