@@ -136,6 +136,9 @@ authenticated import. Worker binding and deployment remain separate operations.
 ## Regtest journey runner bundle
 
 Build only from a clean, reviewed commit in the admitted api-next worktree.
+The builder compiles in the staging host's regtest endpoints (loopback
+24037/24039 and the fixture key); the bundle ignores HSD_REGTEST_* environment
+and never falls back to the test fixture ports 14037/14039.
 Create a new empty package directory outside the checkout and run
 `bun apps/hns-authority-provisioner/ops/staging-host/build-journey-chain.ts
 --output /absolute/package/journey-chain.js` from the repository root. The
