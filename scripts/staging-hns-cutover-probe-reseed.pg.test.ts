@@ -47,6 +47,7 @@ pgTest(
           execute: boolean,
           reconcile: string | undefined,
           attempt = NEW_ATTEMPT,
+          history: readonly string[] | undefined = execute ? ["1:completed"] : undefined,
         ): Promise<Record<string, unknown> | string | undefined> =>
           reseedWithinTransaction(client, {
             schema,
@@ -54,6 +55,7 @@ pgTest(
             expected_role: who.u,
             release: { attempt_id: attempt, bundle_sha256: NEW_SHA },
             reconcile_failed_attempt: reconcile,
+            expected_probe_jobs: history,
             execute,
             ledger_migrations: 0,
             ledger_head: null,
@@ -91,6 +93,14 @@ pgTest(
         expect(dry.attempt_id).toBe(NEW_ATTEMPT);
         expect(await jobCount()).toBe(before);
 
+        expect(dry.probe_jobs).toEqual(["1:completed"]);
+        // Execution without the dry run's history, or with a different one, refuses.
+        expect(await reseed(true, FAILED_ATTEMPT, NEW_ATTEMPT, [])).toBe(
+          "probe_history_unexpected",
+        );
+        expect(
+          await reseed(true, FAILED_ATTEMPT, NEW_ATTEMPT, ["1:completed", "2:completed"]),
+        ).toBe("probe_history_unexpected");
         // Execution queues exactly one fresh probe job through the maintained
         // function and leaves the completed history in place.
         const executed = (await reseed(true, FAILED_ATTEMPT)) as Record<string, unknown>;

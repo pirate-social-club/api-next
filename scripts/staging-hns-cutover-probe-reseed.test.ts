@@ -104,11 +104,27 @@ describe("staging cutover probe re-seed command", () => {
       code(() => parseReseedCommand(["--manifest", "/m.json", "--reconcile-failed-attempt", "x"])),
     ).toBe("reconcile_invalid");
     expect(
+      code(() =>
+        parseReseedCommand([
+          "--manifest",
+          "/m.json",
+          "--execute",
+          "--expect-admin-role",
+          "pscale_admin",
+        ]),
+      ),
+    ).toBe("probe_jobs_required");
+    expect(
+      code(() => parseReseedCommand(["--manifest", "/m.json", "--expect-probe-jobs", "1:queued"])),
+    ).toBe("probe_jobs_invalid");
+    expect(
       parseReseedCommand([
         "--manifest",
         "/m.json",
         "--reconcile-failed-attempt",
         FAILED,
+        "--expect-probe-jobs",
+        "1:completed",
         "--execute",
         "--expect-admin-role",
         "pscale_admin",
@@ -116,6 +132,7 @@ describe("staging cutover probe re-seed command", () => {
     ).toEqual({
       manifest_path: "/m.json",
       reconcile_failed_attempt: FAILED,
+      expected_probe_jobs: ["1:completed"],
       execute: true,
       expected_admin_role: "pscale_admin",
     });
@@ -134,6 +151,25 @@ describe("staging cutover probe re-seed command", () => {
 });
 
 describe("staging cutover probe re-seed pre-state", () => {
+  test("refuses settled probe history other than the exact history the dry run showed", () => {
+    expect(code(() => requirePreReseedState(seededBefore, release, FAILED, ["1:completed"]))).toBe(
+      "admitted",
+    );
+    const extra = {
+      ...seededBefore,
+      probe_jobs: [
+        ...seededBefore.probe_jobs,
+        { job_id: 5, kind: "observe_readiness", state: "completed", generation: 1 },
+      ],
+    };
+    expect(code(() => requirePreReseedState(extra, release, FAILED, ["1:completed"]))).toBe(
+      "probe_history_unexpected",
+    );
+    expect(code(() => requirePreReseedState(seededBefore, release, FAILED, ["1:failed"]))).toBe(
+      "probe_history_unexpected",
+    );
+  });
+
   test("admits the named failed attempt whose only fault was the attempt mismatch", () => {
     expect(code(() => requirePreReseedState(seededBefore, release, FAILED))).toBe("admitted");
     expect(code(() => requirePreReseedState(seededBefore, release, undefined))).toBe(

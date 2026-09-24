@@ -44,6 +44,7 @@ import {
 export type ReseedCommand = Readonly<{
   manifest_path: string;
   reconcile_failed_attempt: string | undefined;
+  expected_probe_jobs: readonly string[] | undefined;
   execute: boolean;
   expected_admin_role: string | undefined;
 }>;
@@ -53,6 +54,7 @@ const ATTEMPT_ID = /^[A-Za-z0-9._:-]{8,128}$/u;
 export function parseReseedCommand(arguments_: readonly string[]): ReseedCommand {
   let manifest: string | undefined;
   let reconcile: string | undefined;
+  let probeJobs: readonly string[] | undefined;
   let execute = false;
   let role: string | undefined;
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -69,6 +71,15 @@ export function parseReseedCommand(arguments_: readonly string[]): ReseedCommand
         throw new SeedRefusal("reconcile_invalid");
       reconcile = value;
       index += 1;
+    } else if (argument === "--expect-probe-jobs") {
+      if (probeJobs !== undefined) throw new SeedRefusal("probe_jobs_duplicate");
+      if (
+        value === undefined ||
+        !/^\d{1,12}:(?:completed|failed)(?:,\d{1,12}:(?:completed|failed))*$/u.test(value)
+      )
+        throw new SeedRefusal("probe_jobs_invalid");
+      probeJobs = value.split(",");
+      index += 1;
     } else if (argument === "--execute") {
       if (execute) throw new SeedRefusal("execute_duplicate");
       execute = true;
@@ -82,10 +93,14 @@ export function parseReseedCommand(arguments_: readonly string[]): ReseedCommand
   }
   if (manifest === undefined) throw new SeedRefusal("manifest_required");
   if (execute && role === undefined) throw new SeedRefusal("admin_role_required");
+  // The operator copies the settled probe history from the dry run; execution
+  // refuses unless it is still exactly that history.
+  if (execute && probeJobs === undefined) throw new SeedRefusal("probe_jobs_required");
   if (!execute && role !== undefined) throw new SeedRefusal("admin_role_without_execute");
   return {
     manifest_path: manifest,
     reconcile_failed_attempt: reconcile,
+    expected_probe_jobs: probeJobs,
     execute,
     expected_admin_role: role,
   };
@@ -175,6 +190,7 @@ export function requirePreReseedState(
   state: ReseedState,
   release: ReviewedRelease,
   reconcileFailedAttempt: string | undefined,
+  expectedProbeJobs?: readonly string[],
 ) {
   requireCutover(state);
   requireProbeLifecycle(state);
@@ -185,6 +201,12 @@ export function requirePreReseedState(
     if (job.kind !== "observe_readiness" || (job.state !== "completed" && job.state !== "failed"))
       throw new SeedRefusal("probe_job_unexpected");
   }
+  if (
+    expectedProbeJobs !== undefined &&
+    JSON.stringify(state.probe_jobs.map((job) => `${job.job_id}:${job.state}`)) !==
+      JSON.stringify(expectedProbeJobs)
+  )
+    throw new SeedRefusal("probe_history_unexpected");
   const [identity] = state.identity;
   if (state.identity.length !== 1 || identity === undefined)
     throw new SeedRefusal("service_identity_unexpected");
@@ -331,6 +353,7 @@ export async function runReseedCommand(
       expected_role: command.expected_admin_role ?? target.migrator_role,
       release,
       reconcile_failed_attempt: command.reconcile_failed_attempt,
+      expected_probe_jobs: command.expected_probe_jobs,
       execute: command.execute,
       ledger_migrations: ledger.length,
       ledger_head: ledger.at(-1)?.version ?? null,
@@ -346,6 +369,7 @@ export type ReseedTransactionInput = Readonly<{
   expected_role: string;
   release: ReviewedRelease;
   reconcile_failed_attempt: string | undefined;
+  expected_probe_jobs: readonly string[] | undefined;
   execute: boolean;
   ledger_migrations: number;
   ledger_head: string | null;
@@ -372,7 +396,14 @@ export async function reseedWithinTransaction(
     if (before.sql_database !== input.sql_database) throw new SeedRefusal("sql_database");
     if (before.session_user !== input.expected_role || before.current_user !== input.expected_role)
       throw new SeedRefusal("admin_role_mismatch");
-    requirePreReseedState(before, input.release, input.reconcile_failed_attempt);
+    if (input.execute && input.expected_probe_jobs === undefined)
+      throw new SeedRefusal("probe_jobs_required");
+    requirePreReseedState(
+      before,
+      input.release,
+      input.reconcile_failed_attempt,
+      input.expected_probe_jobs,
+    );
     const bound = {
       attempt_id: input.release.attempt_id,
       bundle_sha256: input.release.bundle_sha256,
