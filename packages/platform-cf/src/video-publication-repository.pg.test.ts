@@ -1526,13 +1526,52 @@ suite("video publication PostgreSQL", () => {
         post: { post_type: "video", body: null },
         video: publicVideo,
       });
-      expect(projectedFeed.items[0]).toMatchObject({
+      // Home lists a video only once Stream can play it.
+      const feedIds = (feed: typeof projectedFeed) =>
+        feed.items.map((item) => (item as { post?: { post?: { id?: string } } }).post?.post?.id);
+      expect(feedIds(projectedFeed)).not.toContain("post-video-publication");
+      await admin.query(
+        `UPDATE media_video_stream_ingests
+            SET state='ready',creator_marker=$2,source_sha256=$3,provider_video_id=$4,
+                acceptance_deadline_ms=1000,encoding_deadline_ms=2000
+          WHERE operation_id=(SELECT operation_id FROM media_publication_projections
+                               WHERE community_id=$1 AND post_id='post-video-publication')`,
+        [community, "c".repeat(64), "d".repeat(64), "e".repeat(32)],
+      );
+      const readyFeed = await Effect.runPromise(
+        Effect.scoped(feedStore.listHome({ query: {}, viewerUserId: actor })),
+      );
+      expect(feedIds(readyFeed)).toContain("post-video-publication");
+      const readyItem = readyFeed.items.find(
+        (item) =>
+          (item as { post?: { post?: { id?: string } } }).post?.post?.id ===
+          "post-video-publication",
+      );
+      expect(readyItem).toMatchObject({
         post: {
           post: { id: "post-video-publication", post_type: "video", body: null },
-          video: publicVideo,
+          video: {
+            playback: { status: "ready", provider: "stream", playback_ref: "e".repeat(32) },
+          },
         },
       });
-      const publicProjection = JSON.stringify({ projectedPost, projectedFeed });
+      // Replayed publication must not add a second Home row.
+      await admin.query(
+        `INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at)
+         SELECT community_id, feed_item_id, post_id, 0, clock_timestamp() FROM home_feed_projection
+          WHERE community_id=$1 AND post_id='post-video-publication'
+         ON CONFLICT (community_id,post_id) DO NOTHING`,
+        [community],
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM home_feed_projection WHERE community_id=$1 AND post_id='post-video-publication'",
+            [community],
+          )
+        ).rows[0],
+      ).toEqual({ n: 1 });
+      const publicProjection = JSON.stringify({ projectedPost, projectedFeed, readyFeed });
       for (const privateEvidence of [
         videoSha256,
         audioSha256,
