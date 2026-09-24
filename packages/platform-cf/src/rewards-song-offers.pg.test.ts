@@ -1327,8 +1327,8 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       await admin.query(template);
       const runtimeConnection = `${scopedConnection}${encodeURIComponent(` -c role=${runtime}`)}`;
       const probe = new Client({ connectionString: runtimeConnection });
-      await probe.connect();
       try {
+        await probe.connect();
         const role = await probe.query<{ readonly current_user: string }>("SELECT current_user");
         expect(role.rows[0]?.current_user).toBe(runtime);
         await expect(
@@ -1421,7 +1421,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         );
         expect(updated.policy_revision).toBe(2);
       } finally {
-        await probe.end();
+        await probe.end().catch(() => undefined);
         for (const role of [runtime, operator]) {
           await admin.query(`DROP OWNED BY ${quoteIdentifier(role)}`);
           await admin.query(`DROP ROLE ${quoteIdentifier(role)}`);

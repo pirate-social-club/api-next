@@ -426,10 +426,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 replayed: true,
               };
             }
-            yield* lockOwnerPolicyHead(transaction, {
+            const lockedHead = yield* lockOwnerPolicyHead(transaction, {
               communityId: input.communityId,
               postId: input.postId,
             });
+            if (lockedHead.rows.length !== 1) return yield* rejected("song-unavailable");
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.open.authority",
               text: `SELECT publication.audio_revision,
@@ -604,7 +605,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
               }
               return { leg: yield* readLeg(transaction, text(row, "leg_id")), replayed: true };
             }
-            yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
+            const lockedHead = yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
+            if (lockedHead.rows.length !== 1) return yield* rejected("not-found");
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.leg.authority",
               text: `SELECT offer.status AS offer_status, offer.ends_at,
@@ -783,7 +785,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 replayed: true,
               };
             }
-            yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
+            const lockedHead = yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
+            if (lockedHead.rows.length !== 1) return yield* rejected("not-found");
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.asset-leg.authority",
               text: `SELECT offer.status AS offer_status,
