@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { open, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
   buildHnsRootImportPublishPlanV1,
@@ -22,9 +22,13 @@ import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
 import {
   claimPublishAttempt,
   finalizePublishAttempt,
-  JOURNEY_LEASE_DIRECTORY,
   JOURNEY_ROOT,
+  JOURNEY_STATE_DIRECTORY,
+  JourneyDispatchAmbiguity,
   JourneyRefusal,
+  journeyFailureOutput,
+  readPublishAttempt,
+  requirePrivateStateDirectory,
 } from "./journey-publish-receipt.ts";
 
 /**
@@ -329,10 +333,10 @@ export async function requirePlanProvenance(
     throw new JourneyRefusal("plan_ds_differs_from_zone");
 }
 
-const leasePath = () => join(JOURNEY_LEASE_DIRECTORY, "lease.json");
+const leasePath = () => join(JOURNEY_STATE_DIRECTORY, "lease.json");
 
 async function beginLease(root: string) {
-  await mkdir(JOURNEY_LEASE_DIRECTORY, { recursive: true, mode: 0o700 });
+  await requirePrivateStateDirectory();
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(leasePath(), "wx", 0o600);
@@ -343,6 +347,7 @@ async function beginLease(root: string) {
     await handle.writeFile(
       JSON.stringify({ root, pid: process.pid, started_at: new Date().toISOString() }),
     );
+    await handle.sync();
   } finally {
     await handle.close();
   }
@@ -350,6 +355,7 @@ async function beginLease(root: string) {
 }
 
 async function requireLease(root: string) {
+  await requirePrivateStateDirectory();
   let lease: { root?: unknown };
   try {
     lease = JSON.parse(await readFile(leasePath(), "utf8")) as { root?: unknown };
@@ -434,7 +440,7 @@ async function acquire(root: string) {
     state = await nameState(root);
   }
   if (state !== "CLOSED" || !(await ownedByWallet(root)))
-    throw new JourneyRefusal(`auction_state_${state ?? "none"}`);
+    throw new JourneyRefusal("auction_state_unexpected");
   // Registration establishes the empty initial resource; it is not the UPDATE.
   await hsdRegtestWallet("sendupdate", [root, { records: [] }]);
   await mine(10);
@@ -469,34 +475,89 @@ async function publish(root: string, planPath: string, responseSha256: string) {
     encoded_resource_sha256: digest,
     response_sha256,
   };
-  await claimPublishAttempt(attempt);
-  const update = Schema.decodeUnknownSync(
-    Schema.Struct({
-      hash: Schema.String,
-      outputs: Schema.Array(Schema.Struct({ covenant: Schema.Struct({ action: Schema.String }) })),
-    }),
-  )(await hsdRegtestWallet("sendupdate", [root, { records }]));
-  if (!update.outputs.some((output) => output.covenant.action === "UPDATE"))
-    throw new JourneyRefusal("not_an_update");
-  if (!SHA256.test(update.hash)) throw new JourneyRefusal("update_txid_invalid");
-  await finalizePublishAttempt(attempt, { status: "broadcasted", txid: update.hash });
-  await mine(1);
-  const inclusion = await tip();
-  await finalizePublishAttempt(attempt, {
-    status: "included",
-    txid: update.hash,
-    inclusion_height: inclusion,
+  const receipt = await claimPublishAttempt(attempt);
+  // From here on an update may already be broadcast. Nothing below is a clean
+  // refusal, and no txid is ever reported unless the wallet returned one.
+  let txid: string | null = null;
+  try {
+    const raw = await hsdRegtestWallet("sendupdate", [root, { records }]);
+    let update: { hash: string; outputs: readonly { covenant: { action: string } }[] };
+    try {
+      update = Schema.decodeUnknownSync(
+        Schema.Struct({
+          hash: Schema.String,
+          outputs: Schema.Array(
+            Schema.Struct({ covenant: Schema.Struct({ action: Schema.String }) }),
+          ),
+        }),
+      )(raw);
+    } catch {
+      throw new JourneyDispatchAmbiguity("update_response_unparseable", null, receipt);
+    }
+    if (!SHA256.test(update.hash))
+      throw new JourneyDispatchAmbiguity("update_txid_invalid", null, receipt);
+    txid = update.hash;
+    if (!update.outputs.some((output) => output.covenant.action === "UPDATE"))
+      throw new JourneyDispatchAmbiguity("not_an_update", txid, receipt);
+    await finalizePublishAttempt(attempt, { status: "broadcasted", txid });
+    await mine(1);
+    const inclusion = await confirmedHeight(txid);
+    if (inclusion === null)
+      return {
+        outcome: "broadcast_unconfirmed",
+        root,
+        digest,
+        root_import_session_id,
+        publish_plan_sha256,
+        response_sha256,
+        txid,
+        receipt,
+      };
+    await finalizePublishAttempt(attempt, {
+      status: "included",
+      txid,
+      inclusion_height: inclusion,
+    });
+    return {
+      outcome: "published",
+      root,
+      digest,
+      root_import_session_id,
+      publish_plan_sha256,
+      response_sha256,
+      txid,
+      inclusion_height: inclusion,
+      receipt,
+    };
+  } catch (error) {
+    if (error instanceof JourneyDispatchAmbiguity) throw error;
+    throw new JourneyDispatchAmbiguity(
+      error instanceof JourneyRefusal ? error.code : "post_claim_failure",
+      txid,
+      receipt,
+    );
+  }
+}
+
+/** The height of the block containing txid, or null while it is unconfirmed.
+ * Inclusion is read from the node, never inferred from the tip after mining. */
+async function confirmedHeight(txid: string): Promise<number | null> {
+  const TxView = Schema.Struct({
+    confirmations: Schema.optional(Schema.Number),
+    blockhash: Schema.optional(Schema.NullOr(Schema.String)),
   });
-  return {
-    outcome: "published",
-    root,
-    digest,
-    root_import_session_id,
-    publish_plan_sha256,
-    response_sha256,
-    txid: update.hash,
-    inclusion_height: inclusion,
-  };
+  let raw: unknown;
+  try {
+    raw = await hsdRegtestNode("getrawtransaction", [txid, 1]);
+  } catch (error) {
+    // hsd answers "Transaction not found" until the transaction is in a block
+    // (observed on regtest); only that answer means unconfirmed.
+    if (error instanceof Error && error.message.includes("Transaction not found")) return null;
+    throw error;
+  }
+  const view = Schema.decodeUnknownSync(TxView)(raw);
+  if (!view.blockhash || !view.confirmations || view.confirmations < 1) return null;
+  return (await tip()) - view.confirmations + 1;
 }
 
 /** Empirical, not computed: the maintained observer decides when the safe view
@@ -507,15 +568,28 @@ async function advanceSafe(root: string, planPath: string, responseSha256: strin
     await readFile(planPath),
     responseSha256,
   );
-  const current = await observe(root, "current");
-  if (
-    current.kind !== "observed" ||
-    !(await hnsObservedResourceMatchesEncodedPlanV1(current.observation.records, digest))
-  )
-    throw new JourneyRefusal("plan_not_current");
-  for (let mined = 0; mined <= 60; mined += 1) {
-    const safe = await observe(root, "safe");
+  const matches = async (view: "current" | "safe") => {
+    const observed = await observe(root, view);
+    return observed.kind === "observed" &&
+      (await hnsObservedResourceMatchesEncodedPlanV1(observed.observation.records, digest))
+      ? observed
+      : null;
+  };
+  if (!(await matches("current"))) {
+    // Mining may continue only for this root's own fenced broadcast of the
+    // same response; it never sends another update.
+    const receipt = await readPublishAttempt(root);
     if (
+      receipt.state !== "present" ||
+      (receipt.status !== "broadcasted" && receipt.status !== "included") ||
+      receipt.response_sha256 !== response_sha256
+    )
+      throw new JourneyRefusal("plan_not_current");
+  }
+  for (let mined = 0; mined <= 60; mined += 1) {
+    const safe = (await matches("current")) ? await observe(root, "safe") : null;
+    if (
+      safe !== null &&
       safe.kind === "observed" &&
       (await hnsObservedResourceMatchesEncodedPlanV1(safe.observation.records, digest))
     )
@@ -546,6 +620,7 @@ async function status(root: string) {
   return {
     outcome: "status",
     root,
+    receipt: await readPublishAttempt(root),
     height: await tip(),
     state: await nameState(root),
     owned: await ownedByWallet(root),
@@ -575,13 +650,12 @@ if (import.meta.main) {
   try {
     console.log(JSON.stringify(await runJourneyCommand(Bun.argv.slice(2))));
   } catch (error) {
-    // RPC errors can carry endpoint details; print a fixed code only.
-    console.error(
-      JSON.stringify({
-        outcome: "journey_chain_refused",
-        code: error instanceof JourneyRefusal ? error.code : "unexpected",
-      }),
-    );
-    process.exitCode = 1;
+    // RPC errors can carry endpoint details; print fixed fields only.
+    const rootArgument = Bun.argv.slice(2)[Bun.argv.slice(2).indexOf("--root") + 1];
+    const root =
+      typeof rootArgument === "string" && JOURNEY_ROOT.test(rootArgument) ? rootArgument : null;
+    const failure = journeyFailureOutput(error, root);
+    console.error(JSON.stringify(failure.line));
+    process.exitCode = failure.exitCode;
   }
 }

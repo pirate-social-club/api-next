@@ -159,9 +159,26 @@ Solid handoff pins that final digest before login and checks it again before
 every command. Do not copy source files, node_modules, credentials or a
 package directory to the host.
 
-The runner's per-root `publish-<root>.json` is a retained dispatch fence in
-the private journey lease directory. It is created atomically before
-`sendupdate`, records the session, response, plan and resource digests, then
-records the returned TXID before mining. A lost response or failed mine never
-authorizes redispatch; inspect the receipt and chain manually. The file and
-lease are not automatically cleaned up after a failed journey.
+The runner keeps its lease and per-root `publish-<root>.json` dispatch fence
+in one fixed state directory, `~/.local/state/pirate-hns-staging-journey` of
+the account running it. The home directory comes from the account database, not
+`HOME`; there is no environment override, and the location is outside aged
+temporary storage. Before any lease or claim the runner refuses unless that
+directory is a real directory owned by the running user with mode 0700 (not a
+symlink). The fence is created atomically and fsynced before `sendupdate`,
+records the session, response, plan and resource digests, then records the
+returned TXID before mining and the confirmed inclusion height read from the
+node afterwards.
+
+The claim proves only that an attempt was fenced, not that a transaction was
+broadcast. Every failure after the claim prints
+`{"outcome":"journey_chain_dispatch_ambiguous","code",...,"txid","receipt"}`
+on stderr and exits 3; `txid` is present only when the wallet returned one and
+is never inferred. Only failures before the claim print
+`{"outcome":"journey_chain_refused","code"}` and exit 1. An unconfirmed
+broadcast returns `broadcast_unconfirmed` with its TXID; `advance-safe` then
+mines, never re-sends, but only for that root's own fenced broadcast of the same
+response. A lost response or failed mine never authorizes redispatch; read
+`status --root`, which reports the receipt, and reconcile with the chain by
+hand. The file and lease are not automatically cleaned up after a failed
+journey.
