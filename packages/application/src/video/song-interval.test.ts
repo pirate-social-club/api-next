@@ -637,6 +637,81 @@ describe("song-reference reservation through the request path", () => {
       capability: "song_reference",
     });
   });
+
+  test("an existing 30 second revision-1 reservation is still claimed after the 15 second rule", async () => {
+    const reservation: VideoReservationRecord = {
+      reservationId: "media-reservation-song-r1",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen = (intervalPolicyRevision: number): FrozenSongReservationPlan => ({
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 20 * SECOND,
+      clipDurationSamples: 30 * SECOND,
+      intervalPolicyRevision,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    });
+    const body = {
+      persona_id: persona.persona_id,
+      version: "video-start-input-v1",
+      video_reservation_id: "media-reservation-song-r1",
+      idempotency_key: "create-song-video-r1",
+    };
+    const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+    const created = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen: frozen(1),
+        submissions,
+      }),
+    );
+    expect(created).toMatchObject({ intent: "song_reference", status: "processing" });
+    expect(submissions[0]?.state.songPlan).toMatchObject({
+      clipDurationSamples: 30 * SECOND,
+      intervalPolicyRevision: 1,
+    });
+    // A revision-2 reservation could never hold 30 seconds; a plan claiming
+    // one is refused rather than started.
+    const refused = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen: frozen(2),
+        submissions: [],
+      }),
+    ).catch((e) => e);
+    expect(refused).toBeInstanceOf(Error);
+    expect(String(refused.message)).toContain("song-reference submission plan is invalid");
+  });
 });
 
 describe("measuring a song's canonical duration", () => {
