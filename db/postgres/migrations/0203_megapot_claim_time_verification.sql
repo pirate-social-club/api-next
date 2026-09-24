@@ -329,8 +329,11 @@ CREATE TRIGGER megapot_participant_claim_guards_append_only
 
 -- The participant claim. Idempotent per credit. Outcomes: accepted,
 -- subject_conflict, verification_missing, verification_stale,
--- verification_failed, not_found. Evidence refusals write nothing, so the
--- credit stays claimable later.
+-- verification_failed, not_claimable, not_found. Evidence refusals write
+-- nothing, so the credit stays claimable later. A credit without an accepted
+-- claim that is no longer wholly unpaid and unreserved (a participant credit
+-- paid or reserved before this migration) is not_claimable: it acquires no
+-- claim and consumes no guard.
 CREATE FUNCTION accept_megapot_participant_claim_v1(
   input_credit_id TEXT,
   input_account_id TEXT
@@ -345,7 +348,8 @@ DECLARE
   result_reason TEXT;
   now_at TIMESTAMPTZ := clock_timestamp();
 BEGIN
-  SELECT credit.credit_id, credit.account_id, batch.pool_leg_id, batch.drawing_id
+  SELECT credit.credit_id, credit.account_id, credit.state, credit.paid_atomic,
+         credit.reserved_atomic, batch.pool_leg_id, batch.drawing_id
     INTO target
     FROM reward_ledger_credits credit
     JOIN megapot_allocations allocation
@@ -366,6 +370,10 @@ BEGIN
    WHERE claim.credit_id = input_credit_id FOR UPDATE;
   IF existing.status = 'accepted' THEN
     RETURN QUERY SELECT 'accepted'::TEXT, 'accepted'::TEXT;
+    RETURN;
+  END IF;
+  IF target.state <> 'credited' OR target.paid_atomic <> 0 OR target.reserved_atomic <> 0 THEN
+    RETURN QUERY SELECT 'not_claimable'::TEXT, existing.status;
     RETURN;
   END IF;
 
@@ -499,6 +507,22 @@ BEGIN
   RETURN 'accepted';
 END
 $$;
+
+-- Migration boundary: a participant payout already in flight would bypass the
+-- claim gate below, so this migration refuses to apply until any such credit
+-- is settled or explicitly resolved. Rewards are disabled everywhere at the
+-- time of writing, so none is expected.
+DO $megapot_claim_boundary$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM reward_ledger_credits
+     WHERE source_kind = 'megapot_allocation'
+       AND state IN ('payout_reserved', 'payout_pending', 'reconciliation_required')
+  ) THEN
+    RAISE EXCEPTION 'megapot participant payouts are in flight; settle them before migration 0203';
+  END IF;
+END;
+$megapot_claim_boundary$;
 
 -- Database backstop for the payout gate: a participant credit cannot leave
 -- credited (reservation for payout) without an accepted claim, whatever path

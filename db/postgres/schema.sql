@@ -27,7 +27,8 @@ DECLARE
   result_reason TEXT;
   now_at TIMESTAMPTZ := clock_timestamp();
 BEGIN
-  SELECT credit.credit_id, credit.account_id, batch.pool_leg_id, batch.drawing_id
+  SELECT credit.credit_id, credit.account_id, credit.state, credit.paid_atomic,
+         credit.reserved_atomic, batch.pool_leg_id, batch.drawing_id
     INTO target
     FROM reward_ledger_credits credit
     JOIN megapot_allocations allocation
@@ -48,6 +49,10 @@ BEGIN
    WHERE claim.credit_id = input_credit_id FOR UPDATE;
   IF existing.status = 'accepted' THEN
     RETURN QUERY SELECT 'accepted'::TEXT, 'accepted'::TEXT;
+    RETURN;
+  END IF;
+  IF target.state <> 'credited' OR target.paid_atomic <> 0 OR target.reserved_atomic <> 0 THEN
+    RETURN QUERY SELECT 'not_claimable'::TEXT, existing.status;
     RETURN;
   END IF;
 

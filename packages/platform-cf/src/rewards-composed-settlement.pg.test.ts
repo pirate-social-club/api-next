@@ -606,6 +606,13 @@ suite("Composed current-policy Megapot settlement", () => {
         ).rows[0]?.owed;
       const owedBefore = (901n - paidTotal).toString();
       expect(await outstanding()).toBe(owedBefore);
+      const guards = async () =>
+        (
+          await admin.query(
+            "SELECT pool_leg_id,drawing_id::text,subject_key_id,credit_id FROM megapot_participant_claim_guards ORDER BY credit_id",
+          )
+        ).rows;
+      expect(await guards()).toHaveLength(3);
       // The study winner's Very subject is recovered onto the unverified
       // account. Its claim finds the subject already consumed in this pool and
       // drawing, so the credit is held as subject_conflict, never paid.
@@ -615,7 +622,7 @@ suite("Composed current-policy Megapot settlement", () => {
         "unverified-recovered",
         await digest("receipt-study-recovered"),
         "current",
-        "study",
+        { subject: "study", previous: "study", epoch: 2 },
       );
       const conflict = { outcome: "subject_conflict", claim_status: "subject_conflict" };
       expect(await claimFor(credit("winner-unverified"), "winner-unverified")).toEqual(conflict);
@@ -634,58 +641,76 @@ suite("Composed current-policy Megapot settlement", () => {
           [credit("winner-unverified")],
         ),
       ).rejects.toThrow("accepted claim");
-      // A refused claim is claimable later once valid evidence exists.
+      // The recovered subject moves on; the conflict stays held and a claim
+      // without evidence is refused without changing it.
       await seedVeryRewardEvidence(
         admin,
-        "winner-expired",
-        "expired-renewed",
-        await digest("subject-expired-renewed"),
+        "winner-below",
+        "below-recovered",
+        await digest("receipt-study-moved"),
+        "current",
+        { subject: "study", previous: "unverified-recovered", epoch: 3 },
       );
-      expect(await claimFor(credit("winner-expired"), "winner-expired")).toEqual({
+      expect(await claimFor(credit("winner-unverified"), "winner-unverified")).toEqual({
+        outcome: "verification_missing",
+        claim_status: "subject_conflict",
+      });
+      // Evidence bound to a different, unused subject accepts the same claim
+      // record and consumes that subject's guard.
+      await seedVeryRewardEvidence(
+        admin,
+        "winner-unverified",
+        "unverified-own",
+        await digest("subject-unverified-own"),
+      );
+      expect(await claimFor(credit("winner-unverified"), "winner-unverified")).toEqual({
         outcome: "accepted",
         claim_status: "accepted",
       });
+      expect(await guards()).toHaveLength(4);
+      // The karaoke winner's subject is recovered onto the stale-evidence
+      // account, whose claim becomes a second subject_conflict.
+      await seedVeryRewardEvidence(
+        admin,
+        "winner-expired",
+        "expired-recovered",
+        await digest("receipt-karaoke-recovered"),
+        "current",
+        { subject: "karaoke", previous: "karaoke", epoch: 2 },
+      );
+      expect(await claimFor(credit("winner-expired"), "winner-expired")).toEqual(conflict);
       expect((await claimFor(credit("winner-failed"), "winner-failed")).outcome).toBe(
         "verification_failed",
       );
-      // The audited operator exception moves the conflict to accepted through
+      // The audited operator exception moves that conflict to accepted through
       // the same claim record, without consuming or releasing any guard.
-      const guardsBefore = await admin.query(
-        "SELECT pool_leg_id,drawing_id::text,subject_key_id,credit_id FROM megapot_participant_claim_guards ORDER BY credit_id",
-      );
-      expect(guardsBefore.rows).toHaveLength(4);
+      const guardsBefore = await guards();
       const operatorAccept = (reason: string) =>
         admin.query(
           "SELECT operator_accept_megapot_participant_claim_v1($1,'operator',$2,'review:composed-conflict') AS outcome",
-          [credit("winner-unverified"), reason],
+          [credit("winner-expired"), reason],
         );
       await expect(operatorAccept("   ")).rejects.toThrow();
       expect((await operatorAccept("reviewed recovered subject")).rows).toEqual([
         { outcome: "accepted" },
       ]);
       await expect(operatorAccept("second decision")).rejects.toThrow("subject_conflict");
+      expect(await guards()).toEqual(guardsBefore);
       expect(
         (
           await admin.query(
-            "SELECT pool_leg_id,drawing_id::text,subject_key_id,credit_id FROM megapot_participant_claim_guards ORDER BY credit_id",
-          )
-        ).rows,
-      ).toEqual(guardsBefore.rows);
-      expect(
-        (
-          await admin.query(
-            `SELECT account_id,status,operator_actor_role,operator_reason,operator_evidence_reference
+            `SELECT account_id,status,operator_actor_role
                FROM megapot_participant_claims ORDER BY account_id`,
           )
         ).rows.map((row) => [row.account_id, row.status, row.operator_actor_role]),
       ).toEqual([
         ["winner-both", "accepted", null],
-        ["winner-expired", "accepted", null],
+        ["winner-expired", "accepted", "operator"],
         ["winner-karaoke", "accepted", null],
         ["winner-study", "accepted", null],
-        ["winner-unverified", "accepted", "operator"],
+        ["winner-unverified", "accepted", null],
       ]);
-      expect(await claimFor(credit("winner-unverified"), "winner-unverified")).toEqual({
+      expect(await claimFor(credit("winner-expired"), "winner-expired")).toEqual({
         outcome: "accepted",
         claim_status: "accepted",
       });
@@ -766,6 +791,129 @@ suite("Composed current-policy Megapot settlement", () => {
         }
       }
       expect(await outstanding()).toBe(owedBefore);
+      // Same subject, second song's pool in the same provider drawing. The production
+      // chain fixture drives one pool, so the second pool's leg, allocation
+      // batch, allocation and credit are copied from the first with triggers
+      // bypassed; the claim routine and guard run unmodified against them.
+      const secondLeg = `${legId}-second-pool`;
+      const secondBatch = `${chain.allocation.allocationBatchId}-second-pool`;
+      const secondCredit = `${credit("winner-both")}-second-pool`;
+      const copyRow = (table: string, where: string, patch: Record<string, string | null>) =>
+        admin.query(
+          `INSERT INTO ${table}
+             SELECT (jsonb_populate_record(NULL::${table}, to_jsonb(source) || $2::jsonb)).*
+               FROM ${table} source WHERE ${where}=$1`,
+          [
+            where === "leg_id"
+              ? legId
+              : where === "allocation_batch_id"
+                ? chain.allocation.allocationBatchId
+                : credit("winner-both"),
+            JSON.stringify(patch),
+          ],
+        );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        const offer = await admin.query(
+          "SELECT offer_id FROM song_reward_offer_legs WHERE leg_id=$1",
+          [legId],
+        );
+        const secondOffer = `${offer.rows[0]?.offer_id}-second-pool`;
+        await admin.query(
+          `INSERT INTO song_reward_offers
+             SELECT (jsonb_populate_record(NULL::song_reward_offers, to_jsonb(source) || $2::jsonb)).*
+               FROM song_reward_offers source WHERE offer_id=$1`,
+          [
+            offer.rows[0]?.offer_id,
+            JSON.stringify({ offer_id: secondOffer, post_id: `${POST_ID}-second-song` }),
+          ],
+        );
+        await copyRow("song_reward_offer_legs", "leg_id", {
+          leg_id: secondLeg,
+          offer_id: secondOffer,
+          post_id: `${POST_ID}-second-song`,
+        });
+        await copyRow("megapot_allocation_batches", "allocation_batch_id", {
+          allocation_batch_id: secondBatch,
+          pool_leg_id: secondLeg,
+          claim_effect_id: `${chain.claimEffectId}-second-pool`,
+        });
+        await copyRow("reward_ledger_credits", "credit_id", {
+          credit_id: secondCredit,
+          source_reference: secondCredit,
+          state: "credited",
+          paid_atomic: "0",
+          reserved_atomic: "0",
+          settled_at: null,
+        });
+        await copyRow("megapot_allocations", "credit_id", {
+          allocation_batch_id: secondBatch,
+          credit_id: secondCredit,
+        });
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      // Two concurrent claims on the same credit settle to one accepted claim
+      // and one guard consumption.
+      const racers = [
+        new Client({ connectionString: scoped }),
+        new Client({ connectionString: scoped }),
+      ];
+      try {
+        await Promise.all(racers.map((client) => client.connect()));
+        const raced = await Promise.all(
+          racers.map((client) =>
+            client.query(
+              "SELECT outcome, claim_status FROM accept_megapot_participant_claim_v1($1,'winner-both')",
+              [secondCredit],
+            ),
+          ),
+        );
+        expect(raced.map((result) => result.rows[0])).toEqual([
+          { outcome: "accepted", claim_status: "accepted" },
+          { outcome: "accepted", claim_status: "accepted" },
+        ]);
+      } finally {
+        await Promise.all(racers.map((client) => client.end().catch(() => undefined)));
+      }
+      const bothGuards = (await guards()).filter((row) =>
+        [credit("winner-both"), secondCredit].includes(row.credit_id),
+      );
+      expect(bothGuards.map((row) => row.pool_leg_id).sort()).toEqual([legId, secondLeg].sort());
+      expect(new Set(bothGuards.map((row) => row.subject_key_id)).size).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM megapot_participant_claims WHERE credit_id=$1",
+            [secondCredit],
+          )
+        ).rows,
+      ).toEqual([{ count: 1 }]);
+      // A participant credit paid before migration 0203 acquires no claim and
+      // consumes no guard.
+      const guardCount = (await guards()).length;
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE reward_ledger_credits SET state='sent', paid_atomic=amount_atomic, reserved_atomic=0,
+                settled_at=clock_timestamp()
+            WHERE credit_id=$1`,
+          [credit("winner-failed")],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await seedVeryRewardEvidence(
+        admin,
+        "winner-late",
+        "late-own",
+        await digest("subject-late-own"),
+      );
+      expect(await claimFor(credit("winner-failed"), "winner-failed")).toEqual({
+        outcome: "not_claimable",
+        claim_status: null,
+      });
+      expect((await guards()).length).toBe(guardCount);
       // Remaining 90,000 atoms are sponsor funds, not an unexplained delta.
       // Offer expiry/refund and live receipt decoding are separate coverage.
     } finally {

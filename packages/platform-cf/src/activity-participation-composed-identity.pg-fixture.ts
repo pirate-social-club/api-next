@@ -29,17 +29,18 @@ export async function seedVeryRewardEvidence(
   suffix: string,
   subjectDigest = "1".repeat(64),
   evidenceAge: "current" | "expired" = "current",
-  // Recovers the subject seeded under this earlier suffix onto `accountId` as
-  // binding epoch 2, so one Very subject can be moved between accounts. The
-  // subject then comes from that seed; `subjectDigest` only keys the receipt.
-  recoverFrom?: string,
+  // Recovers an existing subject onto `accountId` as the next binding epoch,
+  // so one Very subject can be moved between accounts. `subject` names the
+  // seed that created the subject and `previous` the seed holding its current
+  // binding. `subjectDigest` then only keys the receipt.
+  recover?: { readonly subject: string; readonly previous: string; readonly epoch: number },
 ): Promise<void> {
   // Seed a coherently completed historical ceremony rather than mutate immutable evidence.
   const observedAt =
     evidenceAge === "expired" ? "(clock_timestamp() - interval '2 days')" : "clock_timestamp()";
   const proofSessionId = `composed-proof-${suffix}`;
-  const subjectId = `composed-subject-${recoverFrom ?? suffix}`;
-  const epoch = recoverFrom === undefined ? 1 : 2;
+  const subjectId = `composed-subject-${recover?.subject ?? suffix}`;
+  const epoch = recover?.epoch ?? 1;
   const bindingEventId = `composed-binding-${suffix}`;
   const receiptId = `composed-receipt-${suffix}`;
   const bindingId = `composed-group-${suffix}`;
@@ -69,12 +70,12 @@ export async function seedVeryRewardEvidence(
       JSON.stringify([{ claim_id: "credential.subject_unique" }, { claim_id: "human.personhood" }]),
       JSON.stringify(["credential.subject_unique", "human.personhood"]),
       `composed-upstream-${suffix}`,
-      recoverFrom === undefined ? "establish" : "recover",
+      recover === undefined ? "establish" : "recover",
     ],
   });
   await admin.query("BEGIN");
   try {
-    if (recoverFrom === undefined) {
+    if (recover === undefined) {
       await admin.query({
         text: `INSERT INTO subject_keys (
                  subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
@@ -95,8 +96,8 @@ export async function seedVeryRewardEvidence(
         proofSessionId,
         `composed-bind-${suffix}`,
         epoch,
-        recoverFrom === undefined ? "initial" : "recovery",
-        recoverFrom === undefined ? null : `composed-binding-${recoverFrom}`,
+        recover === undefined ? "initial" : "recovery",
+        recover === undefined ? null : `composed-binding-${recover.previous}`,
       ],
     });
     await admin.query({
