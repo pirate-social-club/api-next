@@ -306,3 +306,27 @@ test("a network failure logs only the step and error name", async () => {
   await expect(f.transport.copy(source)).rejects.toThrow("Stream transport unavailable");
   expect(f.events).toEqual([{ event: "stream_step_failed", step: "copy", error: "TypeError" }]);
 });
+
+test("fetch is called unbound, as workerd requires for the global fetch", async () => {
+  const f = fixture();
+  let receiver: unknown = "unset";
+  const transport = makeVideoStreamTransport({
+    accountId: "d".repeat(32),
+    apiToken: "fixture-token",
+    sourceGatewayOrigin: gateway,
+    nowMs: () => 0,
+    grants: { issue: async (input) => ({ url: grantUrl, expiresAtMs: input.expiresAtMs }) },
+    fetch: async function (this: unknown, url: RequestInfo | URL) {
+      receiver = this;
+      if (this !== undefined) throw new TypeError("Illegal invocation");
+      return Response.json({
+        success: true,
+        result: String(url).endsWith("/copy") ? { uid: "c".repeat(32) } : [],
+      });
+    } as typeof fetch,
+    log: (event) => f.events.push(event),
+  });
+  await transport.copy(source);
+  expect(receiver).toBeUndefined();
+  expect(f.events).toEqual([]);
+});

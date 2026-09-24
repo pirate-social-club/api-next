@@ -113,6 +113,9 @@ export function makeVideoStreamTransport(
     throw new Error("Missing or invalid Stream deployment credentials");
   makeVideoSourceUrl(input.sourceGatewayOrigin, "a".repeat(43));
   const base = `https://api.cloudflare.com/client/v4/accounts/${input.accountId}/stream`;
+  // Called unbound: workerd rejects the global fetch invoked as a method of
+  // another object ("Illegal invocation"), which Bun and Node allow.
+  const send = input.fetch;
   const log =
     input.log ?? ((event: VideoStreamTransportEvent) => console.log(JSON.stringify(event)));
   async function request(path: string, body?: unknown): Promise<unknown> {
@@ -122,7 +125,7 @@ export function makeVideoStreamTransport(
     const step = streamOperation(path);
     let logged = false;
     try {
-      const response = await input.fetch(`${base}${path}`, {
+      const response = await send(`${base}${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: { Authorization: `Bearer ${input.apiToken}`, "Content-Type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
