@@ -120,6 +120,11 @@ function fixture(
   const ids = ["open-action", "open-offer", "leg-action", "pool-leg", "observe-action"];
   const store: SongRewardOfferStore = {
     listAdmittedAssets: options.catalog ?? (() => Effect.succeed({ items: [], nextCursor: null })),
+    // Only account_1's persona_1 owns one active wallet; anything else fails closed.
+    fundingSender: ({ accountId, personaId }) =>
+      accountId === "account_1" && personaId === "persona_1"
+        ? Effect.succeed(fundingIntent.senderAddress)
+        : Effect.fail(new SongRewardOfferRejected({ reason: "persona-ineligible" })),
     qualificationPolicies:
       options.policies ??
       (() =>
@@ -291,11 +296,8 @@ function fixture(
   return createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
     handlers,
-    authenticate: () => ({
-      kind: "user",
-      subject: "account_1",
-      walletAddress: fundingIntent.senderAddress,
-    }),
+    // An email-only session: no wallet is proved at sign-in.
+    authenticate: () => ({ kind: "user", subject: "account_1" }),
     authorize: () => undefined,
   });
 }
@@ -501,6 +503,47 @@ describe("song reward offer HTTP handlers", () => {
         recipient_address: leg.custodyAddress,
       },
     });
+  });
+
+  test("pins the persona wallet as sender and refuses a persona without one", async () => {
+    const worker = fixture();
+    const headers = { authorization: "Bearer test", "content-type": "application/json" };
+    const body = (personaId: string, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        idempotency_key: "leg_sender",
+        persona_id: personaId,
+        funding_amount_atomic: "5000000",
+        max_ticket_price_atomic: "1000000",
+        entry_cutoff_seconds: 300,
+        eligible_activities: ["study"],
+        min_score_bps: 7000,
+        empty_pool_policy: "no_purchase",
+        fallback_payout_persona_id: null,
+        fallback_disclosure_acknowledged: false,
+        ...extra,
+      });
+    const pinned = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
+      method: "POST",
+      headers,
+      body: body("persona_1"),
+    });
+    expect(pinned.status).toBe(201);
+    expect(await pinned.json()).toMatchObject({
+      funding: { sender_address: intent.senderAddress },
+    });
+    // A caller-supplied sender is not part of the contract and is rejected.
+    const steered = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
+      method: "POST",
+      headers,
+      body: body("persona_1", { sender_address: address("9") }),
+    });
+    expect(steered.status).toBe(400);
+    const foreign = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
+      method: "POST",
+      headers,
+      body: body("persona_without_wallet"),
+    });
+    expect(foreign.status).toBe(404);
   });
 
   test("binds an observed transaction to the authenticated funder and exact effect", async () => {

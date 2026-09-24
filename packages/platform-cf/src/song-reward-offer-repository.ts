@@ -583,6 +583,28 @@ export function makeControlPlaneSongRewardOfferRepository() {
         mapped,
       ),
 
+    fundingSender: (input: Parameters<SongRewardOfferStore["fundingSender"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "song-reward-offer.funding-sender.read",
+          text: `SELECT wallet.address
+                   FROM personas persona
+                   JOIN persona_wallet_assignments wallet
+                     ON wallet.account_id=persona.account_id
+                    AND wallet.persona_id=persona.persona_id
+                    AND wallet.chain_account_kind='evm'
+                    AND wallet.status='active'
+                  WHERE persona.account_id=$1 AND persona.persona_id=$2
+                    AND persona.status='active'
+                  LIMIT 2`,
+          values: [input.accountId, input.personaId],
+          readonly: true,
+        });
+        if (result.rows.length !== 1) return yield* rejected("persona-ineligible");
+        return text(result.rows[0] as Row, "address").toLowerCase();
+      }).pipe(mapped),
+
     addMegapotPoolLeg: (input: Parameters<SongRewardOfferStore["addMegapotPoolLeg"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -1000,6 +1022,7 @@ export const makeControlPlaneSongRewardOfferStore = (
   return {
     listAdmittedAssets: (input) => provide(repository.listAdmittedAssets(input)),
     qualificationPolicies: () => provide(repository.qualificationPolicies()),
+    fundingSender: (input) => provide(repository.fundingSender(input)),
     openOffer: (input) => provide(repository.openOffer(input)),
     addMegapotPoolLeg: (input) => provide(repository.addMegapotPoolLeg(input)),
     addAssetBonusLeg: (input) => provide(repository.addAssetBonusLeg(input)),

@@ -458,7 +458,6 @@ export function makeSongRewardOfferHandlers(
     },
     AddMegapotPoolLeg: async (request) => {
       const principal = user(request.principal);
-      if (principal.wallet === null) throw new AuthError({ message: "Wallet session required" });
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -475,6 +474,14 @@ export function makeSongRewardOfferHandlers(
         readonly fallback_payout_persona_id: string | null;
         readonly fallback_disclosure_acknowledged: boolean;
       };
+      // The sender is never read from the request or the session: it is the
+      // chosen persona's single active wallet, owned by this account.
+      const senderAddress = await run(
+        services.store.fundingSender({
+          accountId: principal.accountId,
+          personaId: body.persona_id,
+        }),
+      );
       const result = await run(
         rewards.addMegapotPoolLeg({
           accountId: principal.accountId,
@@ -484,7 +491,7 @@ export function makeSongRewardOfferHandlers(
           ...(body.expected_qualification_policy_versions === undefined
             ? {}
             : { expectedQualificationPolicyVersions: body.expected_qualification_policy_versions }),
-          senderAddress: principal.wallet,
+          senderAddress,
           fundingAmountAtomic: BigInt(body.funding_amount_atomic),
           maxTicketPriceAtomic: BigInt(body.max_ticket_price_atomic),
           entryCutoffSeconds: body.entry_cutoff_seconds,
@@ -506,7 +513,6 @@ export function makeSongRewardOfferHandlers(
     },
     AddAssetBonusLeg: async (request) => {
       const principal = user(request.principal);
-      if (principal.wallet === null) throw new AuthError({ message: "Wallet session required" });
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -523,6 +529,14 @@ export function makeSongRewardOfferHandlers(
         readonly amount_per_claim_atomic: string;
         readonly max_claims: number;
       };
+      // The sender is never read from the request or the session: it is the
+      // chosen persona's single active wallet, owned by this account.
+      const senderAddress = await run(
+        services.store.fundingSender({
+          accountId: principal.accountId,
+          personaId: body.persona_id,
+        }),
+      );
       const result = await run(
         rewards.addAssetBonusLeg({
           accountId: principal.accountId,
@@ -532,7 +546,7 @@ export function makeSongRewardOfferHandlers(
           ...(body.expected_qualification_policy_versions === undefined
             ? {}
             : { expectedQualificationPolicyVersions: body.expected_qualification_policy_versions }),
-          senderAddress: principal.wallet,
+          senderAddress,
           fundingAmountAtomic: BigInt(body.funding_amount_atomic),
           chainId: body.chain_id,
           tokenAddress: body.token_address,

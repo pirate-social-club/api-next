@@ -44,7 +44,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 23;
+const testCount = 24;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -1427,6 +1427,43 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           await admin.query(`DROP ROLE ${quoteIdentifier(role)}`);
         }
       }
+    });
+    completedTestCount += 1;
+  });
+
+  test("derives the funding sender only from the persona's single active wallet", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const owner = await seedSong(admin, "sender-owner", address("d"));
+      const other = await seedSong(admin, "sender-other", address("e"));
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const sender = (accountId: string, personaId: string) =>
+        Effect.runPromise(store.fundingSender({ accountId, personaId }));
+      const refused = { _tag: "SongRewardOfferRejected", reason: "persona-ineligible" };
+
+      expect(await sender(owner.accountId, owner.personaId)).toBe(address("d"));
+      // Another account's persona, or a persona that does not exist, fails closed.
+      for (const [accountId, personaId] of [
+        [owner.accountId, other.personaId],
+        [other.accountId, owner.personaId],
+        [owner.accountId, "persona-missing"],
+      ] as const) {
+        await expect(sender(accountId, personaId)).rejects.toMatchObject(refused);
+      }
+      // An inactive wallet assignment is not a sender either.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE persona_wallet_assignments
+              SET status='tombstoned', tombstoned_at=clock_timestamp(), updated_at=clock_timestamp()
+            WHERE account_id=$1 AND persona_id=$2`,
+          [owner.accountId, owner.personaId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await expect(sender(owner.accountId, owner.personaId)).rejects.toMatchObject(refused);
     });
     completedTestCount += 1;
   });

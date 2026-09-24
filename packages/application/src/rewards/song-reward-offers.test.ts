@@ -120,6 +120,7 @@ describe("song reward offer application service", () => {
     const fundingCalls: unknown[] = [];
     const store: SongRewardOfferStore = {
       listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+      fundingSender: () => Effect.succeed("0x5555555555555555555555555555555555555555"),
       qualificationPolicies: () =>
         Effect.succeed([
           {
@@ -223,6 +224,7 @@ describe("song reward offer application service", () => {
     const service = makeSongRewardOfferService({
       store: {
         listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+        fundingSender: () => Effect.succeed("0x5555555555555555555555555555555555555555"),
         qualificationPolicies: () =>
           Effect.succeed([
             {
@@ -281,6 +283,7 @@ describe("song reward offer application service", () => {
     const service = makeSongRewardOfferService({
       store: {
         listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+        fundingSender: () => Effect.succeed("0x5555555555555555555555555555555555555555"),
         qualificationPolicies: () =>
           Effect.succeed([
             {
