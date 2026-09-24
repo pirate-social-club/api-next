@@ -23,7 +23,6 @@ CREATE TABLE spaces_final_issuance_evidence (
   handle_label TEXT NOT NULL,
   script_pubkey_hex TEXT NOT NULL,
   certificate_sha256_hex TEXT NOT NULL,
-  commitment_txid_hex TEXT NOT NULL,
   commitment_root_hex TEXT NOT NULL,
   mined_height BIGINT NOT NULL,
   verified_tip_height BIGINT NOT NULL,
@@ -39,7 +38,6 @@ CREATE TABLE spaces_final_issuance_evidence (
     AND octet_length(handle_label) BETWEEN 1 AND 62
     AND script_pubkey_hex ~ '^5120[0-9a-f]{64}$'
     AND certificate_sha256_hex ~ '^[0-9a-f]{64}$'
-    AND commitment_txid_hex ~ '^[0-9a-f]{64}$'
     AND commitment_root_hex ~ '^[0-9a-f]{64}$'
     AND mined_height >= 0
     AND verified_tip_height > mined_height + 144
@@ -103,7 +101,6 @@ CREATE TABLE spaces_final_conflict_evidence (
   expected_script_pubkey_hex TEXT NOT NULL,
   observed_script_pubkey_hex TEXT NOT NULL,
   certificate_sha256_hex TEXT NOT NULL,
-  commitment_txid_hex TEXT NOT NULL,
   commitment_root_hex TEXT NOT NULL,
   mined_height BIGINT NOT NULL,
   verified_tip_height BIGINT NOT NULL,
@@ -124,7 +121,6 @@ CREATE TABLE spaces_final_conflict_evidence (
     AND observed_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'
     AND observed_script_pubkey_hex <> expected_script_pubkey_hex
     AND certificate_sha256_hex ~ '^[0-9a-f]{64}$'
-    AND commitment_txid_hex ~ '^[0-9a-f]{64}$'
     AND commitment_root_hex ~ '^[0-9a-f]{64}$'
     AND mined_height >= 0
     AND verified_tip_height > mined_height + 144

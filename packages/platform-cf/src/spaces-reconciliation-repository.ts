@@ -51,7 +51,6 @@ const targetFromRow = (row: Row): SpacesVerificationTargetV1 => ({
 
 const validFinalEvidence = (evidence: SpacesFinalIssuanceV1): boolean =>
   /^[0-9a-f]{64}$/u.test(evidence.certificate_sha256_hex) &&
-  /^[0-9a-f]{64}$/u.test(evidence.commitment_txid_hex) &&
   /^[0-9a-f]{64}$/u.test(evidence.commitment_root_hex) &&
   Number.isSafeInteger(evidence.mined_height) &&
   evidence.mined_height >= 0 &&
@@ -323,9 +322,9 @@ const finalizeInTransaction = Effect.fn("spacesReconciliationFinalizeInTransacti
     label: "spaces-reconciliation.evidence.insert",
     text: `INSERT INTO spaces_final_issuance_evidence (
                evidence_id,claim_id,network,namespace_root,handle_label,script_pubkey_hex,
-               certificate_sha256_hex,commitment_txid_hex,commitment_root_hex,mined_height,
+               certificate_sha256_hex,commitment_root_hex,mined_height,
                verified_tip_height,verifier_id,verifier_version,observed_at,recorded_at
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::timestamptz,$15::timestamptz)`,
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::timestamptz,$14::timestamptz)`,
     values: [
       evidenceId,
       target.claim_id,
@@ -334,7 +333,6 @@ const finalizeInTransaction = Effect.fn("spacesReconciliationFinalizeInTransacti
       target.handle_label,
       target.script_pubkey_hex,
       evidence.certificate_sha256_hex,
-      evidence.commitment_txid_hex,
       evidence.commitment_root_hex,
       evidence.mined_height,
       evidence.verified_tip_height,
@@ -541,11 +539,11 @@ const recordConflict = Effect.fn("spacesReconciliationRecordConflict")(function*
         text: `INSERT INTO spaces_final_conflict_evidence (
                  evidence_id,claim_id,network,namespace_root,handle_label,
                  expected_script_pubkey_hex,observed_script_pubkey_hex,
-                 certificate_sha256_hex,commitment_txid_hex,commitment_root_hex,
+                 certificate_sha256_hex,commitment_root_hex,
                  mined_height,verified_tip_height,verifier_id,verifier_version,
                  observed_at,recorded_at
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-                         $15::timestamptz,$16::timestamptz)`,
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                         $14::timestamptz,$15::timestamptz)`,
         values: [
           evidenceId,
           target.claim_id,
@@ -555,7 +553,6 @@ const recordConflict = Effect.fn("spacesReconciliationRecordConflict")(function*
           target.script_pubkey_hex,
           observedScriptPubkeyHex,
           evidence.certificate_sha256_hex,
-          evidence.commitment_txid_hex,
           evidence.commitment_root_hex,
           evidence.mined_height,
           evidence.verified_tip_height,

@@ -16,7 +16,6 @@ export type SpacesVerificationTargetV1 = Readonly<{
  * recipient, valid commitment history and tip height against mined height. */
 export type SpacesFinalIssuanceV1 = Readonly<{
   certificate_sha256_hex: string;
-  commitment_txid_hex: string;
   commitment_root_hex: string;
   mined_height: number;
   verified_tip_height: number;

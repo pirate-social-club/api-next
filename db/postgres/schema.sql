@@ -34511,7 +34511,6 @@ CREATE TABLE spaces_final_conflict_evidence (
     expected_script_pubkey_hex text NOT NULL,
     observed_script_pubkey_hex text NOT NULL,
     certificate_sha256_hex text NOT NULL,
-    commitment_txid_hex text NOT NULL,
     commitment_root_hex text NOT NULL,
     mined_height bigint NOT NULL,
     verified_tip_height bigint NOT NULL,
@@ -34519,7 +34518,7 @@ CREATE TABLE spaces_final_conflict_evidence (
     verifier_version text NOT NULL,
     observed_at timestamp with time zone NOT NULL,
     recorded_at timestamp with time zone NOT NULL,
-    CONSTRAINT spaces_final_conflict_evidence_identity_check CHECK (((evidence_id ~ '^sconfinal_[0-9a-f]{32}$'::text) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (expected_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_script_pubkey_hex <> expected_script_pubkey_hex) AND (certificate_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_txid_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND (mined_height >= 0) AND (verified_tip_height > (mined_height + 144)) AND is_handle_sales_identifier_v1(verifier_id, 128) AND is_handle_sales_identifier_v1(verifier_version, 128) AND (observed_at <= recorded_at)))
+    CONSTRAINT spaces_final_conflict_evidence_identity_check CHECK (((evidence_id ~ '^sconfinal_[0-9a-f]{32}$'::text) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (expected_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (observed_script_pubkey_hex <> expected_script_pubkey_hex) AND (certificate_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND (mined_height >= 0) AND (verified_tip_height > (mined_height + 144)) AND is_handle_sales_identifier_v1(verifier_id, 128) AND is_handle_sales_identifier_v1(verifier_version, 128) AND (observed_at <= recorded_at)))
 );
 
 CREATE TABLE spaces_final_issuance_evidence (
@@ -34530,7 +34529,6 @@ CREATE TABLE spaces_final_issuance_evidence (
     handle_label text NOT NULL,
     script_pubkey_hex text NOT NULL,
     certificate_sha256_hex text NOT NULL,
-    commitment_txid_hex text NOT NULL,
     commitment_root_hex text NOT NULL,
     mined_height bigint NOT NULL,
     verified_tip_height bigint NOT NULL,
@@ -34538,7 +34536,7 @@ CREATE TABLE spaces_final_issuance_evidence (
     verifier_version text NOT NULL,
     observed_at timestamp with time zone NOT NULL,
     recorded_at timestamp with time zone NOT NULL,
-    CONSTRAINT spaces_final_issuance_evidence_identity_check CHECK (((evidence_id ~ '^sfinal_[0-9a-f]{32}$'::text) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (certificate_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_txid_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND (mined_height >= 0) AND (verified_tip_height > (mined_height + 144)) AND is_handle_sales_identifier_v1(verifier_id, 128) AND is_handle_sales_identifier_v1(verifier_version, 128) AND (observed_at <= recorded_at)))
+    CONSTRAINT spaces_final_issuance_evidence_identity_check CHECK (((evidence_id ~ '^sfinal_[0-9a-f]{32}$'::text) AND is_community_route_root_label('spaces'::text, namespace_root) AND (handle_label ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text) AND (handle_label !~ '^xn--'::text) AND ((octet_length(handle_label) >= 1) AND (octet_length(handle_label) <= 62)) AND (script_pubkey_hex ~ '^5120[0-9a-f]{64}$'::text) AND (certificate_sha256_hex ~ '^[0-9a-f]{64}$'::text) AND (commitment_root_hex ~ '^[0-9a-f]{64}$'::text) AND (mined_height >= 0) AND (verified_tip_height > (mined_height + 144)) AND is_handle_sales_identifier_v1(verifier_id, 128) AND is_handle_sales_identifier_v1(verifier_version, 128) AND (observed_at <= recorded_at)))
 );
 
 CREATE TABLE spaces_issuance_driver_root_enablements (
