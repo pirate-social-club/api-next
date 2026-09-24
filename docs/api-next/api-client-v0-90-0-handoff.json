@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.90.0",
+  "sourceBranch": "feat/song-stems",
+  "sourceBase": "3b70f465db080163919c55032ebc489b917baff5",
+  "validatedSourceCommit": "pending",
+  "pullRequest": null,
+  "wireContract": "Song stems, phase one: song upload reservations accept slot primary_audio, instrumental_audio or vocal_audio; POST /media-post-submissions/{submission_id}/stems seals an uploaded instrumental or vocals stem onto the author's unpublished song submission; song submission snapshots carry an optional stems field (instrumental_audio and vocal_audio, each sealed or null). Existing operations are unchanged; a primary reservation remains the only way to create a submission.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.90.0.tgz",
+    "sha256": "76a4368b9663aec6bc462f6db91643e312be504e7547ae6cb3850a697ed5dc1d"
+  },
+  "validation": {
+    "status": "Local candidate; gates in progress",
+    "passed": [],
+    "remaining": [
+      "Repository check and unit, Node and Workerd tests",
+      "Full PostgreSQL suite",
+      "Hosted required checks",
+      "Paired Solid adoption"
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, credential use or live product mutation occurred."
+  }
+}
