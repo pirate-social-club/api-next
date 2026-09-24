@@ -1491,12 +1491,13 @@ suite("video publication PostgreSQL", () => {
       );
       expect(await access()).toBe(false);
 
-      await admin.query(
-        `INSERT INTO home_feed_projection
-          (community_id,feed_item_id,post_id,rank_score,projected_at)
-         VALUES ($1,'feed-video-publication','post-video-publication',1,clock_timestamp())`,
+      // Publication itself projects the video into Home.
+      const projection = await admin.query(
+        `SELECT feed_item_id FROM home_feed_projection
+          WHERE community_id=$1 AND post_id='post-video-publication'`,
         [community],
       );
+      expect(projection.rows).toHaveLength(1);
       const contentStore = makeControlPlaneContentStore(layer);
       const feedStore = makeControlPlaneFeedStore(layer);
       const projectedPost = await Effect.runPromise(

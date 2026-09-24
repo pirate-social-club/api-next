@@ -2227,6 +2227,17 @@ function publishTransaction(input: VideoPublishBundle) {
           ],
           readonly: false,
         });
+        // Home lists posts from this projection. Song and text publication
+        // write it in the same transaction; a published video must too.
+        yield* tx.execute({
+          label: "video-publication.home-feed.insert",
+          text: `INSERT INTO home_feed_projection
+            (community_id,feed_item_id,post_id,rank_score,projected_at)
+            VALUES ($1,$2,$3,0,clock_timestamp())
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [current.state.communityId, `video-feed-${current.state.operationId}`, postId],
+          readonly: false,
+        });
         yield* tx.execute({
           label: "video-publication.rights-insert",
           text: `INSERT INTO media_video_rights
@@ -2905,6 +2916,17 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             current.state.authorDeclaredRating,
             contentRating,
           ],
+          readonly: false,
+        });
+        // Home lists posts from this projection. Song and text publication
+        // write it in the same transaction; a published video must too.
+        yield* tx.execute({
+          label: "video-publication.home-feed.insert",
+          text: `INSERT INTO home_feed_projection
+            (community_id,feed_item_id,post_id,rank_score,projected_at)
+            VALUES ($1,$2,$3,0,clock_timestamp())
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [current.state.communityId, `video-feed-${current.state.operationId}`, postId],
           readonly: false,
         });
         yield* tx.execute({
