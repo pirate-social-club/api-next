@@ -413,8 +413,17 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("keeps persona fixture custody optional and restricted to the staging operator path", () => {
-    const names = ["PERSONA_WALLET_E2E_EMAIL", "PERSONA_WALLET_E2E_OTP"];
+  test("keeps wallet fixtures and Spaces verifier credentials only in staging operator custody", () => {
+    const names = [
+      "PERSONA_WALLET_E2E_EMAIL",
+      "PERSONA_WALLET_E2E_OTP",
+      "SPACES_TAPROOT_E2E_EMAIL",
+      "SPACES_TAPROOT_E2E_OTP",
+      "SPACES_VERIFIER_ACCESS_CLIENT_ID",
+      "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
+      "SPACES_VERIFIER_BEARER_TOKEN",
+      "SPACES_VERIFIER_TUNNEL_TOKEN",
+    ];
     for (const environment of ["dev", "staging", "prod"] as const) {
       const base = emptySnapshot(environment);
       expect(
