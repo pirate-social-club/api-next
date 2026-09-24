@@ -1544,7 +1544,10 @@ export async function createProductionHttpWorker(
     avatarAuthoring,
   );
   const worker = createHttpWorker({
-    config: { corsOrigin: config.CORS_ORIGIN },
+    config: {
+      corsOrigin: config.CORS_ORIGIN,
+      hnsCommunityAppApiProtectedOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
+    },
     hnsCommunityAppApi,
     hnsHandleHostApi,
     hnsEdgeStatus,

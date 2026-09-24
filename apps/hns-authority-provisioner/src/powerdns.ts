@@ -48,7 +48,7 @@ type ApiCryptokey = Readonly<{
 const responseMaxBytes = 1_048_576;
 const requestTimeoutMs = 5_000;
 
-async function reservationAccount(challenge: string): Promise<string> {
+export async function reservationAccount(challenge: string): Promise<string> {
   const reservationDigest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(challenge),
@@ -169,7 +169,7 @@ function parseDs(value: string): HnsRootDelegationDsV1 | null {
   };
 }
 
-function retainedDsRecords(values: readonly string[]): readonly HnsRootDelegationDsV1[] {
+export function retainedDsRecords(values: readonly string[]): readonly HnsRootDelegationDsV1[] {
   return [...new Set(values)]
     .flatMap((value) => {
       const parsed = parseDs(value);

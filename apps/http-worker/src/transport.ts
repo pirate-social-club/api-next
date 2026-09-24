@@ -128,6 +128,8 @@ export interface BeforeDecodeArgs {
 export interface HttpWorkerConfig {
   /** Comma-separated exact allowed origins, or `*`, supplied by Worker configuration. */
   readonly corsOrigin: string;
+  /** A configured protected hostname must fail closed even before HNS is enabled. */
+  readonly hnsCommunityAppApiProtectedOrigin?: string;
 }
 
 export interface HttpWorkerOptions {
@@ -728,6 +730,23 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   const hnsEdgeStatus = options.hnsEdgeStatus ?? disabledProductionHnsEdgeStatusComposition;
   const hnsCommunityAppApi =
     options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
+  const configuredHnsProtectedOrigin = options.config?.hnsCommunityAppApiProtectedOrigin ?? "";
+  if (configuredHnsProtectedOrigin !== "") {
+    try {
+      const parsed = new URL(configuredHnsProtectedOrigin);
+      if (parsed.protocol !== "https:" || parsed.origin !== configuredHnsProtectedOrigin) {
+        throw new Error("invalid protected origin");
+      }
+    } catch {
+      throw new Error("HNS community API protected origin is invalid");
+    }
+    if (
+      hnsCommunityAppApi.enabled &&
+      configuredHnsProtectedOrigin !== hnsCommunityAppApi.protected_origin
+    ) {
+      throw new Error("HNS community API protected origin is invalid");
+    }
+  }
   const hnsHandleHostApi =
     options.hnsHandleHostApi ?? disabledProductionHnsHandleHostApiComposition;
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
@@ -758,6 +777,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.raw.url);
     const pathname = requestUrl.pathname;
+    if (!hnsCommunityAppApi.enabled && requestUrl.origin === configuredHnsProtectedOrigin) {
+      return new Response(null, { status: 503, headers: { "cache-control": "no-store" } });
+    }
     if (pathname === "/admin/hns") {
       if (context.req.raw.method !== "GET") {
         return new Response("Method not allowed", {

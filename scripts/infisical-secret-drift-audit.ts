@@ -107,6 +107,24 @@ const STAGING_RUNTIME_SUPPORT_SECRET_NAMES = [
 // The Stream token's operator copy is retained while the shared runtime copy
 // is used by the staging video path. Both copies remain staging-only.
 const STAGING_VIDEO_OPERATOR_SECRET_NAMES = ["VIDEO_STREAM_API_TOKEN"] as const;
+// Isolated staging HNS onboarding custody (api-hns-staging-enablement): scoped
+// staging Cloudflare credentials, the operator database identity used once for
+// grants, the gateway database and outbound Solid Access pair, the Solid API and
+// authority Access pairs, and the staging forwarder key registry. Staging only.
+const STAGING_HNS_OPERATOR_SECRET_NAMES = [
+  "CLOUDFLARE_HNS_STAGING_ACCESS_SETUP_TOKEN",
+  "CLOUDFLARE_HNS_STAGING_TOKEN",
+  "CLOUDFLARE_HNS_STAGING_TUNNEL_TOKEN",
+  "CONTROL_PLANE_POSTGRES_OPERATOR_URL",
+  "HNS_COMMUNITY_APP_API_ACCESS_CLIENT_ID",
+  "HNS_COMMUNITY_APP_API_ACCESS_CLIENT_SECRET",
+  "HNS_COMMUNITY_APP_AUTHORITY_ACCESS_CLIENT_ID",
+  "HNS_COMMUNITY_APP_AUTHORITY_ACCESS_CLIENT_SECRET",
+  "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+  "HNS_STAGING_GATEWAY_DATABASE_URL",
+  "HNS_STAGING_GATEWAY_SOLID_ACCESS_CLIENT_ID",
+  "HNS_STAGING_GATEWAY_SOLID_ACCESS_CLIENT_SECRET",
+] as const;
 const STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES = [
   "MODERATION_E2E_OWNER_EMAIL",
   "MODERATION_E2E_OWNER_OTP",
@@ -181,6 +199,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_VIDEO_OPERATOR_SECRET_NAMES,
+      ...STAGING_HNS_OPERATOR_SECRET_NAMES,
     ],
   },
   {
