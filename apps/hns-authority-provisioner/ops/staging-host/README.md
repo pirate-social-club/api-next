@@ -132,3 +132,36 @@ The approved observer service targets HTTP 127.0.0.1:4082 through this tunnel.
 There is no public hostname. Healthy connector connections and exact directory
 readback are transport prerequisites, not proof of a Worker fetch or an
 authenticated import. Worker binding and deployment remain separate operations.
+
+## Regtest journey runner bundle
+
+Build only from a clean, reviewed commit in the admitted api-next worktree.
+Create a new empty package directory outside the checkout and run
+`bun apps/hns-authority-provisioner/ops/staging-host/build-journey-chain.ts
+--output /absolute/package/journey-chain.js` from the repository root. The
+builder refuses an existing output, bundles the relative regtest fixture
+imports, executes a no-network invalid-command probe from the package
+directory, and prints the exact source and bundle SHA-256. Preserve that
+JSON receipt beside the bundle and independently recompute the digest before
+any transfer.
+
+Installation is a separately approved CI-host operation, not part of the
+build. `bun apps/hns-authority-provisioner/ops/staging-host/install-journey-chain.ts
+--bundle /absolute/package/journey-chain.js --expected-sha256 <reviewed-sha>`
+is a local-only dry run. After reviewing that result, add `--execute-host` for
+the single approved installation. The installer checks the host's exact target
+first, refuses an existing different file or symlink, transfers only the
+bundle into a new private temporary file, verifies its SHA-256 there, then
+installs it atomically at `/opt/pirate-hns-staging/journey-chain.js` with root
+ownership and read-only executable mode. A final host readback must match.
+An uncertain response is stop-only; inspect the target before any retry. The
+Solid handoff pins that final digest before login and checks it again before
+every command. Do not copy source files, node_modules, credentials or a
+package directory to the host.
+
+The runner's per-root `publish-<root>.json` is a retained dispatch fence in
+the private journey lease directory. It is created atomically before
+`sendupdate`, records the session, response, plan and resource digests, then
+records the returned TXID before mining. A lost response or failed mine never
+authorizes redispatch; inspect the receipt and chain manually. The file and
+lease are not automatically cleaned up after a failed journey.
