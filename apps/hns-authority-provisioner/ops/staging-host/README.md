@@ -182,3 +182,12 @@ response. A lost response or failed mine never authorizes redispatch; read
 `status --root`, which reports the receipt, and reconcile with the chain by
 hand. The file and lease are not automatically cleaned up after a failed
 journey.
+
+If writing the claim itself fails after the file was created, the runner
+reports a pre-claim refusal (nothing was dispatched) but the root stays fenced
+by the partial file; choose a new journey root rather than deleting the fence.
+Earlier runner versions kept the lease and receipts in
+`/var/tmp/pirate-hns-staging-journey`. Before the first run of this version,
+read that directory on the host once: any lease or receipt there belongs to an
+older journey and must be reconciled by hand, never moved into the new state
+directory to satisfy a check.

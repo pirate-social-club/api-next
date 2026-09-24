@@ -6,23 +6,27 @@ import { join } from "node:path";
 export const JOURNEY_ROOT = /^e2e[a-z0-9]{6,40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 
+export class JourneyRefusal extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
 /**
  * The single-dispatch guard lives in one fixed per-user state directory. It is
  * resolved from the account database, not HOME or any other environment
  * variable, and sits outside aged temporary storage, so neither a caller nor
  * a cleanup timer can redirect or silently remove the fence.
  */
-export const JOURNEY_STATE_DIRECTORY = join(
-  userInfo().homedir,
-  ".local",
-  "state",
-  "pirate-hns-staging-journey",
-);
-
-export class JourneyRefusal extends Error {
-  constructor(readonly code: string) {
-    super(code);
+export function journeyStateDirectory(): string {
+  let home: string;
+  try {
+    home = userInfo().homedir;
+  } catch {
+    throw new JourneyRefusal("state_directory_unresolvable");
   }
+  if (!home.startsWith("/")) throw new JourneyRefusal("state_directory_unresolvable");
+  return join(home, ".local", "state", "pirate-hns-staging-journey");
 }
 
 /**
@@ -42,7 +46,7 @@ export class JourneyDispatchAmbiguity extends Error {
 
 /** Refuse unless the directory is a real directory owned by this user with
  * mode 0700. Creation happens only when it is absent. */
-export async function requirePrivateStateDirectory(directory = JOURNEY_STATE_DIRECTORY) {
+export async function requirePrivateStateDirectory(directory = journeyStateDirectory()) {
   try {
     await lstat(directory);
   } catch (error) {
@@ -72,7 +76,7 @@ type PublishAttempt = Readonly<{
   inclusion_height?: number;
 }>;
 
-const publishAttemptPath = (root: string, directory = JOURNEY_STATE_DIRECTORY) =>
+const publishAttemptPath = (root: string, directory = journeyStateDirectory()) =>
   join(directory, `publish-${root}.json`);
 
 async function syncDirectory(directory: string) {
@@ -88,7 +92,7 @@ async function syncDirectory(directory: string) {
  * partial write still occupies the name and must be reconciled manually. */
 export async function claimPublishAttempt(
   attempt: Omit<PublishAttempt, "status" | "txid" | "inclusion_height">,
-  directory = JOURNEY_STATE_DIRECTORY,
+  directory = journeyStateDirectory(),
 ) {
   if (
     !JOURNEY_ROOT.test(attempt.root) ||
@@ -123,7 +127,7 @@ export async function claimPublishAttempt(
 export async function finalizePublishAttempt(
   attempt: Omit<PublishAttempt, "status" | "txid" | "inclusion_height">,
   result: Pick<PublishAttempt, "status" | "txid" | "inclusion_height">,
-  directory = JOURNEY_STATE_DIRECTORY,
+  directory = journeyStateDirectory(),
 ) {
   if (
     (result.status !== "broadcasted" && result.status !== "included") ||
@@ -164,7 +168,7 @@ export async function finalizePublishAttempt(
 }
 
 /** Read-only receipt summary for status and reconciliation. */
-export async function readPublishAttempt(root: string, directory = JOURNEY_STATE_DIRECTORY) {
+export async function readPublishAttempt(root: string, directory = journeyStateDirectory()) {
   const path = publishAttemptPath(root, directory);
   let raw: string;
   try {

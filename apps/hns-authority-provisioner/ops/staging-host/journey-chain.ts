@@ -23,10 +23,10 @@ import {
   claimPublishAttempt,
   finalizePublishAttempt,
   JOURNEY_ROOT,
-  JOURNEY_STATE_DIRECTORY,
   JourneyDispatchAmbiguity,
   JourneyRefusal,
   journeyFailureOutput,
+  journeyStateDirectory,
   readPublishAttempt,
   requirePrivateStateDirectory,
 } from "./journey-publish-receipt.ts";
@@ -333,7 +333,7 @@ export async function requirePlanProvenance(
     throw new JourneyRefusal("plan_ds_differs_from_zone");
 }
 
-const leasePath = () => join(JOURNEY_STATE_DIRECTORY, "lease.json");
+const leasePath = () => join(journeyStateDirectory(), "lease.json");
 
 async function beginLease(root: string) {
   await requirePrivateStateDirectory();
@@ -539,6 +539,26 @@ async function publish(root: string, planPath: string, responseSha256: string) {
   }
 }
 
+/**
+ * The node's verbose view of txid, or null if it keeps answering
+ * "Transaction not found". On regtest that answer was observed for a just
+ * returned sendupdate before it was indexed; a short retry covers that lag.
+ * A persistent answer means the transaction was not accepted or was evicted,
+ * which is reported as unconfirmed, never as included. Any other error throws.
+ */
+async function findTransaction(txid: string): Promise<unknown | null> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await hsdRegtestNode("getrawtransaction", [txid, 1]);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Transaction not found"))
+        throw error;
+      if (attempt < 4) await Bun.sleep(1000);
+    }
+  }
+  return null;
+}
+
 /** The height of the block containing txid, or null while it is unconfirmed.
  * Inclusion is read from the node, never inferred from the tip after mining. */
 async function confirmedHeight(txid: string): Promise<number | null> {
@@ -546,15 +566,8 @@ async function confirmedHeight(txid: string): Promise<number | null> {
     confirmations: Schema.optional(Schema.Number),
     blockhash: Schema.optional(Schema.NullOr(Schema.String)),
   });
-  let raw: unknown;
-  try {
-    raw = await hsdRegtestNode("getrawtransaction", [txid, 1]);
-  } catch (error) {
-    // hsd answers "Transaction not found" until the transaction is in a block
-    // (observed on regtest); only that answer means unconfirmed.
-    if (error instanceof Error && error.message.includes("Transaction not found")) return null;
-    throw error;
-  }
+  const raw = await findTransaction(txid);
+  if (raw === null) return null;
   const view = Schema.decodeUnknownSync(TxView)(raw);
   if (!view.blockhash || !view.confirmations || view.confirmations < 1) return null;
   return (await tip()) - view.confirmations + 1;
@@ -582,9 +595,13 @@ async function advanceSafe(root: string, planPath: string, responseSha256: strin
     if (
       receipt.state !== "present" ||
       (receipt.status !== "broadcasted" && receipt.status !== "included") ||
-      receipt.response_sha256 !== response_sha256
+      receipt.response_sha256 !== response_sha256 ||
+      receipt.txid === null
     )
       throw new JourneyRefusal("plan_not_current");
+    // Never mine blindly for a transaction the node no longer knows.
+    if ((await findTransaction(receipt.txid)) === null)
+      throw new JourneyRefusal("broadcast_not_found");
   }
   for (let mined = 0; mined <= 60; mined += 1) {
     const safe = (await matches("current")) ? await observe(root, "safe") : null;
