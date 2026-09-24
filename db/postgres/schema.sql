@@ -13456,6 +13456,18 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION lock_song_owner_policy_head_v1(input_community_id text, input_post_id text) RETURNS TABLE(owner_account_id text, audio_revision bigint, current_policy_revision bigint, current_policy_hash text)
+    LANGUAGE sql STRICT SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT head.owner_account_id, head.audio_revision,
+         head.current_policy_revision, head.current_policy_hash
+    FROM song_owner_policies AS head
+   WHERE head.community_id = input_community_id
+     AND head.post_id = input_post_id
+     FOR SHARE
+$$;
+
 CREATE FUNCTION media_video_stage_fact_immutable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
