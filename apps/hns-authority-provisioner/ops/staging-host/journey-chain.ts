@@ -19,6 +19,13 @@ import {
   requireHsdRegtestChain,
 } from "../../../../packages/platform-cf/src/hns-regtest-node.pg-fixture.ts";
 import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
+import {
+  claimPublishAttempt,
+  finalizePublishAttempt,
+  JOURNEY_LEASE_DIRECTORY,
+  JOURNEY_ROOT,
+  JourneyRefusal,
+} from "./journey-publish-receipt.ts";
 
 /**
  * Chain leg of the staging HNS onboarding journey, run on the isolated staging
@@ -48,16 +55,9 @@ import { reservationAccount, retainedDsRecords } from "../../src/powerdns.ts";
 const TREE_INTERVAL_BLOCKS = 5;
 const SAFE_CONFIRMATIONS = 12;
 // Only journey-generated names; never an operator- or owner-supplied root.
-const ROOT = /^e2e[a-z0-9]{6,40}$/u;
-const LEASE_DIRECTORY = process.env.HNS_JOURNEY_LEASE_DIR ?? "/var/tmp/pirate-hns-staging-journey";
+const SHA256 = /^[0-9a-f]{64}$/u;
 const AUTHORITY_API = "http://127.0.0.21:8081";
 const AUTHORITY_KEY = "isolated-hns-authority-fixture-only";
-
-class JourneyRefusal extends Error {
-  constructor(readonly code: string) {
-    super(code);
-  }
-}
 
 export type JourneyCommand =
   | Readonly<{ kind: "begin"; root: string }>
@@ -81,7 +81,7 @@ export function parseJourneyCommand(argv: readonly string[]): JourneyCommand {
   }
   const root = () => {
     const value = options.get("--root");
-    if (value === undefined || !ROOT.test(value)) throw new JourneyRefusal("root_invalid");
+    if (value === undefined || !JOURNEY_ROOT.test(value)) throw new JourneyRefusal("root_invalid");
     return value;
   };
   const only = (...allowed: string[]) => {
@@ -329,10 +329,10 @@ export async function requirePlanProvenance(
     throw new JourneyRefusal("plan_ds_differs_from_zone");
 }
 
-const leasePath = () => join(LEASE_DIRECTORY, "lease.json");
+const leasePath = () => join(JOURNEY_LEASE_DIRECTORY, "lease.json");
 
 async function beginLease(root: string) {
-  await mkdir(LEASE_DIRECTORY, { recursive: true, mode: 0o700 });
+  await mkdir(JOURNEY_LEASE_DIRECTORY, { recursive: true, mode: 0o700 });
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(leasePath(), "wx", 0o600);
@@ -462,6 +462,14 @@ async function publish(root: string, planPath: string, responseSha256: string) {
   if (current.observation.records.length !== 0)
     throw new JourneyRefusal("pre_update_resource_not_empty");
   await requirePlanProvenance(root, records);
+  const attempt = {
+    root,
+    root_import_session_id,
+    publish_plan_sha256,
+    encoded_resource_sha256: digest,
+    response_sha256,
+  };
+  await claimPublishAttempt(attempt);
   const update = Schema.decodeUnknownSync(
     Schema.Struct({
       hash: Schema.String,
@@ -470,8 +478,15 @@ async function publish(root: string, planPath: string, responseSha256: string) {
   )(await hsdRegtestWallet("sendupdate", [root, { records }]));
   if (!update.outputs.some((output) => output.covenant.action === "UPDATE"))
     throw new JourneyRefusal("not_an_update");
+  if (!SHA256.test(update.hash)) throw new JourneyRefusal("update_txid_invalid");
+  await finalizePublishAttempt(attempt, { status: "broadcasted", txid: update.hash });
   await mine(1);
   const inclusion = await tip();
+  await finalizePublishAttempt(attempt, {
+    status: "included",
+    txid: update.hash,
+    inclusion_height: inclusion,
+  });
   return {
     outcome: "published",
     root,

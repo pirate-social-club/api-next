@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildHnsRootImportPublishPlanV1,
   encodeHnsResourceV1,
@@ -14,6 +17,7 @@ import {
   requirePublishablePlan,
   requireSessionPlan,
 } from "./journey-chain.ts";
+import { claimPublishAttempt, finalizePublishAttempt } from "./journey-publish-receipt.ts";
 
 const root = "e2eabc123";
 const responseDigest = "a".repeat(64);
@@ -218,4 +222,70 @@ describe("staging journey chain command", () => {
       await code(() => run(authority({ account }, keys), "http://127.evil.example:8081")),
     ).toBe("authority_not_loopback");
   });
+});
+
+test("publish claim is atomic across callers and survives a process restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hns-publish-claim-"));
+  const attempt = {
+    root,
+    root_import_session_id: "session_fixture",
+    publish_plan_sha256: "b".repeat(64),
+    encoded_resource_sha256: "c".repeat(64),
+    response_sha256: "d".repeat(64),
+  };
+  try {
+    const results = await Promise.allSettled([
+      claimPublishAttempt(attempt, directory),
+      claimPublishAttempt(attempt, directory),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(await code(() => claimPublishAttempt(attempt, directory))).toBe(
+      "publish_attempt_exists",
+    );
+    const path = join(directory, `publish-${root}.json`);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      ...attempt,
+      status: "dispatch_claimed",
+    });
+    expect(
+      await code(() =>
+        finalizePublishAttempt(
+          { ...attempt, response_sha256: "e".repeat(64) },
+          { status: "broadcasted", txid: "f".repeat(64) },
+          directory,
+        ),
+      ),
+    ).toBe("publish_claim_mismatch");
+    await finalizePublishAttempt(
+      attempt,
+      { status: "broadcasted", txid: "f".repeat(64) },
+      directory,
+    );
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      ...attempt,
+      status: "broadcasted",
+      txid: "f".repeat(64),
+    });
+    expect(await code(() => claimPublishAttempt(attempt, directory))).toBe(
+      "publish_attempt_exists",
+    );
+    await finalizePublishAttempt(
+      attempt,
+      {
+        status: "included",
+        txid: "f".repeat(64),
+        inclusion_height: 157,
+      },
+      directory,
+    );
+    expect((JSON.parse(await readFile(path, "utf8")) as { status: string }).status).toBe(
+      "included",
+    );
+    expect(await code(() => claimPublishAttempt(attempt, directory))).toBe(
+      "publish_attempt_exists",
+    );
+  } finally {
+    await rm(directory, { recursive: true });
+  }
 });
