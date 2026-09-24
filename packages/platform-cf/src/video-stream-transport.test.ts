@@ -81,7 +81,7 @@ test("Stream copy uses exact sealed facts and a signed-only server template", as
   expect(f.calls).toHaveLength(1);
   expect(f.calls[0]?.init?.redirect).toBe("manual");
   expect(JSON.parse(String(f.calls[0]?.init?.body))).toEqual({
-    input: grantUrl,
+    url: grantUrl,
     creator: identity.creator,
     meta: video.meta,
     requireSignedURLs: true,

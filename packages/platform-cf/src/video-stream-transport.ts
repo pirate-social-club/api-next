@@ -133,8 +133,9 @@ export function makeVideoStreamTransport(
       )
         throw new Error("Stream source grant origin or path mismatch");
       // Downloads are opt-in via a separate API; this adapter never creates them.
+      // Stream's copy contract names the source link `url` ("Upload via link").
       const copied = await request("/copy", {
-        input: grant.url,
+        url: grant.url,
         creator: source.identity.creator,
         meta: {
           source_sha256: source.identity.sourceSha256,
