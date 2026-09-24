@@ -55,11 +55,79 @@ describe("Spaces final issuance verifier adapter", () => {
     }
   });
 
-  test("a 409 remains pending because revision 1 cannot identify the occupant", async () => {
-    const verifier = makeSpacesFinalIssuanceVerifier(credentials, async () =>
-      Response.json({ error: "chain_fact_conflict" }, { status: 409 }),
-    );
+  test("a missing final certificate remains pending after both checks", async () => {
+    const paths: string[] = [];
+    const verifier = makeSpacesFinalIssuanceVerifier(credentials, async (url, init) => {
+      paths.push(url);
+      if (url.endsWith("/v1/observe-name")) {
+        expect(JSON.parse(String(init.body))).toEqual({
+          root: "@xn--fn8h",
+          name: "membername@xn--fn8h",
+        });
+      }
+      return Response.json({ error: "chain_fact_conflict" }, { status: 409 });
+    });
     expect(await Effect.runPromise(verifier.verify(target))).toEqual({ kind: "pending" });
+    expect(paths).toEqual([
+      "https://spaces-verifier.pirate.sc/v1/verify-name",
+      "https://spaces-verifier.pirate.sc/v1/observe-name",
+    ]);
+  });
+
+  test("records a different recipient only after a final observed certificate", async () => {
+    const otherScript = `5120${"2".repeat(64)}`;
+    const verifier = makeSpacesFinalIssuanceVerifier(credentials, async (url) =>
+      url.endsWith("/v1/verify-name")
+        ? Response.json({ error: "chain_fact_conflict" }, { status: 409 })
+        : Response.json({
+            ...finalEvidence,
+            contract: "spaces-verifier-name-observation-v1",
+            recipient_script_pubkey_hex: otherScript,
+          }),
+    );
+    const result = await Effect.runPromise(verifier.verify(target));
+    expect(result.kind).toBe("occupied_other");
+    if (result.kind === "occupied_other") {
+      expect(result.observed_script_pubkey_hex).toBe(otherScript);
+      expect(result.evidence.verifier_version).toBe("spaces-verifier-name-observation-v1");
+    }
+  });
+
+  test("a verified observation with the requested recipient can finalize after a racing 409", async () => {
+    const verifier = makeSpacesFinalIssuanceVerifier(credentials, async (url) =>
+      url.endsWith("/v1/verify-name")
+        ? Response.json({ error: "chain_fact_conflict" }, { status: 409 })
+        : Response.json({ ...finalEvidence, contract: "spaces-verifier-name-observation-v1" }),
+    );
+    expect((await Effect.runPromise(verifier.verify(target))).kind).toBe("final");
+  });
+
+  test("refuses malformed conflict evidence and a missing observation endpoint", async () => {
+    for (const observed of [
+      { ...finalEvidence, contract: "spaces-verifier-name-observation-v1", name: "other@xn--fn8h" },
+      { ...finalEvidence, contract: "spaces-verifier-name-observation-v1", commitment_height: 856 },
+      {
+        ...finalEvidence,
+        contract: "spaces-verifier-name-observation-v1",
+        recipient_script_pubkey_hex: "0014bad",
+      },
+    ]) {
+      const verifier = makeSpacesFinalIssuanceVerifier(credentials, async (url) =>
+        url.endsWith("/v1/verify-name")
+          ? Response.json({ error: "chain_fact_conflict" }, { status: 409 })
+          : Response.json(observed),
+      );
+      expect(Effect.runPromise(verifier.verify(target))).rejects.toThrow(
+        "Spaces final verification unavailable",
+      );
+    }
+    const olderVerifier = makeSpacesFinalIssuanceVerifier(
+      credentials,
+      async (url) => new Response(null, { status: url.endsWith("/v1/verify-name") ? 409 : 404 }),
+    );
+    expect(Effect.runPromise(olderVerifier.verify(target))).rejects.toThrow(
+      "Spaces final verification unavailable",
+    );
   });
 
   test("refuses stale, wrong-recipient, and nonfinal evidence", async () => {
