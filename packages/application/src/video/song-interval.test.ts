@@ -125,10 +125,10 @@ describe("song-video interval preflight", () => {
       audio_revision: 3,
       canonical_duration_samples: 214 * SECOND,
       interval_policy: {
-        policy_revision: 1,
+        policy_revision: 2,
         sample_rate_hz: 48_000,
         min_clip_duration_samples: 3 * SECOND,
-        max_clip_duration_samples: 180 * SECOND,
+        max_clip_duration_samples: 15 * SECOND,
       },
       interval: null,
     });
@@ -150,13 +150,13 @@ describe("song-video interval preflight", () => {
       );
       return result.state === "ready" ? result.interval : null;
     };
-    expect(await verdict(184 * SECOND, 30 * SECOND)).toEqual({ accepted: true });
-    expect(await verdict(184 * SECOND + 1, 30 * SECOND)).toEqual({
+    expect(await verdict(199 * SECOND, 15 * SECOND)).toEqual({ accepted: true });
+    expect(await verdict(199 * SECOND + 1, 15 * SECOND)).toEqual({
       accepted: false,
       reason: "canonical_song_interval_uncovered",
     });
     expect(await verdict(0, 2 * SECOND)).toEqual({ accepted: false, reason: "interval_too_short" });
-    expect(await verdict(0, 181 * SECOND)).toEqual({
+    expect(await verdict(0, 16 * SECOND)).toEqual({
       accepted: false,
       reason: "interval_too_long",
     });
@@ -241,7 +241,7 @@ const songBody = {
   selected_from: { kind: "library" as const },
   audio_revision: 3,
   clip_start_samples: 40 * SECOND,
-  clip_duration_samples: 45 * SECOND,
+  clip_duration_samples: 12 * SECOND,
 };
 
 describe("viewer access to the source song", () => {
@@ -327,8 +327,8 @@ describe("freezing the render plan at reservation", () => {
       songDurationSamples: 214 * SECOND,
       songAssetId: "asset_song_r3",
       clipStartSamples: 40 * SECOND,
-      clipDurationSamples: 45 * SECOND,
-      intervalPolicyRevision: 1,
+      clipDurationSamples: 12 * SECOND,
+      intervalPolicyRevision: 2,
       ownerPolicyRevision: 2,
       ownerPolicyHash: "b".repeat(64),
       derivativeVideo: "allowed",
@@ -357,7 +357,7 @@ describe("freezing the render plan at reservation", () => {
         actor,
         body: {
           song_post_id: "post_song",
-          interval: { clip_start_samples: 40 * SECOND, clip_duration_samples: 45 * SECOND },
+          interval: { clip_start_samples: 40 * SECOND, clip_duration_samples: 12 * SECOND },
         },
       },
       intervalServices(world.store),
@@ -380,7 +380,7 @@ describe("freezing the render plan at reservation", () => {
   test("refuses an interval the canonical song cannot cover", async () => {
     const error = await freeze(songStore().store, {
       ...songBody,
-      clip_start_samples: 214 * SECOND - 45 * SECOND + 1,
+      clip_start_samples: 214 * SECOND - 12 * SECOND + 1,
     }).catch((e) => e);
     expect(error).toBeInstanceOf(BadRequest);
     expect(error.details).toEqual({ reason_code: "canonical_song_interval_uncovered" });
@@ -525,7 +525,7 @@ describe("song-reference reservation through the request path", () => {
       },
       interval: {
         clip_start_samples: 40 * SECOND,
-        clip_duration_samples: 45 * SECOND,
+        clip_duration_samples: 12 * SECOND,
         song_duration_samples: 214 * SECOND,
       },
     });
@@ -636,6 +636,81 @@ describe("song-reference reservation through the request path", () => {
       reason_code: "capability_unavailable",
       capability: "song_reference",
     });
+  });
+
+  test("an existing 30 second revision-1 reservation is still claimed after the 15 second rule", async () => {
+    const reservation: VideoReservationRecord = {
+      reservationId: "media-reservation-song-r1",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen = (intervalPolicyRevision: number): FrozenSongReservationPlan => ({
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 20 * SECOND,
+      clipDurationSamples: 30 * SECOND,
+      intervalPolicyRevision,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    });
+    const body = {
+      persona_id: persona.persona_id,
+      version: "video-start-input-v1",
+      video_reservation_id: "media-reservation-song-r1",
+      idempotency_key: "create-song-video-r1",
+    };
+    const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+    const created = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen: frozen(1),
+        submissions,
+      }),
+    );
+    expect(created).toMatchObject({ intent: "song_reference", status: "processing" });
+    expect(submissions[0]?.state.songPlan).toMatchObject({
+      clipDurationSamples: 30 * SECOND,
+      intervalPolicyRevision: 1,
+    });
+    // A revision-2 reservation could never hold 30 seconds; a plan claiming
+    // one is refused rather than started.
+    const refused = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen: frozen(2),
+        submissions: [],
+      }),
+    ).catch((e) => e);
+    expect(refused).toBeInstanceOf(Error);
+    expect(String(refused.message)).toContain("song-reference submission plan is invalid");
   });
 });
 

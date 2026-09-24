@@ -1045,6 +1045,7 @@ export async function createVideoSubmission(
             songDurationSamples: songPlan.songDurationSamples,
             clipStartSamples: songPlan.clipStartSamples,
             clipDurationSamples: songPlan.clipDurationSamples,
+            intervalPolicyRevision: songPlan.intervalPolicyRevision,
           },
         });
   const response = await snapshot(
