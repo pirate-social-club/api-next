@@ -1,3 +1,13 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "3b70f465db080163919c55032ebc489b917baff5",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/media-upload-reservations status 201: enum value added: \"instrumental_audio\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communitiesCommunityIdMediaUploadReservations",
+      "reason": "Song stems amendment (Specs 013 and 019, 2026-09-24): a song reservation echoes the slot it was requested for. Existing clients only request primary_audio and therefore only receive primary_audio; client 0.90.0 adds the instrumental and vocals slots."
+    }
+  ]
 }

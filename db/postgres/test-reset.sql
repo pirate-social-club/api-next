@@ -253,6 +253,7 @@ TRUNCATE TABLE
   "media_reference_evidence",
   "media_song_canonical_timings",
   "media_song_lyrics_revisions",
+  "media_song_stems",
   "media_song_video_accepted_masters",
   "media_song_video_masters",
   "media_song_video_render_attempts",

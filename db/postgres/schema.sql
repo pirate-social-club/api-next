@@ -15965,6 +15965,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_media_reservation_slot_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.slot IS DISTINCT FROM OLD.slot THEN
+    RAISE EXCEPTION 'media reservation slot is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION reject_megapot_snapshot_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -21407,6 +21418,22 @@ CREATE FUNCTION validate_media_reservation_claim_pair() RETURNS trigger
     AS $$
 DECLARE submission_record media_post_submissions%ROWTYPE; event_record media_submission_events%ROWTYPE; issued_event_record media_submission_events%ROWTYPE;
 BEGIN
+  -- Song stems (instrumental, vocals) are claimed under their own operation
+  -- '<submission operation>-stem-<slot>', never as the submission's audio.
+  IF NEW.slot <> 'primary_audio' THEN
+    IF NEW.state IN ('claimed', 'sealed', 'rejected', 'expired') AND NEW.submission_id IS NOT NULL THEN
+      SELECT * INTO submission_record FROM media_post_submissions
+        WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+          AND submission_id=NEW.submission_id FOR SHARE;
+      IF submission_record.submission_id IS NULL
+         OR submission_record.media_kind IS DISTINCT FROM 'song'
+         OR NEW.claim_fence <> 1
+         OR NEW.operation_id IS DISTINCT FROM submission_record.operation_id || '-stem-' || NEW.slot THEN
+        RAISE EXCEPTION 'media stem reservation claim is not paired with its submission';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END IF;
   IF NEW.state IN ('claimed', 'sealed', 'rejected', 'expired') AND NEW.submission_id IS NOT NULL THEN
     SELECT * INTO submission_record FROM media_post_submissions
       WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
@@ -21667,6 +21694,40 @@ BEGIN
   RETURN NEW;
 END;
 $_$;
+
+CREATE FUNCTION validate_media_song_stem_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE reservation_record media_upload_reservations%ROWTYPE;
+DECLARE submission_record media_post_submissions%ROWTYPE;
+BEGIN
+  SELECT * INTO submission_record FROM media_post_submissions
+    WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
+      AND submission_id = NEW.submission_id FOR SHARE;
+  SELECT * INTO reservation_record FROM media_upload_reservations
+    WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
+      AND reservation_id = NEW.reservation_id FOR UPDATE;
+  IF submission_record.submission_id IS NULL
+     OR submission_record.media_kind IS DISTINCT FROM 'song'
+     OR submission_record.status IN ('published', 'blocked', 'abandoned')
+     OR submission_record.author_persona_id IS DISTINCT FROM NEW.author_persona_id
+     OR NEW.operation_id IS DISTINCT FROM submission_record.operation_id || '-stem-' || NEW.slot
+     OR reservation_record.reservation_id IS NULL
+     OR reservation_record.media_kind IS DISTINCT FROM 'song'
+     OR reservation_record.slot IS DISTINCT FROM NEW.slot
+     OR reservation_record.submission_id IS DISTINCT FROM NEW.submission_id
+     OR reservation_record.operation_id IS DISTINCT FROM NEW.operation_id
+     OR reservation_record.state <> 'claimed'
+     OR reservation_record.expires_at <= clock_timestamp()
+     OR reservation_record.expected_content_type <> NEW.content_type
+     OR reservation_record.expected_size_bytes <> NEW.size_bytes
+     OR (reservation_record.expected_sha256 IS NOT NULL AND reservation_record.expected_sha256 <> NEW.canonical_sha256)
+  THEN
+    RAISE EXCEPTION 'sealed song stem facts do not match its reservation and submission';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 CREATE FUNCTION validate_media_submission_authority() RETURNS trigger
     LANGUAGE plpgsql
@@ -29182,6 +29243,32 @@ CREATE TABLE media_song_lyrics_revisions (
     CONSTRAINT media_song_lyrics_revisions_provenance_check CHECK ((provenance = ANY (ARRAY['asr_accepted'::text, 'pasted'::text, 'corrected'::text])))
 );
 
+CREATE TABLE media_song_stems (
+    submission_id text NOT NULL,
+    slot text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    reservation_id text NOT NULL,
+    immutable_ref text NOT NULL,
+    destination_ref text NOT NULL,
+    etag text NOT NULL,
+    object_version text NOT NULL,
+    size_bytes bigint NOT NULL,
+    content_type text NOT NULL,
+    canonical_sha256 text NOT NULL,
+    author_persona_id text NOT NULL,
+    sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_stems_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_stems_content_type_check CHECK ((content_type = 'audio/mpeg'::text)),
+    CONSTRAINT media_song_stems_destination_ref_check CHECK ((btrim(destination_ref) <> ''::text)),
+    CONSTRAINT media_song_stems_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_song_stems_immutable_ref_check CHECK ((btrim(immutable_ref) <> ''::text)),
+    CONSTRAINT media_song_stems_object_version_check CHECK ((btrim(object_version) <> ''::text)),
+    CONSTRAINT media_song_stems_size_bytes_check CHECK ((size_bytes > 0)),
+    CONSTRAINT media_song_stems_slot_check CHECK ((slot = ANY (ARRAY['instrumental_audio'::text, 'vocal_audio'::text])))
+);
+
 CREATE TABLE media_song_video_accepted_masters (
     plan_id text NOT NULL,
     master_revision_id text NOT NULL,
@@ -29502,6 +29589,7 @@ CREATE TABLE media_upload_reservations (
     multipart_manifest jsonb,
     multipart_completed_at timestamp with time zone,
     multipart_aborted_at timestamp with time zone,
+    slot text DEFAULT 'primary_audio'::text NOT NULL,
     CONSTRAINT media_upload_reservations_claim_fence_check CHECK ((claim_fence >= 0)),
     CONSTRAINT media_upload_reservations_claim_shape CHECK ((((state = 'issued'::text) AND (claim_fence = 0)) OR ((state = 'expired'::text) AND (((submission_id IS NULL) AND (claim_fence = 0)) OR ((submission_id IS NOT NULL) AND (claim_fence > 0)))) OR ((state = ANY (ARRAY['claimed'::text, 'sealed'::text, 'rejected'::text])) AND (claim_fence > 0)))),
     CONSTRAINT media_upload_reservations_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-upload-reservations'::text)),
@@ -29515,6 +29603,8 @@ CREATE TABLE media_upload_reservations (
     CONSTRAINT media_upload_reservations_reservation_id_check CHECK ((btrim(reservation_id) <> ''::text)),
     CONSTRAINT media_upload_reservations_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
     CONSTRAINT media_upload_reservations_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_upload_reservations_slot_check CHECK ((slot = ANY (ARRAY['primary_audio'::text, 'instrumental_audio'::text, 'vocal_audio'::text]))),
+    CONSTRAINT media_upload_reservations_slot_kind CHECK (((media_kind = 'song'::text) OR (slot = 'primary_audio'::text))),
     CONSTRAINT media_upload_reservations_state_check CHECK ((state = ANY (ARRAY['issued'::text, 'claimed'::text, 'sealed'::text, 'rejected'::text, 'expired'::text]))),
     CONSTRAINT media_upload_reservations_state_shape CHECK ((((state = 'issued'::text) AND (submission_id IS NULL) AND (operation_id IS NULL)) OR ((state = 'expired'::text) AND (((submission_id IS NULL) AND (operation_id IS NULL)) OR ((submission_id IS NOT NULL) AND (operation_id IS NOT NULL)))) OR ((state = ANY (ARRAY['claimed'::text, 'sealed'::text, 'rejected'::text])) AND (submission_id IS NOT NULL) AND (operation_id IS NOT NULL)))),
     CONSTRAINT media_upload_reservations_terminal_evidence_digest_check CHECK (((terminal_evidence_digest IS NULL) OR (terminal_evidence_digest ~ '^[0-9a-f]{64}$'::text))),
@@ -34256,6 +34346,18 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_revisions_submission_id_audio_revision_ly_key UNIQUE (submission_id, audio_revision, lyrics_revision);
 
+ALTER TABLE ONLY media_song_stems
+    ADD CONSTRAINT media_song_stems_destination_ref_key UNIQUE (destination_ref);
+
+ALTER TABLE ONLY media_song_stems
+    ADD CONSTRAINT media_song_stems_immutable_ref_key UNIQUE (immutable_ref);
+
+ALTER TABLE ONLY media_song_stems
+    ADD CONSTRAINT media_song_stems_pkey PRIMARY KEY (submission_id, slot);
+
+ALTER TABLE ONLY media_song_stems
+    ADD CONSTRAINT media_song_stems_reservation_id_key UNIQUE (reservation_id);
+
 ALTER TABLE ONLY media_song_video_accepted_masters
     ADD CONSTRAINT media_song_video_accepted_masters_master_revision_id_key UNIQUE (master_revision_id);
 
@@ -36490,6 +36592,8 @@ CREATE TRIGGER media_reference_evidence_append_only BEFORE DELETE OR UPDATE ON m
 
 CREATE CONSTRAINT TRIGGER media_reservation_claim_pair AFTER INSERT OR UPDATE ON media_upload_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'song'::text)) EXECUTE FUNCTION validate_media_reservation_claim_pair();
 
+CREATE TRIGGER media_reservation_slot_immutable BEFORE UPDATE ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION reject_media_reservation_slot_change();
+
 CREATE TRIGGER media_song_canonical_timing_guard BEFORE DELETE OR UPDATE ON media_song_canonical_timings FOR EACH ROW EXECUTE FUNCTION guard_media_song_canonical_timing();
 
 CREATE TRIGGER media_song_lyrics_append_only BEFORE DELETE OR UPDATE ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION guard_media_lyrics_append_only();
@@ -36497,6 +36601,10 @@ CREATE TRIGGER media_song_lyrics_append_only BEFORE DELETE OR UPDATE ON media_so
 CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_insert();
 
 CREATE TRIGGER media_song_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'song'::text)) EXECUTE FUNCTION guard_media_reservation_update();
+
+CREATE TRIGGER media_song_stem_insert_guard BEFORE INSERT ON media_song_stems FOR EACH ROW EXECUTE FUNCTION validate_media_song_stem_insert();
+
+CREATE TRIGGER media_song_stems_append_only BEFORE DELETE OR UPDATE ON media_song_stems FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update_rating_v2();
 
@@ -38434,6 +38542,12 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_transcript_fk FOREIGN KEY (submission_id, audio_revision, base_transcript_revision, canonical_audio_sha256) REFERENCES media_transcript_artifacts(submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
+
+ALTER TABLE ONLY media_song_stems
+    ADD CONSTRAINT media_song_stems_community_id_actor_user_id_reservation_id_fkey FOREIGN KEY (community_id, actor_user_id, reservation_id, submission_id, operation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, reservation_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_song_stems
+    ADD CONSTRAINT media_song_stems_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
 
 ALTER TABLE ONLY media_song_video_accepted_masters
     ADD CONSTRAINT media_song_video_accepted_maste_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_masters(master_revision_id, plan_id) ON DELETE RESTRICT;

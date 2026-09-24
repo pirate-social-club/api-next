@@ -830,11 +830,23 @@ export const SongTermsInputV1 = Schema.Union([
 ]);
 export type SongTermsInputV1 = Schema.Schema.Type<typeof SongTermsInputV1>;
 
+/** A song's audio slots. `primary_audio` is the master; the two stems are
+ * optional and attach to an existing submission (Song stems amendment,
+ * Specs 013 and 019, 2026-09-24). */
+export const SongAudioSlotV1 = Schema.Literals([
+  "primary_audio",
+  "instrumental_audio",
+  "vocal_audio",
+]);
+export type SongAudioSlotV1 = Schema.Schema.Type<typeof SongAudioSlotV1>;
+export const SongStemSlotV1 = Schema.Literals(["instrumental_audio", "vocal_audio"]);
+export type SongStemSlotV1 = Schema.Schema.Type<typeof SongStemSlotV1>;
+
 export const ReserveSongAudioV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
   track: Schema.Literal("song"),
-  slot: Schema.Literal("primary_audio"),
+  slot: SongAudioSlotV1,
   expected_content_type: Schema.String.check(
     Schema.isPattern(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u),
   ),
@@ -847,7 +859,7 @@ const RequiredUploadHeader = Schema.Struct({ name: SongAuthorString, value: Song
 export const SongAudioReservationV1 = Schema.Struct({
   reservation_id: SongAuthorString,
   track: Schema.Literal("song"),
-  slot: Schema.Literal("primary_audio"),
+  slot: SongAudioSlotV1,
   status: Schema.Literal("awaiting_upload"),
   upload: Schema.Struct({
     method: Schema.Literal("PUT"),
@@ -1118,6 +1130,23 @@ export const BindSongReferenceV1 = Schema.Struct({
 });
 export type BindSongReferenceV1 = Schema.Schema.Type<typeof BindSongReferenceV1>;
 
+/** Seals an uploaded stem reservation onto an existing song submission. */
+export const AttachSongStemV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+  slot: SongStemSlotV1,
+  reservation_id: SongAuthorString,
+});
+export type AttachSongStemV1 = Schema.Schema.Type<typeof AttachSongStemV1>;
+
+export const SongStemV1 = Schema.Struct({
+  status: Schema.Literal("sealed"),
+  content_type: Schema.Literal("audio/mpeg"),
+  size_bytes: PositiveSafeInteger,
+});
+export type SongStemV1 = Schema.Schema.Type<typeof SongStemV1>;
+
 export const RetryOrCancelSongSubmissionV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
@@ -1223,6 +1252,13 @@ const SongMediaSubmissionCommon = {
     ]),
   }),
   updated_at: SongAuthorString,
+  /** Sealed stems. Karaoke and the Study/Karaoke pipeline need both. */
+  stems: Schema.optional(
+    Schema.Struct({
+      instrumental_audio: Schema.NullOr(SongStemV1),
+      vocal_audio: Schema.NullOr(SongStemV1),
+    }),
+  ),
 };
 export const SongMediaPostSubmissionV1 = Schema.Union([
   Schema.Struct({
@@ -2264,6 +2300,23 @@ export const BindMediaPostSubmissionReference = endpoint({
   errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
 
+export const AttachMediaPostSubmissionStem = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/stems",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: AttachSongStemV1 },
+  response: MediaPostSubmissionV1,
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    IdempotencyConflict,
+    UploadObjectMissing,
+    NotFound,
+    RateLimited,
+  ],
+});
+
 export const RetryMediaPostSubmission = endpoint({
   method: "POST",
   path: "/media-post-submissions/:submissionId/retry",
@@ -2486,6 +2539,7 @@ export const v1Registry = {
   RenewVideoUploadParts,
   GetMediaPostSubmission,
   BindMediaPostSubmissionReference,
+  AttachMediaPostSubmissionStem,
   RetryMediaPostSubmission,
   RetryVideoPostSubmissionPoster,
   CancelMediaPostSubmission,

@@ -404,6 +404,7 @@ suite("song media persistence PostgreSQL migration suite", () => {
         "media_publication_decisions_append_only",
         "media_reference_evidence_append_only",
         "media_song_lyrics_append_only",
+        "media_song_stems_append_only",
         "media_submission_command_replays_append_only",
         "media_submission_events_append_only",
         "media_submission_terms_append_only",

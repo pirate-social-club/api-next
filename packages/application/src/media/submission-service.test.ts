@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MediaIngressUploadPresigner } from "@pirate/application";
-import { InternalError, NotFound, UploadObjectMissing } from "@pirate/contracts";
+import { Conflict, InternalError, NotFound, UploadObjectMissing } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   createMediaSubmissionState,
@@ -10,6 +10,7 @@ import {
 import type { PersonaRecord } from "../use-cases/personas.ts";
 import { MediaSealFailure, type MediaUploadSealer } from "./submission-sealing.ts";
 import {
+  attachMediaStem,
   finalizeMediaSubmission,
   type MediaSubmissionServices,
   type MediaUploadStore,
@@ -107,6 +108,8 @@ function storeWith(overrides: Partial<MediaUploadStore>): MediaUploadStore {
     bindTerms: unused,
     bindLyrics: unused,
     bindReference: unused,
+    getStemContext: unused,
+    attachStem: unused,
     retry: unused,
     authorCancel: unused,
     moderate: unused,
@@ -929,5 +932,131 @@ describe("media submission service upload orchestration", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({ status: "processing", phase: "analysis", audio_revision: 1 });
     expect(commits).toBe(2);
+  });
+});
+
+describe("song stem attachment", () => {
+  const stemBody = {
+    persona_id: persona.persona_id,
+    idempotency_key: "stem-key",
+    expected_creation_revision: awaitingUpload.creationRevision,
+    slot: "vocal_audio" as const,
+    reservation_id: "stem_reservation",
+  };
+  const stemReservation: {
+    slot: "primary_audio" | "instrumental_audio" | "vocal_audio";
+    state: string;
+    expired: boolean;
+    expectedContentType: string;
+    expectedSizeBytes: number;
+    expectedSha256: string | null;
+  } = {
+    slot: "vocal_audio",
+    state: "issued",
+    expired: false,
+    expectedContentType: "audio/mpeg",
+    expectedSizeBytes: 4,
+    expectedSha256: null,
+  };
+  const view = { state: awaitingUpload, lyrics, updatedAt: "2026-08-26T00:00:30.000Z" };
+  const stemServices = (input: {
+    readonly state?: MediaSubmissionState;
+    readonly reservation?: Partial<typeof stemReservation> | null;
+    readonly inspect?: MediaUploadSealer["inspect"];
+    readonly seals?: Parameters<MediaUploadSealer["seal"]>[0][];
+    readonly attached?: unknown[];
+  }) => {
+    const stateView = { ...view, state: input.state ?? awaitingUpload };
+    return servicesWith({
+      store: storeWith({
+        getViewForAuthor: async () => stateView,
+        replay: async () => ({ kind: "none" }),
+        getStemContext: async () => ({
+          view: stateView,
+          reservation:
+            input.reservation === null ? null : { ...stemReservation, ...input.reservation },
+        }),
+        attachStem: async (command) => {
+          input.attached?.push(command);
+          return { kind: "committed", submissionId: stateView.state.submissionId };
+        },
+      }),
+      sealer: {
+        inspect: input.inspect ?? (async () => ({ outcome: "ready", source })),
+        seal: async (request) => {
+          input.seals?.push(request);
+          return {
+            result: {
+              outcome: "sealed",
+              immutable_ref: request.immutableRef,
+              destination_ref: `r2://${request.destinationKey}`,
+              etag: "stem-etag",
+              version: "stem-version",
+              size_bytes: 4,
+              canonical_sha256: "a".repeat(64),
+            },
+          };
+        },
+      },
+    });
+  };
+
+  test("seals a vocals stem under its own operation and shows it on the submission", async () => {
+    const seals: Parameters<MediaUploadSealer["seal"]>[0][] = [];
+    const attached: unknown[] = [];
+    const result = await attachMediaStem(
+      { submissionId: awaitingUpload.submissionId, actor, body: stemBody },
+      stemServices({ seals, attached }),
+    );
+    expect(seals).toHaveLength(1);
+    expect(seals[0]?.destinationKey).toBe("immutable/media_operation-stem-vocal_audio/audio/1");
+    expect(seals[0]?.ownershipMarker).toBe("media_operation-stem-vocal_audio");
+    expect(attached[0]).toMatchObject({
+      slot: "vocal_audio",
+      reservationId: "stem_reservation",
+      stemOperationId: "media_operation-stem-vocal_audio",
+      endpointTemplate: "/media-post-submissions/:submissionId/stems",
+      immutableObject: { sizeBytes: 4, contentType: "audio/mpeg", canonicalSha256: "a".repeat(64) },
+    });
+    expect(result).toMatchObject({
+      audio_revision: 0,
+      stems: {
+        instrumental_audio: null,
+        vocal_audio: { status: "sealed", content_type: "audio/mpeg", size_bytes: 4 },
+      },
+    });
+  });
+
+  test("refuses a reservation made for another slot, before sealing", async () => {
+    const seals: Parameters<MediaUploadSealer["seal"]>[0][] = [];
+    for (const slot of ["instrumental_audio", "primary_audio"] as const) {
+      await expect(
+        attachMediaStem(
+          { submissionId: awaitingUpload.submissionId, actor, body: stemBody },
+          stemServices({ reservation: { slot }, seals }),
+        ),
+      ).rejects.toBeInstanceOf(Conflict);
+    }
+    expect(seals).toHaveLength(0);
+  });
+
+  test("refuses once the song is published", async () => {
+    await expect(
+      attachMediaStem(
+        { submissionId: awaitingUpload.submissionId, actor, body: stemBody },
+        stemServices({ state: { ...awaitingUpload, status: "published", postId: "post" } }),
+      ),
+    ).rejects.toMatchObject({ details: { reason_code: "stem_window_closed" } });
+  });
+
+  test("reports a missing upload without changing the submission", async () => {
+    const attached: unknown[] = [];
+    await expect(
+      attachMediaStem(
+        { submissionId: awaitingUpload.submissionId, actor, body: stemBody },
+        stemServices({ inspect: async () => ({ outcome: "source_missing" }), attached }),
+      ),
+    ).rejects.toBeInstanceOf(UploadObjectMissing);
+    expect(attached).toHaveLength(0);
   });
 });
