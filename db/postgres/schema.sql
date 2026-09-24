@@ -10212,6 +10212,22 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_megapot_participant_credit_claim() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.source_kind = 'megapot_allocation' AND OLD.state = 'credited'
+     AND NEW.state <> 'credited'
+     AND NOT EXISTS (
+       SELECT 1 FROM megapot_participant_claims claim
+        WHERE claim.credit_id = NEW.credit_id AND claim.status = 'accepted'
+     ) THEN
+    RAISE EXCEPTION 'megapot participant credit requires an accepted claim before payout';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_megapot_pool_drawing() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -36929,6 +36945,8 @@ CREATE TRIGGER reward_erc20_transfer_receipt_guard BEFORE INSERT OR DELETE OR UP
 CREATE CONSTRAINT TRIGGER reward_ledger_credit_source_pair AFTER INSERT ON reward_ledger_credits DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_ledger_credit_source();
 
 CREATE TRIGGER reward_ledger_credits_change_guard BEFORE DELETE OR UPDATE ON reward_ledger_credits FOR EACH ROW EXECUTE FUNCTION guard_reward_ledger_credit();
+
+CREATE TRIGGER reward_ledger_credits_participant_claim_gate BEFORE UPDATE ON reward_ledger_credits FOR EACH ROW EXECUTE FUNCTION guard_megapot_participant_credit_claim();
 
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 

@@ -500,11 +500,34 @@ BEGIN
 END
 $$;
 
+-- Database backstop for the payout gate: a participant credit cannot leave
+-- credited (reservation for payout) without an accepted claim, whatever path
+-- writes the row.
+CREATE FUNCTION guard_megapot_participant_credit_claim() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.source_kind = 'megapot_allocation' AND OLD.state = 'credited'
+     AND NEW.state <> 'credited'
+     AND NOT EXISTS (
+       SELECT 1 FROM megapot_participant_claims claim
+        WHERE claim.credit_id = NEW.credit_id AND claim.status = 'accepted'
+     ) THEN
+    RAISE EXCEPTION 'megapot participant credit requires an accepted claim before payout';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER reward_ledger_credits_participant_claim_gate
+  BEFORE UPDATE ON reward_ledger_credits
+  FOR EACH ROW EXECUTE FUNCTION guard_megapot_participant_credit_claim();
+
 -- Privilege contract. Claims and guards change only through the two routines
 -- above, which run as their owner with a pinned search path. The runtime role
 -- may execute the participant claim but never write either table directly,
--- and only the operator role may execute the audited exception, so a
--- compromise of the serving path cannot fabricate an operator decision. The
+-- and only the operator role may execute the audited exception, so the
+-- serving role cannot write an operator decision directly. It can still write
+-- identity evidence tables, so this is not a defence against a fully
+-- compromised serving path. The
 -- blanket default table privileges would otherwise reach both new tables, so
 -- the migration revokes them in deployment order under the role-existence
 -- guard; the role template states the same contract.

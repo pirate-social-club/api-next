@@ -384,6 +384,11 @@ export function makeControlPlaneMegapotWorkRepository() {
                        'credited','payout_reserved','payout_pending','reconciliation_required'
                      )
                        AND credit.updated_at <= parameters.observed_at-parameters.threshold
+                       -- Unclaimed participant credits are held by design (§5.2a).
+                       AND NOT (credit.state='credited' AND credit.source_kind='megapot_allocation'
+                         AND NOT EXISTS (SELECT 1 FROM megapot_participant_claims claim
+                                          WHERE claim.credit_id=credit.credit_id
+                                            AND claim.status='accepted'))
                     UNION ALL
                     SELECT 'refund_liabilities',
                            greatest(leg.updated_at,offer.terminal_at),

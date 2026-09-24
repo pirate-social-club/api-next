@@ -624,6 +624,16 @@ suite("Composed current-policy Megapot settlement", () => {
         Effect.runPromise(payout.loadCandidate(credit("winner-unverified"))),
       ).rejects.toMatchObject({ reason: "credit-not-payable" });
       expect(await outstanding()).toBe(owedBefore);
+      // The database refuses a payout reservation without an accepted claim,
+      // even from a writer that bypasses the payout repository.
+      await expect(
+        admin.query(
+          `UPDATE reward_ledger_credits SET state='payout_reserved', reserved_atomic=amount_atomic,
+                updated_at=clock_timestamp()
+            WHERE credit_id=$1`,
+          [credit("winner-unverified")],
+        ),
+      ).rejects.toThrow("accepted claim");
       // A refused claim is claimable later once valid evidence exists.
       await seedVeryRewardEvidence(
         admin,
