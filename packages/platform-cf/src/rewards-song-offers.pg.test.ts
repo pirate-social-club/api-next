@@ -31,6 +31,7 @@ import { makeControlPlaneRewardOfferTerminalStore } from "./reward-offer-termina
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
 import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { makeControlPlaneRewardRefundStore } from "./reward-refund-repository.ts";
+import { makeControlPlaneSongOwnerPolicyStore } from "./song-owner-video-policy-repository.ts";
 import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -43,7 +44,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 22;
+const testCount = 23;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -1199,13 +1200,21 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         }),
       );
 
-      // Client A mirrors the repository's leg authority read, including the
-      // FOR SHARE fence on the policy head, inside an open transaction.
+      // Client A mirrors the repository's leg authority: the guarded head lock,
+      // then the authority read on a fresh snapshot, inside one transaction.
       const authority = new Client({ connectionString: scopedConnection });
       const narrowing = new Client({ connectionString: scopedConnection });
       await Promise.all([authority.connect(), narrowing.connect()]);
       try {
         await authority.query("BEGIN");
+        const locked = await authority.query(
+          `SELECT head.owner_account_id
+             FROM song_reward_offers offer
+             CROSS JOIN LATERAL lock_song_owner_policy_head_v1(offer.community_id, offer.post_id) head
+            WHERE offer.offer_id=$1`,
+          [opened.offer.offerId],
+        );
+        expect(locked.rows).toHaveLength(1);
         const held = await authority.query(
           `SELECT revision.policy_revision, revision.policy_hash
              FROM song_reward_offers offer
@@ -1220,8 +1229,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
               AND revision.policy_revision=head.current_policy_revision
               AND revision.policy_hash=head.current_policy_hash
             WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
-              AND offer.ends_at > clock_timestamp()
-            FOR SHARE OF head`,
+              AND offer.ends_at > clock_timestamp()`,
           [opened.offer.offerId],
         );
         expect(held.rows).toHaveLength(1);
@@ -1274,6 +1282,150 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         expect(leg.leg.ownerPolicyRevision).toBe(2);
       } finally {
         await Promise.all([authority.end(), narrowing.end()]);
+      }
+    });
+    completedTestCount += 1;
+  });
+
+  test("reward authority and owner policy run as the restricted runtime role", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "runtime-role", address("d"));
+      await seedMegapotAuthority(admin);
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-runtime-role', 'megapot-base-sepolia-v2', 84532, 42,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 142, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("9"), hash("9")],
+      );
+      // Apply the operational role template to this schema under unique role
+      // names, so the repositories run with the runtime role's real grants:
+      // SELECT only on song_owner_policies, which cannot take FOR SHARE.
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const runtime = `rewards_runtime_${suffix}`;
+      const operator = `rewards_operator_${suffix}`;
+      const schemaRow = await admin.query<{ readonly schema: string }>(
+        "SELECT current_schema() AS schema",
+      );
+      const schema = schemaRow.rows[0]?.schema;
+      if (!schema) throw new Error("test schema was not resolved");
+      const template = (
+        await Bun.file(new URL("../../../db/postgres/roles.sql.example", import.meta.url)).text()
+      )
+        .replaceAll("api_next_operator", operator)
+        .replaceAll("api_next_app", runtime)
+        .replaceAll("SCHEMA public", `SCHEMA ${quoteIdentifier(schema)}`);
+      await admin.query(template);
+      const runtimeConnection = `${scopedConnection}${encodeURIComponent(` -c role=${runtime}`)}`;
+      const probe = new Client({ connectionString: runtimeConnection });
+      try {
+        await probe.connect();
+        const role = await probe.query<{ readonly current_user: string }>("SELECT current_user");
+        expect(role.rows[0]?.current_user).toBe(runtime);
+        await expect(
+          probe.query(
+            "SELECT 1 FROM song_owner_policies WHERE community_id=$1 AND post_id=$2 FOR SHARE",
+            [identity.communityId, identity.postId],
+          ),
+        ).rejects.toMatchObject({ code: "42501" });
+
+        const layer = makeDirectPostgresControlPlaneLayer(runtimeConnection);
+        const offers = makeControlPlaneSongRewardOfferStore(layer);
+        const opened = await Effect.runPromise(
+          offers.openOffer({
+            actionId: "reward-action-runtime-role-open",
+            offerId: "reward-offer-runtime-role",
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            communityId: identity.communityId,
+            postId: identity.postId,
+            idempotencyKey: "runtime-role-open-1",
+            requestHash: hash("b"),
+            termsHash: hash("c"),
+            rewardPolicy: {
+              version: "scarce_reward_v1",
+              community_id: identity.communityId,
+              offer_id: "reward-offer-runtime-role",
+              requirements: ["human.personhood", "credential.subject_unique"],
+              uniqueness: { kind: "single_authority", authority_id: "reward-offer-runtime-role" },
+              legal_eligibility: {
+                age: null,
+                geography: null,
+                disclosure: null,
+                environment: "test_staging_empty_v1",
+              },
+            },
+            rewardPolicyHash: hash("d"),
+            startsAt: new Date().toISOString(),
+            endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        expect(opened.replayed).toBe(false);
+        const leg = await Effect.runPromise(
+          offers.addMegapotPoolLeg({
+            actionId: "reward-action-runtime-role-leg",
+            legId: "reward-leg-runtime-role",
+            offerId: opened.offer.offerId,
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            idempotencyKey: "runtime-role-leg-1",
+            requestHash: hash("e"),
+            legTermsHash: bytes32("f"),
+            createdAt: new Date(Date.now() + 1).toISOString(),
+            maxTicketPriceAtomic: 20_000n,
+            entryCutoffSeconds: 600,
+            eligibleActivities: ["study", "karaoke"] as const,
+            minScoreBps: 7_000,
+            emptyPoolPolicy: "no_purchase" as const,
+            fallbackPayoutPersonaId: null,
+            referralAllocationVersion: null,
+            referralPolicyHash: null,
+            referralDisclosedAt: null,
+          }),
+        );
+        expect(leg.leg.ownerPolicyRevision).toBe(1);
+
+        const policies = makeControlPlaneSongOwnerPolicyStore(layer);
+        const management = await Effect.runPromise(
+          policies.getManagement({
+            communityId: identity.communityId,
+            postId: identity.postId,
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+          }),
+        );
+        expect(management.policy_revision).toBe(1);
+        const updated = await Effect.runPromise(
+          policies.update({
+            communityId: identity.communityId,
+            postId: identity.postId,
+            accountId: identity.accountId,
+            update: {
+              persona_id: identity.personaId,
+              expected_policy_revision: 1,
+              third_party_reward_legs: "allowed",
+              pool_leg: "allowed",
+              derivative_video: "owner_only",
+            },
+          }),
+        );
+        expect(updated.policy_revision).toBe(2);
+      } finally {
+        await probe.end().catch(() => undefined);
+        for (const role of [runtime, operator]) {
+          await admin.query(`DROP OWNED BY ${quoteIdentifier(role)}`);
+          await admin.query(`DROP ROLE ${quoteIdentifier(role)}`);
+        }
       }
     });
     completedTestCount += 1;
