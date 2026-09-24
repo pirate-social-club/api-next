@@ -35,12 +35,13 @@ function topics(value: ReturnType<typeof encodeEventTopics>): [Hex, ...Hex[]] {
   return value as [Hex, ...Hex[]];
 }
 
-function receipt(): MegapotTransactionReceipt {
+function receipt(options: { from?: Hex; amount?: bigint } = {}): MegapotTransactionReceipt {
+  const from = options.from ?? SENDER;
   return {
     chainId: 84_532,
     status: "success",
     transactionHash: TX,
-    from: SENDER,
+    from,
     to: BONUS,
     blockHash: BLOCK,
     blockNumber: 200n,
@@ -51,10 +52,12 @@ function receipt(): MegapotTransactionReceipt {
           encodeEventTopics({
             abi: transferEvent,
             eventName: "Transfer",
-            args: { from: SENDER, to: CUSTODY },
+            args: { from, to: CUSTODY },
           }),
         ),
-        data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [10_000n]),
+        data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [
+          options.amount ?? 10_000n,
+        ]),
         logIndex: 3,
         transactionHash: TX,
         blockHash: BLOCK,
@@ -155,5 +158,100 @@ describe("reward funding coordinator", () => {
     expect(replay).toEqual(confirmed);
     expect(confirms).toBe(1);
     expect(planned.intent.fundingEffectId).toBe(deriveRewardFundingEffectId(request));
+  });
+
+  test("never confirms a transfer from another sender or of another amount", async () => {
+    for (const mismatch of [receipt({ from: address("9") }), receipt({ amount: 9_999n })]) {
+      const reconciliations: string[] = [];
+      let intent: RewardFundingIntent | null = null;
+      let confirms = 0;
+      const store: RewardFundingStore = {
+        plan: (input) => {
+          intent = {
+            ...input,
+            legKind: "asset_bonus",
+            recipientAddress: CUSTODY,
+            state: "planned",
+            transactionHash: null,
+            confirmedAmountAtomic: null,
+            transferLogIndex: null,
+            blockNumber: null,
+            blockHash: null,
+            attestationId: "megapot-base-sepolia-v2",
+            environment: "staging",
+            chainId: 84_532,
+            tokenAddress: BONUS,
+            tokenDecimals: 18,
+            usdcAddress: USDC,
+            custodyAddress: CUSTODY,
+            jackpotAddress: JACKPOT,
+            ticketNftAddress: NFT,
+            referrerAddress: REFERRER,
+            jackpotCodeHash: hash("7"),
+            usdcCodeHash: hash("8"),
+            ticketNftCodeHash: hash("9"),
+          };
+          return Effect.succeed(intent);
+        },
+        find: () => Effect.succeed(intent),
+        bindTransaction: (input) => {
+          if (intent === null) throw new Error("missing intent");
+          intent = { ...intent, state: "confirming", transactionHash: input.transactionHash };
+          return Effect.succeed(intent);
+        },
+        confirm: (input) => {
+          if (intent === null) throw new Error("missing intent");
+          confirms += 1;
+          intent = {
+            ...intent,
+            state: "confirmed",
+            confirmedAmountAtomic: input.amountAtomic,
+            transferLogIndex: input.transferLogIndex,
+            blockNumber: input.blockNumber,
+            blockHash: input.blockHash,
+          };
+          return Effect.void;
+        },
+        revert: () => Effect.void,
+        requireReconciliation: (input) => {
+          reconciliations.push(input.reason);
+          if (intent !== null) intent = { ...intent, state: "reconciliation_required" };
+          return Effect.void;
+        },
+      };
+      const rpc = {
+        attestDeployment: async () => ({
+          jackpotCodeHash: hash("7"),
+          usdcCodeHash: hash("8"),
+          ticketNftCodeHash: hash("9"),
+        }),
+        readReceipt: async () => mismatch,
+        readBlock: async () => ({ blockNumber: 200n, blockHash: BLOCK }),
+        readHead: async () => ({ blockNumber: 202n, blockHash: hash("c") }),
+      } as unknown as MegapotV2RpcClient;
+      const coordinator = makeRewardFundingCoordinator({
+        store,
+        rpc,
+        now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+      });
+      const request = {
+        legId: "leg-a",
+        funderAccountId: "account-a",
+        senderAddress: SENDER,
+        expectedAmountAtomic: 10_000n,
+        requiredConfirmations: 3,
+        idempotencyKey: "fund-mismatch",
+      } as const;
+      const planned = await Effect.runPromise(coordinator.plan(request));
+      const observed = await Effect.runPromise(
+        coordinator.observe({
+          fundingEffectId: planned.intent.fundingEffectId,
+          transactionHash: TX,
+        }),
+      );
+      expect(observed.kind).not.toBe("confirmed");
+      expect(confirms).toBe(0);
+      expect(reconciliations).toEqual(["funding_receipt_evidence_invalid"]);
+    }
   });
 });

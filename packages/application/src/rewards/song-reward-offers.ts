@@ -129,6 +129,15 @@ export interface SongRewardOfferStore {
     RewardQualificationPoliciesV1,
     SongRewardOfferFailure
   >;
+  /**
+   * The only funding sender a reward leg may name: the chosen persona's single
+   * active EVM wallet, owned by the authenticated account. Missing, inactive or
+   * ambiguous assignments fail closed as persona-ineligible.
+   */
+  readonly fundingSender: (input: {
+    readonly accountId: string;
+    readonly personaId: string;
+  }) => Effect.Effect<string, SongRewardOfferFailure>;
   readonly openOffer: (input: {
     readonly actionId: string;
     readonly offerId: string;
