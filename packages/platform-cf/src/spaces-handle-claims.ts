@@ -36,6 +36,7 @@ import {
   stringArray,
   text,
 } from "./handle-sales-internals.ts";
+import { spacesTaprootOutputScriptFromAddress } from "./spaces-taproot-recipient.ts";
 
 /**
  * Native Spaces quote, reservation, and atomic claim (spec 012 §5.3.13.6-
@@ -314,7 +315,8 @@ const liveRecipient = Effect.fn("spacesLiveRecipient")(function* (
 ) {
   const assignment = yield* transaction.execute<Row>({
     label: "spaces-handle-claims.recipient.resolve",
-    text: `SELECT assignment.assignment_id,assignment.bitcoin_network,assignment.output_script_hex
+    text: `SELECT assignment.assignment_id,assignment.bitcoin_network,assignment.address,
+                 assignment.output_script_hex
              FROM persona_wallet_assignments AS assignment
             WHERE assignment.account_id=$1
               AND assignment.persona_id=$2
@@ -329,10 +331,16 @@ const liveRecipient = Effect.fn("spacesLiveRecipient")(function* (
   const row = assignment.rows[0];
   if (row === undefined) return null;
   const script = text(row, "output_script_hex");
-  if (!isP2trOutputScriptHexV1(script)) throw new Error("invalid Taproot recipient script");
+  const assignmentNetwork = network(row, "bitcoin_network");
+  if (
+    !isP2trOutputScriptHexV1(script) ||
+    spacesTaprootOutputScriptFromAddress(text(row, "address"), assignmentNetwork) !== script
+  ) {
+    throw new Error("invalid Taproot recipient script");
+  }
   return {
     kind: "persona_taproot_v1",
-    network: network(row, "bitcoin_network"),
+    network: assignmentNetwork,
     taproot_assignment_id: text(row, "assignment_id"),
     script_pubkey_hex: script,
   } satisfies SpacesRecipientBindingV1;
