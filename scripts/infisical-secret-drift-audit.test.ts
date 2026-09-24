@@ -452,6 +452,36 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
+  test("keeps the Spaces Taproot fixture identity only at the staging operator path", () => {
+    const names = ["SPACES_TAPROOT_E2E_EMAIL", "SPACES_TAPROOT_E2E_OTP"];
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(({ name }) => names.includes(name ?? "")),
+      ).toEqual([]);
+      for (const path of [
+        "/",
+        "/agents",
+        "/agents/codex",
+        "/services/api-next",
+        "/services/api-next/operator",
+      ] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: names } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name }) => kind === "unexpected-secret" && names.includes(name ?? ""),
+          ),
+        ).toEqual(
+          environment === "staging" && path === "/services/api-next/operator"
+            ? []
+            : names.map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
   test("requires the exact development proxy credential and rejects other names and folders", () => {
     const base = emptySnapshot("dev");
     expect(auditInfisicalSnapshots([base]).violations).toEqual([]);
