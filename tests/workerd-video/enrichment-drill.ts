@@ -82,13 +82,15 @@ export async function exerciseComposedEnrichment(input: {
       if (path.pathname.endsWith("/copy")) {
         copies++;
         const body = (await request.json()) as {
-          input: string;
+          url: string;
           creator: string;
           meta: { source_sha256: string; operation_id: string };
           requireSignedURLs: boolean;
         };
         expect(body.requireSignedURLs).toBe(true);
-        expect(body.input).toMatch(
+        // Stream's copy contract takes the source as `url`; `input` is refused.
+        expect(body).not.toHaveProperty("input");
+        expect(body.url).toMatch(
           /^https:\/\/video-source\.example\/\.well-known\/pirate\/video-source\/v1\/[A-Za-z0-9_-]{43}$/u,
         );
         accepted = body;
