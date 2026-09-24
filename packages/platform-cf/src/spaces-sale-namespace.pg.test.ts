@@ -10,6 +10,7 @@ import {
   handleSpacesMembershipSourceHash,
   handleSpacesSaleNamespaceActivationHash,
 } from "@pirate/domain";
+import { bech32m } from "@scure/base";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -33,6 +34,7 @@ import {
   spacesRoot,
 } from "./spaces-sale-namespace.pg-fixture.ts";
 import { makeControlPlaneSpacesSaleNamespaceStore } from "./spaces-sale-namespace-repository.ts";
+import { makeControlPlaneSpacesTaprootPreparationStore } from "./spaces-taproot-preparation-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -41,7 +43,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_SALE_NAMESPACE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete";
-const testCount = 11;
+const testCount = 14;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000a001";
@@ -74,6 +76,11 @@ async function withSchema(use: (admin: Client, connection: string) => Promise<vo
 
 const spaces = (connection: string): SpacesSaleNamespaceStore =>
   makeControlPlaneSpacesSaleNamespaceStore(makeDirectPostgresControlPlaneLayer(connection));
+const taproot = (connection: string) =>
+  makeControlPlaneSpacesTaprootPreparationStore(makeDirectPostgresControlPlaneLayer(connection));
+
+const regtestAddress = (programHex: string) =>
+  bech32m.encode("bcrt", [1, ...bech32m.toWords(Buffer.from(programHex, "hex"))], 90);
 
 const failureOf = async <A, E>(effect: Effect.Effect<A, E>): Promise<E | undefined> => {
   const exit = await Effect.runPromiseExit(effect);
@@ -1568,6 +1575,153 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
           delegationAddress: delegation,
         }),
       ).rejects.toThrow("live operator instance");
+    });
+    completed++;
+  });
+
+  test("persists Taproot creation intent before provider work and recovers an exact retry", async () => {
+    await withSchema(async (admin, connection) => {
+      await configureSpacesNetwork(admin);
+      const accountId = "taproot-prepare-owner";
+      const personaId = await seedAccount(admin, accountId, { humanEvidence: false });
+      const store = taproot(connection);
+      const request = {
+        accountId,
+        personaId,
+        idempotencyKey: "taproot-prep-1",
+        network: "regtest" as const,
+      };
+      const pending = await Effect.runPromise(store.prepare(request));
+      expect(pending).toMatchObject({
+        personaId,
+        network: "regtest",
+        hdWalletIndex: 0,
+        status: "pending",
+        address: null,
+        outputScriptHex: null,
+      });
+      expect(await Effect.runPromise(store.read({ accountId, personaId }))).toEqual(pending);
+      expect(await Effect.runPromise(store.prepare(request))).toEqual(pending);
+      expect(
+        await failureOf(store.prepare({ ...request, idempotencyKey: "changed" })),
+      ).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "request-mismatch",
+      });
+      expect(await failureOf(store.prepare({ ...request, network: "mainnet" }))).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "request-mismatch",
+      });
+      // An interrupted provider call leaves a durable pending assignment and an active persona.
+      expect(
+        (await admin.query("SELECT status FROM personas WHERE persona_id=$1", [personaId])).rows[0]
+          ?.status,
+      ).toBe("active");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM persona_wallet_assignments WHERE persona_id=$1 AND chain_account_kind='bitcoin-taproot'",
+            [personaId],
+          )
+        ).rows[0]?.count,
+      ).toBe(1);
+    });
+    completed++;
+  });
+
+  test("confirms only the prepared Taproot index and matching bech32m script", async () => {
+    await withSchema(async (admin, connection) => {
+      await configureSpacesNetwork(admin);
+      const accountId = "taproot-confirm-owner";
+      const personaId = await seedAccount(admin, accountId, { humanEvidence: false });
+      const store = taproot(connection);
+      const pending = await Effect.runPromise(
+        store.prepare({
+          accountId,
+          personaId,
+          idempotencyKey: "taproot-confirm-1",
+          network: "regtest",
+        }),
+      );
+      const program = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+      const address = regtestAddress(program);
+      const confirmation = {
+        accountId,
+        personaId,
+        hdWalletIndex: pending.hdWalletIndex,
+        privyWalletId: "provider-wallet-1",
+        address,
+        network: "regtest" as const,
+      };
+      expect(
+        await failureOf(store.confirmVerified({ ...confirmation, hdWalletIndex: 1 })),
+      ).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "provider-mismatch",
+      });
+      expect(
+        await failureOf(
+          store.confirmVerified({ ...confirmation, address: `bcrt1p${"q".repeat(58)}` }),
+        ),
+      ).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "provider-mismatch",
+      });
+      expect(await Effect.runPromise(store.read({ accountId, personaId }))).toEqual(pending);
+      const active = await Effect.runPromise(store.confirmVerified(confirmation));
+      expect(active).toMatchObject({
+        status: "active",
+        address,
+        outputScriptHex: `5120${program}`,
+      });
+      expect(await Effect.runPromise(store.confirmVerified(confirmation))).toEqual(active);
+      expect(
+        await failureOf(
+          store.confirmVerified({ ...confirmation, privyWalletId: "other-provider-wallet" }),
+        ),
+      ).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "provider-mismatch",
+      });
+    });
+    completed++;
+  });
+
+  test("serializes concurrent preparations and keeps sibling persona indices distinct", async () => {
+    await withSchema(async (admin, connection) => {
+      await configureSpacesNetwork(admin);
+      const accountId = "taproot-concurrent-owner";
+      const firstPersona = await seedAccount(admin, accountId, { humanEvidence: false });
+      const secondPersona = "persona-taproot-concurrent-second";
+      await createActivePersonaFixture(admin, { accountId, personaId: secondPersona });
+      const store = taproot(connection);
+      const firstRequest = {
+        accountId,
+        personaId: firstPersona,
+        idempotencyKey: "taproot-concurrent-1",
+        network: "regtest" as const,
+      };
+      const [first, replay] = await Promise.all([
+        Effect.runPromise(store.prepare(firstRequest)),
+        Effect.runPromise(store.prepare(firstRequest)),
+      ]);
+      expect(replay).toEqual(first);
+      expect(
+        await failureOf(store.prepare({ ...firstRequest, personaId: secondPersona })),
+      ).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "request-mismatch",
+      });
+      const second = await Effect.runPromise(
+        store.prepare({
+          ...firstRequest,
+          personaId: secondPersona,
+          idempotencyKey: "taproot-concurrent-2",
+        }),
+      );
+      expect(first.hdWalletIndex).toBe(0);
+      expect(second.hdWalletIndex).toBe(1);
+      expect(second.assignmentId).not.toBe(first.assignmentId);
     });
     completed++;
   });
