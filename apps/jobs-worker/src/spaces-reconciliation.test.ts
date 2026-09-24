@@ -32,7 +32,6 @@ describe("Spaces reconciliation job", () => {
     const alerts: string[] = [];
     const evidence = {
       certificate_sha256_hex: "a".repeat(64),
-      commitment_txid_hex: "b".repeat(64),
       commitment_root_hex: "c".repeat(64),
       mined_height: 100,
       verified_tip_height: 245,
