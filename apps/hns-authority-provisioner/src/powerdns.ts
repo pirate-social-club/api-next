@@ -48,6 +48,29 @@ type ApiCryptokey = Readonly<{
 const responseMaxBytes = 1_048_576;
 const requestTimeoutMs = 5_000;
 
+/**
+ * Runs one PowerDNS exchange, request and body read together, under an
+ * ordinary timer. `AbortSignal.timeout` alone did not keep the serve loop
+ * alive: a read-back that never settled let Bun drain its event loop and exit
+ * 0 in the middle of a provisioning job. This timer is referenced, so a stall
+ * rejects, the job retries, and the failure is logged.
+ */
+async function withExchangeDeadline<T>(exchange: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("PowerDNS request timed out"));
+    }, requestTimeoutMs);
+  });
+  try {
+    return await Promise.race([exchange(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function reservationAccount(challenge: string): Promise<string> {
   const reservationDigest = await crypto.subtle.digest(
     "SHA-256",
@@ -319,21 +342,22 @@ export function makePowerDnsRootProvisioner(
     method: string,
     path: string,
     body?: unknown,
-  ): Promise<{ readonly response: Response; readonly json: unknown }> => {
-    const response = await fetcher(`${apiUrl}/api/v1${path}`, {
-      method,
-      redirect: "manual",
-      signal: AbortSignal.timeout(requestTimeoutMs),
-      headers: {
-        accept: "application/json",
-        "x-api-key": config.api_key,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  ): Promise<{ readonly response: Response; readonly json: unknown }> =>
+    withExchangeDeadline(async (signal) => {
+      const response = await fetcher(`${apiUrl}/api/v1${path}`, {
+        method,
+        redirect: "manual",
+        signal,
+        headers: {
+          accept: "application/json",
+          "x-api-key": config.api_key,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const json = await readBoundedJson(response);
+      return { response, json };
     });
-    const json = await readBoundedJson(response);
-    return { response, json };
-  };
   return async (input) => {
     const zoneName = canonicalName(input.root_label);
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
@@ -458,20 +482,21 @@ export function makePowerDnsRootReconciler(
     throw new Error("PowerDNS root reconciler configuration is invalid");
   }
   const apiUrl = config.api_url.replace(/\/+$/u, "");
-  const request = async (method: string, path: string, body?: unknown) => {
-    const response = await fetcher(`${apiUrl}/api/v1${path}`, {
-      method,
-      redirect: "manual",
-      signal: AbortSignal.timeout(requestTimeoutMs),
-      headers: {
-        accept: "application/json",
-        "x-api-key": config.api_key,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  const request = (method: string, path: string, body?: unknown) =>
+    withExchangeDeadline(async (signal) => {
+      const response = await fetcher(`${apiUrl}/api/v1${path}`, {
+        method,
+        redirect: "manual",
+        signal,
+        headers: {
+          accept: "application/json",
+          "x-api-key": config.api_key,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { response, json: await readBoundedJson(response) };
     });
-    return { response, json: await readBoundedJson(response) };
-  };
   return async (input) => {
     const zoneName = canonicalName(input.root_label);
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
@@ -528,13 +553,15 @@ export function makePowerDnsRootTeardown(
     const zoneName = canonicalName(input.root_label);
     const zoneUrl = `${apiUrl}/api/v1/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
     const inspect = async () => {
-      const response = await fetcher(zoneUrl, {
-        method: "GET",
-        redirect: "manual",
-        signal: AbortSignal.timeout(requestTimeoutMs),
-        headers: { accept: "application/json", "x-api-key": config.api_key },
+      const { response, value } = await withExchangeDeadline(async (signal) => {
+        const response = await fetcher(zoneUrl, {
+          method: "GET",
+          redirect: "manual",
+          signal,
+          headers: { accept: "application/json", "x-api-key": config.api_key },
+        });
+        return { response, value: await readBoundedJson(response) };
       });
-      const value = await readBoundedJson(response);
       if (response.status === 404) return null;
       if (!response.ok) throw new Error("PowerDNS teardown inspection failed");
       parseZone(value, zoneName);
@@ -546,16 +573,19 @@ export function makePowerDnsRootTeardown(
       if (zone.account !== (await reservationAccount(input.challenge_txt_value)))
         throw new Error("PowerDNS teardown reservation does not match");
     }
-    const response = await fetcher(
-      `${apiUrl}/api/v1/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`,
-      {
-        method: "DELETE",
-        redirect: "manual",
-        signal: AbortSignal.timeout(requestTimeoutMs),
-        headers: { accept: "application/json", "x-api-key": config.api_key },
-      },
-    );
-    await readBoundedJson(response);
+    const response = await withExchangeDeadline(async (signal) => {
+      const response = await fetcher(
+        `${apiUrl}/api/v1/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`,
+        {
+          method: "DELETE",
+          redirect: "manual",
+          signal,
+          headers: { accept: "application/json", "x-api-key": config.api_key },
+        },
+      );
+      await readBoundedJson(response);
+      return response;
+    });
     if (response.status !== 404 && !response.ok) {
       throw new Error("PowerDNS zone teardown failed");
     }
@@ -592,19 +622,22 @@ export function makePowerDnsZoneAvailabilityReadV1(
     throw new Error("PowerDNS zone availability configuration is invalid");
   }
   const apiUrl = config.api_url.replace(/\/+$/u, "");
-  const get = (path: string): Promise<Response> =>
-    fetcher(`${apiUrl}/api/v1${path}`, {
-      method: "GET",
-      redirect: "manual",
-      signal: AbortSignal.timeout(requestTimeoutMs),
-      headers: { accept: "application/json", "x-api-key": config.api_key },
+  const get = (path: string): Promise<{ readonly response: Response; readonly json: unknown }> =>
+    withExchangeDeadline(async (signal) => {
+      const response = await fetcher(`${apiUrl}/api/v1${path}`, {
+        method: "GET",
+        redirect: "manual",
+        signal,
+        headers: { accept: "application/json", "x-api-key": config.api_key },
+      });
+      return { response, json: await readBoundedJson(response) };
     });
   return async (input) => {
     const zoneName = canonicalName(input.root_label);
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
     let zoneResponse: Response;
     try {
-      zoneResponse = await get(zonePath);
+      zoneResponse = (await get(zonePath)).response;
     } catch {
       return null;
     }
@@ -614,9 +647,9 @@ export function makePowerDnsZoneAvailabilityReadV1(
     if (!zoneResponse.ok) return null;
     let cryptokeys: unknown;
     try {
-      const response = await get(`${zonePath}/cryptokeys`);
+      const { response, json } = await get(`${zonePath}/cryptokeys`);
       if (!response.ok) return null;
-      cryptokeys = await readBoundedJson(response);
+      cryptokeys = json;
     } catch {
       return null;
     }
@@ -646,16 +679,17 @@ export function makePowerDnsRootInspector(
     throw new Error("PowerDNS root inspector configuration is invalid");
   }
   const apiUrl = config.api_url.replace(/\/+$/u, "");
-  const request = async (path: string): Promise<unknown> => {
-    const response = await fetcher(`${apiUrl}/api/v1${path}`, {
-      method: "GET",
-      redirect: "manual",
-      signal: AbortSignal.timeout(requestTimeoutMs),
-      headers: { accept: "application/json", "x-api-key": config.api_key },
+  const request = (path: string): Promise<unknown> =>
+    withExchangeDeadline(async (signal) => {
+      const response = await fetcher(`${apiUrl}/api/v1${path}`, {
+        method: "GET",
+        redirect: "manual",
+        signal,
+        headers: { accept: "application/json", "x-api-key": config.api_key },
+      });
+      if (!response.ok) throw new Error("PowerDNS authority inspection failed");
+      return readBoundedJson(response);
     });
-    if (!response.ok) throw new Error("PowerDNS authority inspection failed");
-    return readBoundedJson(response);
-  };
   return async (input) => {
     const zoneName = canonicalName(input.root_label);
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
