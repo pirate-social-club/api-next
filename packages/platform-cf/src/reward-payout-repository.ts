@@ -174,6 +174,9 @@ function loadCandidateIn(
       text: `${CANDIDATE_SELECT}
               WHERE credit.credit_id=$1 AND credit.state='credited'
                 AND credit.reserved_atomic=0 AND credit.paid_atomic < credit.amount_atomic
+                AND (credit.source_kind <> 'megapot_allocation' OR EXISTS (
+                     SELECT 1 FROM megapot_participant_claims claim
+                      WHERE claim.credit_id=credit.credit_id AND claim.status='accepted'))
               ${input.lock ? "FOR UPDATE OF credit" : ""}`,
       values: [input.creditId],
       readonly: !input.lock,

@@ -14,6 +14,145 @@ CREATE TYPE community_moderation_policy_update_result_v1 AS (
 	policy_revision_id text
 );
 
+CREATE FUNCTION accept_megapot_participant_claim_v1(input_credit_id text, input_account_id text) RETURNS TABLE(outcome text, claim_status text)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+#variable_conflict use_variable
+DECLARE
+  target RECORD;
+  existing megapot_participant_claims%ROWTYPE;
+  evidence RECORD;
+  guard_owner TEXT;
+  result_reason TEXT;
+  now_at TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT credit.credit_id, credit.account_id, batch.pool_leg_id, batch.drawing_id
+    INTO target
+    FROM reward_ledger_credits credit
+    JOIN megapot_allocations allocation
+      ON allocation.credit_id = credit.credit_id
+     AND allocation.allocation_kind = 'participant'
+    JOIN megapot_allocation_batches batch
+      ON batch.allocation_batch_id = allocation.allocation_batch_id
+   WHERE credit.credit_id = input_credit_id
+     AND credit.account_id = input_account_id
+     AND credit.source_kind = 'megapot_allocation'
+   FOR UPDATE OF credit;
+  IF target.credit_id IS NULL THEN
+    RETURN QUERY SELECT 'not_found'::TEXT, NULL::TEXT;
+    RETURN;
+  END IF;
+
+  SELECT * INTO existing FROM megapot_participant_claims claim
+   WHERE claim.credit_id = input_credit_id FOR UPDATE;
+  IF existing.status = 'accepted' THEN
+    RETURN QUERY SELECT 'accepted'::TEXT, 'accepted'::TEXT;
+    RETURN;
+  END IF;
+
+  SELECT * INTO evidence FROM reward_account_very_evidence_v1(input_account_id, NULL);
+  IF evidence.subject_key_id IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+        FROM subject_keys subject
+        JOIN active_subject_key_bindings active_binding
+          ON active_binding.subject_key_id = subject.subject_key_id
+         AND active_binding.user_id = input_account_id
+        JOIN assertions personhood
+          ON personhood.subject_key_id = subject.subject_key_id
+         AND personhood.user_id = input_account_id
+         AND personhood.claim_id = 'human.personhood'
+         AND personhood.assertion_value = '{"personhood": true}'::jsonb
+        JOIN assertions subject_unique
+          ON subject_unique.binding_group_id = personhood.binding_group_id
+         AND subject_unique.evidence_receipt_id = personhood.evidence_receipt_id
+         AND subject_unique.subject_key_id = subject.subject_key_id
+         AND subject_unique.user_id = input_account_id
+         AND subject_unique.claim_id = 'credential.subject_unique'
+         AND subject_unique.assertion_value = '{"subject_unique": true}'::jsonb
+       WHERE subject.issuer = 'https://verify.very.org'
+         AND subject.method = 'palm_web'
+         AND subject.scope_kind = 'issuer_rp_scope'
+         AND subject.issuer_rp_scope = 'pirate-social'
+    ) THEN
+      result_reason := 'verification_stale';
+    ELSIF EXISTS (
+      SELECT 1
+        FROM subject_keys subject
+        JOIN active_subject_key_bindings active_binding
+          ON active_binding.subject_key_id = subject.subject_key_id
+         AND active_binding.user_id = input_account_id
+       WHERE subject.issuer = 'https://verify.very.org'
+         AND subject.method = 'palm_web'
+         AND subject.scope_kind = 'issuer_rp_scope'
+         AND subject.issuer_rp_scope = 'pirate-social'
+    ) THEN
+      result_reason := 'verification_failed';
+    ELSE
+      result_reason := 'verification_missing';
+    END IF;
+
+    RETURN QUERY SELECT result_reason, existing.status;
+    RETURN;
+  END IF;
+  IF evidence.evidence_count <> 1 THEN
+    RETURN QUERY SELECT 'verification_failed'::TEXT, existing.status;
+    RETURN;
+  END IF;
+
+  PERFORM 1 FROM subject_keys subject
+   WHERE subject.subject_key_id = evidence.subject_key_id FOR UPDATE;
+  SELECT guard.credit_id INTO guard_owner
+    FROM megapot_participant_claim_guards guard
+   WHERE guard.pool_leg_id = target.pool_leg_id
+     AND guard.drawing_id = target.drawing_id
+     AND guard.subject_key_id = evidence.subject_key_id;
+
+  IF guard_owner IS NOT NULL AND guard_owner <> input_credit_id THEN
+    IF existing.credit_id IS NULL THEN
+      INSERT INTO megapot_participant_claims (
+        credit_id, account_id, pool_leg_id, drawing_id, status, subject_key_id
+      ) VALUES (
+        input_credit_id, input_account_id, target.pool_leg_id, target.drawing_id,
+        'subject_conflict', evidence.subject_key_id
+      );
+    ELSE
+      UPDATE megapot_participant_claims claim
+         SET subject_key_id = evidence.subject_key_id, updated_at = now_at
+       WHERE claim.credit_id = input_credit_id;
+    END IF;
+    RETURN QUERY SELECT 'subject_conflict'::TEXT, 'subject_conflict'::TEXT;
+    RETURN;
+  END IF;
+
+  IF existing.credit_id IS NULL THEN
+    INSERT INTO megapot_participant_claims (
+      credit_id, account_id, pool_leg_id, drawing_id, status, subject_key_id,
+      evidence_receipt_id, accepted_at
+    ) VALUES (
+      input_credit_id, input_account_id, target.pool_leg_id, target.drawing_id,
+      'accepted', evidence.subject_key_id, evidence.evidence_receipt_id, now_at
+    );
+  ELSE
+    UPDATE megapot_participant_claims claim
+       SET status = 'accepted', subject_key_id = evidence.subject_key_id,
+           evidence_receipt_id = evidence.evidence_receipt_id,
+           accepted_at = now_at, updated_at = now_at
+     WHERE claim.credit_id = input_credit_id;
+  END IF;
+  IF guard_owner IS NULL THEN
+    INSERT INTO megapot_participant_claim_guards (
+      pool_leg_id, drawing_id, subject_key_id, credit_id, account_id, consumed_at
+    ) VALUES (
+      target.pool_leg_id, target.drawing_id, evidence.subject_key_id,
+      input_credit_id, input_account_id, now_at
+    );
+  END IF;
+  RETURN QUERY SELECT 'accepted'::TEXT, 'accepted'::TEXT;
+END
+$$;
+
 CREATE FUNCTION activate_hns_community_app_host_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_community_id text, input_canonical_root text, input_route_binding_id text, input_route_authority_kind text, input_route_authority_reference text, input_route_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, input_gateway_deployment_reference text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
     LANGUAGE plpgsql
     AS $$
@@ -10046,6 +10185,33 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_megapot_participant_claim() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'megapot participant claims are never deleted';
+  END IF;
+  IF NEW.credit_id <> OLD.credit_id OR NEW.account_id <> OLD.account_id
+     OR NEW.pool_leg_id <> OLD.pool_leg_id OR NEW.drawing_id <> OLD.drawing_id
+     OR NEW.created_at <> OLD.created_at THEN
+    RAISE EXCEPTION 'megapot participant claim identity is immutable';
+  END IF;
+  IF OLD.status = 'accepted' THEN
+    RAISE EXCEPTION 'an accepted megapot participant claim is terminal';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_megapot_participant_claim_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'megapot participant claim guards are append-only';
+END
+$$;
+
 CREATE FUNCTION guard_megapot_pool_drawing() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13668,6 +13834,29 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION operator_accept_megapot_participant_claim_v1(input_credit_id text, input_actor_role text, input_reason text, input_evidence_reference text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  existing megapot_participant_claims%ROWTYPE;
+  now_at TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT * INTO existing FROM megapot_participant_claims
+   WHERE credit_id = input_credit_id FOR UPDATE;
+  IF existing.credit_id IS NULL OR existing.status <> 'subject_conflict' THEN
+    RAISE EXCEPTION 'operator exception requires a subject_conflict claim';
+  END IF;
+  UPDATE megapot_participant_claims
+     SET status = 'accepted', operator_actor_role = input_actor_role,
+         operator_reason = input_reason,
+         operator_evidence_reference = input_evidence_reference,
+         operator_decided_at = now_at, accepted_at = now_at, updated_at = now_at
+   WHERE credit_id = input_credit_id;
+  RETURN 'accepted';
+END
+$$;
+
 CREATE FUNCTION operator_managed_registry_has_active_root(expected_reference text, expected_version bigint, expected_digest text, expected_root text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -14445,15 +14634,11 @@ CREATE FUNCTION project_megapot_pool_share_from_qualification() RETURNS trigger
     AS $$
 DECLARE
   candidate RECORD;
-  evidence RECORD;
-  existing_consumption reward_subject_consumptions%ROWTYPE;
   decided_at TIMESTAMPTZ := clock_timestamp();
-  reason TEXT;
-  decision_outcome TEXT;
   decision_id TEXT;
   eligibility_id TEXT;
-  consumption_id TEXT;
   identity_digest TEXT;
+  admission_hash TEXT;
 BEGIN
   SELECT leg.leg_id, leg.offer_id, drawing.drawing_id, drawing.entry_cutoff_at,
          offer.community_id, offer.reward_policy_version_id,
@@ -14497,9 +14682,8 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- The drawing lock serializes Study/Karaoke producers that qualify the same
-  -- account concurrently. Recheck after acquiring it so only the first commit
-  -- emits an eligibility decision and share.
+  -- The drawing lock serializes producers that qualify the same account
+  -- concurrently; recheck so only the first commit emits a decision and share.
   IF EXISTS (
     SELECT 1 FROM megapot_pool_shares share
      WHERE share.pool_leg_id = candidate.leg_id
@@ -14514,220 +14698,14 @@ BEGIN
   );
   decision_id := 'reward_decision_' || identity_digest;
   eligibility_id := 'reward_eligibility_' || identity_digest;
-  consumption_id := 'reward_subject_' || identity_digest;
-
-  WITH exact_evidence AS (
-    SELECT DISTINCT ON (subject.subject_key_id)
-           subject.subject_key_id,
-           active_binding.binding_event_id,
-           active_binding.binding_epoch,
-           receipt.evidence_receipt_id,
-           receipt.evidence_hash,
-           LEAST(
-             candidate.entry_cutoff_at,
-             receipt.expires_at,
-             personhood.expires_at,
-             subject_unique.expires_at
-           ) AS evidence_expires_at,
-           receipt.observed_at
-      FROM subject_keys subject
-      JOIN active_subject_key_bindings active_binding
-        ON active_binding.subject_key_id = subject.subject_key_id
-       AND active_binding.user_id = NEW.account_id
-      JOIN assertion_bindings binding
-        ON binding.user_id = NEW.account_id
-       AND binding.binding_mode = 'same_subject'
-       AND binding.subject_key_id = subject.subject_key_id
-       AND binding.subject_binding_event_id = active_binding.binding_event_id
-       AND binding.subject_binding_epoch = active_binding.binding_epoch
-      JOIN assertions personhood
-        ON personhood.binding_group_id = binding.binding_group_id
-       AND personhood.user_id = NEW.account_id
-       AND personhood.subject_key_id = subject.subject_key_id
-       AND personhood.claim_id = 'human.personhood'
-       AND personhood.assertion_value = '{"personhood": true}'::jsonb
-       AND personhood.assurance = 'provider_attested'
-      JOIN assertions subject_unique
-        ON subject_unique.binding_group_id = binding.binding_group_id
-       AND subject_unique.user_id = NEW.account_id
-       AND subject_unique.subject_key_id = subject.subject_key_id
-       AND subject_unique.evidence_receipt_id = personhood.evidence_receipt_id
-       AND subject_unique.claim_id = 'credential.subject_unique'
-       AND subject_unique.assertion_value = '{"subject_unique": true}'::jsonb
-       AND subject_unique.assurance = 'provider_attested'
-      JOIN evidence_receipts receipt
-        ON receipt.evidence_receipt_id = personhood.evidence_receipt_id
-       AND receipt.user_id = NEW.account_id
-       AND receipt.subject_key_id = subject.subject_key_id
-       AND receipt.subject_binding_event_id = active_binding.binding_event_id
-       AND receipt.subject_binding_epoch = active_binding.binding_epoch
-       AND receipt.provider_id = 'very.web'
-       AND receipt.issuer = 'https://verify.very.org'
-       AND receipt.method = 'palm_web'
-       AND receipt.scope_kind = 'issuer_rp_scope'
-       AND receipt.issuer_rp_scope = 'pirate-social'
-       AND receipt.issuer_rp_action_scope IS NULL
-       AND receipt.protocol_version = 'very-web-v1'
-       AND receipt.evidence_kind = 'very.web.server-verified.v1'
-       AND receipt.provenance_kind = 'proof_session'
-      JOIN proof_sessions session
-        ON session.proof_session_id = receipt.proof_session_id
-       AND session.actor_id = NEW.account_id
-       AND session.status = 'completed'
-       AND session.completed_at = session.terminal_at
-       AND session.provider_id = receipt.provider_id
-       AND session.issuer = receipt.issuer
-       AND session.method = receipt.method
-       AND session.scope_kind = receipt.scope_kind
-       AND session.issuer_rp_scope = receipt.issuer_rp_scope
-       AND session.issuer_rp_action_scope IS NOT DISTINCT FROM receipt.issuer_rp_action_scope
-       AND session.protocol_version = receipt.protocol_version
-       AND session.requested_requirements =
-         '[{"claim_id":"credential.subject_unique"},{"claim_id":"human.personhood"}]'::jsonb
-       AND session.requested_claim_ids =
-         '["credential.subject_unique","human.personhood"]'::jsonb
-     WHERE subject.issuer = 'https://verify.very.org'
-       AND subject.method = 'palm_web'
-       AND subject.scope_kind = 'issuer_rp_scope'
-       AND subject.issuer_rp_scope = 'pirate-social'
-       AND subject.issuer_rp_action_scope IS NULL
-       AND (receipt.expires_at IS NULL OR receipt.expires_at > decided_at + interval '5 seconds')
-       AND (personhood.expires_at IS NULL OR personhood.expires_at > decided_at + interval '5 seconds')
-       AND (subject_unique.expires_at IS NULL OR subject_unique.expires_at > decided_at + interval '5 seconds')
-       AND COALESCE((
-         SELECT revalidation.outcome
-           FROM assertion_revalidation_events revalidation
-          WHERE revalidation.assertion_id = personhood.assertion_id
-          ORDER BY revalidation.observed_at DESC,
-                   revalidation.assertion_revalidation_event_id DESC LIMIT 1
-       ), 'accepted') = 'accepted'
-       AND COALESCE((
-         SELECT revalidation.outcome
-           FROM assertion_revalidation_events revalidation
-          WHERE revalidation.assertion_id = subject_unique.assertion_id
-          ORDER BY revalidation.observed_at DESC,
-                   revalidation.assertion_revalidation_event_id DESC LIMIT 1
-       ), 'accepted') = 'accepted'
-     ORDER BY subject.subject_key_id, receipt.observed_at DESC, receipt.evidence_receipt_id DESC
-  )
-  SELECT exact_evidence.*, count(*) OVER () AS evidence_count
-    INTO evidence
-    FROM exact_evidence
-   ORDER BY exact_evidence.observed_at DESC, exact_evidence.subject_key_id
-   LIMIT 1;
-
-  IF evidence.subject_key_id IS NULL THEN
-    IF EXISTS (
-      SELECT 1
-        FROM subject_keys subject
-        JOIN active_subject_key_bindings active_binding
-          ON active_binding.subject_key_id = subject.subject_key_id
-         AND active_binding.user_id = NEW.account_id
-        JOIN assertions personhood
-          ON personhood.subject_key_id = subject.subject_key_id
-         AND personhood.user_id = NEW.account_id
-         AND personhood.claim_id = 'human.personhood'
-         AND personhood.assertion_value = '{"personhood": true}'::jsonb
-        JOIN assertions subject_unique
-          ON subject_unique.binding_group_id = personhood.binding_group_id
-         AND subject_unique.evidence_receipt_id = personhood.evidence_receipt_id
-         AND subject_unique.subject_key_id = subject.subject_key_id
-         AND subject_unique.user_id = NEW.account_id
-         AND subject_unique.claim_id = 'credential.subject_unique'
-         AND subject_unique.assertion_value = '{"subject_unique": true}'::jsonb
-       WHERE subject.issuer = 'https://verify.very.org'
-         AND subject.method = 'palm_web'
-         AND subject.scope_kind = 'issuer_rp_scope'
-         AND subject.issuer_rp_scope = 'pirate-social'
-    ) THEN
-      reason := 'verification_stale';
-      decision_outcome := 'needs_evidence';
-    ELSIF EXISTS (
-      SELECT 1
-        FROM subject_keys subject
-        JOIN active_subject_key_bindings active_binding
-          ON active_binding.subject_key_id = subject.subject_key_id
-         AND active_binding.user_id = NEW.account_id
-       WHERE subject.issuer = 'https://verify.very.org'
-         AND subject.method = 'palm_web'
-         AND subject.scope_kind = 'issuer_rp_scope'
-         AND subject.issuer_rp_scope = 'pirate-social'
-    ) THEN
-      reason := 'verification_failed';
-      decision_outcome := 'fail';
-    ELSE
-      reason := 'verification_missing';
-      decision_outcome := 'needs_evidence';
-    END IF;
-
-    INSERT INTO decision_records (
-      decision_record_id,community_id,user_id,policy_version_id,policy_hash,
-      evaluation_mode,outcome,winning_witness,trace,indeterminate_reason,request_id,created_at
-    ) VALUES (
-      decision_id,candidate.community_id,NEW.account_id,candidate.reward_policy_version_id,
-      candidate.policy_hash,'enforce',decision_outcome,'[]'::jsonb,
-      jsonb_build_array(jsonb_build_object('reason',reason)),reason,
-      'pool-share:' || identity_digest,decided_at
-    );
-    INSERT INTO reward_eligibility_decisions (
-      eligibility_decision_id,leg_id,account_id,persona_id,purpose,qualification_id,
-      drawing_id,decision_record_id,outcome,reason,policy_version,evidence_hash,
-      decided_at,expires_at
-    ) VALUES (
-      eligibility_id,candidate.leg_id,NEW.account_id,NEW.persona_id,'pool_share',
-      NEW.qualification_id,candidate.drawing_id,decision_id,'ineligible',reason,
-      candidate.reward_policy_version_id,candidate.policy_hash,decided_at,
-      candidate.entry_cutoff_at
-    );
-    RETURN NEW;
-  END IF;
-
-  IF evidence.evidence_count <> 1 THEN
-    reason := 'verification_failed';
-  ELSE
-    PERFORM 1 FROM subject_keys
-     WHERE subject_key_id = evidence.subject_key_id FOR UPDATE;
-    SELECT * INTO existing_consumption
-      FROM reward_subject_consumptions
-     WHERE campaign_id = candidate.offer_id
-       AND subject_key_id = evidence.subject_key_id
-     FOR UPDATE;
-    IF existing_consumption.reward_subject_consumption_id IS NULL THEN
-      INSERT INTO reward_subject_consumptions (
-        reward_subject_consumption_id,campaign_id,subject_key_id,user_id,
-        binding_event_id,binding_epoch,evidence_receipt_id,consumed_at,created_at
-      ) VALUES (
-        consumption_id,candidate.offer_id,evidence.subject_key_id,NEW.account_id,
-        evidence.binding_event_id,evidence.binding_epoch,evidence.evidence_receipt_id,
-        decided_at,decided_at
-      );
-    ELSIF existing_consumption.user_id <> NEW.account_id THEN
-      reason := 'subject_already_consumed';
-    END IF;
-  END IF;
-
-  IF reason IS NOT NULL THEN
-    INSERT INTO decision_records (
-      decision_record_id,community_id,user_id,policy_version_id,policy_hash,
-      evaluation_mode,outcome,winning_witness,trace,indeterminate_reason,request_id,created_at
-    ) VALUES (
-      decision_id,candidate.community_id,NEW.account_id,candidate.reward_policy_version_id,
-      candidate.policy_hash,'enforce','fail','[]'::jsonb,
-      jsonb_build_array(jsonb_build_object('reason',reason)),reason,
-      'pool-share:' || identity_digest,decided_at
-    );
-    INSERT INTO reward_eligibility_decisions (
-      eligibility_decision_id,leg_id,account_id,persona_id,purpose,qualification_id,
-      drawing_id,decision_record_id,outcome,reason,policy_version,evidence_hash,
-      decided_at,expires_at
-    ) VALUES (
-      eligibility_id,candidate.leg_id,NEW.account_id,NEW.persona_id,'pool_share',
-      NEW.qualification_id,candidate.drawing_id,decision_id,'ineligible',reason,
-      candidate.reward_policy_version_id,evidence.evidence_hash,decided_at,
-      candidate.entry_cutoff_at
-    );
-    RETURN NEW;
-  END IF;
+  -- The admitted facts, not provider evidence: entry requires none.
+  admission_hash := encode(sha256(convert_to(jsonb_build_object(
+    'admission', 'megapot_claim_time_verification_v1',
+    'qualification_id', NEW.qualification_id,
+    'pool_leg_id', candidate.leg_id,
+    'drawing_id', candidate.drawing_id::text,
+    'policy_hash', candidate.policy_hash
+  )::text, 'UTF8')), 'hex');
 
   INSERT INTO decision_records (
     decision_record_id,community_id,user_id,policy_version_id,policy_hash,
@@ -14735,10 +14713,16 @@ BEGIN
   ) VALUES (
     decision_id,candidate.community_id,NEW.account_id,candidate.reward_policy_version_id,
     candidate.policy_hash,'enforce','pass',
+    -- A pass must name its witness: the qualification and admitted terms.
     jsonb_build_array(jsonb_build_object(
-      'subject_key_id',evidence.subject_key_id,
-      'evidence_receipt_id',evidence.evidence_receipt_id
-    )),jsonb_build_array(jsonb_build_object('result','eligible')),
+      'admission','megapot_claim_time_verification_v1',
+      'qualification_id',NEW.qualification_id,
+      'pool_leg_id',candidate.leg_id,
+      'drawing_id',candidate.drawing_id::text
+    )),
+    jsonb_build_array(jsonb_build_object(
+      'result','eligible','admission','megapot_claim_time_verification_v1'
+    )),
     'pool-share:' || identity_digest,decided_at
   );
   INSERT INTO reward_eligibility_decisions (
@@ -14747,8 +14731,8 @@ BEGIN
   ) VALUES (
     eligibility_id,candidate.leg_id,NEW.account_id,NEW.persona_id,'pool_share',
     NEW.qualification_id,candidate.drawing_id,decision_id,'eligible',
-    candidate.reward_policy_version_id,evidence.evidence_hash,decided_at,
-    evidence.evidence_expires_at
+    candidate.reward_policy_version_id,admission_hash,decided_at,
+    candidate.entry_cutoff_at
   );
   INSERT INTO megapot_pool_shares (
     pool_leg_id,drawing_id,account_id,persona_id,qualification_id,
@@ -16866,6 +16850,119 @@ BEGIN
   RETURN QUERY SELECT 'revoked'::TEXT, input_activation_id,
     input_route_binding_id, input_expected_activation_generation + 1;
 END;
+$$;
+
+CREATE FUNCTION reward_account_very_evidence_v1(input_account_id text, input_valid_until timestamp with time zone) RETURNS TABLE(subject_key_id text, binding_event_id text, binding_epoch bigint, evidence_receipt_id text, evidence_hash text, evidence_expires_at timestamp with time zone, observed_at timestamp with time zone, evidence_count bigint)
+    LANGUAGE plpgsql
+    AS $$
+#variable_conflict use_column
+DECLARE
+  checked_at TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  RETURN QUERY
+
+  WITH exact_evidence AS (
+    SELECT DISTINCT ON (subject.subject_key_id)
+           subject.subject_key_id,
+           active_binding.binding_event_id,
+           active_binding.binding_epoch,
+           receipt.evidence_receipt_id,
+           receipt.evidence_hash,
+           LEAST(
+             input_valid_until,
+             receipt.expires_at,
+             personhood.expires_at,
+             subject_unique.expires_at
+           ) AS evidence_expires_at,
+           receipt.observed_at
+      FROM subject_keys subject
+      JOIN active_subject_key_bindings active_binding
+        ON active_binding.subject_key_id = subject.subject_key_id
+       AND active_binding.user_id = input_account_id
+      JOIN assertion_bindings binding
+        ON binding.user_id = input_account_id
+       AND binding.binding_mode = 'same_subject'
+       AND binding.subject_key_id = subject.subject_key_id
+       AND binding.subject_binding_event_id = active_binding.binding_event_id
+       AND binding.subject_binding_epoch = active_binding.binding_epoch
+      JOIN assertions personhood
+        ON personhood.binding_group_id = binding.binding_group_id
+       AND personhood.user_id = input_account_id
+       AND personhood.subject_key_id = subject.subject_key_id
+       AND personhood.claim_id = 'human.personhood'
+       AND personhood.assertion_value = '{"personhood": true}'::jsonb
+       AND personhood.assurance = 'provider_attested'
+      JOIN assertions subject_unique
+        ON subject_unique.binding_group_id = binding.binding_group_id
+       AND subject_unique.user_id = input_account_id
+       AND subject_unique.subject_key_id = subject.subject_key_id
+       AND subject_unique.evidence_receipt_id = personhood.evidence_receipt_id
+       AND subject_unique.claim_id = 'credential.subject_unique'
+       AND subject_unique.assertion_value = '{"subject_unique": true}'::jsonb
+       AND subject_unique.assurance = 'provider_attested'
+      JOIN evidence_receipts receipt
+        ON receipt.evidence_receipt_id = personhood.evidence_receipt_id
+       AND receipt.user_id = input_account_id
+       AND receipt.subject_key_id = subject.subject_key_id
+       AND receipt.subject_binding_event_id = active_binding.binding_event_id
+       AND receipt.subject_binding_epoch = active_binding.binding_epoch
+       AND receipt.provider_id = 'very.web'
+       AND receipt.issuer = 'https://verify.very.org'
+       AND receipt.method = 'palm_web'
+       AND receipt.scope_kind = 'issuer_rp_scope'
+       AND receipt.issuer_rp_scope = 'pirate-social'
+       AND receipt.issuer_rp_action_scope IS NULL
+       AND receipt.protocol_version = 'very-web-v1'
+       AND receipt.evidence_kind = 'very.web.server-verified.v1'
+       AND receipt.provenance_kind = 'proof_session'
+      JOIN proof_sessions session
+        ON session.proof_session_id = receipt.proof_session_id
+       AND session.actor_id = input_account_id
+       AND session.status = 'completed'
+       AND session.completed_at = session.terminal_at
+       AND session.provider_id = receipt.provider_id
+       AND session.issuer = receipt.issuer
+       AND session.method = receipt.method
+       AND session.scope_kind = receipt.scope_kind
+       AND session.issuer_rp_scope = receipt.issuer_rp_scope
+       AND session.issuer_rp_action_scope IS NOT DISTINCT FROM receipt.issuer_rp_action_scope
+       AND session.protocol_version = receipt.protocol_version
+       AND session.requested_requirements =
+         '[{"claim_id":"credential.subject_unique"},{"claim_id":"human.personhood"}]'::jsonb
+       AND session.requested_claim_ids =
+         '["credential.subject_unique","human.personhood"]'::jsonb
+     WHERE subject.issuer = 'https://verify.very.org'
+       AND subject.method = 'palm_web'
+       AND subject.scope_kind = 'issuer_rp_scope'
+       AND subject.issuer_rp_scope = 'pirate-social'
+       AND subject.issuer_rp_action_scope IS NULL
+       AND (receipt.expires_at IS NULL OR receipt.expires_at > checked_at + interval '5 seconds')
+       AND (personhood.expires_at IS NULL OR personhood.expires_at > checked_at + interval '5 seconds')
+       AND (subject_unique.expires_at IS NULL OR subject_unique.expires_at > checked_at + interval '5 seconds')
+       AND COALESCE((
+         SELECT revalidation.outcome
+           FROM assertion_revalidation_events revalidation
+          WHERE revalidation.assertion_id = personhood.assertion_id
+          ORDER BY revalidation.observed_at DESC,
+                   revalidation.assertion_revalidation_event_id DESC LIMIT 1
+       ), 'accepted') = 'accepted'
+       AND COALESCE((
+         SELECT revalidation.outcome
+           FROM assertion_revalidation_events revalidation
+          WHERE revalidation.assertion_id = subject_unique.assertion_id
+          ORDER BY revalidation.observed_at DESC,
+                   revalidation.assertion_revalidation_event_id DESC LIMIT 1
+       ), 'accepted') = 'accepted'
+     ORDER BY subject.subject_key_id, receipt.observed_at DESC, receipt.evidence_receipt_id DESC
+  )
+  SELECT exact_evidence.subject_key_id, exact_evidence.binding_event_id,
+         exact_evidence.binding_epoch::BIGINT, exact_evidence.evidence_receipt_id,
+         exact_evidence.evidence_hash, exact_evidence.evidence_expires_at,
+         exact_evidence.observed_at, count(*) OVER ()
+    FROM exact_evidence
+   ORDER BY exact_evidence.observed_at DESC, exact_evidence.subject_key_id
+   LIMIT 1;
+END
 $$;
 
 CREATE FUNCTION reward_current_qualification_policies(activities text[]) RETURNS jsonb
@@ -30147,6 +30244,34 @@ CREATE TABLE megapot_fallback_cutoff_evidence (
     CONSTRAINT megapot_fallback_cutoff_persona_shape CHECK ((((sponsor_kind = 'external_fallback'::text) AND (payout_persona_id IS NOT NULL)) OR ((sponsor_kind = 'shared_platform'::text) AND (payout_persona_id IS NULL))))
 );
 
+CREATE TABLE megapot_participant_claim_guards (
+    pool_leg_id text NOT NULL,
+    drawing_id numeric(78,0) NOT NULL,
+    subject_key_id text NOT NULL,
+    credit_id text NOT NULL,
+    account_id text NOT NULL,
+    consumed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE megapot_participant_claims (
+    credit_id text NOT NULL,
+    account_id text NOT NULL,
+    pool_leg_id text NOT NULL,
+    drawing_id numeric(78,0) NOT NULL,
+    status text NOT NULL,
+    subject_key_id text,
+    evidence_receipt_id text,
+    operator_actor_role text,
+    operator_reason text,
+    operator_evidence_reference text,
+    operator_decided_at timestamp with time zone,
+    accepted_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_participant_claim_shape CHECK ((((status = 'subject_conflict'::text) AND (accepted_at IS NULL) AND (subject_key_id IS NOT NULL) AND (operator_decided_at IS NULL)) OR ((status = 'accepted'::text) AND (accepted_at IS NOT NULL) AND (((operator_decided_at IS NULL) AND (subject_key_id IS NOT NULL) AND (evidence_receipt_id IS NOT NULL)) OR ((operator_decided_at IS NOT NULL) AND (operator_actor_role IS NOT NULL) AND (btrim(operator_actor_role) <> ''::text) AND (operator_reason IS NOT NULL) AND (btrim(operator_reason) <> ''::text) AND (operator_evidence_reference IS NOT NULL) AND (btrim(operator_evidence_reference) <> ''::text)))))),
+    CONSTRAINT megapot_participant_claims_status_check CHECK ((status = ANY (ARRAY['accepted'::text, 'subject_conflict'::text])))
+);
+
 CREATE TABLE megapot_pool_beneficiary_snapshots (
     snapshot_id text NOT NULL,
     pool_leg_id text NOT NULL,
@@ -34529,6 +34654,15 @@ ALTER TABLE ONLY megapot_fallback_cutoff_activity_evidence
 ALTER TABLE ONLY megapot_fallback_cutoff_evidence
     ADD CONSTRAINT megapot_fallback_cutoff_evidence_pkey PRIMARY KEY (pool_leg_id, drawing_id);
 
+ALTER TABLE ONLY megapot_participant_claim_guards
+    ADD CONSTRAINT megapot_participant_claim_guards_credit_id_key UNIQUE (credit_id);
+
+ALTER TABLE ONLY megapot_participant_claim_guards
+    ADD CONSTRAINT megapot_participant_claim_guards_pkey PRIMARY KEY (pool_leg_id, drawing_id, subject_key_id);
+
+ALTER TABLE ONLY megapot_participant_claims
+    ADD CONSTRAINT megapot_participant_claims_pkey PRIMARY KEY (credit_id);
+
 ALTER TABLE ONLY megapot_pool_beneficiary_snapshots
     ADD CONSTRAINT megapot_pool_beneficiary_snapshots_pkey PRIMARY KEY (snapshot_id);
 
@@ -36605,6 +36739,10 @@ CREATE TRIGGER megapot_drawing_sweeps_change_guard BEFORE DELETE OR UPDATE ON me
 CREATE TRIGGER megapot_drawing_transitions_append_only BEFORE DELETE OR UPDATE ON megapot_pool_drawing_transitions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE CONSTRAINT TRIGGER megapot_fallback_cutoff_pair AFTER INSERT OR UPDATE ON megapot_pool_drawings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_fallback_cutoff();
+
+CREATE TRIGGER megapot_participant_claim_guards_append_only BEFORE DELETE OR UPDATE ON megapot_participant_claim_guards FOR EACH ROW EXECUTE FUNCTION guard_megapot_participant_claim_guard();
+
+CREATE TRIGGER megapot_participant_claims_guard BEFORE DELETE OR UPDATE ON megapot_participant_claims FOR EACH ROW EXECUTE FUNCTION guard_megapot_participant_claim();
 
 CREATE CONSTRAINT TRIGGER megapot_pool_drawing_transition_pair AFTER UPDATE ON megapot_pool_drawings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_pool_drawing_transition();
 
@@ -38695,6 +38833,30 @@ ALTER TABLE ONLY megapot_fallback_cutoff_evidence
 
 ALTER TABLE ONLY megapot_fallback_cutoff_evidence
     ADD CONSTRAINT megapot_fallback_cutoff_evidence_sponsor_account_id_fkey FOREIGN KEY (sponsor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY megapot_participant_claim_guards
+    ADD CONSTRAINT megapot_participant_claim_guards_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY megapot_participant_claim_guards
+    ADD CONSTRAINT megapot_participant_claim_guards_credit_id_fkey FOREIGN KEY (credit_id) REFERENCES megapot_participant_claims(credit_id);
+
+ALTER TABLE ONLY megapot_participant_claim_guards
+    ADD CONSTRAINT megapot_participant_claim_guards_pool_leg_id_fkey FOREIGN KEY (pool_leg_id) REFERENCES song_reward_offer_legs(leg_id);
+
+ALTER TABLE ONLY megapot_participant_claim_guards
+    ADD CONSTRAINT megapot_participant_claim_guards_subject_key_id_fkey FOREIGN KEY (subject_key_id) REFERENCES subject_keys(subject_key_id);
+
+ALTER TABLE ONLY megapot_participant_claims
+    ADD CONSTRAINT megapot_participant_claims_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY megapot_participant_claims
+    ADD CONSTRAINT megapot_participant_claims_credit_id_fkey FOREIGN KEY (credit_id) REFERENCES reward_ledger_credits(credit_id);
+
+ALTER TABLE ONLY megapot_participant_claims
+    ADD CONSTRAINT megapot_participant_claims_pool_leg_id_fkey FOREIGN KEY (pool_leg_id) REFERENCES song_reward_offer_legs(leg_id);
+
+ALTER TABLE ONLY megapot_participant_claims
+    ADD CONSTRAINT megapot_participant_claims_subject_key_id_fkey FOREIGN KEY (subject_key_id) REFERENCES subject_keys(subject_key_id);
 
 ALTER TABLE ONLY megapot_pool_beneficiary_snapshots
     ADD CONSTRAINT megapot_pool_beneficiary_snapshots_pool_leg_id_drawing_id_fkey FOREIGN KEY (pool_leg_id, drawing_id) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id) DEFERRABLE INITIALLY DEFERRED;

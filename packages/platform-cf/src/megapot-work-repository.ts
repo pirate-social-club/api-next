@@ -211,9 +211,14 @@ export function makeControlPlaneMegapotWorkRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "megapot-work.credits.read",
-            text: `SELECT credit_id FROM reward_ledger_credits
-                    WHERE state='credited'
-                    ORDER BY created_at,credit_id LIMIT $1`,
+            // Participant credits are paid only after an accepted claim
+            // (Spec 015 §5.2a); fallback and bonus credits are unchanged.
+            text: `SELECT credit.credit_id FROM reward_ledger_credits credit
+                    WHERE credit.state='credited'
+                      AND (credit.source_kind <> 'megapot_allocation' OR EXISTS (
+                     SELECT 1 FROM megapot_participant_claims claim
+                      WHERE claim.credit_id=credit.credit_id AND claim.status='accepted'))
+                    ORDER BY credit.created_at,credit.credit_id LIMIT $1`,
             values: [limit],
             readonly: true,
           });

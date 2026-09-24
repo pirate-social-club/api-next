@@ -202,6 +202,7 @@
     "0199_video_safety_provider_calls.sql": "e8dfe8d17b52b831e748e4a1a128278ff1ee6e1ac893b0ee1eed0db8305fe8bb",
     "0200_video_moderation_unresolved_abandonment.sql": "8c440362972e34059a595c5551d4fcba0ebe9a08188029fd7e9dc25930ff78ef",
     "0201_song_transform_author_retry.sql": "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c",
-    "0202_song_owner_policy_head_lock.sql": "40d776d31595a8e860e8f7d2bf036c155270a9f9907cbc9c3129c05066523fdc"
+    "0202_song_owner_policy_head_lock.sql": "40d776d31595a8e860e8f7d2bf036c155270a9f9907cbc9c3129c05066523fdc",
+    "0203_megapot_claim_time_verification.sql": "dcc26dfd3218b53289105a8a8a1e8280b3d23d9665a3b64c2f63651ced4eb284"
   }
 }

@@ -293,6 +293,8 @@ TRUNCATE TABLE
   "megapot_drawing_sweeps",
   "megapot_fallback_cutoff_activity_evidence",
   "megapot_fallback_cutoff_evidence",
+  "megapot_participant_claim_guards",
+  "megapot_participant_claims",
   "megapot_pool_beneficiary_snapshots",
   "megapot_pool_commitment_effects",
   "megapot_pool_drawing_transitions",
