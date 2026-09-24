@@ -1595,7 +1595,7 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
       expect(pending).toMatchObject({
         personaId,
         network: "regtest",
-        hdWalletIndex: 0,
+        hdWalletIndex: null,
         status: "pending",
         address: null,
         outputScriptHex: null,
@@ -1629,65 +1629,35 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
     completed++;
   });
 
-  test("confirms only the prepared Taproot index and matching bech32m script", async () => {
+  test("reads an existing verified Taproot script without inventing a provider index", async () => {
     await withSchema(async (admin, connection) => {
       await configureSpacesNetwork(admin);
-      const accountId = "taproot-confirm-owner";
+      const accountId = "taproot-verified-owner";
       const personaId = await seedAccount(admin, accountId, { humanEvidence: false });
       const store = taproot(connection);
-      const pending = await Effect.runPromise(
-        store.prepare({
-          accountId,
-          personaId,
-          idempotencyKey: "taproot-confirm-1",
-          network: "regtest",
-        }),
-      );
       const program = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
       const address = regtestAddress(program);
-      const confirmation = {
-        accountId,
-        personaId,
-        hdWalletIndex: pending.hdWalletIndex,
-        privyWalletId: "provider-wallet-1",
-        address,
-        network: "regtest" as const,
-      };
-      expect(
-        await failureOf(store.confirmVerified({ ...confirmation, hdWalletIndex: 1 })),
-      ).toMatchObject({
-        _tag: "SpacesTaprootPreparationConflict",
-        reason: "provider-mismatch",
-      });
-      expect(
-        await failureOf(
-          store.confirmVerified({ ...confirmation, address: `bcrt1p${"q".repeat(58)}` }),
-        ),
-      ).toMatchObject({
-        _tag: "SpacesTaprootPreparationConflict",
-        reason: "provider-mismatch",
-      });
-      expect(await Effect.runPromise(store.read({ accountId, personaId }))).toEqual(pending);
-      const active = await Effect.runPromise(store.confirmVerified(confirmation));
-      expect(active).toMatchObject({
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (
+           assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,status,
+           reservation_idempotency_key,bitcoin_network,privy_wallet_id,address,output_script_hex,
+           assigned_at,created_at,updated_at
+         ) VALUES ('taproot-verified',$1,$2,'bitcoin-taproot',NULL,'active',
+                   'taproot-verified','regtest','provider-wallet-1',$3,$4,
+                   statement_timestamp(),statement_timestamp(),statement_timestamp())`,
+        [personaId, accountId, address, `5120${program}`],
+      );
+      expect(await Effect.runPromise(store.read({ accountId, personaId }))).toMatchObject({
         status: "active",
         address,
         outputScriptHex: `5120${program}`,
-      });
-      expect(await Effect.runPromise(store.confirmVerified(confirmation))).toEqual(active);
-      expect(
-        await failureOf(
-          store.confirmVerified({ ...confirmation, privyWalletId: "other-provider-wallet" }),
-        ),
-      ).toMatchObject({
-        _tag: "SpacesTaprootPreparationConflict",
-        reason: "provider-mismatch",
+        hdWalletIndex: null,
       });
     });
     completed++;
   });
 
-  test("serializes concurrent preparations and keeps sibling persona indices distinct", async () => {
+  test("serializes concurrent preparations and blocks a sibling while provider outcome is unknown", async () => {
     await withSchema(async (admin, connection) => {
       await configureSpacesNetwork(admin);
       const accountId = "taproot-concurrent-owner";
@@ -1712,6 +1682,24 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
         _tag: "SpacesTaprootPreparationConflict",
         reason: "request-mismatch",
       });
+      expect(
+        await failureOf(
+          store.prepare({
+            ...firstRequest,
+            personaId: secondPersona,
+            idempotencyKey: "taproot-concurrent-2",
+          }),
+        ),
+      ).toMatchObject({
+        _tag: "SpacesTaprootPreparationConflict",
+        reason: "account-busy",
+      });
+      await admin.query(
+        `UPDATE persona_wallet_assignments
+            SET status='tombstoned',tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+          WHERE assignment_id=$1`,
+        [first.assignmentId],
+      );
       const second = await Effect.runPromise(
         store.prepare({
           ...firstRequest,
@@ -1719,8 +1707,8 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
           idempotencyKey: "taproot-concurrent-2",
         }),
       );
-      expect(first.hdWalletIndex).toBe(0);
-      expect(second.hdWalletIndex).toBe(1);
+      expect(first.hdWalletIndex).toBeNull();
+      expect(second.hdWalletIndex).toBeNull();
       expect(second.assignmentId).not.toBe(first.assignmentId);
     });
     completed++;

@@ -11,7 +11,7 @@ export type SpacesTaprootPreparation = Readonly<{
   assignmentId: string;
   personaId: string;
   network: SpacesBitcoinNetwork;
-  hdWalletIndex: number;
+  hdWalletIndex: number | null;
   status: "pending" | "active";
   address: string | null;
   outputScriptHex: string | null;
@@ -19,12 +19,10 @@ export type SpacesTaprootPreparation = Readonly<{
 
 class SpacesTaprootPreparationConflict extends Data.TaggedError(
   "SpacesTaprootPreparationConflict",
-)<{ readonly reason: "authority" | "request-mismatch" | "provider-mismatch" }> {}
+)<{ readonly reason: "authority" | "request-mismatch" | "account-busy" }> {}
 
 const validId = (value: string): boolean =>
   value.length > 0 && value.length <= 128 && value === value.trim();
-const validProviderId = (value: string): boolean =>
-  value.length > 0 && value.length <= 256 && value === value.trim();
 
 const string = (row: Row, field: string): string => {
   const value = row[field];
@@ -60,7 +58,7 @@ const preparation = (row: Row): SpacesTaprootPreparation => {
     assignmentId: string(row, "assignment_id"),
     personaId: string(row, "persona_id"),
     network,
-    hdWalletIndex: index(row.hd_wallet_index),
+    hdWalletIndex: row.hd_wallet_index === null ? null : index(row.hd_wallet_index),
     status,
     address,
     outputScriptHex,
@@ -76,9 +74,10 @@ const SELECT_ASSIGNMENT = `SELECT assignment_id,persona_id,bitcoin_network,hd_wa
                                AND status IN ('pending','active')`;
 
 /**
- * A private storage seam for Spec 014 §12.2. It never calls Privy. The caller
- * persists this intent before invoking the user's embedded wallet and later
- * confirms only an independently verified provider wallet at the same index.
+ * A private storage seam for Spec 014 §12.2. It never calls Privy. The pinned
+ * browser SDK created a new Taproot wallet at the next index when add was
+ * retried with an existing index. External creation therefore remains blocked
+ * until provider snapshot and uncertain-outcome reconciliation are implemented.
  */
 export function makeControlPlaneSpacesTaprootPreparationStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -145,7 +144,7 @@ export function makeControlPlaneSpacesTaprootPreparationStore(
               }
               const owner = yield* transaction.execute<Row>({
                 label: "spaces-taproot.prepare.owner",
-                text: `SELECT evm.hd_wallet_index FROM personas AS persona
+                text: `SELECT 1 FROM personas AS persona
                         JOIN persona_wallet_assignments AS evm
                           ON evm.account_id=persona.account_id
                          AND evm.persona_id=persona.persona_id
@@ -178,6 +177,17 @@ export function makeControlPlaneSpacesTaprootPreparationStore(
                 }
                 return preparation(existing.rows[0]);
               }
+              const otherPending = yield* transaction.execute<Row>({
+                label: "spaces-taproot.prepare.account-busy",
+                text: `SELECT 1 FROM persona_wallet_assignments
+                        WHERE account_id=$1 AND chain_account_kind='bitcoin-taproot'
+                          AND status='pending' LIMIT 1`,
+                values: [input.accountId],
+                readonly: true,
+              });
+              if (otherPending.rows.length !== 0) {
+                return yield* new SpacesTaprootPreparationConflict({ reason: "account-busy" });
+              }
               const configured = yield* transaction.execute<Row>({
                 label: "spaces-taproot.prepare.network",
                 text: "SELECT 1 FROM spaces_network_configuration WHERE network=$1",
@@ -193,114 +203,14 @@ export function makeControlPlaneSpacesTaprootPreparationStore(
                          assignment_id,persona_id,account_id,chain_account_kind,
                          hd_wallet_index,status,reservation_idempotency_key,bitcoin_network
                        ) VALUES ('persona_taproot_' || replace(gen_random_uuid()::text,'-',''),
-                                 $2,$1,'bitcoin-taproot',$3,'pending',$4,$5)
+                                 $2,$1,'bitcoin-taproot',NULL,'pending',$3,$4)
                        RETURNING assignment_id,persona_id,bitcoin_network,hd_wallet_index,
                                  status,address,output_script_hex`,
-                values: [
-                  input.accountId,
-                  input.personaId,
-                  index(owner.rows[0]?.hd_wallet_index),
-                  input.idempotencyKey,
-                  input.network,
-                ],
+                values: [input.accountId, input.personaId, input.idempotencyKey, input.network],
                 readonly: false,
               });
               if (inserted.rows.length !== 1) return yield* Effect.die("Taproot insert missing");
               return preparation(inserted.rows[0] as Row);
-            }),
-          );
-        }),
-      ),
-
-    confirmVerified: (
-      input: Readonly<{
-        accountId: string;
-        personaId: string;
-        hdWalletIndex: number;
-        privyWalletId: string | null;
-        address: string;
-        network: SpacesBitcoinNetwork;
-      }>,
-    ) =>
-      provide(
-        Effect.gen(function* () {
-          if (
-            !validId(input.accountId) ||
-            !validId(input.personaId) ||
-            !Number.isSafeInteger(input.hdWalletIndex) ||
-            input.hdWalletIndex < 0 ||
-            (input.privyWalletId !== null && !validProviderId(input.privyWalletId))
-          ) {
-            return yield* new SpacesTaprootPreparationConflict({ reason: "provider-mismatch" });
-          }
-          let outputScriptHex: string;
-          try {
-            outputScriptHex = spacesTaprootOutputScriptFromAddress(input.address, input.network);
-          } catch {
-            return yield* new SpacesTaprootPreparationConflict({ reason: "provider-mismatch" });
-          }
-          const db = yield* ControlPlaneDb;
-          return yield* db.withTransaction((transaction) =>
-            Effect.gen(function* () {
-              const owner = yield* transaction.execute<Row>({
-                label: "spaces-taproot.confirm.owner",
-                text: `SELECT 1 FROM personas
-                        WHERE account_id=$1 AND persona_id=$2 AND status='active' FOR UPDATE`,
-                values: [input.accountId, input.personaId],
-                readonly: false,
-              });
-              if (owner.rows.length !== 1) {
-                return yield* new SpacesTaprootPreparationConflict({ reason: "authority" });
-              }
-              const existing = yield* transaction.execute<Row>({
-                label: "spaces-taproot.confirm.existing",
-                text: `${SELECT_ASSIGNMENT} FOR UPDATE`,
-                values: [input.accountId, input.personaId],
-                readonly: false,
-              });
-              if (existing.rows.length !== 1) {
-                return yield* new SpacesTaprootPreparationConflict({ reason: "request-mismatch" });
-              }
-              const row = existing.rows[0] as Row;
-              if (
-                index(row.hd_wallet_index) !== input.hdWalletIndex ||
-                row.bitcoin_network !== input.network
-              ) {
-                return yield* new SpacesTaprootPreparationConflict({ reason: "provider-mismatch" });
-              }
-              if (row.status === "active") {
-                if (
-                  row.privy_wallet_id !== input.privyWalletId ||
-                  row.address !== input.address ||
-                  row.output_script_hex !== outputScriptHex
-                ) {
-                  return yield* new SpacesTaprootPreparationConflict({
-                    reason: "provider-mismatch",
-                  });
-                }
-                return preparation(row);
-              }
-              const confirmed = yield* transaction.execute<Row>({
-                label: "spaces-taproot.confirm.commit",
-                text: `UPDATE persona_wallet_assignments
-                         SET privy_wallet_id=$3,address=$4,output_script_hex=$5,
-                             status='active',assigned_at=greatest(clock_timestamp(),created_at),
-                             updated_at=greatest(clock_timestamp(),created_at)
-                       WHERE account_id=$1 AND persona_id=$2
-                         AND chain_account_kind='bitcoin-taproot' AND status='pending'
-                       RETURNING assignment_id,persona_id,bitcoin_network,hd_wallet_index,
-                                 status,address,output_script_hex`,
-                values: [
-                  input.accountId,
-                  input.personaId,
-                  input.privyWalletId,
-                  input.address,
-                  outputScriptHex,
-                ],
-                readonly: false,
-              });
-              if (confirmed.rows.length !== 1) return yield* Effect.die("Taproot confirm missing");
-              return preparation(confirmed.rows[0] as Row);
             }),
           );
         }),
