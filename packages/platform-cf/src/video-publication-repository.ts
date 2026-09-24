@@ -2028,7 +2028,10 @@ export function makeControlPlaneVideoPublicationStore(
                 ...(allApproved
                   ? {
                       status: "processing" as const,
-                      phase: "publish" as const,
+                      phase:
+                        current.state.intent === "song_reference"
+                          ? ("render" as const)
+                          : ("publish" as const),
                       reviewReasons: [],
                       decision:
                         current.state.decision === null
@@ -2068,7 +2071,11 @@ function insertPublicationWakeup(
   actionId: string,
 ) {
   return Effect.gen(function* () {
-    if (state.video === null || state.analysis === null || state.phase !== "publish")
+    if (
+      state.video === null ||
+      state.analysis === null ||
+      (state.phase !== "publish" && state.phase !== "render")
+    )
       throw new Error("video publication wakeup authority rejected");
     const identity = `video-analysis:${state.operationId}:v${state.videoRevision}:c${state.creationRevision}`;
     yield* tx.execute({
