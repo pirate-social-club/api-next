@@ -270,6 +270,10 @@ function fixture(
         ],
         nextCursor: null,
       }),
+    issueClaimVerificationIntent: ({ accountId }) => {
+      claimCalls.push({ accountId, creditId: "intent" });
+      return Effect.succeed({ intentId: "reward-claim_1" });
+    },
     claimCredit: ({ accountId, creditId }) => {
       claimCalls.push({ accountId, creditId });
       return creditId === "credit_2"
@@ -775,6 +779,22 @@ describe("song reward offer HTTP handlers", () => {
     expect(await credits.json()).toMatchObject({
       items: [{ credit_id: "credit_1", claim: { status: "accepted", payout_status: "pending" } }],
     });
+  });
+
+  test("issues a reward-claim Very intent for the signed-in account only", async () => {
+    claimCalls.length = 0;
+    const unauthenticated = await fixture().request("/rewards/claim-verification-intents", {
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    const issued = await fixture().request("/rewards/claim-verification-intents", {
+      method: "POST",
+      headers: { authorization: "Bearer test" },
+    });
+    expect(issued.status).toBe(200);
+    expect(issued.headers.get("cache-control")).toBe("no-store");
+    expect(await issued.json()).toEqual({ intent_id: "reward-claim_1", provider_id: "very.web" });
+    expect(claimCalls).toEqual([{ accountId: "account_1", creditId: "intent" }]);
   });
 
   test("maps an internally reclaimable terminal plan to the stable wire status", async () => {

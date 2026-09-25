@@ -33,6 +33,7 @@
     "./community-repository": "./src/community-repository.ts",
     "./community-route-repository": "./src/community-route-repository.ts",
     "./community-join-intent-resolver": "./src/community-join-intent-resolver.ts",
+    "./reward-claim-verification-intent": "./src/reward-claim-verification-intent.ts",
     "./community-creation-intent-resolver": "./src/community-creation-intent-resolver.ts",
     "./community-creation-repository": "./src/community-creation-repository.ts",
     "./nationality-authoring": "./src/nationality-authoring.ts",

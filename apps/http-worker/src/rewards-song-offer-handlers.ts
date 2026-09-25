@@ -61,6 +61,7 @@ export type SongRewardOfferHandlers = Readonly<{
   GetMegapotPoolStanding: EndpointHandler;
   ListMyRewardCredits: EndpointHandler;
   ClaimRewardCredit: EndpointHandler;
+  IssueRewardClaimVerificationIntent: EndpointHandler;
 }>;
 
 const rewardUnavailable = (): never => {
@@ -89,6 +90,7 @@ export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandler
     GetMegapotPoolStanding: rewardUnavailable,
     ListMyRewardCredits: rewardUnavailable,
     ClaimRewardCredit: rewardUnavailable,
+    IssueRewardClaimVerificationIntent: rewardUnavailable,
   };
 }
 
@@ -138,6 +140,7 @@ export function makeLazySongRewardOfferHandlers(
     GetMegapotPoolStanding: handler("GetMegapotPoolStanding"),
     ListMyRewardCredits: handler("ListMyRewardCredits"),
     ClaimRewardCredit: handler("ClaimRewardCredit"),
+    IssueRewardClaimVerificationIntent: handler("IssueRewardClaimVerificationIntent"),
   };
 }
 
@@ -735,6 +738,18 @@ export function makeSongRewardOfferHandlers(
           .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
       );
       return { outcome: result.outcome, credit: rewardCredit(result.credit) };
+    },
+    IssueRewardClaimVerificationIntent: async (request) => {
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const result = await Effect.runPromise(
+        services.projections
+          .issueClaimVerificationIntent({ accountId: principal.subject })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return { intent_id: result.intentId, provider_id: "very.web" as const };
     },
   };
 }

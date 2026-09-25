@@ -163,6 +163,7 @@ import {
   makeDurableObjectIdentityRegistrationRateLimiter,
   type RegistrationRateLimiterNamespaces,
 } from "@pirate/platform-cf/registration-rate-limiter";
+import { makeControlPlaneRewardClaimIntentResolver } from "@pirate/platform-cf/reward-claim-verification-intent";
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
@@ -1093,6 +1094,7 @@ export async function createProductionHttpWorker(
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
     makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneRewardClaimIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneHandleNationalityIntentResolver(controlPlane),
     accountAgeVerification.intents,
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
