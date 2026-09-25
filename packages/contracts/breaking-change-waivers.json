@@ -1,7 +1,7 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_communitiesCommunityIdHandleOfferings",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -11,7 +11,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_communitiesCommunityIdHandleSaleNamespaces",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -22,7 +22,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_communitiesCommunityIdHandleSalesManagement",
       "kind": "clean-break",
       "reason": "Ratified Spaces owner-management successor in Spec 012 section 5.3.13.11, including plural authoring presets; HNS candidates remain admitted.",
@@ -37,7 +37,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_communitiesCommunityIdHandleSalesManagementOfferings",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -47,7 +47,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_communitiesCommunityIdHandleSalesManagementSaleNamespaces",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -59,7 +59,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_handleClaimsClaimId",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -71,7 +71,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_handlesFamilyNamespaceRootHandleLabel",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -80,7 +80,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "get_personasPersonaIdHandleGrants",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -89,7 +89,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "post_communitiesCommunityIdHandleOfferings",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -105,7 +105,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "post_communitiesCommunityIdHandleOfferingsOfferingIdRevisions",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -121,7 +121,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "post_communitiesCommunityIdHandleSaleNamespaces",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -135,7 +135,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "post_communitiesCommunityIdHandleSaleNamespacesActivationIdRevisions",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -149,7 +149,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "post_handleClaims",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
@@ -165,7 +165,7 @@
       ]
     },
     {
-      "baselineSha": "0202af61542fb35af0aa47c8d3951336783d8252",
+      "baselineSha": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
       "operationId": "post_handleQuotes",
       "kind": "clean-break",
       "reason": "Ratified Spaces native names successor contracts in Spec 012 section 5.3.13; HNS variants remain admitted. The detector flattens the new union shapes.",
