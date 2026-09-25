@@ -52,7 +52,8 @@ SELECT jsonb_build_object(
    'reserved_atomic',c.reserved_atomic::text,'state',c.state,
    'receipt_confirmed',COALESCE(e.state='confirmed' AND r.transfer_purpose='reward_payout'
       AND r.amount_atomic=a.amount_atomic AND r.recipient_address=p.destination_address
-      AND p.payout_persona_id=a.persona_id AND p.account_id=a.account_id,false)) ORDER BY a.ordinal)
+      AND p.payout_persona_id=a.persona_id AND p.account_id=a.account_id,false),
+   'claim_status',(SELECT status FROM megapot_participant_claims WHERE credit_id=a.credit_id)) ORDER BY a.ordinal)
    FROM megapot_allocations a JOIN reward_ledger_credits c USING (credit_id)
    LEFT JOIN reward_payout_effects p USING (credit_id)
    LEFT JOIN reward_chain_effects e ON e.effect_id=p.payout_effect_id
