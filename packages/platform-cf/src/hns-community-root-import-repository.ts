@@ -133,9 +133,11 @@ const sessionReadColumns = `session.*,
               OR ownership.status='expired')
        THEN 'expired'
        WHEN session.status='awaiting_owner_update' AND EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed'
-              -- A closed publication window holds the import for recovery with
-              -- authority retained; the lifecycle projection reports it.
-              AND job.failure_code IS DISTINCT FROM 'publication_window_closed') THEN 'failed'
+              -- A closed publication window or an exhausted ownership check
+              -- holds the import for recovery with authority retained; the
+              -- lifecycle projection reports it, with its pending reason.
+              AND job.failure_code IS DISTINCT FROM 'publication_window_closed'
+              AND job.failure_code IS DISTINCT FROM 'ownership_check_exhausted') THEN 'failed'
        WHEN session.status NOT IN ('activated','failed','expired') AND ownership.status='failed'
        THEN 'failed' ELSE session.status END AS status,
   (EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state IN ('pending','leased')) OR EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
@@ -260,8 +262,6 @@ function ownershipFailureReason(row: Row): HnsCommunityRootImportFailureReasonV1
 function terminalFailureReason(row: Row): HnsCommunityRootImportFailureReasonV1 {
   const ownership = ownershipFailureReason(row);
   if (ownership !== null) return ownership;
-  if (text(row, "publication_failure_code") === "ownership_check_exhausted")
-    return "ownership_check_attempts_exhausted";
   switch (text(row, "provision_failure_code")) {
     case "root_unavailable":
       return "root_resource_unavailable";

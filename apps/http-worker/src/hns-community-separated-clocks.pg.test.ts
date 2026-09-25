@@ -425,11 +425,15 @@ pgTest(
           supported_action: "retire",
         }),
       ]);
+      // The owner sees a recovery hold naming why, not a retryable failure.
       const projected = (await (await base.call(base.sessionUrl)).json()) as {
-        lifecycle: { phase: string; permitted_actions: string[] };
+        status: string;
+        lifecycle: { phase: string; pending_reason: string; permitted_actions: string[] };
       };
+      expect(projected.status).toBe("awaiting_owner_update");
       expect(projected.lifecycle).toMatchObject({
         phase: "recovery_required",
+        pending_reason: "ownership_check_attempts_exhausted",
         permitted_actions: ["poll", "recover"],
       });
 
