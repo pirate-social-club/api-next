@@ -2,6 +2,10 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/platform-cf/spaces-operator-assignment-repository": new URL(
+    "../../packages/platform-cf/src/spaces-operator-assignment-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/age-verification": new URL(
     "../../packages/application/src/use-cases/age-verification.ts",
     import.meta.url,

@@ -13638,6 +13638,42 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_spaces_operator_prepared_assignment_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Spaces prepared assignment cannot be deleted';
+  END IF;
+  IF OLD.status <> 'prepared' OR NEW.status <> 'confirmed'
+    OR (to_jsonb(NEW) - 'status' - 'confirmed_at' - 'confirmed_by_account_id'
+        - 'namespace_authority_reference' - 'namespace_authority_generation'
+        - 'confirm_idempotency_key' - 'confirm_request_bytes')
+      <> (to_jsonb(OLD) - 'status' - 'confirmed_at' - 'confirmed_by_account_id'
+        - 'namespace_authority_reference' - 'namespace_authority_generation'
+        - 'confirm_idempotency_key' - 'confirm_request_bytes') THEN
+    RAISE EXCEPTION 'Spaces prepared assignment may only be confirmed once';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_operator_service_credential_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Spaces operator credential cannot be deleted';
+  END IF;
+  IF OLD.status <> 'active' OR NEW.status <> 'revoked'
+    OR (to_jsonb(NEW) - 'status' - 'revoked_at')
+      <> (to_jsonb(OLD) - 'status' - 'revoked_at') THEN
+    RAISE EXCEPTION 'Spaces operator credential may only be revoked';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_spaces_registry_acknowledgment_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -34705,6 +34741,87 @@ CREATE TABLE spaces_operator_instances (
     CONSTRAINT spaces_operator_instances_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))
 );
 
+CREATE TABLE spaces_operator_prepared_assignments (
+    operator_assignment_id text NOT NULL,
+    operator_assignment_generation bigint DEFAULT 1 NOT NULL,
+    credential_id text NOT NULL,
+    environment text NOT NULL,
+    network text NOT NULL,
+    canonical_root text NOT NULL,
+    operator_instance_id text NOT NULL,
+    operator_wallet_reference text NOT NULL,
+    delegation_address text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_bytes bytea NOT NULL,
+    request_sha256_hex text NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    confirmed_at timestamp with time zone,
+    confirmed_by_account_id text,
+    namespace_authority_reference text,
+    namespace_authority_generation bigint,
+    confirm_idempotency_key text,
+    confirm_request_bytes bytea,
+    CONSTRAINT spaces_operator_prepared_ass_operator_assignment_generati_check CHECK ((operator_assignment_generation = 1)),
+    CONSTRAINT spaces_operator_prepared_assign_operator_wallet_reference_check CHECK (is_handle_sales_identifier_v1(operator_wallet_reference, 256)),
+    CONSTRAINT spaces_operator_prepared_assignmen_operator_assignment_id_check CHECK ((operator_assignment_id ~ '^sassign_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_operator_prepared_assignments_canonical_root_check CHECK (is_community_route_root_label('spaces'::text, canonical_root)),
+    CONSTRAINT spaces_operator_prepared_assignments_check CHECK ((((status = 'prepared'::text) AND (confirmed_at IS NULL) AND (confirmed_by_account_id IS NULL) AND (namespace_authority_reference IS NULL) AND (namespace_authority_generation IS NULL) AND (confirm_idempotency_key IS NULL) AND (confirm_request_bytes IS NULL)) OR ((status = 'confirmed'::text) AND (confirmed_at >= created_at) AND (confirmed_by_account_id IS NOT NULL) AND (namespace_authority_reference IS NOT NULL) AND (namespace_authority_generation > 0) AND (confirm_idempotency_key IS NOT NULL) AND ((octet_length(confirm_request_bytes) >= 1) AND (octet_length(confirm_request_bytes) <= 4096))))),
+    CONSTRAINT spaces_operator_prepared_assignments_delegation_address_check CHECK ((delegation_address ~ '^bcs1p[a-z0-9]{8,120}$'::text)),
+    CONSTRAINT spaces_operator_prepared_assignments_environment_check CHECK ((environment = ANY (ARRAY['development'::text, 'staging'::text, 'production'::text]))),
+    CONSTRAINT spaces_operator_prepared_assignments_idempotency_key_check CHECK (is_handle_sales_identifier_v1(idempotency_key, 128)),
+    CONSTRAINT spaces_operator_prepared_assignments_network_check CHECK ((network = 'mainnet'::text)),
+    CONSTRAINT spaces_operator_prepared_assignments_request_bytes_check CHECK (((octet_length(request_bytes) >= 1) AND (octet_length(request_bytes) <= 4096))),
+    CONSTRAINT spaces_operator_prepared_assignments_request_sha256_hex_check CHECK ((request_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_operator_prepared_assignments_status_check CHECK ((status = ANY (ARRAY['prepared'::text, 'confirmed'::text])))
+);
+
+CREATE TABLE spaces_operator_service_credentials (
+    credential_id text NOT NULL,
+    operator_instance_id text NOT NULL,
+    environment text NOT NULL,
+    network text NOT NULL,
+    canonical_root text NOT NULL,
+    capability text NOT NULL,
+    verifier_sha256_hex text NOT NULL,
+    status text NOT NULL,
+    authorization_reference text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    revoked_at timestamp with time zone,
+    CONSTRAINT spaces_operator_service_credentia_authorization_reference_check CHECK (is_handle_sales_identifier_v1(authorization_reference, 128)),
+    CONSTRAINT spaces_operator_service_credentials_canonical_root_check CHECK (is_community_route_root_label('spaces'::text, canonical_root)),
+    CONSTRAINT spaces_operator_service_credentials_capability_check CHECK ((capability = ANY (ARRAY['assignment_prepare'::text, 'capability_report'::text, 'funding_report'::text]))),
+    CONSTRAINT spaces_operator_service_credentials_check CHECK ((((status = 'active'::text) AND (revoked_at IS NULL)) OR ((status = 'revoked'::text) AND (revoked_at >= created_at)))),
+    CONSTRAINT spaces_operator_service_credentials_credential_id_check CHECK ((credential_id ~ '^sopscred_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_operator_service_credentials_environment_check CHECK ((environment = ANY (ARRAY['development'::text, 'staging'::text, 'production'::text]))),
+    CONSTRAINT spaces_operator_service_credentials_network_check CHECK ((network = 'mainnet'::text)),
+    CONSTRAINT spaces_operator_service_credentials_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text]))),
+    CONSTRAINT spaces_operator_service_credentials_verifier_sha256_hex_check CHECK ((verifier_sha256_hex ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE spaces_operator_service_reports (
+    report_id text NOT NULL,
+    credential_id text NOT NULL,
+    capability text NOT NULL,
+    operator_assignment_id text NOT NULL,
+    operator_assignment_generation bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    request_bytes bytea NOT NULL,
+    request_sha256_hex text NOT NULL,
+    observation_generation bigint NOT NULL,
+    status text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT spaces_operator_service_reports_capability_check CHECK ((capability = ANY (ARRAY['capability_report'::text, 'funding_report'::text]))),
+    CONSTRAINT spaces_operator_service_reports_check CHECK ((observed_at <= created_at)),
+    CONSTRAINT spaces_operator_service_reports_idempotency_key_check CHECK (is_handle_sales_identifier_v1(idempotency_key, 128)),
+    CONSTRAINT spaces_operator_service_reports_observation_generation_check CHECK (((observation_generation >= 1) AND (observation_generation <= '9007199254740991'::bigint))),
+    CONSTRAINT spaces_operator_service_reports_report_id_check CHECK ((report_id ~ '^sopsreport_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_operator_service_reports_request_bytes_check CHECK (((octet_length(request_bytes) >= 1) AND (octet_length(request_bytes) <= 4096))),
+    CONSTRAINT spaces_operator_service_reports_request_sha256_hex_check CHECK ((request_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_operator_service_reports_status_check CHECK ((status = ANY (ARRAY['observed'::text, 'absent'::text, 'funded_v1'::text, 'commits_paused_insufficient_funds_v1'::text])))
+);
+
 CREATE TABLE spaces_owner_proof_ceremonies (
     ceremony_id text NOT NULL,
     generation bigint NOT NULL,
@@ -38154,6 +38271,27 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_pkey PRIMARY KEY (operator_instance_id);
 
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assi_credential_id_idempotency_key_key UNIQUE (credential_id, idempotency_key);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assignme_operator_wallet_reference_key UNIQUE (operator_wallet_reference);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assignments_delegation_address_key UNIQUE (delegation_address);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assignments_pkey PRIMARY KEY (operator_assignment_id);
+
+ALTER TABLE ONLY spaces_operator_service_credentials
+    ADD CONSTRAINT spaces_operator_service_credentials_pkey PRIMARY KEY (credential_id);
+
+ALTER TABLE ONLY spaces_operator_service_reports
+    ADD CONSTRAINT spaces_operator_service_repor_credential_id_idempotency_key_key UNIQUE (credential_id, idempotency_key);
+
+ALTER TABLE ONLY spaces_operator_service_reports
+    ADD CONSTRAINT spaces_operator_service_reports_pkey PRIMARY KEY (report_id);
+
 ALTER TABLE ONLY spaces_owner_proof_ceremonies
     ADD CONSTRAINT spaces_owner_proof_ceremonies_account_id_community_id_canon_key UNIQUE (account_id, community_id, canonical_root, start_idempotency_key);
 
@@ -38898,6 +39036,10 @@ CREATE INDEX spaces_issuance_verifications_due_idx ON spaces_issuance_verificati
 CREATE UNIQUE INDEX spaces_namespace_authority_evidence_root_uidx ON spaces_namespace_authority_evidence USING btree (network, canonical_root) WHERE (namespace_authority_generation = 1);
 
 CREATE UNIQUE INDEX spaces_operator_assignment_live_root_uidx ON spaces_operator_assignment_current USING btree (network, canonical_root) WHERE (status = 'active'::text);
+
+CREATE UNIQUE INDEX spaces_operator_prepared_root_uidx ON spaces_operator_prepared_assignments USING btree (environment, network, canonical_root) WHERE (status = 'prepared'::text);
+
+CREATE UNIQUE INDEX spaces_operator_service_active_uidx ON spaces_operator_service_credentials USING btree (operator_instance_id, environment, network, canonical_root, capability) WHERE (status = 'active'::text);
 
 CREATE INDEX spaces_owner_proof_current_idx ON spaces_owner_proof_ceremonies USING btree (environment, canonical_root, generation DESC);
 
@@ -40120,6 +40262,12 @@ CREATE TRIGGER spaces_operator_funding_observation_insert_guard BEFORE INSERT ON
 CREATE TRIGGER spaces_operator_funding_observations_append_only BEFORE DELETE OR UPDATE ON spaces_operator_funding_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER spaces_operator_instance_change_guard BEFORE DELETE OR UPDATE ON spaces_operator_instances FOR EACH ROW EXECUTE FUNCTION guard_spaces_operator_instance_change_v1();
+
+CREATE TRIGGER spaces_operator_prepared_assignments_change_guard BEFORE DELETE OR UPDATE ON spaces_operator_prepared_assignments FOR EACH ROW EXECUTE FUNCTION guard_spaces_operator_prepared_assignment_change_v1();
+
+CREATE TRIGGER spaces_operator_service_credentials_change_guard BEFORE DELETE OR UPDATE ON spaces_operator_service_credentials FOR EACH ROW EXECUTE FUNCTION guard_spaces_operator_service_credential_change_v1();
+
+CREATE TRIGGER spaces_operator_service_reports_append_only BEFORE DELETE OR UPDATE ON spaces_operator_service_reports FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER spaces_registry_acknowledgment_insert_guard BEFORE INSERT ON spaces_registry_acknowledgments FOR EACH ROW EXECUTE FUNCTION guard_spaces_registry_acknowledgment_insert_v1();
 
@@ -42746,6 +42894,27 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assi_namespace_authority_referenc_fkey FOREIGN KEY (namespace_authority_reference, namespace_authority_generation) REFERENCES spaces_namespace_authority_evidence(namespace_authority_reference, namespace_authority_generation);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assignmen_confirmed_by_account_id_fkey FOREIGN KEY (confirmed_by_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assignments_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES spaces_operator_service_credentials(credential_id);
+
+ALTER TABLE ONLY spaces_operator_prepared_assignments
+    ADD CONSTRAINT spaces_operator_prepared_assignments_operator_instance_id_fkey FOREIGN KEY (operator_instance_id) REFERENCES spaces_operator_instances(operator_instance_id);
+
+ALTER TABLE ONLY spaces_operator_service_credentials
+    ADD CONSTRAINT spaces_operator_service_credentials_operator_instance_id_fkey FOREIGN KEY (operator_instance_id) REFERENCES spaces_operator_instances(operator_instance_id);
+
+ALTER TABLE ONLY spaces_operator_service_reports
+    ADD CONSTRAINT spaces_operator_service_repor_operator_assignment_id_opera_fkey FOREIGN KEY (operator_assignment_id, operator_assignment_generation) REFERENCES spaces_operator_assignment_revisions(operator_assignment_id, operator_assignment_generation);
+
+ALTER TABLE ONLY spaces_operator_service_reports
+    ADD CONSTRAINT spaces_operator_service_reports_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES spaces_operator_service_credentials(credential_id);
 
 ALTER TABLE ONLY spaces_owner_proof_ceremonies
     ADD CONSTRAINT spaces_owner_proof_ceremonies_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);

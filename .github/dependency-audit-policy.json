@@ -3,6 +3,7 @@
   "requestPathThreshold": "moderate",
   "requestPathPackages": [
     "@noble/curves",
+    "@scure/base",
     "@selfxyz/core",
     "@zkpassport/sdk",
     "cizgile",

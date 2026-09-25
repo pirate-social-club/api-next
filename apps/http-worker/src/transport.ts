@@ -17,6 +17,7 @@ import {
   NotFound,
   toErrorBody,
 } from "@pirate/contracts";
+import type { SpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { Schema } from "effect";
 import type { Context } from "hono";
@@ -50,6 +51,8 @@ import {
 } from "./hns-handle-host-api-composition.ts";
 import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
+import { makeSpacesOperatorAssignmentHandlers } from "./spaces-operator-assignment-handlers.ts";
+import { makeSpacesOperatorAssignmentTransport } from "./spaces-operator-assignment-transport.ts";
 import { makeSpacesOwnerProofHandlers } from "./spaces-owner-proof-handlers.ts";
 import {
   makeSpacesRegistryTransport,
@@ -166,6 +169,8 @@ export interface HttpWorkerOptions {
   readonly spacesRegistry?: SpacesRegistryTransportOptions;
   /** Absent in production until scoped verifier credentials are installed. */
   readonly spacesOwnerProof?: SpacesOwnerProofStore;
+  /** Absent until scoped host credentials and an independent verifier are composed. */
+  readonly spacesOperatorAssignments?: SpacesOperatorAssignmentStore;
 }
 
 type HttpWorkerEnv = {
@@ -673,6 +678,8 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "StartSpacesOwnership",
   "PollSpacesOwnership",
+  "GetSpacesOperatorAssignments",
+  "ConfirmSpacesOperatorAssignment",
   "GetHandleNationalityAuthoring",
   "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
@@ -771,6 +778,14 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     options.spacesOwnerProof === undefined
       ? undefined
       : makeSpacesOwnerProofHandlers(options.spacesOwnerProof);
+  const spacesOperatorAssignmentHandlers =
+    options.spacesOperatorAssignments === undefined
+      ? undefined
+      : makeSpacesOperatorAssignmentHandlers(options.spacesOperatorAssignments);
+  const spacesOperatorAssignmentTransport =
+    options.spacesOperatorAssignments === undefined
+      ? undefined
+      : makeSpacesOperatorAssignmentTransport(options.spacesOperatorAssignments);
   const sessionExchangeHandler =
     options.sessionExchange === undefined
       ? undefined
@@ -780,6 +795,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
         spacesOwnerProofHandlers?.[binding.name] !== undefined ||
+        spacesOperatorAssignmentHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
   );
@@ -803,6 +819,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     }
     if (spacesRegistry?.matches(pathname)) {
       return spacesRegistry.serve(context.req.raw);
+    }
+    if (spacesOperatorAssignmentTransport?.matches(pathname)) {
+      return spacesOperatorAssignmentTransport.serve(context.req.raw);
     }
     if (pathname === "/admin/hns") {
       if (context.req.raw.method !== "GET") {
@@ -894,6 +913,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
           spacesOwnerProofHandlers?.[binding.name] ??
+          spacesOperatorAssignmentHandlers?.[binding.name] ??
           (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
             ? makeIdentityRegistrationHandler(options.identityRegistration)

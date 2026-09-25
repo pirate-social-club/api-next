@@ -70,6 +70,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/spaces-sale-namespace.pg.test.ts",
   "packages/platform-cf/src/spaces-handle-claims.pg.test.ts",
   "packages/platform-cf/src/spaces-owner-proof-repository.pg.test.ts",
+  "packages/platform-cf/src/spaces-operator-assignment-repository.pg.test.ts",
   "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
   "packages/platform-cf/src/hns-community-root-import-repository.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",

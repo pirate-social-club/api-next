@@ -23,6 +23,7 @@
     "./hns-root-import-lifecycle-observability": "./src/hns-root-import-lifecycle-observability.ts",
     "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
     "./spaces-owner-proof-repository": "./src/spaces-owner-proof-repository.ts",
+    "./spaces-operator-assignment-repository": "./src/spaces-operator-assignment-repository.ts",
     "./hns-community-publication-queue": "./src/hns-community-publication-queue.ts",
     "./hns-community-root-import-repository": "./src/hns-community-root-import-repository.ts",
     "./hns-activation-current-view-repository": "./src/hns-activation-current-view-repository.ts",
@@ -179,6 +180,7 @@
   "dependencies": {
     "@noble/curves": "2.3.0",
     "@pirate/verifier-response-contract": "0.0.0",
+    "@scure/base": "1.2.6",
     "@selfxyz/core": "1.2.0-beta.1",
     "jose": "6.2.2",
     "pg": "8.16.3",

@@ -111,6 +111,10 @@ import {
   GetSongOwnerPolicy,
   UpdateSongOwnerPolicy,
 } from "./song-owner-video-policy.ts";
+import {
+  ConfirmSpacesOperatorAssignment,
+  GetSpacesOperatorAssignments,
+} from "./spaces-operator-assignment.ts";
 import { PollSpacesOwnership, StartSpacesOwnership } from "./spaces-owner-proof.ts";
 import {
   GetStudyAvailabilityV2,
@@ -168,6 +172,8 @@ export const registry = {
   StartNamespaceOwnership,
   StartSpacesOwnership,
   PollSpacesOwnership,
+  GetSpacesOperatorAssignments,
+  ConfirmSpacesOperatorAssignment,
   PollNamespaceOwnership,
   CreateKaraokeAttempt,
   GetKaraokeReadiness,
