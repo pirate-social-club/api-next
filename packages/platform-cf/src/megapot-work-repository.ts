@@ -339,13 +339,21 @@ export function makeControlPlaneMegapotWorkRepository() {
                       CROSS JOIN parameters
                      WHERE effect.effect_kind IN (
                        'usdc_approval','ticket_purchase','winnings_claim','reward_payout',
-                       'reward_refund'
+                       'reward_refund','gas_topup'
                      )
                        AND effect.state IN (
                          'nonce_reserved','prepared','broadcast_pending','confirming',
                          'reconciliation_required'
                        )
                        AND effect.updated_at <= parameters.observed_at-parameters.threshold
+                    UNION ALL
+                    -- A requested gas top-up that never reserved a nonce has no
+                    -- effect yet; count it with the chain effects it is waiting on.
+                    SELECT 'chain_effects', topup.updated_at, parameters.observed_at
+                      FROM reward_gas_topups topup
+                      CROSS JOIN parameters
+                     WHERE topup.status='requested' AND topup.effect_id IS NULL
+                       AND topup.updated_at <= parameters.observed_at-parameters.threshold
                     UNION ALL
                     SELECT 'funding_effects', funding.updated_at, parameters.observed_at
                       FROM song_reward_leg_funding_effects funding

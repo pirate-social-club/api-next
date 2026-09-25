@@ -44,6 +44,48 @@ export interface MegapotRewardsRuntime {
   readonly closeExpiredOffers: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
   readonly refund: (fundingEffectId: string) => Effect.Effect<unknown, unknown>;
   readonly payout: (creditId: string) => Effect.Effect<unknown, unknown>;
+  /**
+   * Winner gas top-ups, sent after payouts. Absent or null when the gas
+   * signer secret or the active gas wallet row is missing; the step is then
+   * skipped.
+   */
+  readonly gasTopups?: Readonly<{
+    listOpen: (limit: number) => Effect.Effect<readonly string[], unknown>;
+    send: (topupId: string) => Effect.Effect<unknown, unknown>;
+  }> | null;
+}
+
+type GasTopupRuntime = NonNullable<MegapotRewardsRuntime["gasTopups"]>;
+
+/**
+ * Resolves the gas top-up step without ever failing the rewards job. A failed
+ * gas wallet lookup yields a runtime whose listing fails, so the cycle records
+ * it as a gas top-up failure and continues without top-ups. No active wallet
+ * skips the step; a different active wallet skips it and reports a mismatch.
+ */
+export function resolveGasTopupRuntime(input: {
+  readonly loadActiveSigner: () => Effect.Effect<string | null, unknown>;
+  readonly configuredSigner: string;
+  readonly makeRuntime: (activeSigner: string) => GasTopupRuntime;
+}): Effect.Effect<Readonly<{ runtime: GasTopupRuntime | null; signerMismatch: boolean }>, never> {
+  return input.loadActiveSigner().pipe(
+    Effect.map((activeSigner) => {
+      if (activeSigner === null) return { runtime: null, signerMismatch: false };
+      if (activeSigner !== input.configuredSigner) {
+        return { runtime: null, signerMismatch: true };
+      }
+      return { runtime: input.makeRuntime(activeSigner), signerMismatch: false };
+    }),
+    Effect.catch((error) =>
+      Effect.succeed({
+        runtime: {
+          listOpen: () => Effect.fail(error),
+          send: () => Effect.fail(error),
+        } satisfies GasTopupRuntime,
+        signerMismatch: false,
+      }),
+    ),
+  );
 }
 
 export type MegapotRewardsCycleSummary = Readonly<{
@@ -58,6 +100,7 @@ export type MegapotRewardsCycleSummary = Readonly<{
   terminalOffers: number;
   refunded: number;
   paid: number;
+  gasTopups: number;
   failures: readonly string[];
   failureDiagnostics: readonly string[];
   agedPending: readonly MegapotAgedPending[] | null;
@@ -93,7 +136,7 @@ const AGED_PENDING_ALERT_COPY: Readonly<
 > = {
   chain_effects: {
     key: "megapot-rewards:aged-chain-effects",
-    body: "Custody-signed reward chain effects exceeded the reconciliation grace period.",
+    body: "Reward chain effects or gas top-ups exceeded the reconciliation grace period.",
   },
   funding_effects: {
     key: "megapot-rewards:aged-funding-effects",
@@ -175,6 +218,7 @@ export function writeMegapotRewardsCycleSnapshot(
       terminal_offer_count: summary.terminalOffers,
       refunded_count: summary.refunded,
       paid_count: summary.paid,
+      gas_topup_count: summary.gasTopups,
       failure_count: summary.failures.length,
       failure_tags: summary.failures,
       failure_diagnostics: summary.failureDiagnostics,
@@ -336,6 +380,24 @@ export function runMegapotRewardsCycle(input: {
     );
     recordFailures(payoutFailures);
 
+    let gasTopups = 0;
+    const gasTopupRuntime = input.runtime.gasTopups ?? null;
+    if (gasTopupRuntime !== null) {
+      // A failed listing is recorded like any candidate failure, so the
+      // liveness projection and the summary are still produced.
+      const open = yield* gasTopupRuntime.listOpen(limit).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            recordFailures([error]);
+            return [] as readonly string[];
+          }),
+        ),
+      );
+      const [gasTopupFailures, sent] = yield* partition(open, gasTopupRuntime.send);
+      recordFailures(gasTopupFailures);
+      gasTopups = sent.length;
+    }
+
     const agedPending = yield* input.work
       .loadAgedPending(MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS)
       .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -352,6 +414,7 @@ export function runMegapotRewardsCycle(input: {
       terminalOffers: terminalOffers.length,
       refunded: refunded.length,
       paid: paid.length,
+      gasTopups,
       failures,
       failureDiagnostics,
       agedPending,

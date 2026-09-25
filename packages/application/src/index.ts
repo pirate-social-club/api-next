@@ -35,6 +35,7 @@ export * from "./rewards/megapot-drawing-observation.ts";
 export * from "./rewards/megapot-purchase.ts";
 export * from "./rewards/megapot-sweep.ts";
 export * from "./rewards/reward-funding.ts";
+export * from "./rewards/reward-gas-topup.ts";
 export * from "./rewards/reward-offer-terminal.ts";
 export * from "./rewards/reward-payout.ts";
 export * from "./rewards/reward-projections.ts";

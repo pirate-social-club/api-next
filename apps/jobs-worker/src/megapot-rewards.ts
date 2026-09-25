@@ -1,6 +1,7 @@
 import { AlertCollector, ControlPlaneDb } from "@pirate/application";
 import {
   type AlertSink,
+  deriveBaseSepoliaMegapotAddress,
   type MegapotCommitmentBucket,
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
@@ -14,6 +15,7 @@ import {
   makeControlPlaneMegapotPurchaseStore,
   makeControlPlaneMegapotSweepStore,
   makeControlPlaneMegapotWorkStore,
+  makeControlPlaneRewardGasTopupSendStore,
   makeControlPlaneRewardOfferTerminalStore,
   makeControlPlaneRewardPayoutStore,
   makeControlPlaneRewardRefundStore,
@@ -28,6 +30,7 @@ import {
   makeMegapotSweepCoordinator,
   makeMegapotV2RpcClient,
   makeR2MegapotCommitmentPublisher,
+  makeRewardGasTopupCoordinator,
   makeRewardPayoutCoordinator,
   makeRewardRefundCoordinator,
 } from "@pirate/platform-cf";
@@ -37,8 +40,10 @@ import {
   MEGAPOT_REWARDS_CYCLE_LANE,
   MEGAPOT_REWARDS_CYCLE_SCHEDULE,
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
+  type MegapotRewardsRuntime,
   megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
+  resolveGasTopupRuntime,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
@@ -95,13 +100,18 @@ const MEGAPOT_REWARDS_READS = [
   "postgres:platform_sponsorship_budgets",
   "postgres:platform_sponsorship_budget_entries",
   "postgres:megapot_pool_drawing_transitions",
+  "postgres:reward_gas_topup_wallets",
+  "postgres:reward_gas_topup_daily_budgets",
+  "postgres:reward_gas_topups",
+  "postgres:reward_native_transfer_receipt_evidence",
 ] as const satisfies readonly TableKey[];
 
 const MEGAPOT_REWARDS_WRITES = MEGAPOT_REWARDS_READS.filter(
   (table) =>
     table !== "postgres:megapot_deployment_attestations" &&
     table !== "postgres:reward_activity_availability_observations" &&
-    table !== "postgres:megapot_pool_shares",
+    table !== "postgres:megapot_pool_shares" &&
+    table !== "postgres:reward_gas_topup_wallets",
 ) satisfies readonly TableKey[];
 
 const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
@@ -130,6 +140,9 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "MegapotSweepRejected",
   "MegapotSweepStorageFailed",
   "MegapotWorkStorageFailed",
+  "RewardGasTopupCoordinatorFailed",
+  "RewardGasTopupRejected",
+  "RewardGasTopupStorageFailed",
   "RewardPayoutCoordinatorFailed",
   "RewardPayoutRejected",
   "RewardPayoutStorageFailed",
@@ -154,6 +167,8 @@ export type MegapotRewardsJobOptions = Readonly<{
   attestationId: string;
   rpcUrl: string;
   custodyPrivateKey: string;
+  /** Null when MEGAPOT_GAS_TOPUP_PRIVATE_KEY is unset; the top-up step is then skipped. */
+  gasTopupPrivateKey: string | null;
   commitmentBucket: MegapotCommitmentBucket;
   commitmentPublicOrigin: string;
   requiredConfirmations: number;
@@ -252,6 +267,41 @@ export function makeMegapotRewardsJob(
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
     });
+    const gasTopupStore = makeControlPlaneRewardGasTopupSendStore(controlPlane);
+    let gasTopups: MegapotRewardsRuntime["gasTopups"] = null;
+    const gasTopupPrivateKey = options.gasTopupPrivateKey;
+    if (gasTopupPrivateKey !== null) {
+      // The gas signer must be the registered active gas wallet, never custody.
+      const resolved = yield* resolveGasTopupRuntime({
+        loadActiveSigner: () => gasTopupStore.loadActiveSigner(deployment.chainId),
+        configuredSigner: deriveBaseSepoliaMegapotAddress(gasTopupPrivateKey),
+        makeRuntime: (activeSigner) => {
+          const gasTopup = makeRewardGasTopupCoordinator({
+            store: gasTopupStore,
+            rpc,
+            signer: makeBaseSepoliaMegapotV2PrivateKeySigner({
+              privateKey: gasTopupPrivateKey,
+              expectedAddress: activeSigner,
+            }),
+            requiredConfirmations: options.requiredConfirmations,
+            gasLimitMultiplierBps: options.gasLimitMultiplierBps,
+            nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
+          });
+          return {
+            listOpen: (limit) => gasTopupStore.listOpen(limit),
+            send: (topupId) => gasTopup.send(topupId),
+          };
+        },
+      });
+      gasTopups = resolved.runtime;
+      if (resolved.signerMismatch) {
+        yield* collector.emit({
+          key: "megapot-rewards:gas-topup-signer-mismatch",
+          severity: "high",
+          body: "The configured gas top-up signer is not the active gas wallet; top-ups are skipped.",
+        });
+      }
+    }
     const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
     const observer = makeMegapotDrawingObserver({
       store: observationStore,
@@ -334,6 +384,7 @@ export function makeMegapotRewardsJob(
         closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
         refund: (fundingEffectId) => refund.refund(fundingEffectId),
         payout: (creditId) => payout.payout(creditId),
+        gasTopups,
       },
     });
     writeMegapotRewardsCycleSnapshot(

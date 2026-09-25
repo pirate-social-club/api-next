@@ -624,6 +624,49 @@ export const ClaimRewardCredit = endpoint({
   errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
 
+/**
+ * Owner decision 2026-09-25. A winner who claimed and was paid USDC may ask
+ * for a bounded, platform-funded Base native-ETH gas top-up so they can send
+ * that USDC onward. The gas goes to the wallet that received the confirmed
+ * payout, even if the persona's wallet changed since. The server reads that
+ * wallet's ETH balance and tops up only the shortfall to a fixed target,
+ * capped per transfer, once per credit, per account per UTC day and by a
+ * platform daily budget. not_needed: the balance already meets the target and
+ * nothing is stored. pending: a top-up exists for this request, credit or
+ * wallet; poll GET /rewards/gas-topups/{topupId}. limit_reached: a cap refused
+ * it, including a credit whose top-up already confirmed. Idempotent per
+ * idempotency_key for the signed-in account. The amount sent can be lower than
+ * amount_wei if the wallet was partly funded before sending.
+ */
+export const RequestRewardGasTopup = endpoint({
+  method: "POST",
+  path: "/rewards/gas-topups",
+  auth: Auth.user(),
+  request: {
+    body: Schema.Struct({ credit_id: Identifier, idempotency_key: Identifier }),
+  },
+  response: Schema.Struct({
+    status: Schema.Literals(["not_needed", "pending", "limit_reached"]),
+    topup_id: Schema.NullOr(Identifier),
+    amount_wei: Schema.NullOr(AtomicAmount),
+  }),
+  errors: [AuthError, BadRequest, Conflict, NotFound, InternalError, ProviderUnavailable],
+});
+
+/** The caller's own gas top-up. released means nothing was or will be sent. */
+export const GetRewardGasTopup = endpoint({
+  method: "GET",
+  path: "/rewards/gas-topups/:topupId",
+  auth: Auth.user(),
+  request: { path: Schema.Struct({ topupId: Identifier }) },
+  response: Schema.Struct({
+    status: Schema.Literals(["requested", "broadcast", "confirmed", "released"]),
+    amount_wei: AtomicAmount,
+    transaction_hash: Schema.NullOr(TransactionHash),
+  }),
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
+});
+
 /** Current server policy preview. Creation freezes and returns the actual policies. */
 export const GetRewardQualificationPolicies = endpoint({
   method: "GET",
