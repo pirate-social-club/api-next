@@ -32,6 +32,8 @@ export type PlatformNamespaceOwnershipProviderOptions = Readonly<{
     readonly environments?: readonly string[];
     readonly operation_deadlines?: HnsOwnerAdapterOptions["operation_deadlines"];
     readonly target_observation_contract?: HnsOwnerAdapterOptions["target_observation_contract"];
+    /** The pinned registry entry advertises hns-txt-import-v1. */
+    readonly import_protocol_enabled?: boolean;
   }>;
 }>;
 
@@ -64,6 +66,7 @@ function configuredHnsAdapter(
         ? {}
         : { operation_deadlines: hns.operation_deadlines }),
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(hns.import_protocol_enabled === true ? { import_protocol_enabled: true } : {}),
     });
   } catch {
     return undefined;

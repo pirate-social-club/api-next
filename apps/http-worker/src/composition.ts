@@ -351,6 +351,7 @@ export interface HttpWorkerBindings
   readonly HNS_OWNERSHIP_ENABLED?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_VERSION?: string;
+  readonly HNS_OWNERSHIP_CAPABILITIES?: string;
   readonly HNS_COMMUNITY_APP_API_REPLAY?: HnsForwarderReplayStoreNamespace;
   readonly KARAOKE_ATTEMPT?: KaraokeAttemptDoNamespace;
   readonly HNS_COMMUNITY_APP_API_ENABLED?: string;
@@ -560,6 +561,7 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_OWNERSHIP_ENABLED: bindings.HNS_OWNERSHIP_ENABLED,
     HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
     HNS_OWNERSHIP_CONFIGURATION_VERSION: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+    HNS_OWNERSHIP_CAPABILITIES: bindings.HNS_OWNERSHIP_CAPABILITIES,
     HNS_COMMUNITY_APP_API_ENABLED: bindings.HNS_COMMUNITY_APP_API_ENABLED,
     HNS_HANDLE_HOST_API_ENABLED: bindings.HNS_HANDLE_HOST_API_ENABLED,
     HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: bindings.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
@@ -780,6 +782,7 @@ export async function createProductionHttpWorker(
         environment: config.API_NEXT_ENV,
         configuration_reference: config.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
         configuration_version: config.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+        capabilities: config.HNS_OWNERSHIP_CAPABILITIES,
       } as const;
       if (!hnsConfig.enabled) return makeHnsOwnershipComposition(hnsConfig);
       const transport =

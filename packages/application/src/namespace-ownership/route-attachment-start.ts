@@ -93,6 +93,8 @@ export type RouteAttachmentOwnershipStartReservationOutcome =
     }
   | { readonly kind: "in_flight"; readonly retry_after_seconds: number }
   | { readonly kind: "conflict" }
+  /** The stored pending challenge has expired; it is never replayed. */
+  | { readonly kind: "challenge_expired" }
   | {
       readonly kind: "terminal";
       readonly status: "verified" | "failed" | "expired";
@@ -126,7 +128,9 @@ export type RouteAttachmentOwnershipStartReplayOutcome =
       readonly result_hash?: string;
     }
   | { readonly kind: "in_flight"; readonly retry_after_seconds: number }
-  | { readonly kind: "conflict" };
+  | { readonly kind: "conflict" }
+  /** The stored pending challenge has expired; it is never replayed. */
+  | { readonly kind: "challenge_expired" };
 
 export type RouteAttachmentOwnershipStartReservationInput = Readonly<{
   readonly start: RouteAttachmentOwnershipProviderStartInput;
@@ -217,7 +221,8 @@ export class RouteAttachmentOwnershipStartRejected extends Data.TaggedError(
     | "unsupported"
     | "conflict"
     | "in_flight"
-    | "terminal";
+    | "terminal"
+    | "challenge_expired";
   readonly retry_after_seconds?: number;
 }> {}
 
@@ -355,6 +360,9 @@ export const startRouteAttachmentOwnership = Effect.fn("startRouteAttachmentOwne
   if (replay.kind === "conflict") {
     return yield* new RouteAttachmentOwnershipStartRejected({ reason: "conflict" });
   }
+  if (replay.kind === "challenge_expired") {
+    return yield* new RouteAttachmentOwnershipStartRejected({ reason: "challenge_expired" });
+  }
   if (replay.kind === "not_found") {
     return yield* new RouteAttachmentOwnershipStartRejected({ reason: "intent_unavailable" });
   }
@@ -465,6 +473,9 @@ export const startRouteAttachmentOwnership = Effect.fn("startRouteAttachmentOwne
   }
   if (reservationOutcome.kind === "conflict") {
     return yield* new RouteAttachmentOwnershipStartRejected({ reason: "conflict" });
+  }
+  if (reservationOutcome.kind === "challenge_expired") {
+    return yield* new RouteAttachmentOwnershipStartRejected({ reason: "challenge_expired" });
   }
   if (reservationOutcome.kind === "terminal") {
     if (reservationOutcome.status === "verified" && reservationOutcome.result_hash !== undefined) {

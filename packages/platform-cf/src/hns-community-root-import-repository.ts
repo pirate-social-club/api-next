@@ -111,20 +111,33 @@ async function digest(value: unknown): Promise<string> {
   return [...new Uint8Array(result)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+// The preparation row pins its generation-1 ceremony. A renewed challenge
+// moves the current ceremony on, so it is always read through the ledger.
 const preparationColumns = `
   preparation.actor_id, preparation.community_id, preparation.attachment_intent_id,
-  preparation.ceremony_intent_id, preparation.root_label,
+  current_ceremony.ceremony_intent_id, current_ceremony.generation AS ceremony_generation,
+  preparation.root_label,
   preparation.root_import_session_id, preparation.provision_job_id,
   attachment.revision AS attachment_revision, preparation.start_idempotency_key, preparation.start_request_sha256, preparation.admission_kind,
-  preparation.expires_at`;
+  preparation.expires_at, attachment.expires_at AS attachment_expires_at`;
+
+const currentCeremonyJoin = `CROSS JOIN LATERAL hns_community_root_import_current_ceremony_v1(
+  preparation.attachment_intent_id) AS current_ceremony`;
 
 // A retained verification attempt supports resuming checks, not a claim that
 // the wallet broadcast or that an on-chain resource was observed.
 const sessionReadColumns = `session.*,
   CASE WHEN session.status NOT IN ('activated','failed','expired')
-         AND (session.expires_at <= clock_timestamp() OR ownership.status='expired')
+         AND (hns_root_import_session_clock_passed_v1(
+                session.root_import_session_id, session.expires_at, clock_timestamp())
+              OR ownership.status='expired')
        THEN 'expired'
-       WHEN session.status='awaiting_owner_update' AND EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed') THEN 'failed'
+       WHEN session.status='awaiting_owner_update' AND EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed'
+              -- A closed publication window or an exhausted ownership check
+              -- holds the import for recovery with authority retained; the
+              -- lifecycle projection reports it, with its pending reason.
+              AND job.failure_code IS DISTINCT FROM 'publication_window_closed'
+              AND job.failure_code IS DISTINCT FROM 'ownership_check_exhausted') THEN 'failed'
        WHEN session.status NOT IN ('activated','failed','expired') AND ownership.status='failed'
        THEN 'failed' ELSE session.status END AS status,
   (EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state IN ('pending','leased')) OR EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
@@ -189,6 +202,7 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
   const community_id = text(row, "community_id");
   const attachment_intent_id = text(row, "attachment_intent_id");
   const ceremony_intent_id = text(row, "ceremony_intent_id");
+  const ceremony_generation = integer(row.ceremony_generation);
   const root_label = text(row, "root_label");
   const root_import_session_id = text(row, "root_import_session_id");
   const provision_job_id = text(row, "provision_job_id");
@@ -199,6 +213,7 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
     community_id === null ||
     attachment_intent_id === null ||
     ceremony_intent_id === null ||
+    ceremony_generation === null ||
     root_label === null ||
     root_import_session_id === null ||
     provision_job_id === null ||
@@ -211,6 +226,7 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
         community_id,
         attachment_intent_id,
         ceremony_intent_id,
+        ceremony_generation,
         root_label,
         attachment_revision,
         start_idempotency_key,
@@ -456,6 +472,7 @@ function loadPreparation(
                FROM hns_community_root_import_preparations AS preparation
                JOIN community_route_attachment_intents AS attachment
                  ON attachment.attachment_intent_id = preparation.attachment_intent_id
+               ${currentCeremonyJoin}
               WHERE preparation.actor_id=$1 AND preparation.community_id=$2
                 AND preparation.start_idempotency_key=$3
               FOR UPDATE OF preparation, attachment`,
@@ -514,6 +531,61 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            // Under the preparation's locks, a sessionless preparation whose
+            // challenge expired is renewed at the next ceremony generation
+            // before it is handed back. No admission or reservation is spent.
+            const resumed = (row: Row) =>
+              Effect.gen(function* () {
+                const value = decodePreparation(row);
+                if (value === null)
+                  return yield* Effect.fail(invariantFailure("renew-challenge.undecodable_row"));
+                const renewal = {
+                  ...reservation,
+                  attachment_intent_id: value.attachment_intent_id,
+                  ceremony_intent_id: input.ceremony_intent_id,
+                  generation: value.ceremony_generation + 1,
+                } as const;
+                const renewalHash = yield* Effect.promise(() => digest(renewal));
+                const renewed = yield* transaction.execute<Row>({
+                  label: "hns.community-root-import.renew-challenge",
+                  text: "SELECT * FROM renew_hns_community_root_import_challenge_v1($1,$2,$3,$4,$5::jsonb,$6)",
+                  values: [
+                    value.actor_id,
+                    value.community_id,
+                    value.attachment_intent_id,
+                    input.ceremony_intent_id,
+                    JSON.stringify(renewal),
+                    renewalHash,
+                  ],
+                  readonly: false,
+                });
+                const outcome = oneRow(renewed);
+                if (outcome === undefined || outcome === null)
+                  return yield* Effect.fail(
+                    invariantFailure("renew-challenge.unexpected_row_count"),
+                  );
+                switch (outcome.outcome) {
+                  case "session_exists":
+                  case "current":
+                    return { kind: "replay", value } as const;
+                  case "preparation_expired":
+                    return { kind: "preparation_expired" } as const;
+                  case "renewed": {
+                    const reloaded = yield* loadPreparation(
+                      transaction,
+                      value.actor_id,
+                      value.community_id,
+                      value.start_idempotency_key,
+                    );
+                    const next = reloaded === null ? null : decodePreparation(reloaded);
+                    return next === null || next.ceremony_intent_id !== input.ceremony_intent_id
+                      ? yield* Effect.fail(invariantFailure("renew-challenge.unexpected_outcome"))
+                      : ({ kind: "replay", value: next } as const);
+                  }
+                  default:
+                    return { kind: "conflict" } as const;
+                }
+              });
             yield* transaction.execute({
               label: "hns.community-root-import.lock-admission",
               text: "SELECT pg_advisory_xact_lock(hashtextextended('hns-community-provisional-admission-v1', 0))",
@@ -541,9 +613,9 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               input.request.idempotency_key,
             );
             if (replay !== null) {
-              const value = decodePreparation(replay);
-              return value !== null && replay.start_request_sha256 === input.request_sha256
-                ? ({ kind: "replay", value } as const)
+              return decodePreparation(replay) !== null &&
+                replay.start_request_sha256 === input.request_sha256
+                ? yield* resumed(replay)
                 : ({ kind: "conflict" } as const);
             }
             const reusedKey = yield* transaction.execute<Row>({
@@ -587,6 +659,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                        FROM hns_community_root_import_preparations AS preparation
                        JOIN community_route_attachment_intents AS attachment
                          ON attachment.attachment_intent_id=preparation.attachment_intent_id
+                       ${currentCeremonyJoin}
                       WHERE preparation.actor_id=$1 AND preparation.community_id=$2
                         AND preparation.root_label=$3
                         AND preparation.expires_at>clock_timestamp()
@@ -608,12 +681,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               return yield* Effect.fail(
                 invariantFailure("resume-preparation.unexpected_row_count"),
               );
-            if (resumableRow !== null) {
-              const value = decodePreparation(resumableRow);
-              return value === null
-                ? yield* Effect.fail(invariantFailure("resume-preparation.undecodable_row"))
-                : ({ kind: "replay", value } as const);
-            }
+            if (resumableRow !== null) return yield* resumed(resumableRow);
             const attached = yield* transaction.execute<Row>({
               label: "hns.community-root-import.check-attached-root",
               text: `SELECT EXISTS (
@@ -671,10 +739,13 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                        OR EXISTS (SELECT 1 FROM hns_dns_zone_activation_current WHERE canonical_root=$1)
                        OR EXISTS (SELECT 1 FROM community_handle_sale_namespace_activation_current
                                    WHERE family='hns' AND canonical_root=$1)
-                       OR EXISTS (SELECT 1 FROM hns_root_import_sessions
-                                   WHERE root_label=$1
-                                     AND status IN ('provisioning','awaiting_owner_update','observing','ready','activated')
-                                     AND (status='activated' OR expires_at>clock_timestamp()))
+                       OR EXISTS (SELECT 1 FROM hns_root_import_sessions AS held
+                                   WHERE held.root_label=$1
+                                     AND held.status IN ('provisioning','awaiting_owner_update','observing','ready','activated')
+                                     AND (held.status='activated'
+                                          OR NOT hns_root_import_session_clock_passed_v1(
+                                            held.root_import_session_id, held.expires_at,
+                                            clock_timestamp())))
                        OR EXISTS (
                          SELECT 1 FROM operator_managed_root_registry_current AS registry
                           WHERE operator_managed_registry_has_active_root(
@@ -691,9 +762,10 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               return yield* Effect.fail(invariantFailure("check-root.unexpected_row_count"));
             if (unavailableRow?.unavailable !== false) return { kind: "conflict" } as const;
 
-            // The provider challenge can expire before its seven-day parent.
-            // Keep the unique open-parent invariant, retiring only this actor's
-            // failed or expired imports whose resources have been released.
+            // A session's pre-exposure bound can pass before its seven-day
+            // parent. Keep the unique open-parent invariant, retiring only this
+            // actor's failed or expired imports whose resources have been
+            // released. An exposed import is governed by its lifecycle instead.
             yield* transaction.execute({
               label: "hns.community-root-import.expire-released-parent",
               text: `UPDATE community_route_attachment_intents AS attachment
@@ -706,8 +778,29 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                         AND attachment.status IN ('verification_required','commit_ready')
                         AND session.status<>'activated'
                         AND (session.status IN ('failed','expired')
-                             OR session.expires_at<=clock_timestamp())
+                             OR hns_root_import_session_clock_passed_v1(
+                               session.root_import_session_id, session.expires_at,
+                               clock_timestamp()))
                         AND NOT hns_community_root_import_reservation_held_v1(session.root_import_session_id)`,
+              values: [input.request.actor_id, input.request.community_id, grantId],
+              readonly: false,
+            });
+            // A preparation that expired before any session existed holds no
+            // provider resource; its parent is retired so a new start is possible.
+            yield* transaction.execute({
+              label: "hns.community-root-import.expire-sessionless-parent",
+              text: `UPDATE community_route_attachment_intents AS attachment
+                        SET status='expired',revision=attachment.revision+1,
+                            updated_at=clock_timestamp()
+                       FROM hns_community_root_import_preparations AS preparation
+                      WHERE attachment.attachment_intent_id=preparation.attachment_intent_id
+                        AND attachment.actor_id=$1 AND attachment.community_id=$2
+                        AND attachment.authority_grant_id=$3
+                        AND attachment.status='verification_required'
+                        AND (preparation.expires_at<=clock_timestamp()
+                             OR attachment.expires_at<=clock_timestamp())
+                        AND NOT EXISTS (SELECT 1 FROM hns_root_import_sessions AS session
+                          WHERE session.root_import_session_id=preparation.root_import_session_id)`,
               values: [input.request.actor_id, input.request.community_id, grantId],
               readonly: false,
             });
@@ -849,6 +942,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               community_id: input.request.community_id,
               attachment_intent_id: input.attachment_intent_id,
               ceremony_intent_id: input.ceremony_intent_id,
+              ceremony_generation: 1,
               root_label: input.request.root_label,
               attachment_revision: 1,
               root_import_session_id: input.root_import_session_id,
@@ -948,12 +1042,33 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               ownershipRow === null ||
               ownershipRow.status !== "pending" ||
               text(ownershipRow, "route_root_label") !== input.preparation.root_label ||
+              integer(ownershipRow.generation) !== input.preparation.ceremony_generation ||
               instant(ownershipRow.expires_at) !== input.ownership.expires_at
             ) {
               return ownershipRow === null
                 ? ({ kind: "not_found" } as const)
                 : ({ kind: "conflict" } as const);
             }
+            // A replayed challenge may have expired since it was issued. A
+            // session is never created from it; the next start renews it.
+            const challengeLive = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.challenge-live",
+              text: "SELECT $1::timestamptz > clock_timestamp() AS live",
+              values: [input.ownership.expires_at],
+              readonly: false,
+            });
+            if (oneRow(challengeLive)?.live !== true) return { kind: "challenge_expired" } as const;
+            // Before plan exposure the session is bounded by its preparation,
+            // not by the one-hour challenge (0208, separated clocks). A
+            // retained name-signature preparation still needs its live
+            // challenge to begin provisioning, so it keeps the challenge bound
+            // rather than holding the root for days after the challenge dies.
+            const sessionExpiresAt =
+              preparation.admission_kind === "name_signature"
+                ? input.ownership.expires_at
+                : instant(preparation.expires_at);
+            if (sessionExpiresAt === null)
+              return yield* Effect.fail(invariantFailure("load-preparation.undecodable_row"));
             const inserted = yield* transaction.execute<Row>({
               label: "hns.community-root-import.insert-session",
               text: `INSERT INTO hns_root_import_sessions (
@@ -962,7 +1077,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                        ownership_generation,ownership_expected_revision,root_label,
                        challenge_txt_value,status,revision,start_idempotency_key,
                        start_request_sha256,provision_job_id,expires_at
-                     ) VALUES ($1,$2,'community_attachment',NULL,NULL,$3,$4,$5,1,$6,$7,$8,
+                     ) VALUES ($1,$2,'community_attachment',NULL,NULL,$3,$4,$5,$13,$6,$7,$8,
                        'awaiting_ownership',1,$9,$10,$11,$12::timestamptz)
                      RETURNING *`,
               values: [
@@ -977,7 +1092,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                 input.idempotency_key,
                 input.request_sha256,
                 input.preparation.provision_job_id,
-                input.ownership.expires_at,
+                sessionExpiresAt,
+                input.preparation.ceremony_generation,
               ],
               readonly: false,
             });
@@ -1019,7 +1135,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               namespace_session_id: input.ownership.session_id,
               root_label: input.preparation.root_label,
               challenge_txt_value: input.ownership.challenge.challenge_value,
-              expires_at: input.ownership.expires_at,
+              expires_at: sessionExpiresAt,
             };
             const requestBytes = new TextEncoder().encode(canonicalJson(provisionRequest));
             const requestHash = yield* Effect.promise(() => digest(provisionRequest));
