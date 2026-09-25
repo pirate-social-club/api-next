@@ -125,6 +125,8 @@
     "./reward-payout-coordinator": "./src/reward-payout-coordinator.ts",
     "./reward-payout-repository": "./src/reward-payout-repository.ts",
     "./reward-projection-repository": "./src/reward-projection-repository.ts",
+    "./reward-winner-send-chain": "./src/reward-winner-send-chain.ts",
+    "./reward-winner-send-repository": "./src/reward-winner-send-repository.ts",
     "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",
     "./reward-funding-repository": "./src/reward-funding-repository.ts",
     "./song-reward-offer-repository": "./src/song-reward-offer-repository.ts",

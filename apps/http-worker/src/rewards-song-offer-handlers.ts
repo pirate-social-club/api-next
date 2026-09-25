@@ -14,6 +14,8 @@ import {
   type RewardGasTopupRequester,
   type RewardProjectionFailure,
   type RewardProjectionStore,
+  type RewardWinnerSendRecord,
+  type RewardWinnerSendService,
   type SongRewardOffer,
   type SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -43,6 +45,8 @@ export type SongRewardOfferHandlerServices = Readonly<{
   projections: RewardProjectionStore;
   /** Null when the gas top-up limits or gas wallet are not configured. */
   gasTopups?: RewardGasTopupRequester | null;
+  /** Null when the chain client cannot serve winner sends. */
+  winnerSends?: RewardWinnerSendService | null;
   requiredConfirmations: number;
   externalFallbackPolicy: Readonly<{
     referralAllocationVersion: string;
@@ -68,6 +72,11 @@ export type SongRewardOfferHandlers = Readonly<{
   IssueRewardClaimVerificationIntent: EndpointHandler;
   RequestRewardGasTopup: EndpointHandler;
   GetRewardGasTopup: EndpointHandler;
+  CreateRewardWinnerSend: EndpointHandler;
+  GetRewardCreditWinnerSend: EndpointHandler;
+  AttachRewardWinnerSendTransaction: EndpointHandler;
+  CancelRewardWinnerSend: EndpointHandler;
+  GetRewardWinnerSend: EndpointHandler;
 }>;
 
 const rewardUnavailable = (): never => {
@@ -99,6 +108,11 @@ export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandler
     IssueRewardClaimVerificationIntent: rewardUnavailable,
     RequestRewardGasTopup: rewardUnavailable,
     GetRewardGasTopup: rewardUnavailable,
+    CreateRewardWinnerSend: rewardUnavailable,
+    GetRewardCreditWinnerSend: rewardUnavailable,
+    AttachRewardWinnerSendTransaction: rewardUnavailable,
+    CancelRewardWinnerSend: rewardUnavailable,
+    GetRewardWinnerSend: rewardUnavailable,
   };
 }
 
@@ -151,6 +165,11 @@ export function makeLazySongRewardOfferHandlers(
     IssueRewardClaimVerificationIntent: handler("IssueRewardClaimVerificationIntent"),
     RequestRewardGasTopup: handler("RequestRewardGasTopup"),
     GetRewardGasTopup: handler("GetRewardGasTopup"),
+    CreateRewardWinnerSend: handler("CreateRewardWinnerSend"),
+    GetRewardCreditWinnerSend: handler("GetRewardCreditWinnerSend"),
+    AttachRewardWinnerSendTransaction: handler("AttachRewardWinnerSendTransaction"),
+    CancelRewardWinnerSend: handler("CancelRewardWinnerSend"),
+    GetRewardWinnerSend: handler("GetRewardWinnerSend"),
   };
 }
 
@@ -237,6 +256,36 @@ function wireFailure(error: unknown): Error {
   }
   if (tagged._tag === "RewardGasTopupBalanceUnavailable") {
     return new ProviderUnavailable({ message: "Gas top-up balance is unavailable" });
+  }
+  if (tagged._tag === "RewardWinnerSendRejected") {
+    if (tagged.reason === "not-found") {
+      return new NotFound({ message: "Winner send target is unavailable" });
+    }
+    if (tagged.reason === "invalid-recipient" || tagged.reason === "invalid-amount") {
+      return new BadRequest({ message: "Winner send recipient or amount is invalid" });
+    }
+    if (tagged.reason === "sender-busy") {
+      return new Conflict({ message: "Another send from this wallet is in progress" });
+    }
+    if (
+      tagged.reason === "transaction-not-found" ||
+      tagged.reason === "nonce-not-consumed" ||
+      tagged.reason === "status-contended"
+    ) {
+      return new RetryableConflict({ message: "Winner send chain state is not yet visible" });
+    }
+    return new Conflict({ message: "Winner send conflicts with durable state" });
+  }
+  if (tagged._tag === "RewardWinnerSendStorageFailed") {
+    if (tagged.reason === "conflict") {
+      return new Conflict({ message: "Winner send conflicts with durable state" });
+    }
+    return tagged.reason === "unavailable" || tagged.reason === "outcome-unknown"
+      ? new ProviderUnavailable({ message: "Winner send storage is unavailable" })
+      : new InternalError({ message: "Winner send failed" });
+  }
+  if (tagged._tag === "RewardWinnerSendChainUnavailable") {
+    return new ProviderUnavailable({ message: "Winner send chain reads are unavailable" });
   }
   if (tagged._tag === "RewardProjectionStorageFailed") {
     return new InternalError({ message: "Reward projection failed" });
@@ -426,7 +475,37 @@ const rewardCredit = (value: RewardCredit) => ({
     value.claim === null
       ? null
       : { status: value.claim.status, payout_status: value.claim.payoutStatus },
+  send: value.send === null ? null : { send_id: value.send.sendId, status: value.send.status },
 });
+
+const winnerSend = (value: RewardWinnerSendRecord) => {
+  if (value.nonce > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new InternalError({ message: "Winner send failed" });
+  }
+  return {
+    object: "reward_winner_send" as const,
+    send_id: value.sendId,
+    credit_id: value.creditId,
+    status: value.status,
+    chain_id: value.chainId as 84_532,
+    sender: value.senderAddress,
+    recipient: value.recipientAddress,
+    token_address: value.tokenAddress,
+    amount_atomic: value.amountAtomic.toString(),
+    nonce: Number(value.nonce),
+    attempt: value.attempt,
+    transaction_hashes: value.transactionHashes,
+    cancellation_hashes: value.cancellationHashes,
+  };
+};
+
+/** The account is the signed-in user, never a request field. */
+function sessionUser(principal: Principal | null): string {
+  if (principal === null || principal.kind !== "user") {
+    throw new AuthError({ message: "Authentication required" });
+  }
+  return principal.subject;
+}
 
 export function makeSongRewardOfferHandlers(
   services: SongRewardOfferHandlerServices,
@@ -437,6 +516,13 @@ export function makeSongRewardOfferHandlers(
     requiredConfirmations: services.requiredConfirmations,
     externalFallbackPolicy: services.externalFallbackPolicy,
   });
+  const requireWinnerSends = (): RewardWinnerSendService => {
+    const winnerSends = services.winnerSends ?? null;
+    if (winnerSends === null) {
+      throw new ProviderUnavailable({ message: "Winner sends are unavailable" });
+    }
+    return winnerSends;
+  };
   const run = <A, E>(effect: Effect.Effect<A, E, Clock | IdGen>) =>
     Effect.runPromise(
       effect.pipe(
@@ -806,6 +892,76 @@ export function makeSongRewardOfferHandlers(
         topup_id: result.topupId,
         amount_wei: result.amountWei?.toString() ?? null,
       };
+    },
+    CreateRewardWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly creditId: string };
+      const body = request.body as {
+        readonly recipient: string;
+        readonly amount_atomic: string;
+        readonly idempotency_key: string;
+      };
+      const record = await Effect.runPromise(
+        winnerSends
+          .request({
+            accountId,
+            creditId: path.creditId,
+            recipientAddress: body.recipient,
+            amountAtomic: BigInt(body.amount_atomic),
+            idempotencyKey: body.idempotency_key,
+          })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    GetRewardCreditWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly creditId: string };
+      const record = await Effect.runPromise(
+        winnerSends
+          .getByCredit({ accountId, creditId: path.creditId })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    AttachRewardWinnerSendTransaction: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly sendId: string };
+      const body = request.body as { readonly transaction_hash: string };
+      const record = await Effect.runPromise(
+        winnerSends
+          .attachTransaction({
+            accountId,
+            sendId: path.sendId,
+            transactionHash: body.transaction_hash,
+          })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    CancelRewardWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly sendId: string };
+      const body = request.body as { readonly transaction_hash: string };
+      const record = await Effect.runPromise(
+        winnerSends
+          .cancel({ accountId, sendId: path.sendId, transactionHash: body.transaction_hash })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    GetRewardWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly sendId: string };
+      const record = await Effect.runPromise(
+        winnerSends.get({ accountId, sendId: path.sendId }).pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
     },
     GetRewardGasTopup: async (request) => {
       const principal = request.principal;
