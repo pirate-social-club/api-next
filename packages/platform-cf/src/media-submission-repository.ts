@@ -153,6 +153,8 @@ export type ReservationInput = Readonly<{
   responseBytes: Bytes;
   responseSha256: string;
   reservationId?: string;
+  /** Song slot; omitted means the primary audio. */
+  slot?: "primary_audio" | "instrumental_audio" | "vocal_audio";
 }>;
 export type SubmissionInput = Readonly<{
   communityId: string;
@@ -300,6 +302,34 @@ export type ReferenceInput = CommandInput &
     expectedCreationRevision: number;
     reference: BoundReference;
     outbox?: OutboxWrite;
+  }>;
+type SongStemSlot = "instrumental_audio" | "vocal_audio";
+type SongStemFact = Readonly<{ sizeBytes: number; contentType: "audio/mpeg" }>;
+type SongStems = Readonly<Record<SongStemSlot, SongStemFact | null>>;
+type SongStemReservation = Readonly<{
+  reservationId: string;
+  slot: "primary_audio" | SongStemSlot;
+  state: string;
+  expectedContentType: string;
+  expectedSizeBytes: number;
+  expectedSha256: string | null;
+  expired: boolean;
+}>;
+type AttachStemInput = CommandInput &
+  Readonly<{
+    expectedCreationRevision: number;
+    slot: SongStemSlot;
+    reservationId: string;
+    stemOperationId: string;
+    immutableObject: Readonly<{
+      immutableRef: string;
+      destinationRef: string;
+      etag: string;
+      objectVersion: string;
+      sizeBytes: number;
+      contentType: string;
+      canonicalSha256: string;
+    }>;
   }>;
 export type ReviewInput = CommandInput &
   Readonly<{ expectedCreationRevision: number; review: ReviewCase }>;
@@ -528,6 +558,21 @@ export type MediaSubmissionStore = {
     actorUserId: string;
     personaId: string;
   }): Effect.Effect<AuthorLyricsSnapshot | null, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  getStemsForAuthor(input: {
+    communityId: string;
+    submissionId: string;
+    actorUserId: string;
+    personaId: string;
+  }): Effect.Effect<SongStems, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  readStemReservation(input: {
+    communityId: string;
+    actorUserId: string;
+    personaId: string;
+    reservationId: string;
+  }): Effect.Effect<SongStemReservation | null, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  attachStem(
+    input: AttachStemInput,
+  ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   bindTerms(
     input: TermsInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
@@ -1366,7 +1411,7 @@ export function makeControlPlaneMediaSubmissionRepository(
             return yield* Effect.fail(fail("reserve", "membership-required"));
           const inserted = yield* tx.execute({
             label: "media-reservation.insert",
-            text: "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,actor_persona_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,expected_sha256,upload_url,upload_headers,expires_at,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::timestamptz,$13,$14)",
+            text: "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,actor_persona_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,expected_sha256,upload_url,upload_headers,expires_at,response_snapshot_bytes,response_snapshot_sha256,slot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::timestamptz,$13,$14,$15)",
             values: [
               reservationId,
               input.communityId,
@@ -1381,6 +1426,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               json(input.uploadHeaders ?? []),
               input.expiresAt,
               ...snapshot(input),
+              input.slot ?? "primary_audio",
             ],
             readonly: false,
           });
@@ -1482,7 +1528,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           yield* insertEvent(tx, next, 1, "submission_reserved", {});
           const claimed = yield* tx.execute({
             label: "media-reservation.claim",
-            text: "UPDATE media_upload_reservations SET state='claimed',submission_id=$1,operation_id=$2,claim_fence=claim_fence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND reservation_id=$5 AND state='issued' AND expires_at>clock_timestamp()",
+            text: "UPDATE media_upload_reservations SET state='claimed',submission_id=$1,operation_id=$2,claim_fence=claim_fence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND reservation_id=$5 AND state='issued' AND slot='primary_audio' AND expires_at>clock_timestamp()",
             values: [
               submissionId,
               operationId,
@@ -1638,6 +1684,194 @@ export function makeControlPlaneMediaSubmissionRepository(
             ? error
             : fail("get", "invalid-row", { submissionId: input.submissionId }),
       });
+    });
+
+  const getStemsForAuthor: MediaSubmissionStore["getStemsForAuthor"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![input.communityId, input.submissionId, input.actorUserId, input.personaId].every(validId)
+      )
+        return yield* Effect.fail(
+          fail("stems", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "media-stems.author",
+        text: "SELECT slot,size_bytes,content_type FROM media_song_stems WHERE community_id=$1 AND submission_id=$2 AND actor_user_id=$3 AND author_persona_id=$4",
+        values: [input.communityId, input.submissionId, input.actorUserId, input.personaId],
+        readonly: true,
+      });
+      const stems: Record<SongStemSlot, SongStemFact | null> = {
+        instrumental_audio: null,
+        vocal_audio: null,
+      };
+      for (const row of result.rows as Row[]) {
+        const size = Number(row.size_bytes);
+        if (
+          (row.slot !== "instrumental_audio" && row.slot !== "vocal_audio") ||
+          row.content_type !== "audio/mpeg" ||
+          !Number.isSafeInteger(size) ||
+          size < 1
+        )
+          return yield* Effect.fail(
+            fail("stems", "invalid-row", { submissionId: input.submissionId }),
+          );
+        stems[row.slot] = { sizeBytes: size, contentType: "audio/mpeg" };
+      }
+      return stems;
+    });
+
+  const readStemReservation: MediaSubmissionStore["readStemReservation"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![input.communityId, input.actorUserId, input.personaId, input.reservationId].every(validId)
+      )
+        return yield* Effect.fail(
+          fail("stems", "invalid-input", { reservationId: input.reservationId }),
+        );
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "media-stems.reservation",
+        text: "SELECT reservation_id,slot,state,expected_content_type,expected_size_bytes,expected_sha256,(expires_at<=clock_timestamp()) AS expired FROM media_upload_reservations WHERE community_id=$1 AND actor_user_id=$2 AND actor_persona_id=$3 AND reservation_id=$4 AND media_kind='song'",
+        values: [input.communityId, input.actorUserId, input.personaId, input.reservationId],
+        readonly: true,
+      });
+      if (result.rows.length === 0) return null;
+      const row = result.rows[0] as Row;
+      const size = Number(row.expected_size_bytes);
+      if (
+        result.rows.length !== 1 ||
+        !["primary_audio", "instrumental_audio", "vocal_audio"].includes(String(row.slot)) ||
+        !validId(row.expected_content_type) ||
+        !Number.isSafeInteger(size) ||
+        size < 1 ||
+        (row.expected_sha256 !== null && !validHash(row.expected_sha256))
+      )
+        return yield* Effect.fail(
+          fail("stems", "invalid-row", { reservationId: input.reservationId }),
+        );
+      return {
+        reservationId: String(row.reservation_id),
+        slot: row.slot as SongStemReservation["slot"],
+        state: String(row.state),
+        expectedContentType: String(row.expected_content_type),
+        expectedSizeBytes: size,
+        expectedSha256: row.expected_sha256 === null ? null : String(row.expected_sha256),
+        expired: row.expired === true,
+      };
+    });
+
+  // Seals one stem onto its submission: the stem reservation is claimed under
+  // the per-stem operation, the append-only stem row is inserted (its trigger
+  // re-checks reservation and submission facts), and the reservation is
+  // sealed. The submission's own audio, revision and events are untouched.
+  const attachStem: MediaSubmissionStore["attachStem"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        !validCommand(input) ||
+        !validRevision(input.expectedCreationRevision, 1) ||
+        !validId(input.reservationId) ||
+        !validId(input.stemOperationId) ||
+        (input.slot !== "instrumental_audio" && input.slot !== "vocal_audio") ||
+        !validId(input.immutableObject.immutableRef) ||
+        !validId(input.immutableObject.destinationRef) ||
+        !validHash(input.immutableObject.canonicalSha256) ||
+        !validRevision(input.immutableObject.sizeBytes, 1)
+      )
+        return yield* Effect.fail(
+          fail("stems", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "stems");
+          const prior = yield* replayInTx(tx, input, "stems");
+          if (prior !== null) return prior;
+          const current = yield* loadState(tx, input, "stems", true);
+          if (current === null)
+            return yield* Effect.fail(
+              fail("stems", "not-found", { submissionId: input.submissionId }),
+            );
+          if (current.creationRevision !== input.expectedCreationRevision)
+            return yield* Effect.fail(
+              fail("stems", "stale-revision", { submissionId: current.submissionId }),
+            );
+          if (["published", "blocked", "abandoned"].includes(current.status))
+            return yield* Effect.fail(
+              fail("stems", "transition-rejected", { submissionId: current.submissionId }),
+            );
+          if (input.stemOperationId !== `${current.operationId}-stem-${input.slot}`)
+            return yield* Effect.fail(
+              fail("stems", "invalid-input", { submissionId: current.submissionId }),
+            );
+          const existing = yield* tx.execute<Row>({
+            label: "media-stems.existing",
+            text: "SELECT 1 FROM media_song_stems WHERE submission_id=$1 AND slot=$2",
+            values: [current.submissionId, input.slot],
+            readonly: false,
+          });
+          if (existing.rows.length > 0)
+            return yield* Effect.fail(
+              fail("stems", "immutable-object-conflict", { submissionId: current.submissionId }),
+            );
+          const claimed = yield* tx.execute({
+            label: "media-stems.claim",
+            text: "UPDATE media_upload_reservations SET state='claimed',submission_id=$1,operation_id=$2,claim_fence=claim_fence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND actor_persona_id=$5 AND reservation_id=$6 AND slot=$7 AND media_kind='song' AND state='issued' AND expires_at>clock_timestamp()",
+            values: [
+              current.submissionId,
+              input.stemOperationId,
+              current.communityId,
+              current.actorId,
+              current.personaId,
+              input.reservationId,
+              input.slot,
+            ],
+            readonly: false,
+          });
+          if (claimed.rowCount !== 1)
+            return yield* Effect.fail(
+              fail("stems", "reservation-conflict", {
+                submissionId: current.submissionId,
+                reservationId: input.reservationId,
+              }),
+            );
+          yield* tx.execute({
+            label: "media-stems.insert",
+            text: "INSERT INTO media_song_stems (submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+            values: [
+              current.submissionId,
+              input.slot,
+              current.communityId,
+              current.actorId,
+              input.stemOperationId,
+              input.reservationId,
+              input.immutableObject.immutableRef,
+              input.immutableObject.destinationRef,
+              input.immutableObject.etag,
+              input.immutableObject.objectVersion,
+              input.immutableObject.sizeBytes,
+              input.immutableObject.contentType,
+              input.immutableObject.canonicalSha256,
+              current.personaId,
+            ],
+            readonly: false,
+          });
+          yield* tx.execute({
+            label: "media-stems.seal-reservation",
+            text: "UPDATE media_upload_reservations SET state='sealed',updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND reservation_id=$3 AND submission_id=$4 AND operation_id=$5 AND state='claimed'",
+            values: [
+              current.communityId,
+              current.actorId,
+              input.reservationId,
+              current.submissionId,
+              input.stemOperationId,
+            ],
+            readonly: false,
+          });
+          yield* insertReplay(tx, input, current.operationId);
+          return { kind: "committed", submissionId: current.submissionId } as const;
+        }),
+      );
     });
 
   const getLyricsForAuthor: MediaSubmissionStore["getLyricsForAuthor"] = (input) =>
@@ -4219,6 +4453,9 @@ export function makeControlPlaneMediaSubmissionRepository(
     getForAuthor,
     listActiveForAccount,
     getLyricsForAuthor,
+    getStemsForAuthor,
+    readStemReservation,
+    attachStem,
     bindTerms,
     bindLyrics,
     beginFinalize,

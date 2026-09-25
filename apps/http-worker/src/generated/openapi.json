@@ -76397,7 +76397,9 @@
                       "slot": {
                         "type": "string",
                         "enum": [
-                          "primary_audio"
+                          "primary_audio",
+                          "instrumental_audio",
+                          "vocal_audio"
                         ]
                       },
                       "expected_content_type": {
@@ -76699,7 +76701,9 @@
                         "slot": {
                           "type": "string",
                           "enum": [
-                            "primary_audio"
+                            "primary_audio",
+                            "instrumental_audio",
+                            "vocal_audio"
                           ]
                         },
                         "status": {
@@ -77770,6 +77774,9 @@
                                       }
                                     ]
                                   },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
+                                  },
                                   "status": {
                                     "type": "string",
                                     "enum": [
@@ -77858,6 +77865,9 @@
                                         "minLength": 1
                                       }
                                     ]
+                                  },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
                                   },
                                   "status": {
                                     "type": "string",
@@ -77970,6 +77980,9 @@
                                       }
                                     ]
                                   },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
+                                  },
                                   "status": {
                                     "type": "string",
                                     "enum": [
@@ -78063,6 +78076,9 @@
                                         "minLength": 1
                                       }
                                     ]
+                                  },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
                                   },
                                   "status": {
                                     "type": "string",
@@ -78168,6 +78184,9 @@
                                       }
                                     ]
                                   },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
+                                  },
                                   "status": {
                                     "type": "string",
                                     "enum": [
@@ -78251,6 +78270,9 @@
                                         "minLength": 1
                                       }
                                     ]
+                                  },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
                                   },
                                   "status": {
                                     "type": "string",
@@ -78356,6 +78378,9 @@
                                         "minLength": 1
                                       }
                                     ]
+                                  },
+                                  "stems": {
+                                    "$ref": "#/$defs/Union_"
                                   },
                                   "status": {
                                     "type": "string",
@@ -78597,6 +78622,75 @@
                         "current"
                       ],
                       "additionalProperties": false
+                    },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -79000,6 +79094,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -79007,7 +79104,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -79080,6 +79177,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -79192,6 +79292,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -79285,6 +79388,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -79390,6 +79496,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -79473,6 +79582,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -79579,6 +79691,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -79643,7 +79758,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79664,7 +79779,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79681,7 +79796,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -79728,7 +79843,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79749,7 +79864,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79838,7 +79953,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79859,7 +79974,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -79946,7 +80061,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -79967,7 +80082,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -80068,7 +80183,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -80089,7 +80204,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -80180,7 +80295,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -80201,7 +80316,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -80389,7 +80504,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -80400,14 +80584,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -81009,6 +81193,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -81016,7 +81203,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -81089,6 +81276,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -81201,6 +81391,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -81294,6 +81487,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -81399,6 +81595,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -81482,6 +81681,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -81588,6 +81790,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -81652,7 +81857,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81673,7 +81878,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81690,7 +81895,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -81737,7 +81942,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81758,7 +81963,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81847,7 +82052,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81868,7 +82073,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -81955,7 +82160,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -81976,7 +82181,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -82077,7 +82282,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -82098,7 +82303,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -82189,7 +82394,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -82210,7 +82415,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -82398,7 +82603,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -82409,14 +82683,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -82872,6 +83146,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -82879,7 +83156,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -82952,6 +83229,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -83064,6 +83344,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -83157,6 +83440,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -83262,6 +83548,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -83345,6 +83634,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -83451,6 +83743,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -83515,7 +83810,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -83536,7 +83831,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -83553,7 +83848,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -83600,7 +83895,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -83621,7 +83916,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -83710,7 +84005,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -83731,7 +84026,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -83818,7 +84113,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -83839,7 +84134,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -83940,7 +84235,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -83961,7 +84256,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -84052,7 +84347,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -84073,7 +84368,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -84261,7 +84556,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -84272,14 +84636,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -84814,6 +85178,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -84821,7 +85188,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -84894,6 +85261,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -85006,6 +85376,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -85099,6 +85472,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -85204,6 +85580,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -85287,6 +85666,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -85393,6 +85775,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -85457,7 +85842,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -85478,7 +85863,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -85495,7 +85880,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -85542,7 +85927,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -85563,7 +85948,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -85652,7 +86037,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -85673,7 +86058,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -85760,7 +86145,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -85781,7 +86166,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -85882,7 +86267,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -85903,7 +86288,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -85994,7 +86379,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -86015,7 +86400,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -86203,7 +86588,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -86214,14 +86668,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -87364,6 +87818,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -87371,7 +87828,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -87444,6 +87901,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -87556,6 +88016,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -87649,6 +88112,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -87754,6 +88220,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -87837,6 +88306,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -87943,6 +88415,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -88007,7 +88482,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -88028,7 +88503,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -88045,7 +88520,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -88092,7 +88567,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -88113,7 +88588,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -88202,7 +88677,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -88223,7 +88698,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -88310,7 +88785,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -88331,7 +88806,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -88432,7 +88907,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -88453,7 +88928,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -88544,7 +89019,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -88565,7 +89040,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -88753,7 +89228,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -88764,14 +89308,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -89098,6 +89642,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -89105,7 +89652,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -89178,6 +89725,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -89290,6 +89840,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -89383,6 +89936,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -89488,6 +90044,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -89571,6 +90130,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -89677,6 +90239,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -89741,7 +90306,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -89762,7 +90327,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -89779,7 +90344,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -89826,7 +90391,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -89847,7 +90412,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -89936,7 +90501,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -89957,7 +90522,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -90044,7 +90609,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -90065,7 +90630,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -90166,7 +90731,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -90187,7 +90752,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -90278,7 +90843,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -90299,7 +90864,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -90487,7 +91052,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -90498,14 +91132,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -90815,9 +91449,9 @@
         ]
       }
     },
-    "/media-post-submissions/{submissionId}/retry": {
+    "/media-post-submissions/{submissionId}/stems": {
       "post": {
-        "operationId": "post_mediaPostSubmissionsSubmissionIdRetry",
+        "operationId": "post_mediaPostSubmissionsSubmissionIdStems",
         "parameters": [
           {
             "name": "submissionId",
@@ -90854,12 +91488,29 @@
                         "maximum": 9007199254740991
                       }
                     ]
+                  },
+                  "slot": {
+                    "type": "string",
+                    "enum": [
+                      "instrumental_audio",
+                      "vocal_audio"
+                    ]
+                  },
+                  "reservation_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
                   }
                 },
                 "required": [
                   "persona_id",
                   "idempotency_key",
-                  "expected_creation_revision"
+                  "expected_creation_revision",
+                  "slot",
+                  "reservation_id"
                 ],
                 "additionalProperties": false
               }
@@ -90932,6 +91583,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -90939,7 +91593,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -91012,6 +91666,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -91124,6 +91781,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -91217,6 +91877,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -91322,6 +91985,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -91405,6 +92071,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -91511,6 +92180,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -91575,7 +92247,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -91596,7 +92268,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -91613,7 +92285,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -91660,7 +92332,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -91681,7 +92353,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -91770,7 +92442,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -91791,7 +92463,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -91878,7 +92550,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -91899,7 +92571,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -92000,7 +92672,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -92021,7 +92693,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -92112,7 +92784,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -92133,7 +92805,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -92321,7 +92993,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -92332,14 +93073,1967 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
+                    "Union_3": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "maxLength": 5000
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "reason_code": {
+                                  "type": "string",
+                                  "enum": [
+                                    "idempotency_conflict"
+                                  ]
+                                },
+                                "submission_id": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "reason_code",
+                                "submission_id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "reason_code": {
+                                  "type": "string",
+                                  "enum": [
+                                    "upload_object_missing"
+                                  ]
+                                },
+                                "submission_id": {
+                                  "type": "string"
+                                },
+                                "reservation_id": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "reason_code",
+                                "submission_id",
+                                "reservation_id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict",
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "IdempotencyConflict",
+          "UploadObjectMissing",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/media-post-submissions/{submissionId}/retry": {
+      "post": {
+        "operationId": "post_mediaPostSubmissionsSubmissionIdRetry",
+        "parameters": [
+          {
+            "name": "submissionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "expected_creation_revision": {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "persona_id",
+                  "idempotency_key",
+                  "expected_creation_revision"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "processing"
+                              ]
+                            },
+                            "phase": {
+                              "$ref": "#/$defs/Union_1"
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "phase"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "action_required"
+                              ]
+                            },
+                            "action": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "reference_required"
+                                  ]
+                                },
+                                "expires_at": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "reference_request_ref": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "expires_at",
+                                "reference_request_ref"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "action"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "manual_review"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "review_required",
+                                "moderation_unavailable"
+                              ]
+                            },
+                            "review_ref": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "reason_code",
+                            "review_ref"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "published"
+                              ]
+                            },
+                            "published_resource": {
+                              "type": "object",
+                              "properties": {
+                                "post_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "href": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "post_id",
+                                "href"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "published_resource"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "blocked"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "policy_violation"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "processing_failed"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_media",
+                                "unsupported_media",
+                                "probe_failed",
+                                "hash_failed",
+                                "transform_failed",
+                                "publication_failed",
+                                "workflow_terminal_unconverged",
+                                "upload_seal_conflict"
+                              ]
+                            },
+                            "retry_count": {
+                              "type": "number",
+                              "enum": [
+                                0,
+                                1,
+                                2,
+                                3
+                              ]
+                            },
+                            "retryable": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "reason_code",
+                            "retry_count",
+                            "retryable"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "song"
+                              ]
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "lyrics_state": {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "abandoned"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "upload_reservation_expired",
+                                "upload_expectation_mismatch",
+                                "upload_source_changed_before_finalize",
+                                "reference_window_expired",
+                                "author_cancelled_before_finalize"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "creation_revision",
+                            "audio_revision",
+                            "lyrics_state",
+                            "updated_at",
+                            "status",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "video"
+                              ]
+                            },
+                            "intent": {
+                              "$ref": "#/$defs/Union_2"
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "video_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "caption": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "processing"
+                              ]
+                            },
+                            "phase": {
+                              "$ref": "#/$defs/Union_1"
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "intent",
+                            "creation_revision",
+                            "video_revision",
+                            "caption",
+                            "updated_at",
+                            "status",
+                            "phase"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "video"
+                              ]
+                            },
+                            "intent": {
+                              "$ref": "#/$defs/Union_2"
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "video_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "caption": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "manual_review"
+                              ]
+                            },
+                            "reason_codes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "media_review_required",
+                                  "caption_review_required",
+                                  "safety_adapter_unavailable",
+                                  "soundtrack_known_recording",
+                                  "soundtrack_exhausted",
+                                  "soundtrack_skipped"
+                                ]
+                              },
+                              "allOf": [
+                                {
+                                  "minItems": 1
+                                }
+                              ]
+                            },
+                            "review_ref": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "intent",
+                            "creation_revision",
+                            "video_revision",
+                            "caption",
+                            "updated_at",
+                            "status",
+                            "reason_codes",
+                            "review_ref"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "video"
+                              ]
+                            },
+                            "intent": {
+                              "$ref": "#/$defs/Union_2"
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "video_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "caption": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "published"
+                              ]
+                            },
+                            "published_resource": {
+                              "type": "object",
+                              "properties": {
+                                "post_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "href": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "post_id",
+                                "href"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "intent",
+                            "creation_revision",
+                            "video_revision",
+                            "caption",
+                            "updated_at",
+                            "status",
+                            "published_resource"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "video"
+                              ]
+                            },
+                            "intent": {
+                              "$ref": "#/$defs/Union_2"
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "video_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "caption": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "blocked"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "known_recording_requires_song_reference",
+                                "policy_violation",
+                                "rights_violation",
+                                "song_reference_invalid"
+                              ]
+                            },
+                            "song_post_id": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "song_reason_code": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "song_not_published",
+                                    "song_audio_revision_missing",
+                                    "derivative_video_blocked",
+                                    "derivative_video_owner_only"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "intent",
+                            "creation_revision",
+                            "video_revision",
+                            "caption",
+                            "updated_at",
+                            "status",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "video"
+                              ]
+                            },
+                            "intent": {
+                              "$ref": "#/$defs/Union_2"
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "video_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "caption": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "processing_failed"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_media",
+                                "unsupported_media",
+                                "probe_failed",
+                                "hash_failed",
+                                "transform_failed",
+                                "publication_failed",
+                                "membership_required",
+                                "provider_submission_unconfirmed",
+                                "upload_seal_conflict",
+                                "poster_undecodable",
+                                "poster_timestamp_out_of_range"
+                              ]
+                            },
+                            "retry_count": {
+                              "type": "number",
+                              "enum": [
+                                0,
+                                1,
+                                2,
+                                3
+                              ]
+                            },
+                            "retryable": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "intent",
+                            "creation_revision",
+                            "video_revision",
+                            "caption",
+                            "updated_at",
+                            "status",
+                            "reason_code",
+                            "retry_count",
+                            "retryable"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "author_persona": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "track": {
+                              "type": "string",
+                              "enum": [
+                                "video"
+                              ]
+                            },
+                            "intent": {
+                              "$ref": "#/$defs/Union_2"
+                            },
+                            "creation_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "video_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "caption": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "abandoned"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "upload_reservation_expired",
+                                "upload_expectation_mismatch",
+                                "upload_source_changed_before_finalize",
+                                "author_cancelled_before_finalize",
+                                "author_abandoned_unresolved_provider"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "author_persona",
+                            "href",
+                            "track",
+                            "intent",
+                            "creation_revision",
+                            "video_revision",
+                            "caption",
+                            "updated_at",
+                            "status",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "current"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
+                      "type": "string",
+                      "enum": [
+                        "reserve",
+                        "awaiting_upload",
+                        "finalize",
+                        "analysis",
+                        "decision",
+                        "publish"
+                      ]
+                    },
                     "Union_2": {
+                      "type": "string",
+                      "enum": [
+                        "original_audio",
+                        "song_reference"
+                      ]
+                    },
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -93842,6 +96536,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -93849,7 +96546,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -93922,6 +96619,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -94034,6 +96734,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -94127,6 +96830,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -94232,6 +96938,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -94315,6 +97024,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -94421,6 +97133,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -94485,7 +97200,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -94506,7 +97221,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -94523,7 +97238,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -94570,7 +97285,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -94591,7 +97306,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -94680,7 +97395,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -94701,7 +97416,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -94788,7 +97503,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -94809,7 +97524,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -94910,7 +97625,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -94931,7 +97646,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -95022,7 +97737,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -95043,7 +97758,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -95231,7 +97946,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -95242,14 +98026,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
@@ -95979,6 +98763,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -95986,7 +98773,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -96059,6 +98846,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -96171,6 +98961,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -96264,6 +99057,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -96369,6 +99165,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -96452,6 +99251,9 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
                             },
                             "status": {
                               "type": "string",
@@ -96558,6 +99360,9 @@
                                 }
                               ]
                             },
+                            "stems": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -96622,7 +99427,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -96643,7 +99448,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -96660,7 +99465,7 @@
                               ]
                             },
                             "phase": {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             }
                           },
                           "required": [
@@ -96707,7 +99512,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -96728,7 +99533,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -96817,7 +99622,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -96838,7 +99643,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -96925,7 +99730,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -96946,7 +99751,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -97047,7 +99852,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -97068,7 +99873,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -97159,7 +99964,7 @@
                               ]
                             },
                             "intent": {
-                              "$ref": "#/$defs/Union_1"
+                              "$ref": "#/$defs/Union_2"
                             },
                             "creation_revision": {
                               "type": "integer",
@@ -97180,7 +99985,7 @@
                               ]
                             },
                             "caption": {
-                              "$ref": "#/$defs/Union_2"
+                              "$ref": "#/$defs/Union_3"
                             },
                             "updated_at": {
                               "type": "string",
@@ -97368,7 +100173,76 @@
                       ],
                       "additionalProperties": false
                     },
+                    "Objects_2": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "sealed"
+                          ]
+                        },
+                        "content_type": {
+                          "type": "string",
+                          "enum": [
+                            "audio/mpeg"
+                          ]
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "content_type",
+                        "size_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "instrumental_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "vocal_audio": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Objects_2"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "instrumental_audio",
+                            "vocal_audio"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
                       "type": "string",
                       "enum": [
                         "reserve",
@@ -97379,14 +100253,14 @@
                         "publish"
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "original_audio",
                         "song_reference"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "type": "string",
