@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.93.0",
+  "sourceBranch": "feat/spaces-native-claims",
+  "sourceBase": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Integrated client generated from the Spaces native claims, owner proof, operator assignment, and disabled Taproot recipient contracts together with current main rewards contracts. No Spaces route or driver is enabled by this release alone.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.93.0.tgz",
+    "sha256": "97c62760a0ba0d4d8426cccc586d5e852e40ce7fac7c2264f8103d0e4abbbf21"
+  },
+  "validation": {
+    "status": "Local integrated candidate; repository and hosted gates pending",
+    "passed": [
+      "Generated OpenAPI and browser client from merged registered contracts"
+    ],
+    "remaining": [
+      "Complete repository check, PostgreSQL 17, and secret-boundary gates",
+      "Hosted review and paired Solid adoption",
+      "Disabled-first runtime composition and staging acceptance"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, provider wallet creation, chain transaction, or live product mutation occurred."
+  }
+}

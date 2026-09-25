@@ -1,0 +1,35 @@
+[Unit]
+Description=Pirate isolated HNS staging community gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+Slice=pirate-hns-staging.slice
+WorkingDirectory=/srv/pirate-hns-staging/gateway/current
+ExecStart=/usr/bin/env bun /srv/pirate-hns-staging/gateway/current/bin/pirate-hns-community-app-gateway.mjs --mode staging-private-tls --manifest /srv/pirate-hns-staging/gateway/current/deployment-manifest.json
+LoadCredential=hns-community-authority-database-url:/etc/pirate-hns-staging/gateway/authority-database-url
+LoadCredential=hns-community-forwarder-key-registry:/etc/pirate-hns-staging/gateway/forwarder-key-registry.json
+LoadCredential=hns-community-solid-access-client-id:/etc/pirate-hns-staging/gateway/solid-access-client-id
+LoadCredential=hns-community-solid-access-client-secret:/etc/pirate-hns-staging/gateway/solid-access-client-secret
+Restart=on-failure
+RestartSec=3
+MemoryMax=128M
+CPUQuota=15%
+TasksMax=32
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

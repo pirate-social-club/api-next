@@ -189,6 +189,22 @@ describe("HNS root-import lifecycle transition policy", () => {
     expect(next?.plan_exposed_at_epoch_ms).toBe(now);
     expect(next?.publication_deadline_at_epoch_ms).toBe(now + 1_209_600 * SECOND);
     expect(next?.first_current_observation_at_epoch_ms).toBeNull();
+    // Exposure schedules the first current observation at the checking cadence.
+    expect(next?.next_check_at_epoch_ms).toBe(now + 900 * SECOND);
+    expect(decision.requested_work).toEqual([
+      { kind: "observe_current", due_at_epoch_ms: now + 900 * SECOND },
+    ]);
+  });
+
+  test("acknowledgement makes the current observation due immediately", () => {
+    const decision = decideHnsRootImportLifecycleV1(
+      exposedState("awaiting_publication"),
+      event({ event: "publication_acknowledged" }),
+    );
+    expect(decision.outcome).toEqual({ kind: "transition", reason: "acknowledged" });
+    expect(decision.next_state?.phase).toBe("checking_publication");
+    expect(decision.next_state?.next_check_at_epoch_ms).toBe(now);
+    expect(decision.requested_work).toEqual([{ kind: "observe_current", due_at_epoch_ms: now }]);
   });
 
   test("a qualifying current observation in awaiting_publication implies publication and anchors finality once", () => {

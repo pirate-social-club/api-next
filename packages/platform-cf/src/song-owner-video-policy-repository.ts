@@ -123,8 +123,7 @@ const MANAGEMENT_SELECT = `
    WHERE head.community_id = $1
      AND head.post_id = $2
      AND head.owner_account_id = $3
-     AND active_owned_persona($3, $4)
-   FOR SHARE`;
+     AND active_owned_persona($3, $4)`;
 
 const PUBLIC_SELECT = `
   SELECT head.community_id, head.post_id,
@@ -217,12 +216,13 @@ export const makeControlPlaneSongOwnerPolicyRepository = (): SongOwnerPolicyRepo
 
           const song = yield* transaction.execute({
             label: "song-owner-policy.owner.authority",
+            // The runtime role may not lock the head; the guarded append
+            // routine takes FOR UPDATE on it before changing anything.
             text: `SELECT 1
                      FROM song_owner_policies
                     WHERE community_id = $1
                       AND post_id = $2
-                      AND owner_account_id = $3
-                    FOR SHARE`,
+                      AND owner_account_id = $3`,
             values: [input.communityId, input.postId, input.accountId],
             readonly: true,
           });

@@ -6,13 +6,35 @@ import type { RewardFundingIntent } from "./reward-funding.ts";
 
 export { Clock, IdGen } from "../ports.ts";
 export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
+export {
+  makeRewardGasTopupRequester,
+  RewardGasTopupBalanceUnavailable,
+  type RewardGasTopupFailure,
+  RewardGasTopupRejected,
+  type RewardGasTopupRequester,
+  RewardGasTopupStorageFailed,
+  type RewardGasTopupView,
+} from "./reward-gas-topup.ts";
 export type {
   PublicSongAssetBonusProjection,
   PublicSongMegapotPoolProjection,
   RewardCredit,
+  RewardCreditClaim,
+  RewardCreditClaimOutcome,
+  RewardCreditSend,
   RewardProjectionFailure,
   RewardProjectionStore,
 } from "./reward-projections.ts";
+export { RewardProjectionRejected } from "./reward-projections.ts";
+export {
+  makeRewardWinnerSendService,
+  REWARD_WINNER_SEND_CHAIN_ID,
+  RewardWinnerSendChainUnavailable,
+  type RewardWinnerSendRecord,
+  RewardWinnerSendRejected,
+  type RewardWinnerSendService,
+  RewardWinnerSendStorageFailed,
+} from "./reward-winner-send.ts";
 
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
@@ -129,6 +151,15 @@ export interface SongRewardOfferStore {
     RewardQualificationPoliciesV1,
     SongRewardOfferFailure
   >;
+  /**
+   * The only funding sender a reward leg may name: the chosen persona's single
+   * active EVM wallet, owned by the authenticated account. Missing, inactive or
+   * ambiguous assignments fail closed as persona-ineligible.
+   */
+  readonly fundingSender: (input: {
+    readonly accountId: string;
+    readonly personaId: string;
+  }) => Effect.Effect<string, SongRewardOfferFailure>;
   readonly openOffer: (input: {
     readonly actionId: string;
     readonly offerId: string;

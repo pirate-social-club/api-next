@@ -4,13 +4,16 @@ import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-owne
 import {
   completeRouteAttachmentOwnership,
   continueHnsCommunityPublication,
+  HnsCommunityRootImportStorageFailed,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
+import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Effect, Redacted } from "effect";
 import { Client } from "pg";
 import { makeHnsCommunityPublicationQueue } from "../../../packages/platform-cf/src/hns-community-publication-queue.ts";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "../../../packages/platform-cf/src/hns-community-root-import-repository.ts";
 import { makeHnsOwnerServiceBindingTransport } from "../../../packages/platform-cf/src/namespace-ownership/hns-owner-service-binding.ts";
+import { makeControlPlaneHnsImportPublicationAuthorizer } from "../../../packages/platform-cf/src/namespace-ownership/hns-root-import-publication-authorization-postgres.ts";
 import { makePlatformNamespaceOwnershipProviderRegistry } from "../../../packages/platform-cf/src/namespace-ownership/provider-registry.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "../../../packages/platform-cf/src/route-attachment-completion-repository.ts";
@@ -20,13 +23,17 @@ import {
 } from "../../../packages/platform-cf/src/route-attachment-start-repository.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { runHnsAuthorityProvisionExecutorOnce } from "../../hns-authority-provisioner/src/executor.ts";
+import { makeHnsLifecycleObservePort } from "../../hns-authority-provisioner/src/lifecycle-evidence.ts";
 import type { HnsLifecycleClaimV1 } from "../../hns-authority-provisioner/src/lifecycle-executor.ts";
-import { makePostgresHnsLifecycleReadinessPorts } from "../../hns-authority-provisioner/src/lifecycle-queue.ts";
+import {
+  makePostgresHnsLifecycleReadinessPorts,
+  makePostgresHnsRootImportLifecycleQueue,
+} from "../../hns-authority-provisioner/src/lifecycle-queue.ts";
 import { runHnsRootImportReadinessOnce } from "../../hns-authority-provisioner/src/lifecycle-readiness.ts";
 import type { HnsAuthorityZoneResult } from "../../hns-authority-provisioner/src/provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "../../hns-authority-provisioner/src/queue.ts";
 import { attachmentObserverFixture } from "../../hns-owner-verifier/src/attachment-observer.fixture.ts";
-import { handleRequest } from "../../hns-owner-verifier/src/index.ts";
+import { handleRequest, type Env as VerifierEnv } from "../../hns-owner-verifier/src/index.ts";
 import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 import {
   type HnsRootResourceRpcFixture,
@@ -61,6 +68,8 @@ export type AcknowledgedImport = Readonly<{
   readonly call: (path: string, body?: unknown) => Promise<Response> | Response;
   readonly sessionUrl: string;
   readonly verifyOwnerPublication: () => void;
+  /** The owner's publication acknowledgement through the HTTP handler. */
+  readonly acknowledge: () => Promise<Response>;
   readonly services: Parameters<typeof makeHnsCommunityRootImportHandlers>[0];
   cleanup: () => Promise<void>;
 }>;
@@ -81,11 +90,49 @@ export function enabledConfiguration(rpcUrl: string) {
   } as const;
 }
 
+/**
+ * The owner verifier the HTTP Worker reaches. The default is this source
+ * tree's handler; a mixed-version test substitutes another build's handler.
+ */
+export type VerifierHandler = (
+  request: Request,
+  env: VerifierEnv,
+  options: Parameters<typeof handleRequest>[2],
+) => Promise<Response>;
+
+export type ImportProtocolDeployment = Readonly<{
+  /** The HTTP Worker's pinned provider entry advertises hns-txt-import-v1. */
+  readonly http: boolean;
+  /** The verifier's deployed capability list names hns-txt-import-v1. */
+  readonly verifier: boolean;
+}>;
+
 export async function prepareAcknowledgedImport(input: {
   readonly connectionString: string;
   readonly schema?: string;
   readonly onRequest?: () => Promise<void>;
+  /** False stops at plan exposure, before the owner's acknowledgement. */
+  readonly acknowledge?: boolean;
+  /** Defaults to the rollout's target: both sides advertise the protocol. */
+  readonly importProtocol?: ImportProtocolDeployment;
+  readonly verifier?: () => VerifierHandler;
+  /** Runs after plan exposure and before the acknowledgement. */
+  readonly beforeAcknowledge?: (admin: Client, sessionId: string) => Promise<void>;
+  /**
+   * Cuts the first start off after its ownership challenge is issued and before
+   * any session exists, then runs this hook and resumes with `resumeKey`.
+   */
+  readonly interruptedStart?: Readonly<{
+    readonly beforeResume: (
+      admin: Client,
+      start: (idempotencyKey: string) => Promise<Readonly<{ status: number; body: unknown }>>,
+    ) => Promise<void>;
+    readonly resumeKey?: string;
+  }>;
+  /** The chain answer the verifier's observer gives until the owner publishes. */
+  readonly initialObservation?: "pending" | "unavailable" | "rejected";
 }): Promise<AcknowledgedImport> {
+  const importProtocol = input.importProtocol ?? { http: true, verifier: true };
   const schema = input.schema ?? `hns_activation_${randomUUID().replaceAll("-", "")}`;
   const admin = new Client({ connectionString: input.connectionString });
   await admin.connect();
@@ -124,14 +171,17 @@ export async function prepareAcknowledgedImport(input: {
       reference: "hns-owner-staging",
       version: "hns-owner-config-v1",
     };
-    let chain: "pending" | "verified" = "pending";
+    let chain: "pending" | "verified" | "unavailable" | "rejected" =
+      input.initialObservation ?? "pending";
     const observations: string[] = [];
+    const importAuthorizer = makeControlPlaneHnsImportPublicationAuthorizer(layer);
     const transport = makeHnsOwnerServiceBindingTransport({
-      fetch: async (input, init) => {
-        const request = new Request(String(input), init);
+      fetch: async (fetchInput, init) => {
+        const request = new Request(String(fetchInput), init);
         const observation = request.headers.get("Pirate-HNS-Observation-Id");
         if (observation) observations.push(observation);
-        return handleRequest(
+        const verifier = input.verifier?.() ?? handleRequest;
+        return verifier(
           request,
           {
             HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
@@ -140,8 +190,9 @@ export async function prepareAcknowledgedImport(input: {
             HNS_PROVIDER_ENVIRONMENT: "staging",
             HNS_PROVIDER_CONFIGURATION_REFERENCE: configuration.reference,
             HNS_PROVIDER_CONFIGURATION_VERSION: configuration.version,
+            ...(importProtocol.verifier ? { HNS_PROVIDER_CAPABILITIES: "hns-txt-import-v1" } : {}),
           },
-          { targetObserver: attachmentObserverFixture(chain) },
+          { targetObserver: attachmentObserverFixture(chain), importAuthorizer },
         );
       },
     });
@@ -153,6 +204,7 @@ export async function prepareAcknowledgedImport(input: {
           provider_configuration: configuration,
           environments: ["staging"],
           target_observation_contract: "v2",
+          import_protocol_enabled: importProtocol.http,
         },
       }),
     );
@@ -168,8 +220,17 @@ export async function prepareAcknowledgedImport(input: {
       },
     });
     const queue = makeHnsCommunityPublicationQueue(layer);
+    let interruptions = input.interruptedStart === undefined ? 0 : 1;
+    const startStore: typeof store = {
+      ...store,
+      start: (record) => {
+        if (interruptions === 0) return store.start(record);
+        interruptions -= 1;
+        return Effect.fail(new HnsCommunityRootImportStorageFailed({ reason: "interrupted" }));
+      },
+    };
     const services = {
-      store,
+      store: startStore,
       publicationQueue: queue,
       ownership: {
         start: (input: Parameters<typeof startRouteAttachmentOwnership>[0]) =>
@@ -200,7 +261,21 @@ export async function prepareAcknowledgedImport(input: {
         headers: { authorization: "test-account", "content-type": "application/json" },
         ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
       });
-    const start = await call(base, { root_label: "harbor", idempotency_key: "start" });
+    let start = await call(base, { root_label: "harbor", idempotency_key: "start" });
+    if (input.interruptedStart !== undefined) {
+      expect(start.status).toBe(500);
+      await input.interruptedStart.beforeResume(admin, async (idempotencyKey) => {
+        const replayed = await call(base, {
+          root_label: "harbor",
+          idempotency_key: idempotencyKey,
+        });
+        return { status: replayed.status, body: await replayed.json() };
+      });
+      start = await call(base, {
+        root_label: "harbor",
+        idempotency_key: input.interruptedStart.resumeKey ?? "start",
+      });
+    }
     expect(start.status).toBe(202);
     const starting = (await start.json()) as { readonly root_import_session_id: string };
     const sessionUrl = `${base}/${starting.root_import_session_id}`;
@@ -266,7 +341,9 @@ export async function prepareAcknowledgedImport(input: {
       expected_revision: readyPlan.revision,
       idempotency_key: "published",
     };
-    expect((await call(`${sessionUrl}/poll`, acknowledgement)).status).toBe(202);
+    const acknowledge = async () => call(`${sessionUrl}/poll`, acknowledgement);
+    await input.beforeAcknowledge?.(admin, starting.root_import_session_id);
+    if (input.acknowledge !== false) expect((await acknowledge()).status).toBe(202);
     return {
       admin,
       connectionString: input.connectionString,
@@ -286,6 +363,7 @@ export async function prepareAcknowledgedImport(input: {
       verifyOwnerPublication: () => {
         chain = "verified";
       },
+      acknowledge,
       services,
       cleanup,
     };
@@ -295,11 +373,9 @@ export async function prepareAcknowledgedImport(input: {
   }
 }
 
-export async function prepareReadyImport(input: {
-  readonly connectionString: string;
-  readonly schema?: string;
-  readonly onRequest?: () => Promise<void>;
-}): Promise<ReadyImport> {
+export async function prepareReadyImport(
+  input: Parameters<typeof prepareAcknowledgedImport>[0],
+): Promise<ReadyImport> {
   const acknowledged = await prepareAcknowledgedImport(input);
   try {
     const { admin, call, sessionUrl, services, sessionId, planRecords, zoneResult } = acknowledged;
@@ -372,6 +448,15 @@ export async function prepareReadyImport(input: {
               ),
               readiness_observed_at=NULL
         WHERE lifecycle.root_import_session_id=$1`,
+      [sessionId],
+    );
+    // The forced phase stands in for current and safe observation (the
+    // scheduling gate performs them), so the acknowledgement's queued current
+    // observation is closed out with it; otherwise claim order depends on timing.
+    await admin.query(
+      `UPDATE hns_root_import_lifecycle_jobs
+          SET state='completed', completed_at=clock_timestamp(), updated_at=clock_timestamp()
+        WHERE root_import_session_id=$1 AND job_kind='observe_current' AND state='queued'`,
       [sessionId],
     );
     await admin.query(
@@ -513,4 +598,62 @@ export async function expectUntouched(ready: ReadyImport) {
     [ready.sessionId],
   );
   expect(activationHistory.rows[0]?.count).toBe(0);
+}
+
+/** The lifecycle runner's ports against this import's schema and HSD fixture. */
+export function lifecyclePortsFor(base: AcknowledgedImport) {
+  const observer = makeHsdRootResourceObserver({
+    rpc_url: base.hsd.url,
+    authorization: "Basic fixture",
+    chain_network: "regtest",
+    genesis_block_hash: `${"0".repeat(63)}1`,
+    tree_interval_blocks: 36,
+    safe_minimum_confirmations: 12,
+    maximum_tip_age_seconds: 86_400,
+    maximum_future_tip_seconds: 3_600,
+  });
+  const queue = makePostgresHnsRootImportLifecycleQueue(
+    base.scopedConnectionString,
+    makeHnsLifecycleObservePort({
+      observe_chain: (rootLabel, view) => observer(rootLabel, view),
+    }),
+  );
+  const authorityView = (ordinal: 1 | 2) => ({
+    authority_nameserver: `ns${ordinal}.pirate`,
+    authority_address_family: "GLUE4" as const,
+    authority_address: `192.0.2.${52 + ordinal}`,
+    dnssec_validation: "secure" as const,
+    challenge_present: true as const,
+    validated_dnskey_response_sha256: String(ordinal).repeat(64),
+    validated_control_response_sha256: String(ordinal + 2).repeat(64),
+    validated_chain_authority_digest: "5".repeat(64),
+    observed_zone_bytes: base.zoneResult.managed_zone_bytes,
+    observed_zone_sha256: base.zoneResult.managed_rrset_sha256,
+  });
+  const readiness = makePostgresHnsLifecycleReadinessPorts(
+    base.scopedConnectionString,
+    {
+      observe_current_resource: (rootLabel: string) => observer(rootLabel, "current"),
+      reconcile_zone: async () => {},
+      inspect_zone: async () => ({ ...base.zoneResult, created: false }),
+      observe_live: async () => ({
+        authority_views: [authorityView(1), authorityView(2)],
+        gateway: {
+          normalized_host: "app.harbor",
+          gateway_address: base.zoneResult.gateway_ipv4,
+          certificate_spki_sha256: base.zoneResult.gateway_certificate_spki_sha256,
+          http_status: 421 as const,
+        },
+      }),
+    },
+    { environment: "staging", valid_for_seconds: 3600 },
+    queue.finalize,
+  );
+  return {
+    ports: {
+      ...queue,
+      readiness: (job: Parameters<typeof runHnsRootImportReadinessOnce>[0], executorId: string) =>
+        runHnsRootImportReadinessOnce(job, executorId, readiness),
+    },
+  };
 }

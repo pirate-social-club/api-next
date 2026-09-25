@@ -3,24 +3,29 @@
   "kind": "api-client-release-handoff",
   "package": "@pirate/api-client",
   "version": "0.90.0",
-  "sourceBranch": "feat/song-stems",
-  "sourceBase": "3b70f465db080163919c55032ebc489b917baff5",
-  "validatedSourceCommit": "pending",
-  "pullRequest": null,
-  "wireContract": "Song stems, phase one: song upload reservations accept slot primary_audio, instrumental_audio or vocal_audio; POST /media-post-submissions/{submission_id}/stems seals an uploaded instrumental or vocals stem onto the author's unpublished song submission; song submission snapshots carry an optional stems field (instrumental_audio and vocal_audio, each sealed or null). Existing operations are unchanged; a primary reservation remains the only way to create a submission.",
+  "sourceBranch": "feat/megapot-reward-claim-verification-intent",
+  "sourceBase": "7f0a2d2941eddb0f1c433c09c3e906311d488145",
+  "validatedSourceCommit": "2afe441dc02a4901e5ac7882b855b485568c3cef",
+  "pullRequest": 430,
+  "wireContract": "Spec 015 §5.2a. Adds POST /rewards/claim-verification-intents, which issues or reuses an account-scoped intent for the signed-in user and returns {intent_id, provider_id: very.web}. The client starts the Very ceremony with POST /verification/sessions using that intent, then repeats POST /rewards/credits/{creditId}/claim. The ceremony declares the community_join purpose so one palm keeps one Very subject.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.90.0.tgz",
-    "sha256": "76a4368b9663aec6bc462f6db91643e312be504e7547ae6cb3850a697ed5dc1d"
+    "sha256": "e849d80543e4762c1918a9789a5babb29c9b540ac094f7de953eedbd1272c5aa"
   },
   "validation": {
-    "status": "Local candidate; gates in progress",
-    "passed": [],
-    "remaining": [
-      "Repository check and unit, Node and Workerd tests",
-      "Full PostgreSQL suite",
-      "Hosted required checks",
-      "Paired Solid adoption"
+    "status": "Local candidate; hosted review and paired Solid adoption pending",
+    "passed": [
+      "Contract generation and freshness",
+      "Immutable package creation and verification of the generated 0.90.0 client",
+      "OpenAPI breaking-change check against source base 7f0a2d29",
+      "Repository check and complete unit test graph",
+      "Rewards, verification-intent, foundation and role-template PostgreSQL 17 suites (118 pass)"
     ],
-    "operationalBoundary": "No package registry publication, migration execution, deployment, credential use or live product mutation occurred."
+    "remaining": [
+      "Hosted required checks on the exact pull-request head",
+      "Paired Solid 0.90.0 adoption (slice C). Solid must adopt 0.90.0 (which includes 0.89.0's reward credit claim property) before or with the API deploy carrying these contracts.",
+      "Release sequencing: api-next PR #417 also claims 0.90.0; whichever merges second re-cuts its package as the next unused version with a new artifact, digest, ledger row and handoff."
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use or live product mutation occurred."
   }
 }

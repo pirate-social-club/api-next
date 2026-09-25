@@ -40,6 +40,16 @@ export const VIDEO_WORKFLOW_POLL_MS = 30_000;
 export const VIDEO_WORKFLOW_CAPABILITY_MS = 30 * 60_000;
 export const VIDEO_WORKFLOW_MAX_OBSERVATIONS =
   VIDEO_WORKFLOW_CAPABILITY_MS / VIDEO_WORKFLOW_POLL_MS;
+/** Most provider jobs finish within a minute, so the first minute is polled
+ * every 5 s; the remaining observations are spread so the count and the
+ * 30-minute window stay exactly as before. */
+const VIDEO_WORKFLOW_FAST_POLLS = 12;
+const VIDEO_WORKFLOW_FAST_POLL_MS = 5_000;
+export const videoWorkflowPollMs = (index: number): number =>
+  index < VIDEO_WORKFLOW_FAST_POLLS
+    ? VIDEO_WORKFLOW_FAST_POLL_MS
+    : (VIDEO_WORKFLOW_CAPABILITY_MS - VIDEO_WORKFLOW_FAST_POLLS * VIDEO_WORKFLOW_FAST_POLL_MS) /
+      (VIDEO_WORKFLOW_MAX_OBSERVATIONS - VIDEO_WORKFLOW_FAST_POLLS);
 export interface VideoWorkflowStep {
   do<T>(name: string, run: () => Promise<T>): Promise<T>;
   sleep(name: string, milliseconds: number): Promise<void>;
@@ -47,6 +57,8 @@ export interface VideoWorkflowStep {
 }
 export type VideoWorkflowServices = VideoAnalysisRuntimeServices &
   Readonly<{
+    /** Spec 013 v1 sampled-frame gate, enforced again at decision time. */
+    sampledFrameGate?: boolean;
     outbox: Pick<VideoAnalysisOutboxStore, "get">;
     reconciliation: VideoAttemptReconciliationStore;
     stageFacts: VideoStageFactStore;
@@ -398,7 +410,7 @@ export async function runVideoAnalysisWorkflow(
               break;
             }
             if (result === "deadline") break;
-            await step.sleep(`${name}-sleep`, VIDEO_WORKFLOW_POLL_MS);
+            await step.sleep(`${name}-sleep`, videoWorkflowPollMs(index));
           }
         }
         if (!completed) {
@@ -537,6 +549,10 @@ export async function runVideoAnalysisWorkflow(
             captionSha256: await canonicalVideoCaptionSha256(record.state.caption),
             evidenceRef: safety.evidenceRef,
             minorSafetyEvidenceRef: safety.minorSafetyEvidenceRef,
+            ...(safety.gateKind === undefined ? {} : { gateKind: safety.gateKind }),
+            ...(safety.sampledFrameEvidenceRef === undefined
+              ? {}
+              : { sampledFrameEvidenceRef: safety.sampledFrameEvidenceRef }),
           },
           mediaSafety: safety.mediaSafety,
           captionSafety: safety.captionSafety,
@@ -671,7 +687,7 @@ export async function runVideoAnalysisWorkflow(
               break;
             }
             if (observed === "deadline") break;
-            await step.sleep(`${name}-sleep`, VIDEO_WORKFLOW_POLL_MS);
+            await step.sleep(`${name}-sleep`, videoWorkflowPollMs(index));
           }
           if (!completed) {
             // No output and no refusal within the window: the execution is

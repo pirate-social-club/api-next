@@ -9,6 +9,7 @@ import {
   JobsWorkerConfig,
   loadConfig,
   loadConfigFrom,
+  parseRewardGasTopupConfig,
   secret,
 } from "./index.ts";
 
@@ -405,6 +406,10 @@ describe("config system (000 §9)", () => {
               readonly binding?: string;
               readonly service?: string;
             }[];
+            readonly routes?: readonly {
+              readonly pattern?: string;
+              readonly custom_domain?: boolean;
+            }[];
           }
         >
       >;
@@ -413,20 +418,43 @@ describe("config system (000 §9)", () => {
     for (const environment of [config, config.env?.staging]) {
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
       expect(environment?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe("");
-      expect(environment?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe("");
-      expect(environment?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("");
-      expect(environment?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("0");
-      expect(environment?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("-1");
       expect(environment?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
       expect(environment?.durable_objects?.bindings).toContainEqual({
         name: "HNS_COMMUNITY_APP_API_REPLAY",
         class_name: "HnsForwarderReplayStoreDO",
       });
     }
+    expect(config.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe("");
+    expect(config.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe("");
+    expect(config.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("");
+    expect(config.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("0");
+    expect(config.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("-1");
+    const staging = config.env?.staging;
+    expect(staging?.routes).toContainEqual({
+      pattern: "hns-community-api-staging.pirate.sc",
+      custom_domain: true,
+    });
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe(
+      "https://hns-community-api-staging.pirate.sc",
+    );
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe(
+      "https://piratesocialclub.cloudflareaccess.com",
+    );
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe(
+      "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
+    );
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe(
+      "f077cbaec4e7c6ff9ceaf0ebf5b3c5f4ec9d01a35fb4275deb05e33179143818",
+    );
+    expect(staging?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe(
+      "pirate:hns-forwarder-v3:staging-community-app:v1",
+    );
+    expect(staging?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-09-23-01");
+    expect(staging?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("300");
+    expect(staging?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("5");
     const production = config.env?.production;
     expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
     expect(production?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("true");
@@ -461,9 +489,13 @@ describe("config system (000 §9)", () => {
       binding: "HNS_OWNER_VERIFIER",
       service: "pirate-hns-owner-verifier-production",
     });
-    expect(JSON.stringify([config.services, config.env?.staging?.services])).not.toContain(
-      "HNS_OWNER_VERIFIER",
-    );
+    expect(config.services).toBeUndefined();
+    expect(config.env?.staging?.services).toEqual([
+      {
+        binding: "HNS_OWNER_VERIFIER",
+        service: "pirate-hns-owner-verifier-staging",
+      },
+    ]);
     expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
@@ -572,5 +604,46 @@ describe("config system (000 §9)", () => {
         service: "pirate-hns-owner-verifier-production",
       },
     ]);
+  });
+});
+
+describe("winner gas top-up limits", () => {
+  const staging = {
+    MEGAPOT_GAS_TOPUP_TARGET_WEI: "50000000000000",
+    MEGAPOT_GAS_TOPUP_MAX_WEI: "50000000000000",
+    MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "3",
+    MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "5000000000000000",
+  };
+
+  test("absent limits disable top-ups and a complete set parses", () => {
+    expect(
+      parseRewardGasTopupConfig({
+        MEGAPOT_GAS_TOPUP_TARGET_WEI: "",
+        MEGAPOT_GAS_TOPUP_MAX_WEI: "",
+        MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "",
+        MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "",
+      }),
+    ).toBeNull();
+    expect(parseRewardGasTopupConfig(staging)).toEqual({
+      targetBalanceWei: 50_000_000_000_000n,
+      maxTopupWei: 50_000_000_000_000n,
+      accountDailyCount: 3,
+      platformDailyWei: 5_000_000_000_000_000n,
+    });
+  });
+
+  test("a partial, malformed or inconsistent set fails closed", () => {
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_MAX_WEI: "-1" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_MAX_WEI: "60000000000000" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "0" }),
+    ).toThrow();
   });
 });

@@ -94,6 +94,7 @@
     "./use-cases/feed/home-feed": "./src/use-cases/feed/home-feed.ts",
     "./use-cases/feed/public-community-threads": "./src/use-cases/feed/public-community-threads.ts",
     "./use-cases/handles/sales": "./src/use-cases/handles/sales.ts",
+    "./use-cases/handles/spaces-registry": "./src/use-cases/handles/spaces-registry.ts",
     "./use-cases/handles/platform-pirate-rename": "./src/use-cases/handles/platform-pirate-rename.ts",
     "./use-cases/profile": "./src/use-cases/profile.ts",
     "./use-cases/personas": "./src/use-cases/personas.ts",
@@ -110,6 +111,7 @@
     "./use-cases/content/comment-thread": "./src/use-cases/content/comment-thread.ts",
     "./use-cases/content/song-playback": "./src/use-cases/content/song-playback.ts",
     "./avatars/ports": "./src/avatars/ports.ts",
-    "./use-cases/avatars": "./src/use-cases/avatars.ts"
+    "./use-cases/avatars": "./src/use-cases/avatars.ts",
+    "./use-cases/song-library": "./src/use-cases/song-library.ts"
   }
 }

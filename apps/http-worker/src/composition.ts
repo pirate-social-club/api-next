@@ -8,6 +8,12 @@ import {
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
+import {
+  makeRewardGasTopupRequester,
+  makeRewardWinnerSendService,
+  REWARD_WINNER_SEND_CHAIN_ID,
+  RewardGasTopupBalanceUnavailable,
+} from "@pirate/application/rewards/song-reward-offers";
 import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
 import type {
   DanceAttemptSessionAuthorityResolver,
@@ -77,6 +83,7 @@ import {
   HttpWorkerConfig,
   type HttpWorkerConfigValue,
   loadConfigFrom,
+  parseRewardGasTopupConfig,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
@@ -163,9 +170,13 @@ import {
   makeDurableObjectIdentityRegistrationRateLimiter,
   type RegistrationRateLimiterNamespaces,
 } from "@pirate/platform-cf/registration-rate-limiter";
+import { makeControlPlaneRewardClaimIntentResolver } from "@pirate/platform-cf/reward-claim-verification-intent";
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
+import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
+import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
+import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
 import {
   makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
@@ -177,9 +188,12 @@ import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
+import { makeControlPlaneSongLibraryStore } from "@pirate/platform-cf/song-library-repository";
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
+import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
 import {
   type CloudflareStudyGenerationWorkflowBinding,
   makeCloudflareStudyGenerationWorkflowLauncher,
@@ -254,11 +268,18 @@ import {
   makeSongRewardOfferHandlers,
   makeUnavailableSongRewardOfferHandlers,
 } from "./rewards-song-offer-handlers.ts";
+import { makeSongLibraryHandlers } from "./song-library-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
 import {
   makeSongPlaybackHandlers,
   type SongPlaybackBindings,
 } from "./song-playback-composition.ts";
+import {
+  makeSpacesProductionComposition,
+  type SpacesRuntimeBindings,
+  spacesTaprootRecipientEnabled,
+} from "./spaces-production-composition.ts";
+import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
@@ -271,7 +292,8 @@ import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-acces
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
     SongPlaybackBindings,
-    TelegramBindings {
+    TelegramBindings,
+    SpacesRuntimeBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -344,6 +366,7 @@ export interface HttpWorkerBindings
   readonly HNS_OWNERSHIP_ENABLED?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_VERSION?: string;
+  readonly HNS_OWNERSHIP_CAPABILITIES?: string;
   readonly HNS_COMMUNITY_APP_API_REPLAY?: HnsForwarderReplayStoreNamespace;
   readonly KARAOKE_ATTEMPT?: KaraokeAttemptDoNamespace;
   readonly HNS_COMMUNITY_APP_API_ENABLED?: string;
@@ -391,6 +414,10 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_V2_RPC_URL?: string;
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
+  readonly MEGAPOT_GAS_TOPUP_TARGET_WEI?: string;
+  readonly MEGAPOT_GAS_TOPUP_MAX_WEI?: string;
+  readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
+  readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
    * Song-backed video (Spec 013 §5A). Off unless exactly "true". The request path
@@ -549,6 +576,7 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_OWNERSHIP_ENABLED: bindings.HNS_OWNERSHIP_ENABLED,
     HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
     HNS_OWNERSHIP_CONFIGURATION_VERSION: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+    HNS_OWNERSHIP_CAPABILITIES: bindings.HNS_OWNERSHIP_CAPABILITIES,
     HNS_COMMUNITY_APP_API_ENABLED: bindings.HNS_COMMUNITY_APP_API_ENABLED,
     HNS_HANDLE_HOST_API_ENABLED: bindings.HNS_HANDLE_HOST_API_ENABLED,
     HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: bindings.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
@@ -600,6 +628,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_V2_RPC_URL: bindings.MEGAPOT_V2_RPC_URL,
     MEGAPOT_ATTESTATION_ID: bindings.MEGAPOT_ATTESTATION_ID,
     MEGAPOT_REQUIRED_CONFIRMATIONS: bindings.MEGAPOT_REQUIRED_CONFIRMATIONS,
+    MEGAPOT_GAS_TOPUP_TARGET_WEI: bindings.MEGAPOT_GAS_TOPUP_TARGET_WEI,
+    MEGAPOT_GAS_TOPUP_MAX_WEI: bindings.MEGAPOT_GAS_TOPUP_MAX_WEI,
+    MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
+    MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
   };
 }
 
@@ -611,6 +643,9 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   try {
     const config = loadConfigFrom(HttpWorkerConfig, configSource(bindings));
     assertMegapotRewardRuntimePosture(config);
+    // Malformed or partial gas top-up limits fail closed here; absent limits
+    // leave top-ups disabled.
+    parseRewardGasTopupConfig(config);
     if (
       config.MEGAPOT_REWARDS_ENABLED &&
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
@@ -762,6 +797,7 @@ export async function createProductionHttpWorker(
         environment: config.API_NEXT_ENV,
         configuration_reference: config.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
         configuration_version: config.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+        capabilities: config.HNS_OWNERSHIP_CAPABILITIES,
       } as const;
       if (!hnsConfig.enabled) return makeHnsOwnershipComposition(hnsConfig);
       const transport =
@@ -813,6 +849,11 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const spacesRuntime = makeSpacesProductionComposition(
+    bindings,
+    controlPlane,
+    config.API_NEXT_ENV,
+  );
   const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
@@ -1093,6 +1134,7 @@ export async function createProductionHttpWorker(
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
     makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneRewardClaimIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneHandleNationalityIntentResolver(controlPlane),
     accountAgeVerification.intents,
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
@@ -1265,6 +1307,21 @@ export async function createProductionHttpWorker(
       },
     },
   });
+  const spacesTaprootHandlers = makeSpacesTaprootHandlers({
+    enabled: spacesTaprootRecipientEnabled(bindings, config.API_NEXT_ENV),
+    preparations: makeControlPlaneSpacesTaprootPreparationStore(controlPlane),
+    intents: makeControlPlaneSpacesTaprootIntentStore(controlPlane),
+    readInventory: (proof) =>
+      proofVerifier.readPrivyEmbeddedTaprootInventory({
+        accessToken: proof.privy_access_token,
+        identityToken: proof.privy_identity_token ?? null,
+        network: "mainnet",
+      }),
+    canonicalAccountId: (sourceUserId) =>
+      resolvePrivyCredentialAccount(sourceUserId).pipe(
+        Effect.map((identity) => identity.canonicalUserId),
+      ),
+  });
   const activityQualificationHandlers = makeActivityQualificationHandlers({
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -1424,6 +1481,32 @@ export async function createProductionHttpWorker(
             },
           });
           const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
+          const gasTopupLimits = parseRewardGasTopupConfig(config);
+          const gasTopups =
+            gasTopupLimits === null
+              ? null
+              : makeRewardGasTopupRequester({
+                  store: makeControlPlaneRewardGasTopupRequestStore(controlPlane),
+                  readNativeBalance: (address) =>
+                    Effect.tryPromise({
+                      try: () => rpc.readNativeBalance(address),
+                      catch: () =>
+                        new RewardGasTopupBalanceUnavailable({ reason: "rpc-unavailable" }),
+                    }),
+                  limits: gasTopupLimits,
+                  ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+                });
+          // Winner sends read any sender's nonce and transactions on the
+          // attested chain, which must be the chain the record is fixed to.
+          const winnerSends =
+            candidate.chainId === REWARD_WINNER_SEND_CHAIN_ID
+              ? makeRewardWinnerSendService({
+                  store: makeControlPlaneRewardWinnerSendStore(controlPlane),
+                  chain: makeRewardWinnerSendChain(rpc),
+                  requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+                  ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+                })
+              : null;
           return makeSongRewardOfferHandlers({
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
@@ -1437,6 +1520,8 @@ export async function createProductionHttpWorker(
             store: makeControlPlaneSongRewardOfferStore(controlPlane),
             fundingStore: rewardFundingStore,
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
+            gasTopups,
+            winnerSends,
             funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
             requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
             externalFallbackPolicy: null,
@@ -1544,7 +1629,11 @@ export async function createProductionHttpWorker(
     avatarAuthoring,
   );
   const worker = createHttpWorker({
-    config: { corsOrigin: config.CORS_ORIGIN },
+    ...spacesRuntime,
+    config: {
+      corsOrigin: config.CORS_ORIGIN,
+      hnsCommunityAppApiProtectedOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
+    },
     hnsCommunityAppApi,
     hnsHandleHostApi,
     hnsEdgeStatus,
@@ -1565,6 +1654,7 @@ export async function createProductionHttpWorker(
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,
+      ...spacesTaprootHandlers,
       ...activityQualificationHandlers,
       ...karaokeReadinessHandlers,
       ...karaokeHandlers,
@@ -1584,6 +1674,7 @@ export async function createProductionHttpWorker(
       ...danceAttemptHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
+      ...makeSongLibraryHandlers(makeControlPlaneSongLibraryStore(controlPlane)),
     },
     beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,

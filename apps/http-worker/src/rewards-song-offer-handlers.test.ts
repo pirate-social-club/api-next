@@ -4,10 +4,17 @@ import type {
   MegapotPoolLeg,
   RewardFundingIntent,
   RewardFundingStore,
+  RewardGasTopupRequester,
   RewardProjectionStore,
+  RewardWinnerSendRecord,
+  RewardWinnerSendService,
   SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
 import {
+  RewardGasTopupRejected,
+  RewardProjectionRejected,
+  RewardWinnerSendChainUnavailable,
+  RewardWinnerSendRejected,
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -109,17 +116,26 @@ const unexpected = (): never => {
   throw new Error("unexpected fake call");
 };
 
+const claimCalls: { accountId: string; creditId: string }[] = [];
+
 function fixture(
   fundingIntent: RewardFundingIntent = intent,
   options: {
     catalog?: SongRewardOfferStore["listAdmittedAssets"];
     policies?: SongRewardOfferStore["qualificationPolicies"];
     production?: boolean;
+    gasTopups?: RewardGasTopupRequester | null;
+    winnerSends?: RewardWinnerSendService | null;
   } = {},
 ) {
   const ids = ["open-action", "open-offer", "leg-action", "pool-leg", "observe-action"];
   const store: SongRewardOfferStore = {
     listAdmittedAssets: options.catalog ?? (() => Effect.succeed({ items: [], nextCursor: null })),
+    // Only account_1's persona_1 owns one active wallet; anything else fails closed.
+    fundingSender: ({ accountId, personaId }) =>
+      accountId === "account_1" && personaId === "persona_1"
+        ? Effect.succeed(fundingIntent.senderAddress)
+        : Effect.fail(new SongRewardOfferRejected({ reason: "persona-ineligible" })),
     qualificationPolicies:
       options.policies ??
       (() =>
@@ -257,10 +273,41 @@ function fixture(
             createdAt: now,
             updatedAt: now,
             settledAt: null,
+            claim: { status: "accepted", payoutStatus: "pending" },
+            send: { sendId: "winner-send_1", status: "pending" },
           },
         ],
         nextCursor: null,
       }),
+    issueClaimVerificationIntent: ({ accountId }) => {
+      claimCalls.push({ accountId, creditId: "intent" });
+      return Effect.succeed({ intentId: "reward-claim_1" });
+    },
+    claimCredit: ({ accountId, creditId }) => {
+      claimCalls.push({ accountId, creditId });
+      return creditId === "credit_2"
+        ? Effect.succeed({
+            outcome: "verification_missing" as const,
+            credit: {
+              creditId: "credit_2",
+              payoutPersonaId: "persona_1",
+              chainId: 84_532,
+              tokenAddress: leg.tokenAddress,
+              tokenDecimals: 6,
+              amountAtomic: 150n,
+              reservedAtomic: 0n,
+              paidAtomic: 0n,
+              sourceKind: "megapot_allocation" as const,
+              state: "credited" as const,
+              createdAt: now,
+              updatedAt: now,
+              settledAt: null,
+              claim: { status: "unclaimed" as const, payoutStatus: null },
+              send: null,
+            },
+          })
+        : Effect.fail(new RewardProjectionRejected({ reason: "not-found" }));
+    },
   };
   const handlers = makeSongRewardOfferHandlers({
     rewardCatalogAuthority: options.production
@@ -277,6 +324,8 @@ function fixture(
     store,
     fundingStore,
     projections,
+    gasTopups: options.gasTopups ?? null,
+    winnerSends: options.winnerSends ?? null,
     funding: {
       plan: () => Effect.succeed({ kind: "planned", intent: fundingIntent }),
       observe: ({ transactionHash }) =>
@@ -291,11 +340,8 @@ function fixture(
   return createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
     handlers,
-    authenticate: () => ({
-      kind: "user",
-      subject: "account_1",
-      walletAddress: fundingIntent.senderAddress,
-    }),
+    // An email-only session: no wallet is proved at sign-in.
+    authenticate: () => ({ kind: "user", subject: "account_1" }),
     authorize: () => undefined,
   });
 }
@@ -503,6 +549,47 @@ describe("song reward offer HTTP handlers", () => {
     });
   });
 
+  test("pins the persona wallet as sender and refuses a persona without one", async () => {
+    const worker = fixture();
+    const headers = { authorization: "Bearer test", "content-type": "application/json" };
+    const body = (personaId: string, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        idempotency_key: "leg_sender",
+        persona_id: personaId,
+        funding_amount_atomic: "5000000",
+        max_ticket_price_atomic: "1000000",
+        entry_cutoff_seconds: 300,
+        eligible_activities: ["study"],
+        min_score_bps: 7000,
+        empty_pool_policy: "no_purchase",
+        fallback_payout_persona_id: null,
+        fallback_disclosure_acknowledged: false,
+        ...extra,
+      });
+    const pinned = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
+      method: "POST",
+      headers,
+      body: body("persona_1"),
+    });
+    expect(pinned.status).toBe(201);
+    expect(await pinned.json()).toMatchObject({
+      funding: { sender_address: intent.senderAddress },
+    });
+    // A caller-supplied sender is not part of the contract and is rejected.
+    const steered = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
+      method: "POST",
+      headers,
+      body: body("persona_1", { sender_address: address("9") }),
+    });
+    expect(steered.status).toBe(400);
+    const foreign = await worker.request("/reward-offers/reward_offer_1/megapot-pool-legs", {
+      method: "POST",
+      headers,
+      body: body("persona_without_wallet"),
+    });
+    expect(foreign.status).toBe(404);
+  });
+
   test("binds an observed transaction to the authenticated funder and exact effect", async () => {
     const worker = fixture();
     const response = await worker.request(
@@ -666,6 +753,358 @@ describe("song reward offer HTTP handlers", () => {
         },
       ],
     });
+  });
+
+  test("claims a participant credit as the signed-in account only", async () => {
+    claimCalls.length = 0;
+    const unauthenticated = await fixture().request("/rewards/credits/credit_2/claim", {
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    expect(claimCalls).toEqual([]);
+
+    const headers = { authorization: "Bearer test" };
+    const claimed = await fixture().request("/rewards/credits/credit_2/claim", {
+      method: "POST",
+      headers,
+    });
+    expect(claimed.status).toBe(200);
+    expect(claimed.headers.get("cache-control")).toBe("no-store");
+    expect(await claimed.json()).toMatchObject({
+      outcome: "verification_missing",
+      credit: {
+        credit_id: "credit_2",
+        amount_atomic: "150",
+        state: "credited",
+        claim: { status: "unclaimed", payout_status: null },
+        send: null,
+      },
+    });
+    const missing = await fixture().request("/rewards/credits/credit_9/claim", {
+      method: "POST",
+      headers,
+    });
+    expect(missing.status).toBe(404);
+    expect(claimCalls.map((call) => call.creditId)).toEqual(["credit_2", "credit_9"]);
+    expect(new Set(claimCalls.map((call) => call.accountId)).size).toBe(1);
+
+    const credits = await fixture().request("/rewards/credits?limit=25", { headers });
+    expect(await credits.json()).toMatchObject({
+      items: [
+        {
+          credit_id: "credit_1",
+          claim: { status: "accepted", payout_status: "pending" },
+          send: { send_id: "winner-send_1", status: "pending" },
+        },
+      ],
+    });
+  });
+
+  test("issues a reward-claim Very intent for the signed-in account only", async () => {
+    claimCalls.length = 0;
+    const unauthenticated = await fixture().request("/rewards/claim-verification-intents", {
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    const issued = await fixture().request("/rewards/claim-verification-intents", {
+      method: "POST",
+      headers: { authorization: "Bearer test" },
+    });
+    expect(issued.status).toBe(200);
+    expect(issued.headers.get("cache-control")).toBe("no-store");
+    expect(await issued.json()).toEqual({ intent_id: "reward-claim_1", provider_id: "very.web" });
+    expect(claimCalls).toEqual([{ accountId: "account_1", creditId: "intent" }]);
+  });
+
+  test("requests and reads gas top-ups for the signed-in account only", async () => {
+    const requests: { accountId: string; creditId: string; idempotencyKey: string }[] = [];
+    const gasTopups: RewardGasTopupRequester = {
+      request: (input) => {
+        requests.push(input);
+        return Effect.succeed(
+          input.creditId === "credit_full"
+            ? { status: "not_needed" as const, topupId: null, amountWei: null }
+            : { status: "pending" as const, topupId: "gas-topup_1", amountWei: 30_000n },
+        );
+      },
+      get: ({ accountId, topupId }) =>
+        accountId === "account_1" && topupId === "gas-topup_1"
+          ? Effect.succeed({
+              topupId,
+              creditId: "credit_1",
+              status: "broadcast" as const,
+              amountWei: 30_000n,
+              transactionHash: hash("e"),
+            })
+          : Effect.fail(new RewardGasTopupRejected({ reason: "not-found" })),
+    };
+    const worker = fixture(intent, { gasTopups });
+    const post = (body: unknown, authorized = true) =>
+      worker.request("/rewards/gas-topups", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(authorized ? { authorization: "Bearer test" } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    expect((await post({ credit_id: "credit_1", idempotency_key: "key_1" }, false)).status).toBe(
+      401,
+    );
+    expect((await worker.request("/rewards/gas-topups/gas-topup_1")).status).toBe(401);
+
+    const pending = await post({ credit_id: "credit_1", idempotency_key: "key_1" });
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toEqual({
+      status: "pending",
+      topup_id: "gas-topup_1",
+      amount_wei: "30000",
+    });
+    const full = await post({ credit_id: "credit_full", idempotency_key: "key_2" });
+    expect(await full.json()).toEqual({ status: "not_needed", topup_id: null, amount_wei: null });
+    // The account always comes from the session, never the body.
+    expect(requests.map((entry) => entry.accountId)).toEqual(["account_1", "account_1"]);
+
+    const own = await worker.request("/rewards/gas-topups/gas-topup_1", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(own.status).toBe(200);
+    expect(await own.json()).toEqual({
+      status: "broadcast",
+      amount_wei: "30000",
+      transaction_hash: hash("e"),
+    });
+    const foreign = await worker.request("/rewards/gas-topups/gas-topup_other", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(foreign.status).toBe(404);
+  });
+
+  test("records and reads winner sends for the signed-in account only", async () => {
+    const sendRecord: RewardWinnerSendRecord = {
+      sendId: "winner-send_1",
+      creditId: "credit_1",
+      accountId: "account_1",
+      status: "pending",
+      chainId: 84_532,
+      senderAddress: address("a"),
+      recipientAddress: address("d"),
+      tokenAddress: leg.tokenAddress,
+      amountAtomic: 400_000n,
+      nonce: 5n,
+      attempt: 1,
+      transactionHashes: [hash("e")],
+      cancellationHashes: [],
+    };
+    const calls: string[] = [];
+    const own = (
+      accountId: string,
+      id: string,
+    ): Effect.Effect<RewardWinnerSendRecord, RewardWinnerSendRejected> =>
+      accountId === "account_1" && (id === "winner-send_1" || id === "credit_1")
+        ? Effect.succeed(sendRecord)
+        : Effect.fail(new RewardWinnerSendRejected({ reason: "not-found" }));
+    const winnerSends: RewardWinnerSendService = {
+      request: (input) => {
+        calls.push(`request:${input.accountId}:${input.creditId}:${input.recipientAddress}`);
+        if (input.amountAtomic > 1_000_000n) {
+          return Effect.fail(new RewardWinnerSendRejected({ reason: "invalid-amount" }));
+        }
+        if (input.idempotencyKey === "key_conflict") {
+          return Effect.fail(new RewardWinnerSendRejected({ reason: "send-conflict" }));
+        }
+        if (input.idempotencyKey === "key_busy") {
+          return Effect.fail(new RewardWinnerSendRejected({ reason: "sender-busy" }));
+        }
+        return own(input.accountId, input.creditId);
+      },
+      attachTransaction: (input) => {
+        calls.push(`attach:${input.accountId}:${input.sendId}`);
+        return input.transactionHash === hash("0")
+          ? Effect.fail(new RewardWinnerSendRejected({ reason: "transaction-not-found" }))
+          : input.transactionHash === hash("1")
+            ? Effect.fail(new RewardWinnerSendChainUnavailable({ reason: "rpc-unavailable" }))
+            : own(input.accountId, input.sendId);
+      },
+      cancel: (input) => {
+        calls.push(`cancel:${input.accountId}:${input.sendId}`);
+        if (input.transactionHash === hash("2")) {
+          return Effect.fail(new RewardWinnerSendRejected({ reason: "send-conflict" }));
+        }
+        return own(input.accountId, input.sendId).pipe(
+          Effect.map((value) => ({
+            ...value,
+            status: "cancelled" as const,
+            cancellationHashes: [input.transactionHash.toLowerCase()],
+          })),
+        );
+      },
+      get: (input) => own(input.accountId, input.sendId),
+      getByCredit: (input) => own(input.accountId, input.creditId),
+    };
+    const worker = fixture(intent, { winnerSends });
+    const headers = { "content-type": "application/json", authorization: "Bearer test" };
+    const post = (path: string, body: unknown, authorized = true) =>
+      worker.request(path, {
+        method: "POST",
+        headers: authorized ? headers : { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const body = { recipient: address("D"), amount_atomic: "400000", idempotency_key: "key_1" };
+
+    expect((await post("/rewards/credits/credit_1/send", body, false)).status).toBe(401);
+    expect((await worker.request("/rewards/winner-sends/winner-send_1")).status).toBe(401);
+    expect((await worker.request("/rewards/credits/credit_1/send")).status).toBe(401);
+    expect(
+      (
+        await post(
+          "/rewards/winner-sends/winner-send_1/transactions",
+          { transaction_hash: hash("e") },
+          false,
+        )
+      ).status,
+    ).toBe(401);
+    expect(calls).toEqual([]);
+
+    const wire = {
+      object: "reward_winner_send",
+      send_id: "winner-send_1",
+      credit_id: "credit_1",
+      status: "pending",
+      chain_id: 84_532,
+      sender: address("a"),
+      recipient: address("d"),
+      token_address: leg.tokenAddress,
+      amount_atomic: "400000",
+      nonce: 5,
+      attempt: 1,
+      transaction_hashes: [hash("e")],
+      cancellation_hashes: [],
+    };
+    const created = await post("/rewards/credits/credit_1/send", body);
+    expect(created.status).toBe(200);
+    expect(await created.json()).toEqual(wire);
+    // The account always comes from the session.
+    expect(calls).toEqual([`request:account_1:credit_1:${address("D")}`]);
+    expect((await post("/rewards/credits/credit_other/send", body)).status).toBe(404);
+    expect(
+      (await post("/rewards/credits/credit_1/send", { ...body, amount_atomic: "1000001" })).status,
+    ).toBe(400);
+    expect(
+      (await post("/rewards/credits/credit_1/send", { ...body, recipient: "0x12" })).status,
+    ).toBe(400);
+    expect(
+      (await post("/rewards/credits/credit_1/send", { ...body, idempotency_key: "key_conflict" }))
+        .status,
+    ).toBe(409);
+    const busy = await post("/rewards/credits/credit_1/send", {
+      ...body,
+      idempotency_key: "key_busy",
+    });
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toMatchObject({
+      error: { code: "conflict", message: "Another send from this wallet is in progress" },
+    });
+
+    const attached = await post("/rewards/winner-sends/winner-send_1/transactions", {
+      transaction_hash: hash("e"),
+    });
+    expect(await attached.json()).toEqual(wire);
+    const unknown = await post("/rewards/winner-sends/winner-send_1/transactions", {
+      transaction_hash: hash("0"),
+    });
+    expect(unknown.status).toBe(409);
+    expect(await unknown.json()).toMatchObject({ error: { code: "conflict", retryable: true } });
+    const rpcDown = await post("/rewards/winner-sends/winner-send_1/transactions", {
+      transaction_hash: hash("1"),
+    });
+    expect(await rpcDown.json()).toMatchObject({ error: { code: "provider_unavailable" } });
+    expect(
+      (
+        await post("/rewards/winner-sends/winner-send_other/transactions", {
+          transaction_hash: hash("e"),
+        })
+      ).status,
+    ).toBe(404);
+
+    expect(
+      (
+        await post(
+          "/rewards/winner-sends/winner-send_1/cancellation",
+          { transaction_hash: hash("c") },
+          false,
+        )
+      ).status,
+    ).toBe(401);
+    const cancelled = await post("/rewards/winner-sends/winner-send_1/cancellation", {
+      transaction_hash: hash("C"),
+    });
+    expect(await cancelled.json()).toEqual({
+      ...wire,
+      status: "cancelled",
+      cancellation_hashes: [hash("c")],
+    });
+    const settled = await post("/rewards/winner-sends/winner-send_1/cancellation", {
+      transaction_hash: hash("2"),
+    });
+    expect(settled.status).toBe(409);
+    expect(
+      (
+        await post("/rewards/winner-sends/winner-send_other/cancellation", {
+          transaction_hash: hash("c"),
+        })
+      ).status,
+    ).toBe(404);
+    expect(calls.filter((call) => call.startsWith("cancel:"))).toEqual([
+      "cancel:account_1:winner-send_1",
+      "cancel:account_1:winner-send_1",
+      "cancel:account_1:winner-send_other",
+    ]);
+
+    const authorized = { headers: { authorization: "Bearer test" } };
+    const read = await worker.request("/rewards/winner-sends/winner-send_1", authorized);
+    expect(await read.json()).toEqual(wire);
+    const byCredit = await worker.request("/rewards/credits/credit_1/send", authorized);
+    expect(await byCredit.json()).toEqual(wire);
+    expect(
+      (await worker.request("/rewards/winner-sends/winner-send_other", authorized)).status,
+    ).toBe(404);
+    expect((await worker.request("/rewards/credits/credit_other/send", authorized)).status).toBe(
+      404,
+    );
+  });
+
+  test("reports winner sends as unavailable without a chain client", async () => {
+    const response = await fixture().request("/rewards/winner-sends/winner-send_1", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(await response.json()).toMatchObject({ error: { code: "provider_unavailable" } });
+    const disabled = createHttpWorker({
+      config: { corsOrigin: "https://app.pirate.test" },
+      handlers: makeUnavailableSongRewardOfferHandlers(),
+      authenticate: () => ({ kind: "user", subject: "account_1" }),
+      authorize: () => undefined,
+    });
+    const unavailable = await disabled.request("/rewards/credits/credit_1/send", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test" },
+      body: JSON.stringify({
+        recipient: address("d"),
+        amount_atomic: "1",
+        idempotency_key: "key_1",
+      }),
+    });
+    expect(await unavailable.json()).toMatchObject({ error: { code: "provider_unavailable" } });
+  });
+
+  test("reports gas top-ups as unavailable when their limits are not configured", async () => {
+    const response = await fixture().request("/rewards/gas-topups", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test" },
+      body: JSON.stringify({ credit_id: "credit_1", idempotency_key: "key_1" }),
+    });
+    expect(await response.json()).toMatchObject({ error: { code: "provider_unavailable" } });
   });
 
   test("maps an internally reclaimable terminal plan to the stable wire status", async () => {

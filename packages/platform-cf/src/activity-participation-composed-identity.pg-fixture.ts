@@ -29,12 +29,18 @@ export async function seedVeryRewardEvidence(
   suffix: string,
   subjectDigest = "1".repeat(64),
   evidenceAge: "current" | "expired" = "current",
+  // Recovers an existing subject onto `accountId` as the next binding epoch,
+  // so one Very subject can be moved between accounts. `subject` names the
+  // seed that created the subject and `previous` the seed holding its current
+  // binding. `subjectDigest` then only keys the receipt.
+  recover?: { readonly subject: string; readonly previous: string; readonly epoch: number },
 ): Promise<void> {
   // Seed a coherently completed historical ceremony rather than mutate immutable evidence.
   const observedAt =
     evidenceAge === "expired" ? "(clock_timestamp() - interval '2 days')" : "clock_timestamp()";
   const proofSessionId = `composed-proof-${suffix}`;
-  const subjectId = `composed-subject-${suffix}`;
+  const subjectId = `composed-subject-${recover?.subject ?? suffix}`;
+  const epoch = recover?.epoch ?? 1;
   const bindingEventId = `composed-binding-${suffix}`;
   const receiptId = `composed-receipt-${suffix}`;
   const bindingId = `composed-group-${suffix}`;
@@ -64,24 +70,35 @@ export async function seedVeryRewardEvidence(
       JSON.stringify([{ claim_id: "credential.subject_unique" }, { claim_id: "human.personhood" }]),
       JSON.stringify(["credential.subject_unique", "human.personhood"]),
       `composed-upstream-${suffix}`,
-      "establish",
+      recover === undefined ? "establish" : "recover",
     ],
   });
   await admin.query("BEGIN");
   try {
-    await admin.query({
-      text: `INSERT INTO subject_keys (
-               subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
-               issuer_rp_action_scope, subject_digest
-             ) VALUES ($1,$2,$3,'issuer_rp_scope',$4,NULL,$5)`,
-      values: [subjectId, VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE, subjectDigest],
-    });
+    if (recover === undefined) {
+      await admin.query({
+        text: `INSERT INTO subject_keys (
+                 subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
+                 issuer_rp_action_scope, subject_digest
+               ) VALUES ($1,$2,$3,'issuer_rp_scope',$4,NULL,$5)`,
+        values: [subjectId, VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE, subjectDigest],
+      });
+    }
     await admin.query({
       text: `INSERT INTO subject_key_binding_events (
                binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
                binding_kind, idempotency_key, bound_at, previous_binding_event_id
-             ) VALUES ($1,$2,1,$3,$4,'initial',$5,${observedAt},NULL)`,
-      values: [bindingEventId, subjectId, accountId, proofSessionId, `composed-bind-${suffix}`],
+             ) VALUES ($1,$2,$6,$3,$4,$7,$5,${observedAt},$8)`,
+      values: [
+        bindingEventId,
+        subjectId,
+        accountId,
+        proofSessionId,
+        `composed-bind-${suffix}`,
+        epoch,
+        recover === undefined ? "initial" : "recovery",
+        recover === undefined ? null : `composed-binding-${recover.previous}`,
+      ],
     });
     await admin.query({
       text: `INSERT INTO evidence_receipts (
@@ -93,7 +110,7 @@ export async function seedVeryRewardEvidence(
                provider_configuration_version
              ) VALUES ($1,$2,$3,$4,$5,$6,'issuer_rp_scope',$7,NULL,$8,'test',
                'very.web.server-verified.v1',$9,'{}'::jsonb,${observedAt},
-               ${observedAt} + interval '1 day','proof_session',$10,$11,1,
+               ${observedAt} + interval '1 day','proof_session',$10,$11,$14,
                'dynamic',$12,$13)`,
       values: [
         receiptId,
@@ -109,14 +126,15 @@ export async function seedVeryRewardEvidence(
         bindingEventId,
         VERY_WEB_CONFIGURATION_REFERENCE,
         VERY_WEB_CONFIGURATION_VERSION,
+        epoch,
       ],
     });
     await admin.query({
       text: `INSERT INTO assertion_bindings (
                binding_group_id, user_id, binding_mode, subject_key_id,
                subject_binding_event_id, subject_binding_epoch
-             ) VALUES ($1,$2,'same_subject',$3,$4,1)`,
-      values: [bindingId, accountId, subjectId, bindingEventId],
+             ) VALUES ($1,$2,'same_subject',$3,$4,$5)`,
+      values: [bindingId, accountId, subjectId, bindingEventId, epoch],
     });
     await admin.query({
       text: `INSERT INTO assertions (

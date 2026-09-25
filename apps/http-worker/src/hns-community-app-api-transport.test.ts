@@ -201,6 +201,34 @@ function harness() {
 }
 
 describe("interactive HNS community API transport", () => {
+  test("refuses the protected API hostname while HNS is disabled without affecting the ordinary host", async () => {
+    const protectedOrigin = "https://hns-community-api-staging.pirate.sc";
+    const worker = createHttpWorker({
+      config: {
+        corsOrigin: "https://web-next-staging.pirate.sc",
+        hnsCommunityAppApiProtectedOrigin: protectedOrigin,
+      },
+    });
+    for (const path of [
+      "/health",
+      "/api/health",
+      "/internal/hns/solid-host-authority/v2/resolve",
+    ]) {
+      const denied = await worker.request(`${protectedOrigin}${path}`);
+      expect(denied.status).toBe(503);
+      expect(denied.headers.get("cache-control")).toBe("no-store");
+    }
+    expect((await worker.request("https://api-next-staging.pirate.sc/health")).status).toBe(200);
+    expect(() =>
+      createHttpWorker({
+        config: {
+          corsOrigin: "",
+          hnsCommunityAppApiProtectedOrigin: `${protectedOrigin}/path`,
+        },
+      }),
+    ).toThrow("HNS community API protected origin is invalid");
+  });
+
   test("keeps ordinary CORS static and dynamically admits only a verified host", async () => {
     const { worker, signed } = harness();
     const acceptedRequest = await signed("/api/health", "GET");

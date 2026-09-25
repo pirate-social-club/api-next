@@ -11,8 +11,8 @@ import {
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import {
+  CURRENT_SONG_VIDEO_INTERVAL_POLICY,
   checkSongVideoInterval,
-  SONG_VIDEO_INTERVAL_POLICY_V1,
 } from "../../../domain/src/video-submission.ts";
 import { requireMediaHumanActor } from "../media/submission-service.ts";
 import type { ContentStoreService, M2Actor } from "../ports.ts";
@@ -113,10 +113,10 @@ const DEFAULT_MEASURING_RETRY_AFTER_MS = 2_000;
 
 function intervalPolicy() {
   return {
-    policy_revision: SONG_VIDEO_INTERVAL_POLICY_V1.policyRevision,
-    sample_rate_hz: SONG_VIDEO_INTERVAL_POLICY_V1.sampleRateHz,
-    min_clip_duration_samples: SONG_VIDEO_INTERVAL_POLICY_V1.minClipDurationSamples,
-    max_clip_duration_samples: SONG_VIDEO_INTERVAL_POLICY_V1.maxClipDurationSamples,
+    policy_revision: CURRENT_SONG_VIDEO_INTERVAL_POLICY.policyRevision,
+    sample_rate_hz: CURRENT_SONG_VIDEO_INTERVAL_POLICY.sampleRateHz,
+    min_clip_duration_samples: CURRENT_SONG_VIDEO_INTERVAL_POLICY.minClipDurationSamples,
+    max_clip_duration_samples: CURRENT_SONG_VIDEO_INTERVAL_POLICY.maxClipDurationSamples,
   } as const;
 }
 
@@ -348,7 +348,7 @@ export async function freezeSongReservationPlan(
     songAssetId: song.songAssetId,
     clipStartSamples: body.clip_start_samples,
     clipDurationSamples: body.clip_duration_samples,
-    intervalPolicyRevision: SONG_VIDEO_INTERVAL_POLICY_V1.policyRevision,
+    intervalPolicyRevision: CURRENT_SONG_VIDEO_INTERVAL_POLICY.policyRevision,
     ownerPolicyRevision: policy.policyRevision,
     ownerPolicyHash: policy.policyHash,
     derivativeVideo: policy.derivativeVideo,

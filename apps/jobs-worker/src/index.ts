@@ -70,6 +70,7 @@ import {
   collectSongPipelineTerminalAlerts,
   handleSongPipelineDlqBatch,
 } from "./song-pipeline-terminal-alerts";
+import { makeSpacesReconciliationJob } from "./spaces-reconciliation";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -146,6 +147,7 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
   readonly MEGAPOT_CUSTODY_PRIVATE_KEY?: string;
+  readonly MEGAPOT_GAS_TOPUP_PRIVATE_KEY?: string;
   readonly MEGAPOT_COMMITMENT_PUBLIC_ORIGIN?: string;
   readonly MEGAPOT_OBSERVATION_TTL_SECONDS?: string;
   readonly MEGAPOT_APPROVED_ALLOWANCE_ATOMIC?: string;
@@ -175,6 +177,7 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
       MEGAPOT_ATTESTATION_ID: env.MEGAPOT_ATTESTATION_ID,
       MEGAPOT_REQUIRED_CONFIRMATIONS: env.MEGAPOT_REQUIRED_CONFIRMATIONS,
       MEGAPOT_CUSTODY_PRIVATE_KEY: env.MEGAPOT_CUSTODY_PRIVATE_KEY,
+      MEGAPOT_GAS_TOPUP_PRIVATE_KEY: env.MEGAPOT_GAS_TOPUP_PRIVATE_KEY,
       MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: env.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN,
       MEGAPOT_OBSERVATION_TTL_SECONDS: env.MEGAPOT_OBSERVATION_TTL_SECONDS,
       MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: env.MEGAPOT_APPROVED_ALLOWANCE_ATOMIC,
@@ -218,6 +221,7 @@ function makeMegapotOptions(
   }
   const custodyPrivateKey = Redacted.value(config.MEGAPOT_CUSTODY_PRIVATE_KEY);
   const commitmentPublicOrigin = Redacted.value(config.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN);
+  const gasTopupPrivateKey = Redacted.value(config.MEGAPOT_GAS_TOPUP_PRIVATE_KEY);
   let parsedCommitmentOrigin: URL;
   try {
     parsedCommitmentOrigin = new URL(commitmentPublicOrigin);
@@ -226,6 +230,9 @@ function makeMegapotOptions(
   }
   if (
     !/^0x[0-9a-f]{64}$/iu.test(custodyPrivateKey) ||
+    (gasTopupPrivateKey.length > 0 && !/^0x[0-9a-f]{64}$/iu.test(gasTopupPrivateKey)) ||
+    (gasTopupPrivateKey.length > 0 &&
+      gasTopupPrivateKey.toLowerCase() === custodyPrivateKey.toLowerCase()) ||
     parsedCommitmentOrigin.protocol !== "https:" ||
     parsedCommitmentOrigin.pathname !== "/" ||
     parsedCommitmentOrigin.search.length > 0 ||
@@ -252,6 +259,7 @@ function makeMegapotOptions(
     attestationId: config.MEGAPOT_ATTESTATION_ID,
     rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
     custodyPrivateKey,
+    gasTopupPrivateKey: gasTopupPrivateKey.length === 0 ? null : gasTopupPrivateKey,
     commitmentBucket: env.MEGAPOT_COMMITMENTS,
     commitmentPublicOrigin,
     requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
@@ -699,6 +707,12 @@ export function makeJobsWorkerDeclarations(
   }>,
   hnsRootHealthRenewalEnabled = false,
   avatars?: AvatarCleanupBuckets,
+  spacesReconciliation?: Readonly<{
+    store: import("@pirate/application").SpacesReconciliationStore;
+    verifier: import("@pirate/application").SpacesFinalIssuanceVerifier;
+    overdueThresholdSeconds: number;
+    measurementReference: string;
+  }>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -726,6 +740,14 @@ export function makeJobsWorkerDeclarations(
   }
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
+  }
+  if (spacesReconciliation !== undefined) {
+    declarations.push(
+      makeSpacesReconciliationJob(sink, spacesReconciliation.store, spacesReconciliation.verifier, {
+        overdueThresholdSeconds: spacesReconciliation.overdueThresholdSeconds,
+        measurementReference: spacesReconciliation.measurementReference,
+      }),
+    );
   }
   return declarations;
 }

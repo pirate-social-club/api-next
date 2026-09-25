@@ -118,6 +118,36 @@ function closeServer(server: Server): Promise<void> {
 }
 
 describe("community gateway executable assembly", () => {
+  test("uses the manifest authority deadline only for the isolated private staging gateway", () => {
+    const observed: Array<number | undefined> = [];
+    const authorityFactory = (
+      _databaseUrl: string,
+      options?: { readonly resolutionDeadlineMs?: number },
+    ) => {
+      observed.push(options?.resolutionDeadlineMs);
+      return {
+        authority_source: { resolve: () => Effect.succeed(null) },
+        ready: async () => true,
+      };
+    };
+    const base = configuration();
+    assembleHnsCommunityAppGatewayRuntime({
+      configuration: {
+        ...base,
+        manifest: {
+          ...base.manifest,
+          mode: "staging-private-tls",
+        } as HnsCommunityAppGatewayRuntimeConfigurationV1["manifest"],
+      },
+      authority_factory: authorityFactory,
+    });
+    assembleHnsCommunityAppGatewayRuntime({
+      configuration: base,
+      authority_factory: authorityFactory,
+    });
+    expect(observed).toEqual([4_000, undefined]);
+  });
+
   test("accepts only the exact mode and absolute manifest arguments", () => {
     expect(
       parseHnsCommunityAppGatewayArguments([
@@ -152,6 +182,20 @@ describe("community gateway executable assembly", () => {
         "arguments are invalid",
       );
     }
+    expect(
+      parseHnsCommunityAppGatewayArguments([
+        "--mode",
+        "staging-private-tls",
+        "--manifest",
+        "/srv/pirate-hns-staging/gateway/deployment-manifest.json",
+      ]),
+    ).toEqual({
+      mode: "staging-private-tls",
+      manifest_path: "/srv/pirate-hns-staging/gateway/deployment-manifest.json",
+    });
+    expect(listenersForMode("staging-private-tls")).toBe(
+      HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS,
+    );
     expect(HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS).toEqual({
       gateway_host: "127.0.0.1",
       gateway_port: 4069,

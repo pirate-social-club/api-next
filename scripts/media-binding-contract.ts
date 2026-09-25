@@ -25,6 +25,7 @@ export const MEDIA_BINDING_KINDS = {
   ELEVENLABS_API_KEY: "secret",
   OPENAI_API_KEY: "secret",
   OPENAI_MODERATION_ENABLED: "var",
+  VIDEO_SAFETY_GATE: "var",
   OPENROUTER_API_KEY: "secret",
   QENCODE_API_KEY: "secret",
   VIDEO_SOURCE_GATEWAY_ORIGIN: "var",

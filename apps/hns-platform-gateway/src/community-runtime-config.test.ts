@@ -40,7 +40,10 @@ async function manifest(
     profile_utf8_bytes: 622,
     profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
     solid_origin: "https://hns-solid-staging.pirate.sc",
-    solid_ingress_composition_reference: "solid-hns-ingress-staging-01",
+    solid_ingress_composition_reference:
+      mode === "staging-private-tls"
+        ? `solid-hns-ingress-sha256:${"a".repeat(64)}`
+        : "solid-hns-ingress-staging-01",
     solid_access_application_audience: "solid-hns-staging-aud",
     solid_access_client_id_credential: HNS_COMMUNITY_APP_GATEWAY_SOLID_ACCESS_CLIENT_ID_CREDENTIAL,
     solid_access_client_secret_credential:
@@ -65,6 +68,20 @@ async function manifest(
     api_next_source_commit: sourceCommit,
     bundle_sha256: await sha256(bundleBytes),
   };
+  if (mode === "staging-private-tls") {
+    return JSON.stringify({
+      schema: "pirate-hns-community-app-gateway-staging-private-tls-v1",
+      mode,
+      staging_gateway_listener: "127.0.0.1:4269",
+      staging_health_listener: "127.0.0.1:4271",
+      tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
+      private_tls_listener: "172.31.254.2:443",
+      public_tls_termination: false,
+      gateway_certificate_spki_sha256: "c".repeat(64),
+      ...common,
+      ...overrides,
+    });
+  }
   return JSON.stringify(
     mode === "staging-shadow"
       ? {
@@ -174,6 +191,81 @@ async function loadCombined(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 describe("community gateway deployment configuration", () => {
+  test("private staging template matches the runtime manifest without binding fixture values", async () => {
+    const template = JSON.parse(
+      await Bun.file(
+        new URL(
+          "../ops/community/deployment-manifest.staging-private-tls.template.json",
+          import.meta.url,
+        ),
+      ).text(),
+    ) as Record<string, unknown>;
+    const fixture = JSON.parse(await manifest("staging-private-tls")) as Record<string, unknown>;
+    expect(Object.keys(template).sort()).toEqual(Object.keys(fixture).sort());
+    const unresolved = [
+      "gateway_certificate_spki_sha256",
+      "solid_origin",
+      "solid_ingress_composition_reference",
+      "solid_access_application_audience",
+      "authority_database_endpoint",
+      "forwarder_key_registry_reference",
+      "forwarder_key_registry_version",
+      "api_next_source_commit",
+      "bundle_sha256",
+    ];
+    for (const [key, value] of Object.entries(template)) {
+      if (unresolved.includes(key)) {
+        expect(value).toStartWith("__UNRESOLVED_");
+      } else {
+        expect(value).toEqual(fixture[key]);
+      }
+    }
+  });
+
+  test("binds private staging TLS without accepting synthetic or production manifests", async () => {
+    const configuration = await load({ mode: "staging-private-tls" });
+    expect(configuration.manifest).toMatchObject({
+      mode: "staging-private-tls",
+      private_tls_listener: "172.31.254.2:443",
+      gateway_certificate_spki_sha256: "c".repeat(64),
+      solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"a".repeat(64)}`,
+      public_tls_termination: false,
+    });
+    const changed = await load({
+      mode: "staging-private-tls",
+      manifest_overrides: { gateway_certificate_spki_sha256: "d".repeat(64) },
+    });
+    expect(changed.gateway_deployment_reference).not.toBe(
+      configuration.gateway_deployment_reference,
+    );
+    const changedComposition = await load({
+      mode: "staging-private-tls",
+      manifest_overrides: {
+        solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"b".repeat(64)}`,
+      },
+    });
+    expect(changedComposition.gateway_deployment_reference).not.toBe(
+      configuration.gateway_deployment_reference,
+    );
+    for (const other of ["production", "shadow", "staging-shadow"] as const) {
+      await expect(load({ mode: "staging-private-tls", manifest_mode: other })).rejects.toThrow();
+      await expect(load({ mode: other, manifest_mode: "staging-private-tls" })).rejects.toThrow();
+    }
+    for (const manifest_overrides of [
+      { staging_gateway_listener: "0.0.0.0:4269" },
+      { staging_health_listener: "127.0.0.1:4071" },
+      { private_tls_listener: "0.0.0.0:443" },
+      { public_tls_termination: true },
+      { gateway_certificate_spki_sha256: "c".repeat(63) },
+      { synthetic_certificate_spki_sha256: "c".repeat(64) },
+      { tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT },
+      { solid_ingress_composition_reference: "solid-hns-ingress-staging-01" },
+      { solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"A".repeat(64)}` },
+    ]) {
+      await expect(load({ mode: "staging-private-tls", manifest_overrides })).rejects.toThrow();
+    }
+  });
+
   test("binds exact manifest bytes, artifact, source, registry, and credential references", async () => {
     const manifestText = await manifest("production");
     const configuration = await load();

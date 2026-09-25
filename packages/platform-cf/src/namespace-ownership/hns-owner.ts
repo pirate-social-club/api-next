@@ -1,11 +1,15 @@
 import {
+  decodeHnsImportPublicationPollResultV1,
   decodeHnsOwnerResponseBytes,
   decodeHnsOwnerTargetObservationV3Bytes,
   decodeStrictHnsJsonBytes,
   HNS_OWNER_MANIFEST_VERSION,
   HNS_OWNER_PROTOCOL_VERSION,
   HNS_OWNER_PROVIDER_ID,
+  HNS_TXT_IMPORT_PROTOCOL_VERSION,
+  type HnsImportPublicationPollRequestV1,
   type HnsOwnerRawResponse,
+  hnsImportChallengeValueSha256,
   hnsOwnerChallengeName,
   hnsOwnerChallengeValue,
   type NamespaceOwnershipProviderAdapter,
@@ -17,14 +21,17 @@ import {
   NamespaceOwnershipProviderObservationRejected,
   type NamespaceOwnershipProviderPlanInput,
   type NamespaceOwnershipProviderPlanResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   type NamespaceOwnershipProviderStartContext,
   type NamespaceOwnershipProviderStartInput,
   type NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnboundRejected,
+  NamespaceOwnershipProviderUnsupportedProtocol,
   type NamespaceOwnershipSession,
   NamespaceOwnershipUpstreamSessionReference,
+  type RouteAttachmentImportOwnershipProviderCompleteInput,
   type RouteAttachmentOwnershipProviderCompleteInput,
   type RouteAttachmentOwnershipProviderStartInput,
   type RouteAttachmentOwnershipProviderStartResult,
@@ -63,6 +70,12 @@ export type HnsOwnerTransport = Readonly<{
       readonly context: NamespaceOwnershipProviderCompleteContext;
     }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
+  readonly pollRouteAttachmentImport?: (
+    input: Readonly<{
+      readonly request: HnsImportPublicationPollRequestV1;
+      readonly context: NamespaceOwnershipProviderCompleteContext;
+    }>,
+  ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
 }>;
 
 export type HnsOwnerTransportStartResult = Uint8Array;
@@ -72,7 +85,9 @@ export type HnsOwnerTransportFailure =
   | NamespaceOwnershipProviderRejected
   | NamespaceOwnershipProviderUnboundRejected
   | NamespaceOwnershipProviderObservationRejected
-  | NamespaceOwnershipProviderInvalidResponse;
+  | NamespaceOwnershipProviderInvalidResponse
+  | NamespaceOwnershipProviderUnsupportedProtocol
+  | NamespaceOwnershipProviderPublicationClosed;
 
 export type HnsOwnerAdapterOptions = Readonly<{
   readonly transport: HnsOwnerTransport;
@@ -86,6 +101,11 @@ export type HnsOwnerAdapterOptions = Readonly<{
   readonly now?: () => number;
   /** Version-closed target response selected by the owning composition. */
   readonly target_observation_contract?: "v2" | "v3";
+  /**
+   * The pinned registry entry advertises hns-txt-import-v1. Without it the
+   * adapter has no import method, and callers never reserve an import attempt.
+   */
+  readonly import_protocol_enabled?: boolean;
 }>;
 
 const HnsStartPresentation = Schema.Struct({
@@ -111,6 +131,13 @@ function invalid(operation: "plan" | "start" | "complete") {
 
 function observationRejected() {
   return new NamespaceOwnershipProviderObservationRejected({
+    provider_id: HNS_OWNER_PROVIDER_ID,
+    operation: "complete",
+  });
+}
+
+function publicationClosed() {
+  return new NamespaceOwnershipProviderPublicationClosed({
     provider_id: HNS_OWNER_PROVIDER_ID,
     operation: "complete",
   });
@@ -218,6 +245,69 @@ function targetV3Result(
       },
     ),
   );
+}
+
+/**
+ * Decodes the verifier's route-attachment observation. A verified result must
+ * name this session's challenge and carry a chain-derived evidence expiry that
+ * is still in the future; neither ownership clock is consulted here.
+ */
+function routeAttachmentPollResult(
+  bytes: Uint8Array,
+  input:
+    | RouteAttachmentOwnershipProviderCompleteInput
+    | RouteAttachmentImportOwnershipProviderCompleteInput,
+  now: number,
+  contract: HnsOwnerAdapterOptions["target_observation_contract"],
+): Effect.Effect<
+  NamespaceOwnershipProviderCompleteResult,
+  NamespaceOwnershipProviderInvalidResponse | NamespaceOwnershipProviderObservationRejected
+> {
+  if (contract === "v3") {
+    return targetV3Result(bytes, input, now);
+  }
+  let decoded: HnsOwnerRawResponse;
+  try {
+    decoded = decodeHnsOwnerResponseBytes(bytes);
+  } catch {
+    return Effect.fail(invalid("complete"));
+  }
+  if (contract === "v2" && !("observation_contract_version" in decoded.response)) {
+    return Effect.fail(invalid("complete"));
+  }
+  if (decoded.response.status === "pending") {
+    return Effect.succeed({ status: "pending" as const });
+  }
+  const result = decoded.response;
+  if (
+    result.upstream_session_ref !== input.session.upstream_session_ref ||
+    result.challenge_name !==
+      hnsOwnerChallengeName(result.ownership_source, input.session.route.root_label) ||
+    result.challenge_value !== hnsOwnerChallengeValue(input.session.upstream_session_ref) ||
+    result.root_exists !== true ||
+    result.root_control_verified !== true ||
+    result.expiry_horizon_sufficient !== true
+  ) {
+    return Effect.fail(observationRejected());
+  }
+  if (
+    !isCanonicalInstant(result.observed_at) ||
+    !isCanonicalInstant(result.expires_at) ||
+    Date.parse(result.observed_at) > now ||
+    Date.parse(result.expires_at) <= now ||
+    Date.parse(result.expires_at) <= Date.parse(result.observed_at)
+  ) {
+    return Effect.fail(invalid("complete"));
+  }
+  return Effect.succeed({
+    status: "verified" as const,
+    evidence_kind: "raw_provider_response_v1" as const,
+    provider_evidence_ref: result.provider_evidence_ref,
+    raw_response_bytes: decoded.response_bytes,
+    observation: result,
+    observed_at: result.observed_at,
+    expires_at: result.expires_at,
+  });
 }
 
 /**
@@ -519,66 +609,101 @@ export function makeHnsOwnerAdapter(
               ? error
               : invalid("complete"),
           ),
-          Effect.flatMap(
-            (
-              bytes,
-            ): Effect.Effect<
-              NamespaceOwnershipProviderCompleteResult,
-              | NamespaceOwnershipProviderInvalidResponse
-              | NamespaceOwnershipProviderObservationRejected
-            > => {
-              if (options.target_observation_contract === "v3") {
-                return targetV3Result(bytes, input, now());
-              }
-              let decoded: HnsOwnerRawResponse;
-              try {
-                decoded = decodeHnsOwnerResponseBytes(bytes);
-              } catch {
-                return Effect.fail(invalid("complete"));
-              }
-              if (
-                options.target_observation_contract === "v2" &&
-                !("observation_contract_version" in decoded.response)
-              ) {
-                return Effect.fail(invalid("complete"));
-              }
-              if (decoded.response.status === "pending") {
-                return Effect.succeed({ status: "pending" as const });
-              }
-              const result = decoded.response;
-              if (
-                result.upstream_session_ref !== input.session.upstream_session_ref ||
-                result.challenge_name !==
-                  hnsOwnerChallengeName(result.ownership_source, input.session.route.root_label) ||
-                result.challenge_value !==
-                  hnsOwnerChallengeValue(input.session.upstream_session_ref) ||
-                result.root_exists !== true ||
-                result.root_control_verified !== true ||
-                result.expiry_horizon_sufficient !== true
-              ) {
-                return Effect.fail(observationRejected());
-              }
-              if (
-                !isCanonicalInstant(result.observed_at) ||
-                !isCanonicalInstant(result.expires_at) ||
-                Date.parse(result.observed_at) > now() ||
-                Date.parse(result.expires_at) <= now() ||
-                Date.parse(result.expires_at) <= Date.parse(result.observed_at)
-              ) {
-                return Effect.fail(invalid("complete"));
-              }
-              return Effect.succeed({
-                status: "verified" as const,
-                evidence_kind: "raw_provider_response_v1" as const,
-                provider_evidence_ref: result.provider_evidence_ref,
-                raw_response_bytes: decoded.response_bytes,
-                observation: result,
-                observed_at: result.observed_at,
-                expires_at: result.expires_at,
-              });
-            },
+          Effect.flatMap((bytes) =>
+            routeAttachmentPollResult(bytes, input, now(), options.target_observation_contract),
           ),
         );
     },
+    ...(options.import_protocol_enabled !== true ||
+    options.transport.pollRouteAttachmentImport === undefined
+      ? {}
+      : {
+          completeRouteAttachmentImport: (
+            input: RouteAttachmentImportOwnershipProviderCompleteInput,
+            context: NamespaceOwnershipProviderCompleteContext,
+          ): Effect.Effect<NamespaceOwnershipProviderCompleteResult, HnsOwnerTransportFailure> => {
+            const poll = options.transport.pollRouteAttachmentImport;
+            if (
+              poll === undefined ||
+              input.submission.channel !== "poll_result" ||
+              typeof input.submission.payload !== "object" ||
+              input.submission.payload === null ||
+              Array.isArray(input.submission.payload) ||
+              Object.keys(input.submission.payload).length !== 0 ||
+              !sessionMatchesConfiguration(input.session, provider_configuration, environments) ||
+              input.binding.protocol_version !== HNS_TXT_IMPORT_PROTOCOL_VERSION ||
+              input.binding.root_label !== input.session.route.root_label
+            ) {
+              return Effect.fail(unboundRejected("complete"));
+            }
+            if (Date.parse(input.binding.valid_until) <= now())
+              return Effect.fail(publicationClosed());
+            const request: HnsImportPublicationPollRequestV1 = {
+              operation_kind: "route_attachment_import",
+              protocol_version: HNS_TXT_IMPORT_PROTOCOL_VERSION,
+              session: input.session,
+              binding: {
+                root_import_session_id: input.binding.root_import_session_id,
+                root_label: input.binding.root_label,
+                publish_plan_sha256: input.binding.publish_plan_sha256,
+                challenge_value_sha256: input.binding.challenge_value_sha256,
+              },
+              payload: {},
+            };
+            return poll({ request, context }).pipe(
+              Effect.mapError((error) =>
+                error instanceof NamespaceOwnershipProviderUnavailable ||
+                error instanceof NamespaceOwnershipProviderRejected ||
+                error instanceof NamespaceOwnershipProviderUnboundRejected ||
+                error instanceof NamespaceOwnershipProviderObservationRejected ||
+                error instanceof NamespaceOwnershipProviderInvalidResponse ||
+                error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+                error instanceof NamespaceOwnershipProviderPublicationClosed
+                  ? error
+                  : invalid("complete"),
+              ),
+              Effect.flatMap((bytes) =>
+                Effect.tryPromise({
+                  try: async () => {
+                    const decoded = decodeHnsImportPublicationPollResultV1(bytes);
+                    const expectedChallenge = await hnsImportChallengeValueSha256(
+                      hnsOwnerChallengeValue(input.session.upstream_session_ref),
+                    );
+                    const result = decoded.result;
+                    // The envelope must be the verifier's answer for exactly
+                    // this session, plan and challenge, inside a window it
+                    // read from the database itself.
+                    if (
+                      result.root_import_session_id !== input.binding.root_import_session_id ||
+                      result.root_label !== input.session.route.root_label ||
+                      result.publish_plan_sha256 !== input.binding.publish_plan_sha256 ||
+                      result.challenge_value_sha256 !== input.binding.challenge_value_sha256 ||
+                      result.challenge_value_sha256 !== expectedChallenge ||
+                      result.upstream_session_ref !== input.session.upstream_session_ref
+                    ) {
+                      throw observationRejected();
+                    }
+                    // The window closed while the answer was in flight.
+                    if (Date.parse(result.valid_until) <= now()) throw publicationClosed();
+                    return decoded.observation_bytes;
+                  },
+                  catch: (error) =>
+                    error instanceof NamespaceOwnershipProviderObservationRejected ||
+                    error instanceof NamespaceOwnershipProviderPublicationClosed
+                      ? error
+                      : invalid("complete"),
+                }),
+              ),
+              Effect.flatMap((observationBytes) =>
+                routeAttachmentPollResult(
+                  observationBytes,
+                  input,
+                  now(),
+                  options.target_observation_contract,
+                ),
+              ),
+            );
+          },
+        }),
   };
 }

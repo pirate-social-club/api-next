@@ -1628,7 +1628,10 @@ export function makeControlPlaneVideoPublicationStore(
                 extraValues: [
                   input.evidenceRef,
                   current.state.retryCount,
-                  !next.reconciliationRequired && current.state.retryCount < 3,
+                  // A gate the sampled-frame check could not clear is terminal.
+                  !next.reconciliationRequired &&
+                    current.state.retryCount < 3 &&
+                    input.failureCode !== "safety_gate_unresolved",
                   current.state.phase,
                 ],
               });
@@ -1768,6 +1771,7 @@ export function makeControlPlaneVideoPublicationStore(
                   "poster_undecodable",
                   "poster_timestamp_out_of_range",
                   "upload_seal_conflict",
+                  "safety_gate_unresolved",
                 ].includes(current.state.failureCode)
               ) {
                 throw new Error("video technical retry rejected");
@@ -2225,6 +2229,17 @@ function publishTransaction(input: VideoPublishBundle) {
             current.state.authorDeclaredRating,
             contentRating,
           ],
+          readonly: false,
+        });
+        // Home lists posts from this projection. Song and text publication
+        // write it in the same transaction; a published video must too.
+        yield* tx.execute({
+          label: "video-publication.home-feed.insert",
+          text: `INSERT INTO home_feed_projection
+            (community_id,feed_item_id,post_id,rank_score,projected_at)
+            VALUES ($1,$2,$3,0,clock_timestamp())
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [current.state.communityId, `video-feed-${current.state.operationId}`, postId],
           readonly: false,
         });
         yield* tx.execute({
@@ -2905,6 +2920,17 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             current.state.authorDeclaredRating,
             contentRating,
           ],
+          readonly: false,
+        });
+        // Home lists posts from this projection. Song and text publication
+        // write it in the same transaction; a published video must too.
+        yield* tx.execute({
+          label: "video-publication.home-feed.insert",
+          text: `INSERT INTO home_feed_projection
+            (community_id,feed_item_id,post_id,rank_score,projected_at)
+            VALUES ($1,$2,$3,0,clock_timestamp())
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [current.state.communityId, `video-feed-${current.state.operationId}`, postId],
           readonly: false,
         });
         yield* tx.execute({

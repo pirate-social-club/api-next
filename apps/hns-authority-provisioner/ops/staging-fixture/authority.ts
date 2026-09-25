@@ -4,6 +4,7 @@ import {
   makePowerDnsRootProvisioner,
   makePowerDnsRootTeardown,
 } from "../../src/powerdns.ts";
+import { provisionHnsAuthorityRootV1 } from "../../src/provision-root.ts";
 import { publishFixtureResource } from "./chain.ts";
 import { validateFixtureDnssec } from "./dnssec.ts";
 import { acquireAuthorityFixtureLease } from "./lease.ts";
@@ -142,6 +143,10 @@ export async function runLocalAuthorityFixture(
         "--version-string=anonymous",
         `--primary=${index === 0 ? "yes" : "no"}`,
         `--secondary=${index === 1 ? "yes" : "no"}`,
+        `--autosecondary=${index === 1 ? "yes" : "no"}`,
+        "--allow-unsigned-autoprimary=no",
+        "--allow-unsigned-notify=no",
+        "--send-signed-notify=yes",
         "--allow-notify-from=127.0.0.21",
         "--allow-axfr-ips=",
         "--only-notify=127.0.0.0/8",
@@ -163,6 +168,19 @@ export async function runLocalAuthorityFixture(
         algorithm: "hmac-sha256",
         key: transferKey,
       });
+      if (index === 1) {
+        await command([
+          "docker",
+          "exec",
+          name,
+          "pdnsutil",
+          "autoprimary",
+          "add",
+          authorityAddresses[0],
+          "ns2.pirate",
+          "isolated-staging-fixture",
+        ]);
+      }
     }
     const provision = makePowerDnsRootProvisioner(config);
     const result = await provision({
@@ -172,26 +190,7 @@ export async function runLocalAuthorityFixture(
     });
     if (!result.dnssec || result.ds_records.length === 0)
       throw new Error("Missing real DNSSEC delegation");
-    // The secondary transfers signed zone data from the primary, not a copied API fixture.
-    await api(authorityAddresses[1], "POST", "/zones", {
-      name: `${root}.`,
-      kind: "Slave",
-      masters: [authorityAddresses[0]],
-    });
-    const secondary = owned[1];
-    if (!secondary) throw new Error("Missing secondary fixture");
-    await command([
-      "docker",
-      "exec",
-      secondary,
-      "pdnsutil",
-      "tsigkey",
-      "activate",
-      `${root}.`,
-      "fixture-transfer.",
-      "secondary",
-    ]);
-    await command(["docker", "exec", secondary, "pdns_control", "retrieve", `${root}.`]);
+    // Signed NOTIFY admits the secondary and its AXFR key without per-zone orchestration.
     const query = (address: string, name: string, type: string) =>
       command(["dig", `@${address}`, name, type, "+tcp", "+short", "+time=2", "+tries=1"]);
     await eventually(async () => {
@@ -200,6 +199,20 @@ export async function runLocalAuthorityFixture(
           throw new Error("Challenge not transferred");
       }
     });
+    const transferMetadata = await api(
+      authorityAddresses[1],
+      "GET",
+      `/zones/${root}./metadata/AXFR-MASTER-TSIG`,
+    );
+    if (
+      transferMetadata === null ||
+      typeof transferMetadata !== "object" ||
+      !("metadata" in transferMetadata) ||
+      !Array.isArray(transferMetadata.metadata) ||
+      transferMetadata.metadata.length !== 1 ||
+      transferMetadata.metadata[0] !== "fixture-transfer"
+    )
+      throw new Error("Secondary did not retain the signed notification's transfer key");
     for (const [name, type] of [
       [root, "DNSKEY"],
       [root, "NS"],
@@ -217,7 +230,22 @@ export async function runLocalAuthorityFixture(
     if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
       throw new Error("Managed resource readback drift");
     if (withChain) {
-      const observed = await publishFixtureResource(root, challenge, result.ds_records);
+      const observed = await publishFixtureResource(root, challenge, result.ds_records, (observe) =>
+        provisionHnsAuthorityRootV1(
+          {
+            version: "pirate-hns-authority-provision-request-v1",
+            root_import_session_id: `import-${run}`,
+            namespace_session_id: `namespace-${run}`,
+            root_label: root,
+            challenge_txt_value: challenge,
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+          {
+            observe_current_resource: observe,
+            ensure_zone: provision,
+          },
+        ),
+      );
       chainReceipt = observed.receipt;
       await validateFixtureDnssec(root, observed.ds);
     } else {

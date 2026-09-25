@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-authority-provisioner.mjs src/main.ts",
+    "build:staging-journey": "bun ops/staging-host/build-journey-chain.ts",
+    "install:staging-journey": "bun ops/staging-host/install-journey-chain.ts",
     "run": "bun src/main.ts --serve",
     "run-once": "bun src/main.ts"
   },

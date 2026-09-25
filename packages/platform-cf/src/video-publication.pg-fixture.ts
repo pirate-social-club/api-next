@@ -464,6 +464,7 @@ export async function songReferenceFinalizedFixture(
       songDurationSamples: frozen.songDurationSamples,
       clipStartSamples: frozen.clipStartSamples,
       clipDurationSamples: frozen.clipDurationSamples,
+      intervalPolicyRevision: frozen.intervalPolicyRevision,
     },
   });
   await store.createSubmission({

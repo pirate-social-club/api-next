@@ -15,6 +15,15 @@ function deferred<A>() {
 }
 
 describe("serialized HNS gateway authority source", () => {
+  test("honors an explicit deadline without changing the default", async () => {
+    const source: HnsForwarderGatewayAuthoritySourceV1 = {
+      resolve: () =>
+        Effect.promise(() => new Promise((resolve) => setTimeout(() => resolve(null), 80))),
+    };
+    const wrapped = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(source, 10);
+    await expect(Effect.runPromise(wrapped.resolve("app.slow.invalid"))).rejects.toBeDefined();
+  });
+
   test("coalesces only concurrent requests for the same normalized host", async () => {
     const gates = [deferred<null>(), deferred<null>()];
     const calls: string[] = [];

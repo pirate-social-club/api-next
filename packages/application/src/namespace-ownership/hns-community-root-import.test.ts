@@ -31,6 +31,7 @@ const preparation: HnsCommunityRootImportPreparation = {
   community_id: "community-1",
   attachment_intent_id: "attachment-1",
   ceremony_intent_id: "ceremony-1",
+  ceremony_generation: 1,
   root_label: "dankmemes",
   attachment_revision: 1,
   root_import_session_id: "root-import-1",
