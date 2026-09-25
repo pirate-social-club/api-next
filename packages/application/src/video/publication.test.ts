@@ -181,6 +181,61 @@ describe("video publication application", () => {
     } satisfies Partial<Conflict>);
   });
 
+  test.each([
+    ["missing", undefined, null],
+    ["empty", "", null],
+    ["whitespace", "  \n ", null],
+    ["present", "A caption", "A caption"],
+  ] as const)("a %s caption is stored as %p", async (_label, caption, stored) => {
+    const reservation: VideoReservationRecord = {
+      reservationId: "media-reservation-video",
+      intent: "original_audio",
+      communityId: "community_video",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "a".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: 10,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload-one",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 1,
+      expiresAt: "2026-09-04T01:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-04T00:00:00.000Z",
+    };
+    let createdCaption: string | null | undefined;
+    const services = servicesWith({
+      store: storeWith({
+        getReservationForAccount: async () => reservation,
+        createSubmission: async ({ state }) => {
+          createdCaption = state.caption;
+          return { kind: "none" };
+        },
+      }),
+    });
+    await createVideoSubmission(
+      {
+        communityId: reservation.communityId,
+        actor,
+        body: {
+          version: "video-start-input-v1",
+          persona_id: persona.persona_id,
+          video_reservation_id: reservation.reservationId,
+          idempotency_key: `claim-${_label}`,
+          ...(caption === undefined ? {} : { caption }),
+        },
+      },
+      services,
+    );
+    expect(createdCaption).toBe(stored);
+  });
+
   test("reconciliation projects unconfirmed and refuses retry; membership recovery uses publication-only retry", async () => {
     const initial = createOriginalVideoSubmission({
       submissionId: "media-submission-video",
