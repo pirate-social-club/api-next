@@ -33,6 +33,7 @@ export const reusablePostgresTestSuites = [
 export const freshSchemaPostgresTestSuites = [
   "scripts/megapot-golden-adopted-pool.pg.test.ts",
   "apps/http-worker/src/rewards-golden-retry.pg.test.ts",
+  "packages/platform-cf/src/reward-claim-verification-intent.pg.test.ts",
   "packages/platform-cf/src/rewards-composed-settlement.pg.test.ts",
   "packages/platform-cf/src/avatars.pg.test.ts",
   "packages/platform-cf/src/activity-participation-authority.pg.test.ts",
@@ -44,6 +45,7 @@ export const freshSchemaPostgresTestSuites = [
   "apps/http-worker/src/hns-community-activation.pg.test.ts",
   "apps/http-worker/src/hns-community-activation-production-worker.pg.test.ts",
   "apps/http-worker/src/hns-community-joint-ceremony.pg.test.ts",
+  "apps/http-worker/src/hns-lifecycle-observation-scheduling.pg.test.ts",
   "apps/http-worker/src/public-community-threads-composition.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",

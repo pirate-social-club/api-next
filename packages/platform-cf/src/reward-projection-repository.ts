@@ -18,6 +18,7 @@ import {
   type RewardProjectionStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { issueRewardClaimVerificationIntent } from "./reward-claim-verification-intent.ts";
 import { decodeRewardQualificationPolicies } from "./reward-qualification-policy.ts";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -791,6 +792,18 @@ export function makeControlPlaneRewardProjectionRepository() {
         }),
       ),
 
+    issueClaimVerificationIntent: (
+      input: Parameters<RewardProjectionStore["issueClaimVerificationIntent"]>[0],
+    ) =>
+      mapped(
+        issueRewardClaimVerificationIntent(input.accountId).pipe(
+          Effect.map((intentId) => ({ intentId })),
+          Effect.catchTag("RewardClaimIntentDataInvalid", () =>
+            Effect.fail(storage("invalid-row")),
+          ),
+        ),
+      ),
+
     claimCredit: (input: Parameters<RewardProjectionStore["claimCredit"]>[0]) =>
       mapped(
         Effect.gen(function* () {
@@ -836,6 +849,8 @@ export function makeControlPlaneRewardProjectionStore(
     listPublicSongAssetBonuses: (input) => provide(repository.listPublicSongAssetBonuses(input)),
     findStanding: (input) => provide(repository.findStanding(input)),
     listCredits: (input) => provide(repository.listCredits(input)),
+    issueClaimVerificationIntent: (input) =>
+      provide(repository.issueClaimVerificationIntent(input)),
     claimCredit: (input) => provide(repository.claimCredit(input)),
   };
 }

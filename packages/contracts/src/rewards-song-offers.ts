@@ -583,6 +583,22 @@ export const ListMyRewardCredits = endpoint({
 });
 
 /**
+ * Spec 015 §5.2a. Issues or reuses an intent that starts the Very ceremony a
+ * participant claim needs, for a signed-in user with no current evidence.
+ * Start it with POST /verification/sessions {intent_id, provider_id}, then
+ * repeat the claim. An account whose only current Very evidence comes from a
+ * community join ceremony already satisfies the claim; an account holding
+ * evidence for more than one Very subject is refused as verification_failed.
+ */
+export const IssueRewardClaimVerificationIntent = endpoint({
+  method: "POST",
+  path: "/rewards/claim-verification-intents",
+  auth: Auth.user(),
+  response: Schema.Struct({ intent_id: Identifier, provider_id: Schema.Literal("very.web") }),
+  errors: [AuthError, BadRequest, InternalError, ProviderUnavailable],
+});
+
+/**
  * Spec 015 §5.2a participant claim. Requires current server-verified Very
  * evidence for the signed-in account. Idempotent: repeating it returns the
  * existing claim and its payout status. Evidence refusals leave the credit

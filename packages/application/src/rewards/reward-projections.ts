@@ -217,6 +217,13 @@ export interface RewardProjectionStore {
     RewardProjectionFailure
   >;
   /**
+   * Issues or reuses an account-scoped intent that starts the Very ceremony
+   * a claim needs. The account must come from the authenticated session.
+   */
+  readonly issueClaimVerificationIntent: (input: {
+    readonly accountId: string;
+  }) => Effect.Effect<Readonly<{ intentId: string }>, RewardProjectionFailure>;
+  /**
    * Claims one of the account's participant credits. The account must come
    * from the authenticated session; the database routine trusts it.
    */
