@@ -4,8 +4,8 @@
   "package": "@pirate/api-client",
   "version": "0.91.0",
   "sourceBranch": "feat/megapot-winner-gas-topup",
-  "sourceBase": "b4ad4f691e8318948e5f20ff89aa461627eac687",
-  "validatedSourceCommit": "3cc5e293f9b040781460d138a274e56c63c731c9",
+  "sourceBase": "6f029fbba9f4da4fd27ad1ca35e15f1209d534a5",
+  "validatedSourceCommit": "334af937a118617b6f61717ca2a6580990bf04b4",
   "pullRequest": null,
   "wireContract": "Owner decision 2026-09-25 (Megapot winner gas top-up). Adds POST /rewards/gas-topups {credit_id, idempotency_key}, which for the signed-in user's paid and claimed Megapot credit reads the payout persona wallet's Base ETH balance and returns {status: not_needed|pending|limit_reached, topup_id, amount_wei}, and GET /rewards/gas-topups/{topupId}, which returns the caller's own {status: requested|broadcast|confirmed|released, amount_wei, transaction_hash}. Both are unavailable while Megapot rewards or the gas top-up limits are not configured.",
   "artifact": {
@@ -16,10 +16,10 @@
     "status": "Local candidate; hosted review and paired Solid adoption pending",
     "passed": [
       "Contract generation and freshness",
-      "Immutable package creation and verification of the generated 0.91.0 client",
-      "OpenAPI breaking-change check against source base b4ad4f69",
-      "Repository check and complete unit test graph (4770 pass, 1 skip, 0 fail)",
-      "Gas top-up, foundation, migrations-runner and affected rewards PostgreSQL 17 suites (10 suites, 62 pass)"
+      "Immutable package creation and verification of the generated 0.91.0 client (the rebase and review fixes left the generated client byte-identical)",
+      "OpenAPI breaking-change check against source base 6f029fbb",
+      "Repository check and complete unit test graph (4790 pass, 1 skip, 0 fail)",
+      "Gas top-up, foundation, rewards song-offer and composed-settlement PostgreSQL 17 suites (50 pass)"
     ],
     "remaining": [
       "Hosted required checks on the exact pull-request head",
