@@ -60,6 +60,7 @@ export type SongRewardOfferHandlers = Readonly<{
   ListSongAssetBonuses: EndpointHandler;
   GetMegapotPoolStanding: EndpointHandler;
   ListMyRewardCredits: EndpointHandler;
+  ClaimRewardCredit: EndpointHandler;
 }>;
 
 const rewardUnavailable = (): never => {
@@ -87,6 +88,7 @@ export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandler
     ListSongAssetBonuses: rewardUnavailable,
     GetMegapotPoolStanding: rewardUnavailable,
     ListMyRewardCredits: rewardUnavailable,
+    ClaimRewardCredit: rewardUnavailable,
   };
 }
 
@@ -135,6 +137,7 @@ export function makeLazySongRewardOfferHandlers(
     ListSongAssetBonuses: handler("ListSongAssetBonuses"),
     GetMegapotPoolStanding: handler("GetMegapotPoolStanding"),
     ListMyRewardCredits: handler("ListMyRewardCredits"),
+    ClaimRewardCredit: handler("ClaimRewardCredit"),
   };
 }
 
@@ -389,6 +392,10 @@ const rewardCredit = (value: RewardCredit) => ({
   created_at: value.createdAt,
   updated_at: value.updatedAt,
   settled_at: value.settledAt,
+  claim:
+    value.claim === null
+      ? null
+      : { status: value.claim.status, payout_status: value.claim.payoutStatus },
 });
 
 export function makeSongRewardOfferHandlers(
@@ -713,6 +720,21 @@ export function makeSongRewardOfferHandlers(
         items: result.items.map(rewardCredit),
         next_cursor: result.nextCursor,
       };
+    },
+    ClaimRewardCredit: async (request) => {
+      // Spec 015 §5.2a: the claiming account is the signed-in user, never a
+      // request field, because the database routine trusts its account.
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const path = request.params as { readonly creditId: string };
+      const result = await Effect.runPromise(
+        services.projections
+          .claimCredit({ accountId: principal.subject, creditId: path.creditId })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return { outcome: result.outcome, credit: rewardCredit(result.credit) };
     },
   };
 }
