@@ -132,6 +132,14 @@ const alias = {
     "../../packages/platform-cf/config/index.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/spaces-final-issuance-verifier": new URL(
+    "../../packages/platform-cf/src/spaces-final-issuance-verifier.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-reconciliation-repository": new URL(
+    "../../packages/platform-cf/src/spaces-reconciliation-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/media-processing-cloudflare": new URL(
     "../../packages/platform-cf/src/media-processing-cloudflare.ts",
     import.meta.url,
