@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { schnorr } from "@noble/curves/secp256k1.js";
 import {
   spacesOwnerChallengeDigestV1,
   spacesOwnerChallengeMessageV1,
   spacesOwnerPollRequestHashV1,
+  spacesOwnerSignatureValidV1,
   spacesOwnerStartRequestHashV1,
 } from "./spaces-owner-proof-codec.ts";
 
@@ -49,5 +51,21 @@ describe("Spaces owner-proof byte encoding", () => {
       hash,
     );
     expect(spacesOwnerPollRequestHashV1({ ...request, generation: 2 })).not.toBe(hash);
+  });
+
+  it("checks the prefixed digest with BIP-340 and rejects changed bytes", () => {
+    const secretKey = Buffer.from("03".repeat(32), "hex");
+    const rootKeyHex = Buffer.from(schnorr.getPublicKey(secretKey)).toString("hex");
+    const digestHex = spacesOwnerChallengeDigestV1("staging test challenge");
+    const signatureHex = Buffer.from(
+      schnorr.sign(Buffer.from(digestHex, "hex"), secretKey),
+    ).toString("hex");
+    expect(spacesOwnerSignatureValidV1(digestHex, rootKeyHex, signatureHex)).toBe(true);
+    expect(spacesOwnerSignatureValidV1("00".repeat(32), rootKeyHex, signatureHex)).toBe(false);
+    expect(spacesOwnerSignatureValidV1(digestHex, "11".repeat(32), signatureHex)).toBe(false);
+    expect(spacesOwnerSignatureValidV1(digestHex, rootKeyHex, "aa".repeat(64))).toBe(false);
+    expect(spacesOwnerSignatureValidV1(digestHex, rootKeyHex, signatureHex.toUpperCase())).toBe(
+      false,
+    );
   });
 });

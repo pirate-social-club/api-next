@@ -34705,6 +34705,95 @@ CREATE TABLE spaces_operator_instances (
     CONSTRAINT spaces_operator_instances_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))
 );
 
+CREATE TABLE spaces_owner_proof_ceremonies (
+    ceremony_id text NOT NULL,
+    generation bigint NOT NULL,
+    environment text NOT NULL,
+    network text DEFAULT 'mainnet'::text NOT NULL,
+    canonical_root text NOT NULL,
+    community_id text NOT NULL,
+    account_id text NOT NULL,
+    start_idempotency_key text NOT NULL,
+    start_request_bytes bytea NOT NULL,
+    start_request_hash text NOT NULL,
+    nonce_hex text NOT NULL,
+    root_outpoint text NOT NULL,
+    root_key_hex text NOT NULL,
+    challenge_message text NOT NULL,
+    challenge_digest_hex text NOT NULL,
+    start_verifier_bytes bytea NOT NULL,
+    start_verifier_sha256_hex text NOT NULL,
+    key_last_changed_at timestamp with time zone NOT NULL,
+    anchored_at timestamp with time zone NOT NULL,
+    publication_verified_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    terminal_response jsonb,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_owner_proof_ceremonies_canonical_root_check CHECK (is_community_route_root_label('spaces'::text, canonical_root)),
+    CONSTRAINT spaces_owner_proof_ceremonies_ceremony_id_check CHECK ((ceremony_id ~ '^sowner_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_challenge_digest_hex_check CHECK ((challenge_digest_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_environment_check CHECK ((environment = ANY (ARRAY['development'::text, 'staging'::text, 'production'::text]))),
+    CONSTRAINT spaces_owner_proof_ceremonies_generation_check CHECK (((generation >= 1) AND (generation <= '9007199254740991'::bigint))),
+    CONSTRAINT spaces_owner_proof_ceremonies_network_check CHECK ((network = 'mainnet'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_nonce_hex_check CHECK ((nonce_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_root_key_hex_check CHECK ((root_key_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_root_outpoint_check CHECK ((root_outpoint ~ '^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_idempotency_key_check CHECK (is_handle_sales_identifier_v1(start_idempotency_key, 128)),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_request_bytes_check CHECK (((octet_length(start_request_bytes) >= 1) AND (octet_length(start_request_bytes) <= 2048))),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_bytes_check CHECK (((octet_length(start_verifier_bytes) >= 1) AND (octet_length(start_verifier_bytes) <= 65536))),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_sha256_hex_check CHECK ((start_verifier_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_ceremonies_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'verified'::text, 'expired'::text, 'root_changed'::text, 'signature_rejected'::text]))),
+    CONSTRAINT spaces_owner_proof_ceremony_terminal CHECK ((((status = 'pending'::text) AND (terminal_response IS NULL)) OR ((status <> 'pending'::text) AND (terminal_response IS NOT NULL)))),
+    CONSTRAINT spaces_owner_proof_ceremony_times CHECK (((key_last_changed_at <= anchored_at) AND (anchored_at <= publication_verified_at) AND (publication_verified_at <= created_at) AND (expires_at > created_at) AND (updated_at >= created_at)))
+);
+
+CREATE TABLE spaces_owner_proof_evidence (
+    namespace_authority_reference text NOT NULL,
+    namespace_authority_generation bigint NOT NULL,
+    ceremony_id text NOT NULL,
+    proof_anchor_height bigint NOT NULL,
+    proof_anchor_block_hash text NOT NULL,
+    proof_root_anchor_id_hex text NOT NULL,
+    certificate_anchor_height bigint NOT NULL,
+    certificate_anchor_block_hash text NOT NULL,
+    certificate_root_anchor_id_hex text NOT NULL,
+    observation_sha256_hex text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    fresh_until timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_owner_proof_evidence_certificate_anchor_block_hash_check CHECK ((certificate_anchor_block_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_evidence_certificate_anchor_height_check CHECK ((certificate_anchor_height >= 0)),
+    CONSTRAINT spaces_owner_proof_evidence_certificate_root_anchor_id_he_check CHECK ((certificate_root_anchor_id_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_evidence_check CHECK (((proof_anchor_height >= certificate_anchor_height) AND (fresh_until > observed_at))),
+    CONSTRAINT spaces_owner_proof_evidence_observation_sha256_hex_check CHECK ((observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_evidence_proof_anchor_block_hash_check CHECK ((proof_anchor_block_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_evidence_proof_anchor_height_check CHECK ((proof_anchor_height >= 0)),
+    CONSTRAINT spaces_owner_proof_evidence_proof_root_anchor_id_hex_check CHECK ((proof_root_anchor_id_hex ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE spaces_owner_proof_polls (
+    poll_id text NOT NULL,
+    ceremony_id text NOT NULL,
+    account_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_bytes bytea NOT NULL,
+    request_hash text NOT NULL,
+    signature_hex text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    terminal_response jsonb,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_owner_proof_polls_attempt_count_check CHECK (((attempt_count >= 0) AND (attempt_count <= 8))),
+    CONSTRAINT spaces_owner_proof_polls_check CHECK ((updated_at >= created_at)),
+    CONSTRAINT spaces_owner_proof_polls_idempotency_key_check CHECK (is_handle_sales_identifier_v1(idempotency_key, 128)),
+    CONSTRAINT spaces_owner_proof_polls_poll_id_check CHECK ((poll_id ~ '^sopoll_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_owner_proof_polls_request_bytes_check CHECK (((octet_length(request_bytes) >= 1) AND (octet_length(request_bytes) <= 4096))),
+    CONSTRAINT spaces_owner_proof_polls_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_owner_proof_polls_signature_hex_check CHECK ((signature_hex ~ '^[0-9a-f]{128}$'::text))
+);
+
 CREATE TABLE spaces_registry_acknowledgments (
     acknowledgment_id text NOT NULL,
     claim_id text NOT NULL,
@@ -38065,6 +38154,27 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_pkey PRIMARY KEY (operator_instance_id);
 
+ALTER TABLE ONLY spaces_owner_proof_ceremonies
+    ADD CONSTRAINT spaces_owner_proof_ceremonies_account_id_community_id_canon_key UNIQUE (account_id, community_id, canonical_root, start_idempotency_key);
+
+ALTER TABLE ONLY spaces_owner_proof_ceremonies
+    ADD CONSTRAINT spaces_owner_proof_ceremonies_environment_canonical_root_ge_key UNIQUE (environment, canonical_root, generation);
+
+ALTER TABLE ONLY spaces_owner_proof_ceremonies
+    ADD CONSTRAINT spaces_owner_proof_ceremonies_pkey PRIMARY KEY (ceremony_id);
+
+ALTER TABLE ONLY spaces_owner_proof_evidence
+    ADD CONSTRAINT spaces_owner_proof_evidence_ceremony_id_key UNIQUE (ceremony_id);
+
+ALTER TABLE ONLY spaces_owner_proof_evidence
+    ADD CONSTRAINT spaces_owner_proof_evidence_pkey PRIMARY KEY (namespace_authority_reference, namespace_authority_generation);
+
+ALTER TABLE ONLY spaces_owner_proof_polls
+    ADD CONSTRAINT spaces_owner_proof_polls_ceremony_id_idempotency_key_key UNIQUE (ceremony_id, idempotency_key);
+
+ALTER TABLE ONLY spaces_owner_proof_polls
+    ADD CONSTRAINT spaces_owner_proof_polls_pkey PRIMARY KEY (poll_id);
+
 ALTER TABLE ONLY spaces_registry_acknowledgments
     ADD CONSTRAINT spaces_registry_acknowledgment_key_unique UNIQUE (acknowledgment_id, network, namespace_root, handle_label);
 
@@ -38788,6 +38898,8 @@ CREATE INDEX spaces_issuance_verifications_due_idx ON spaces_issuance_verificati
 CREATE UNIQUE INDEX spaces_namespace_authority_evidence_root_uidx ON spaces_namespace_authority_evidence USING btree (network, canonical_root) WHERE (namespace_authority_generation = 1);
 
 CREATE UNIQUE INDEX spaces_operator_assignment_live_root_uidx ON spaces_operator_assignment_current USING btree (network, canonical_root) WHERE (status = 'active'::text);
+
+CREATE INDEX spaces_owner_proof_current_idx ON spaces_owner_proof_ceremonies USING btree (environment, canonical_root, generation DESC);
 
 CREATE INDEX spaces_registry_commit_hint_claims_claim_idx ON spaces_registry_commit_hint_claims USING btree (claim_id);
 
@@ -42634,6 +42746,24 @@ ALTER TABLE ONLY spaces_operator_funding_observations
 
 ALTER TABLE ONLY spaces_operator_instances
     ADD CONSTRAINT spaces_operator_instances_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_owner_proof_ceremonies
+    ADD CONSTRAINT spaces_owner_proof_ceremonies_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY spaces_owner_proof_ceremonies
+    ADD CONSTRAINT spaces_owner_proof_ceremonies_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY spaces_owner_proof_evidence
+    ADD CONSTRAINT spaces_owner_proof_evidence_ceremony_id_fkey FOREIGN KEY (ceremony_id) REFERENCES spaces_owner_proof_ceremonies(ceremony_id);
+
+ALTER TABLE ONLY spaces_owner_proof_evidence
+    ADD CONSTRAINT spaces_owner_proof_evidence_namespace_authority_reference__fkey FOREIGN KEY (namespace_authority_reference, namespace_authority_generation) REFERENCES spaces_namespace_authority_evidence(namespace_authority_reference, namespace_authority_generation);
+
+ALTER TABLE ONLY spaces_owner_proof_polls
+    ADD CONSTRAINT spaces_owner_proof_polls_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY spaces_owner_proof_polls
+    ADD CONSTRAINT spaces_owner_proof_polls_ceremony_id_fkey FOREIGN KEY (ceremony_id) REFERENCES spaces_owner_proof_ceremonies(ceremony_id);
 
 ALTER TABLE ONLY spaces_registry_acknowledgments
     ADD CONSTRAINT spaces_registry_acknowledgment_delivery_fk FOREIGN KEY (claim_id, delivery_generation) REFERENCES spaces_registry_deliveries(claim_id, delivery_generation);

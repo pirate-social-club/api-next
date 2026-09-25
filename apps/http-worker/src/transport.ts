@@ -17,6 +17,7 @@ import {
   NotFound,
   toErrorBody,
 } from "@pirate/contracts";
+import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { Schema } from "effect";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -49,6 +50,7 @@ import {
 } from "./hns-handle-host-api-composition.ts";
 import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
+import { makeSpacesOwnerProofHandlers } from "./spaces-owner-proof-handlers.ts";
 import {
   makeSpacesRegistryTransport,
   type SpacesRegistryTransportOptions,
@@ -162,6 +164,8 @@ export interface HttpWorkerOptions {
   readonly hnsHandleHostApi?: HnsHandleHostApiComposition;
   /** Private operator registry; absent in every production composition by default. */
   readonly spacesRegistry?: SpacesRegistryTransportOptions;
+  /** Absent in production until scoped verifier credentials are installed. */
+  readonly spacesOwnerProof?: SpacesOwnerProofStore;
 }
 
 type HttpWorkerEnv = {
@@ -667,6 +671,8 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "ListCommunityHandleOfferingManagement",
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "StartSpacesOwnership",
+  "PollSpacesOwnership",
   "GetHandleNationalityAuthoring",
   "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
@@ -761,6 +767,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       : makeSpacesRegistryTransport(options.spacesRegistry);
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
     options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
+  const spacesOwnerProofHandlers =
+    options.spacesOwnerProof === undefined
+      ? undefined
+      : makeSpacesOwnerProofHandlers(options.spacesOwnerProof);
   const sessionExchangeHandler =
     options.sessionExchange === undefined
       ? undefined
@@ -769,6 +779,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     (binding) =>
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
+        spacesOwnerProofHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
   );
@@ -882,6 +893,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         const handler =
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
+          spacesOwnerProofHandlers?.[binding.name] ??
           (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
             ? makeIdentityRegistrationHandler(options.identityRegistration)

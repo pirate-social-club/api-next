@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { schnorr } from "@noble/curves/secp256k1.js";
 
 /** Exact byte encodings from Spec 012 §5.3.13.3.1. */
 const sha256Hex = (bytes: string | Uint8Array): string =>
@@ -82,4 +83,28 @@ export function spacesOwnerPollRequestHashV1(
       input.signatureHex,
     ]),
   );
+}
+
+/** Local BIP-340 check used only to distinguish a bad signature from a retry. */
+export function spacesOwnerSignatureValidV1(
+  challengeDigestHex: string,
+  rootKeyHex: string,
+  signatureHex: string,
+): boolean {
+  if (
+    !/^[0-9a-f]{64}$/u.test(challengeDigestHex) ||
+    !/^[0-9a-f]{64}$/u.test(rootKeyHex) ||
+    !/^[0-9a-f]{128}$/u.test(signatureHex)
+  ) {
+    return false;
+  }
+  try {
+    return schnorr.verify(
+      Buffer.from(signatureHex, "hex"),
+      Buffer.from(challengeDigestHex, "hex"),
+      Buffer.from(rootKeyHex, "hex"),
+    );
+  } catch {
+    return false;
+  }
 }

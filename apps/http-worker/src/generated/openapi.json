@@ -122178,6 +122178,1527 @@
         ]
       }
     },
+    "/communities/{communityId}/spaces-ownership/start": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdSpacesOwnershipStart",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "canonical_root": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "idempotency_key",
+                  "canonical_root"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 2048
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-ownership-start-v1"
+                          ]
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "network": {
+                          "type": "string",
+                          "enum": [
+                            "mainnet"
+                          ]
+                        },
+                        "canonical_root": {
+                          "type": "string"
+                        },
+                        "root_outpoint": {
+                          "type": "string"
+                        },
+                        "root_key_hex": {
+                          "type": "string"
+                        },
+                        "challenge_message": {
+                          "type": "string"
+                        },
+                        "challenge_digest_hex": {
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "network",
+                        "canonical_root",
+                        "root_outpoint",
+                        "root_key_hex",
+                        "challenge_message",
+                        "challenge_digest_hex",
+                        "expires_at",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-ownership-start-v1"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_pending"
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "status",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-ownership-start-v1"
+                          ]
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "network": {
+                          "type": "string",
+                          "enum": [
+                            "mainnet"
+                          ]
+                        },
+                        "canonical_root": {
+                          "type": "string"
+                        },
+                        "root_outpoint": {
+                          "type": "string"
+                        },
+                        "root_key_hex": {
+                          "type": "string"
+                        },
+                        "challenge_message": {
+                          "type": "string"
+                        },
+                        "challenge_digest_hex": {
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "network",
+                        "canonical_root",
+                        "root_outpoint",
+                        "root_key_hex",
+                        "challenge_message",
+                        "challenge_digest_hex",
+                        "expires_at",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-ownership-start-v1"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_pending"
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "status",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-ownership-start-v1"
+                          ]
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "network": {
+                          "type": "string",
+                          "enum": [
+                            "mainnet"
+                          ]
+                        },
+                        "canonical_root": {
+                          "type": "string"
+                        },
+                        "root_outpoint": {
+                          "type": "string"
+                        },
+                        "root_key_hex": {
+                          "type": "string"
+                        },
+                        "challenge_message": {
+                          "type": "string"
+                        },
+                        "challenge_digest_hex": {
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "network",
+                        "canonical_root",
+                        "root_outpoint",
+                        "root_key_hex",
+                        "challenge_message",
+                        "challenge_digest_hex",
+                        "expires_at",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-ownership-start-v1"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_pending"
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "status",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "403": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "verification_required"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          },
+          "browserSessionOnly": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "NotFound",
+          "ProviderUnavailable",
+          "VerificationRequired",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/spaces-ownership/poll": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdSpacesOwnershipPoll",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ceremony_id": {
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "signature_hex": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ceremony_id",
+                  "idempotency_key",
+                  "signature_hex"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 4096
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "$ref": "#/$defs/Literal_"
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verified"
+                          ]
+                        },
+                        "namespace_authority_reference": {
+                          "type": "string"
+                        },
+                        "namespace_authority_generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "evidence_digest_hex": {
+                          "type": "string"
+                        },
+                        "observed_at": {
+                          "type": "string"
+                        },
+                        "fresh_until": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "status",
+                        "namespace_authority_reference",
+                        "namespace_authority_generation",
+                        "evidence_digest_hex",
+                        "observed_at",
+                        "fresh_until",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "$ref": "#/$defs/Literal_"
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_pending"
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "status",
+                        "retry_after_seconds",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "$ref": "#/$defs/Literal_"
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "expired",
+                            "root_changed",
+                            "signature_rejected"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "status",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Literal_": {
+                      "type": "string",
+                      "enum": [
+                        "pirate-spaces-ownership-result-v1"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "$ref": "#/$defs/Literal_"
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verified"
+                          ]
+                        },
+                        "namespace_authority_reference": {
+                          "type": "string"
+                        },
+                        "namespace_authority_generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "evidence_digest_hex": {
+                          "type": "string"
+                        },
+                        "observed_at": {
+                          "type": "string"
+                        },
+                        "fresh_until": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "status",
+                        "namespace_authority_reference",
+                        "namespace_authority_generation",
+                        "evidence_digest_hex",
+                        "observed_at",
+                        "fresh_until",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "$ref": "#/$defs/Literal_"
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_pending"
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "status",
+                        "retry_after_seconds",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "$ref": "#/$defs/Literal_"
+                        },
+                        "ceremony_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "expired",
+                            "root_changed",
+                            "signature_rejected"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "ceremony_id",
+                        "generation",
+                        "status",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Literal_": {
+                      "type": "string",
+                      "enum": [
+                        "pirate-spaces-ownership-result-v1"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "403": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "verification_required"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          },
+          "browserSessionOnly": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "NotFound",
+          "ProviderUnavailable",
+          "VerificationRequired",
+          "InternalError"
+        ]
+      }
+    },
     "/community-creation-intents/{intentId}/namespace-ownership/poll": {
       "post": {
         "operationId": "post_communityCreationIntentsIntentIdNamespaceOwnershipPoll",

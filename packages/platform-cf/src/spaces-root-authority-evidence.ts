@@ -122,6 +122,11 @@ export function parseSpacesRootAuthorityEvidenceV1(
     evidence.proof_anchor_height < evidence.certificate_anchor_height ||
     evidence.proof_anchor_height > evidence.anchor_height ||
     evidence.anchor_height > evidence.tip_height ||
+    evidence.tip_height - evidence.proof_anchor_height > 144 ||
+    (evidence.proof_anchor_height === evidence.anchor_height &&
+      evidence.proof_anchor_block_hash !== evidence.anchor_block_hash) ||
+    (evidence.proof_anchor_height === evidence.certificate_anchor_height &&
+      evidence.proof_anchor_block_hash !== evidence.certificate_anchor_block_hash) ||
     evidence.tip_age_seconds > 21_600 ||
     (evidence.commitment_count === 0 &&
       (evidence.latest_commitment !== null || evidence.latest_final_commitment !== null)) ||

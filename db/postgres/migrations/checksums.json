@@ -212,6 +212,7 @@
     "0209_spaces_sale_namespace_activation.sql": "095c390e8f851d67db0af48aec61e828aa89e0d807e0490d21e9aaac41d01688",
     "0210_spaces_native_claims.sql": "a99fbbcb064de83bcd03612b492be73cf837a61ab537df745c53595f3cb836f2",
     "0211_spaces_registry.sql": "728abd7b19dec3742f90d14fd6b184bf532a6e7fcdc9a74ebde73c06ea529021",
-    "0212_spaces_final_issuance.sql": "a9b594061f2f39fc28f0c484ac4ebda41c3c56eac80f50945bf8ecb4bd78c1f7"
+    "0212_spaces_final_issuance.sql": "a9b594061f2f39fc28f0c484ac4ebda41c3c56eac80f50945bf8ecb4bd78c1f7",
+    "0213_spaces_owner_proof_ceremony.sql": "346ea2a9eb1dcdea6c7ae590baec633ab57a7ff9b7f6e257835a3bb9159acfea"
   }
 }

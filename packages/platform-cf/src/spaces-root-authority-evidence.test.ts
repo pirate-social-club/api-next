@@ -88,6 +88,8 @@ describe("Spaces root authority response boundary", () => {
       { ...baseline, root: "@ceramic" },
       { ...baseline, outpoint: `${"77".repeat(32)}:1`, anchor_bound_outpoint: false },
       { ...baseline, proof_anchor_height: 968507 },
+      { ...baseline, tip_height: 968689 },
+      { ...baseline, proof_anchor_block_hash: "99".repeat(32) },
       { ...baseline, owner_xonly_key_hex: "88".repeat(32) },
       { ...baseline, chain_proof_base64: binary("tampered").base64 },
       { ...baseline, root_certificate_base64: binary("tampered").base64 },

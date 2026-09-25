@@ -111,6 +111,7 @@ import {
   GetSongOwnerPolicy,
   UpdateSongOwnerPolicy,
 } from "./song-owner-video-policy.ts";
+import { PollSpacesOwnership, StartSpacesOwnership } from "./spaces-owner-proof.ts";
 import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
@@ -165,6 +166,8 @@ export const registry = {
   ...verification,
   ...money,
   StartNamespaceOwnership,
+  StartSpacesOwnership,
+  PollSpacesOwnership,
   PollNamespaceOwnership,
   CreateKaraokeAttempt,
   GetKaraokeReadiness,

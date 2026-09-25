@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.92.0",
+  "sourceBranch": "feat/spaces-native-claims",
+  "sourceBase": "0d0421467d9f42b575931651651ffb77f662ffc8",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Spec 012 §5.3.13.3.1. Adds browser-session-only POST /communities/:communityId/spaces-ownership/start with exact JSON {idempotency_key,canonical_root} and POST /communities/:communityId/spaces-ownership/poll with exact JSON {ceremony_id,idempotency_key,signature_hex}. Start returns a bounded owner challenge or verification_pending. Poll returns verification_pending, verified evidence, or a terminal rejection. The owner wallet signs only on the owner device. The routes are not composed in production until scoped verifier credentials and the installed verifier wire are accepted.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.92.0.tgz",
+    "sha256": "5885531109947bbf1b682dfb5032f543b6f5c9ab16b314a35f046263c1ec4b2c"
+  },
+  "validation": {
+    "status": "Local candidate; full local check and test gates passed, hosted review pending",
+    "passed": [
+      "Generated OpenAPI and client from the registered exact-JSON contracts",
+      "Verifier v2 parser and BIP-340 codec unit tests",
+      "Owner proof PostgreSQL 17 tests for durable verification, exact replay, pending observation, and positive root drift (2 passed)",
+      "Repository check, including 213 migration checksums and immutable 0.92.0 client verification",
+      "Complete unit graph (4881 passed, 1 intentional skip, 0 failed), Node (20 passed), and all six Worker suites (83, 2, 77, 2, 10, 16 passed)"
+    ],
+    "remaining": [
+      "Hosted required checks on a reviewed pull-request head",
+      "Scoped verifier credentials and disabled-first production composition",
+      "Paired Solid owner-screen adoption before or with the API deploy"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, provider call, credential use, wallet access, chain transaction, or live product mutation occurred."
+  }
+}

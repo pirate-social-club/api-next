@@ -2,6 +2,7 @@
   "globalThreshold": "high",
   "requestPathThreshold": "moderate",
   "requestPathPackages": [
+    "@noble/curves",
     "@selfxyz/core",
     "@zkpassport/sdk",
     "cizgile",
