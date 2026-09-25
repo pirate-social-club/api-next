@@ -32,6 +32,7 @@ export const reusablePostgresTestSuites = [
 
 export const freshSchemaPostgresTestSuites = [
   "scripts/megapot-golden-adopted-pool.pg.test.ts",
+  "scripts/staging-hns-cutover-probe-reseed.pg.test.ts",
   "apps/http-worker/src/rewards-golden-retry.pg.test.ts",
   "packages/platform-cf/src/reward-claim-verification-intent.pg.test.ts",
   "packages/platform-cf/src/reward-gas-topup.pg.test.ts",
