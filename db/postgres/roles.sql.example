@@ -75,6 +75,25 @@ GRANT EXECUTE ON FUNCTION claim_hns_root_import_lifecycle_job_v1(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION finalize_hns_root_import_lifecycle_job_v1(
   BIGINT, TEXT, BIGINT, TEXT, TEXT
 ) TO api_next_app;
+-- HNS import separated clocks (0208). The HTTP Worker renews an expired
+-- challenge and reads the publication window; the owner verifier authorizes an
+-- hns-txt-import-v1 poll. Both Workers use one Hyperdrive and so one role, so
+-- these grants do not separate them.
+GRANT EXECUTE ON FUNCTION renew_hns_community_root_import_challenge_v1(
+  TEXT, TEXT, TEXT, TEXT, JSONB, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION hns_root_import_publication_window_decision_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION hns_root_import_publication_window_open_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION hold_hns_root_import_for_recovery_v1(TEXT, TEXT, TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION hns_root_import_publication_window_v1(TEXT, TEXT, TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION authorize_hns_root_import_publication_poll_v1(
+  TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
+) TO api_next_app;
+REVOKE INSERT, UPDATE, DELETE ON
+  hns_root_import_publication_authorizations,
+  hns_community_root_import_preparation_ceremonies,
+  hns_root_import_separated_clocks_inventory
+FROM api_next_app;
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_lifecycle_decision_v1(
   TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BIGINT, BIGINT, BIGINT
 ) TO api_next_app;

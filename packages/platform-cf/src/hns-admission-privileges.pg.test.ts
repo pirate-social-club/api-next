@@ -118,6 +118,11 @@ suite("HNS admission runtime execution privileges", () => {
 
       await admin.query(`GRANT EXECUTE ON FUNCTION ${schema}.${signature} TO ${runtimeRole}`);
       expect((await prepare(next, runtimeRole)).kind).toBe("created");
+      // A replay may renew an expired challenge, which the runtime role reaches
+      // only through its fenced routine (0208).
+      await admin.query(
+        `GRANT EXECUTE ON FUNCTION ${schema}.renew_hns_community_root_import_challenge_v1(text,text,text,text,jsonb,text) TO ${runtimeRole}`,
+      );
       expect((await prepare(next, runtimeRole)).kind).toBe("replay");
       // Reapplication is safe and does not grant to PUBLIC or the monitor role.
       await admin.query(`GRANT EXECUTE ON FUNCTION ${schema}.${signature} TO ${runtimeRole}`);

@@ -15,6 +15,7 @@ import { Client } from "pg";
 import { makeHnsCommunityPublicationQueue } from "../../../packages/platform-cf/src/hns-community-publication-queue.ts";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "../../../packages/platform-cf/src/hns-community-root-import-repository.ts";
 import { makeHnsOwnerServiceBindingTransport } from "../../../packages/platform-cf/src/namespace-ownership/hns-owner-service-binding.ts";
+import { makeControlPlaneHnsImportPublicationAuthorizer } from "../../../packages/platform-cf/src/namespace-ownership/hns-root-import-publication-authorization-postgres.ts";
 import { makePlatformNamespaceOwnershipProviderRegistry } from "../../../packages/platform-cf/src/namespace-ownership/provider-registry.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "../../../packages/platform-cf/src/route-attachment-completion-repository.ts";
@@ -119,8 +120,12 @@ pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
               HNS_PROVIDER_ENVIRONMENT: "staging",
               HNS_PROVIDER_CONFIGURATION_REFERENCE: configuration.reference,
               HNS_PROVIDER_CONFIGURATION_VERSION: configuration.version,
+              HNS_PROVIDER_CAPABILITIES: "hns-txt-import-v1",
             },
-            { targetObserver: attachmentObserverFixture(chain) },
+            {
+              targetObserver: attachmentObserverFixture(chain),
+              importAuthorizer: makeControlPlaneHnsImportPublicationAuthorizer(layer),
+            },
           );
         },
       });
@@ -132,6 +137,7 @@ pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
             provider_configuration: configuration,
             environments: ["staging"],
             target_observation_contract: "v2",
+            import_protocol_enabled: true,
           },
         }),
       );

@@ -14,17 +14,21 @@ export {
   NamespaceOwnershipProviderObservationRejected,
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderStartContext,
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnboundRejected,
+  NamespaceOwnershipProviderUnsupportedProtocol,
   NamespaceOwnershipRoute,
   NamespaceOwnershipSession,
   NamespaceOwnershipSubmission,
   NamespaceOwnershipSubmissionChannel,
   NamespaceOwnershipUpstreamSessionReference,
+  RouteAttachmentImportOwnershipProviderCompleteInput,
+  RouteAttachmentImportPublicationBinding,
   RouteAttachmentOwnershipProviderCompleteInput,
   RouteAttachmentOwnershipProviderStartInput,
   RouteAttachmentOwnershipProviderStartResult,
@@ -414,6 +418,7 @@ export {
   hnsProviderIdentityDigest,
   hnsProviderIdentityPreimage,
 } from "./hns-evidence.ts";
+export * from "./hns-import-publication-poll.ts";
 export * from "./hns-incident-recovery.ts";
 export {
   decodeHnsPrivateDriverAuthoritativeAxfrResponseV1,

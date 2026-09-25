@@ -47,6 +47,9 @@
       "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres": [
         "./packages/platform-cf/src/namespace-ownership/hns-control-observer-postgres.ts"
       ],
+      "@pirate/platform-cf/hns-root-import-publication-authorization-postgres": [
+        "./packages/platform-cf/src/namespace-ownership/hns-root-import-publication-authorization-postgres.ts"
+      ],
       "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport": [
         "./packages/platform-cf/src/namespace-ownership/hns-private-driver-transport.ts"
       ],

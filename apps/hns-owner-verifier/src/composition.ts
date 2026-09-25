@@ -3,6 +3,11 @@ import type {
   HnsControlObserverRuntimeCapabilitiesV2,
 } from "@pirate/application/namespace-ownership";
 import { makeHnsAuthoritativeDnsValidatorV1 } from "@pirate/application/namespace-ownership";
+import {
+  type HnsImportPublicationAuthorization,
+  type HnsImportPublicationAuthorizationInput,
+  makeControlPlaneHnsImportPublicationAuthorizer,
+} from "@pirate/platform-cf/hns-root-import-publication-authorization-postgres";
 import { makeHnsControlObserverHsdPrivateTransport } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import {
   makeControlPlaneHnsAuthorityInventoryResolver,
@@ -76,6 +81,24 @@ function sequentialMessageIds() {
       return current;
     },
   });
+}
+
+/**
+ * The import publication authorization is read from the control plane the
+ * verifier already uses for observer snapshots. Without that binding there is
+ * no authority to check, and the import poll is refused as misconfigured.
+ */
+export function composeHnsImportPublicationAuthorizer(
+  env: HnsTargetCompositionBindings,
+):
+  | ((
+      input: HnsImportPublicationAuthorizationInput,
+    ) => Promise<HnsImportPublicationAuthorization | null>)
+  | undefined {
+  if (env.CONTROL_PLANE === undefined) return undefined;
+  return makeControlPlaneHnsImportPublicationAuthorizer(
+    makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
+  );
 }
 
 export function composeHnsNameProofRuntime(

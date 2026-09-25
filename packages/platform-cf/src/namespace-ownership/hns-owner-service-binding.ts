@@ -1,10 +1,15 @@
 import {
   decodeHnsRootImportNameProofResultV1,
+  encodeHnsImportPublicationPollRequestV1,
+  HNS_IMPORT_PUBLICATION_POLL_REQUEST_MAX_BYTES,
+  HNS_IMPORT_PUBLICATION_POLL_RESPONSE_MAX_BYTES,
   HNS_OWNER_PROVIDER_ID,
   type HnsRootImportNameProofVerifierPort,
   NamespaceOwnershipProviderInvalidResponse,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
+  NamespaceOwnershipProviderUnsupportedProtocol,
   type RouteAttachmentOwnershipProviderStartInput,
   type RouteAttachmentOwnershipSession,
 } from "@pirate/application";
@@ -15,6 +20,7 @@ import type { HnsOwnerTransport, HnsOwnerTransportFailure } from "./hns-owner.ts
 
 const START_URL = "https://hns-owner.internal/internal/hns-owner/v1/start";
 const POLL_URL = "https://hns-owner.internal/internal/hns-owner/v1/poll";
+const IMPORT_POLL_URL = "https://hns-owner.internal/internal/hns-owner/v1/import-poll";
 const NAME_PROOF_URL = "https://hns-owner.internal/internal/hns-owner/v1/verify-name-signature";
 const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
@@ -170,12 +176,52 @@ export async function discardHnsOwnerServiceBindingResponse(response: Response):
   }
 }
 
+async function errorCode(response: Response): Promise<unknown> {
+  try {
+    return ((await response.clone().json()) as { readonly error?: unknown }).error;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A verifier build that predates hns-txt-import-v1 has no import path and
+ * answers 404 not_found; a build that has the protocol disabled answers a
+ * typed 501. Either way nothing was observed, which is not a rejection of the
+ * owner. Any other 404 stays a rejection, so a misrouted binding is visible.
+ */
+async function unsupportedImportProtocol(response: Response): Promise<boolean> {
+  if (response.status === 404) return (await errorCode(response)) === "not_found";
+  return response.status === 501 && (await errorCode(response)) === "unsupported_protocol";
+}
+
 async function mappedResponse(
   response: Response,
   operation: Operation,
   contentType: "application/json" | "application/octet-stream",
   maxBytes: number,
+  importPoll = false,
 ): Promise<Uint8Array> {
+  if (importPoll && (await unsupportedImportProtocol(response))) {
+    await discardHnsOwnerServiceBindingResponse(response);
+    throw new NamespaceOwnershipProviderUnsupportedProtocol({
+      provider_id: HNS_OWNER_PROVIDER_ID,
+      operation: "complete",
+    });
+  }
+  // The verifier read the import's window from the database and found it
+  // closed; nothing about the owner's proof was judged.
+  if (
+    importPoll &&
+    response.status === 409 &&
+    (await errorCode(response)) === "publication_not_authorized"
+  ) {
+    await discardHnsOwnerServiceBindingResponse(response);
+    throw new NamespaceOwnershipProviderPublicationClosed({
+      provider_id: HNS_OWNER_PROVIDER_ID,
+      operation: "complete",
+    });
+  }
   if (response.status === 429 || response.status >= 500) {
     await discardHnsOwnerServiceBindingResponse(response);
     throw unavailable(operation);
@@ -204,6 +250,7 @@ function request(
   deadlineMs: number,
   operation: Operation,
   maxResponseBytes: number,
+  importPoll = false,
 ): Effect.Effect<Uint8Array, HnsOwnerTransportFailure> {
   return Effect.tryPromise({
     try: async () => {
@@ -230,6 +277,7 @@ function request(
           operation,
           accept === "application/json" ? "application/json" : "application/octet-stream",
           maxResponseBytes,
+          importPoll,
         );
       } finally {
         clearTimeout(timeout);
@@ -238,7 +286,9 @@ function request(
     catch: (error) =>
       error instanceof NamespaceOwnershipProviderUnavailable ||
       error instanceof NamespaceOwnershipProviderRejected ||
-      error instanceof NamespaceOwnershipProviderInvalidResponse
+      error instanceof NamespaceOwnershipProviderInvalidResponse ||
+      error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+      error instanceof NamespaceOwnershipProviderPublicationClosed
         ? error
         : unavailable(operation),
   });
@@ -319,6 +369,29 @@ export function makeHnsOwnerServiceBindingTransport(
         HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
+      );
+    },
+    pollRouteAttachmentImport: ({ request: importRequest, context }) => {
+      let body: Uint8Array;
+      try {
+        body = encodeHnsImportPublicationPollRequestV1(importRequest);
+      } catch {
+        return Effect.fail(invalid("complete"));
+      }
+      if (body.byteLength > HNS_IMPORT_PUBLICATION_POLL_REQUEST_MAX_BYTES) {
+        return Effect.fail(invalid("complete"));
+      }
+      return request(
+        binding,
+        IMPORT_POLL_URL,
+        body,
+        "application/json",
+        context.namespace_session_id,
+        context.observation_id,
+        HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+        "complete",
+        HNS_IMPORT_PUBLICATION_POLL_RESPONSE_MAX_BYTES,
+        true,
       );
     },
     pollRouteAttachment: ({ session, payload, context }) => {

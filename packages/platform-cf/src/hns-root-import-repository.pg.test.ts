@@ -1396,7 +1396,13 @@ suite("Postgres 17 HNS root-import repository", () => {
              'community_123e4567-e89b-42d3-a456-426614174099','attachment-import',
              'attachment-ceremony','attachment-reservation',1,1,1,$1,$2,
              'namespace-provider',$3,'managed','test-provider','v1','hns-txt-v1','test',
-             'newroot','attachment-upstream','embedded_sdk','{}'::jsonb,'completed',
+             'newroot',
+             -- The challenge the session carries, so a plan exposed for this
+             -- community session has a matching ownership challenge.
+             (SELECT substr(challenge_txt_value, length('pirate-verification=') + 1)
+                FROM hns_root_import_sessions
+               WHERE root_import_session_id='root-import-session'),
+             'embedded_sdk','{}'::jsonb,'completed',
              transaction_timestamp()-interval '2 minutes',
              transaction_timestamp()-interval '1 minute',
              transaction_timestamp()-interval '1 minute',$4)`,

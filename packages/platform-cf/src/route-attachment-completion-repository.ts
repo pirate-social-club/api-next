@@ -2,9 +2,11 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneResult,
+  type ControlPlaneTransaction,
   RouteAttachmentCompletionStorageFailed,
   type RouteAttachmentCompletionStore,
   type RouteAttachmentCompletionStored,
+  type RouteAttachmentImportPublicationWindow,
   RouteAttachmentOwnershipSession,
 } from "@pirate/application";
 import { ProviderConfigurationRef } from "@pirate/domain/verification";
@@ -39,7 +41,10 @@ const columns = `
   intent.revision AS attachment_revision,intent.status AS attachment_status,
   result.outcome_status,result.result_hash`;
 
-function stored(row: Row): RouteAttachmentCompletionStored | null {
+function stored(
+  row: Row,
+  importPublication: RouteAttachmentImportPublicationWindow | null = null,
+): RouteAttachmentCompletionStored | null {
   const configuration = Schema.decodeUnknownOption(
     ProviderConfigurationRef,
     exact,
@@ -96,6 +101,7 @@ function stored(row: Row): RouteAttachmentCompletionStored | null {
       namespace_session_id: id,
       revision,
       session: session.value,
+      import_publication: importPublication,
       status,
       terminal: null,
     } as const;
@@ -106,9 +112,80 @@ function stored(row: Row): RouteAttachmentCompletionStored | null {
     namespace_session_id: id,
     revision,
     session: session.value,
+    import_publication: importPublication,
     status,
     terminal: { status: terminalStatus, result_hash: resultHash },
   } as const;
+}
+
+/**
+ * The publication window of the exposed community import that owns this
+ * namespace session, read from the database. No row is the ordinary
+ * hns-txt-v1 case.
+ */
+function readImportPublicationWindow(
+  tx: Pick<ControlPlaneTransaction, "execute">,
+  request: Parameters<RouteAttachmentCompletionStore["load"]>[0],
+  readonly: boolean,
+) {
+  return Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: "route-attachment.completion.publication-window",
+      text: `SELECT root_import_session_id, root_label, publish_plan_sha256,
+                    challenge_value_sha256, window_open, reason, valid_until
+               FROM hns_root_import_publication_window_v1($1,$2,$3)`,
+      values: [request.actor_id, request.community_id, request.session_id],
+      readonly,
+    });
+    const row = one(result);
+    if (row === undefined) return yield* Effect.fail(failed());
+    if (row === null) return null;
+    const root_import_session_id = text(row, "root_import_session_id");
+    const root_label = text(row, "root_label");
+    const publish_plan_sha256 = text(row, "publish_plan_sha256");
+    const challenge_value_sha256 = text(row, "challenge_value_sha256");
+    const reason = text(row, "reason");
+    const valid_until = row.valid_until === null ? null : instant(row.valid_until);
+    if (
+      root_import_session_id === null ||
+      root_label === null ||
+      publish_plan_sha256 === null ||
+      challenge_value_sha256 === null ||
+      reason === null ||
+      typeof row.window_open !== "boolean" ||
+      (row.valid_until !== null && valid_until === null)
+    ) {
+      return yield* Effect.fail(failed());
+    }
+    return {
+      root_import_session_id,
+      root_label,
+      publish_plan_sha256,
+      challenge_value_sha256,
+      window_open: row.window_open,
+      reason,
+      valid_until,
+    } satisfies RouteAttachmentImportPublicationWindow;
+  });
+}
+
+/** A ceremony replaced by a renewed challenge can never complete. */
+function isCurrentCeremony(
+  tx: Pick<ControlPlaneTransaction, "execute">,
+  request: Parameters<RouteAttachmentCompletionStore["load"]>[0],
+) {
+  return Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: "route-attachment.completion.current-ceremony",
+      text: `SELECT current_ceremony_intent_id FROM community_route_attachment_requirement_states
+              WHERE attachment_intent_id=$1 AND actor_id=$2 AND requirement_kind='namespace_ownership'`,
+      values: [request.attachment_intent_id, request.actor_id],
+      readonly: false,
+    });
+    const row = one(result);
+    if (row === undefined) return yield* Effect.fail(failed());
+    return row !== null && row.current_ceremony_intent_id === request.ceremony_intent_id;
+  });
 }
 
 const loadSql = `SELECT ${columns}
@@ -131,7 +208,7 @@ function matchesRequest(row: Row, request: Parameters<RouteAttachmentCompletionS
   );
 }
 
-function attempt(row: Row) {
+function attempt(row: Row, counted_before: boolean) {
   const completion_attempt_id = text(row, "completion_attempt_id");
   const namespace_session_id = text(row, "namespace_session_id");
   const fence_token = integer(row.fence_token);
@@ -149,6 +226,7 @@ function attempt(row: Row) {
         fence_token,
         evidence_ref,
         lease_expires_at,
+        counted_before,
       };
 }
 
@@ -181,7 +259,8 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
           const row = one(result);
           if (row === undefined) return yield* Effect.fail(failed());
           if (row === null) return null;
-          const value = stored(row);
+          const importPublication = yield* readImportPublicationWindow(db, request, true);
+          const value = stored(row, importPublication);
           return value === null ? yield* Effect.fail(failed()) : value;
         }),
       ),
@@ -206,16 +285,27 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
               const row = one(loaded);
               if (row === undefined) return yield* Effect.fail(failed());
               if (row === null) return { kind: "not_found" } as const;
-              const current = stored(row);
+              const importPublication = yield* readImportPublicationWindow(
+                tx,
+                input.request,
+                false,
+              );
+              const current = stored(row, importPublication);
               if (current === null) return yield* Effect.fail(failed());
               if (current.terminal !== null) return { kind: "replay", stored: current } as const;
+              // An exposed import is bounded by its publication window under
+              // this lock; every other session keeps the hns-txt-v1 expiry.
               if (
                 !matchesRequest(row, input.request) ||
                 row.status !== "pending" ||
                 row.attachment_status !== "verification_required" ||
-                Date.parse(instant(row.expires_at) ?? "") <= Date.now()
+                (importPublication === null &&
+                  Date.parse(instant(row.expires_at) ?? "") <= Date.now()) ||
+                !(yield* isCurrentCeremony(tx, input.request))
               )
                 return { kind: "conflict" } as const;
+              if (importPublication !== null && !importPublication.window_open)
+                return { kind: "window_closed", reason: importPublication.reason } as const;
               const authority = yield* tx.execute<Row>({
                 label: "route-attachment.completion.check-authority",
                 text: "SELECT has_community_route_authority($1,$2) AS allowed",
@@ -240,6 +330,8 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                 if (value.state === "leased" && lease !== null && Date.parse(lease) > Date.now())
                   return { kind: "in_flight", retry_after_seconds: retryAfter(lease) } as const;
               }
+              // A retryable observation keeps its own identity and number. It
+              // was already counted, and stays counted.
               const waiting = prior.rows.find(
                 (value) =>
                   value.state === "released" &&
@@ -247,25 +339,67 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                   value.idempotency_key === input.request.idempotency_key &&
                   value.completion_request_sha256 === input.completion_request_sha256,
               );
-              if (waiting !== undefined) {
-                const renewed = yield* tx.execute<Row>({
-                  label: "route-attachment.completion.renew-pending",
-                  text: `UPDATE community_route_attachment_completion_attempts
-                    SET state='leased',retryable_observation=false,fence_token=fence_token+1,
-                        lease_expires_at=clock_timestamp()+($2::bigint*interval '1 millisecond'),
-                        updated_at=clock_timestamp()
-                    WHERE completion_attempt_id=$1 RETURNING *`,
-                  values: [waiting.completion_attempt_id, input.lease_ms],
-                  readonly: false,
+              const lease = (row: Row, countedBefore: boolean, retarget: boolean) =>
+                Effect.gen(function* () {
+                  const renewed = yield* tx.execute<Row>({
+                    label: "route-attachment.completion.renew-pending",
+                    text: `UPDATE community_route_attachment_completion_attempts
+                      SET state='leased',retryable_observation=false,fence_token=fence_token+1,
+                          idempotency_key=CASE WHEN $3::boolean THEN $4 ELSE idempotency_key END,
+                          completion_request_sha256=CASE WHEN $3::boolean THEN $5
+                            ELSE completion_request_sha256 END,
+                          lease_expires_at=clock_timestamp()+($2::bigint*interval '1 millisecond'),
+                          updated_at=clock_timestamp()
+                      WHERE completion_attempt_id=$1 RETURNING *`,
+                    values: [
+                      row.completion_attempt_id,
+                      input.lease_ms,
+                      retarget,
+                      input.request.idempotency_key,
+                      input.completion_request_sha256,
+                    ],
+                    readonly: false,
+                  });
+                  const renewedRow = one(renewed);
+                  const reservation =
+                    renewedRow == null ? null : attempt(renewedRow, countedBefore);
+                  return reservation === null
+                    ? yield* Effect.fail(failed())
+                    : ({ kind: "acquired", reservation } as const);
                 });
-                const row = one(renewed);
-                const reservation = row == null ? null : attempt(row);
-                return reservation === null
-                  ? yield* Effect.fail(failed())
-                  : ({ kind: "acquired", reservation } as const);
-              }
-              if (prior.rows.length >= Math.min(3, input.max_attempts))
+              if (waiting !== undefined) return yield* lease(waiting, true, false);
+              // A not-attempted row never counted. There is at most one per
+              // session: every later request reuses it, under that request's
+              // identity, and only while the budget allows a real check.
+              const counted = prior.rows.filter((value) => value.state !== "not_attempted");
+              if (counted.length >= Math.min(3, input.max_attempts)) {
+                // An exposed import cannot resume its ownership check on its
+                // own once the budget is spent; hold it for operator recovery
+                // so that next action exists.
+                if (importPublication !== null) {
+                  yield* tx.execute({
+                    label: "route-attachment.completion.hold-exhausted-import",
+                    text: "SELECT hold_hns_root_import_for_recovery_v1($1,$2,$3)",
+                    values: [
+                      importPublication.root_import_session_id,
+                      "ownership_check_attempts_exhausted",
+                      `ownership-check-exhausted:${input.request.session_id}`,
+                    ],
+                    readonly: false,
+                  });
+                }
                 return { kind: "budget_exhausted" } as const;
+              }
+              const unattempted = prior.rows.find((value) => value.state === "not_attempted");
+              if (unattempted !== undefined) {
+                const collides = prior.rows.some(
+                  (value) =>
+                    value !== unattempted &&
+                    value.idempotency_key === input.request.idempotency_key &&
+                    value.attempt_number === unattempted.attempt_number,
+                );
+                if (!collides) return yield* lease(unattempted, false, true);
+              }
               const inserted = yield* tx.execute<Row>({
                 label: "route-attachment.completion.insert-attempt",
                 text: `INSERT INTO community_route_attachment_completion_attempts (
@@ -282,7 +416,7 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                   input.request.attachment_intent_id,
                   input.request.ceremony_intent_id,
                   input.request.expected_revision,
-                  prior.rows.length + 1,
+                  counted.length + 1,
                   input.request.idempotency_key,
                   input.completion_request_sha256,
                   input.evidence_ref,
@@ -291,7 +425,8 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                 readonly: false,
               });
               const value = one(inserted);
-              const reservation = value === null || value === undefined ? null : attempt(value);
+              const reservation =
+                value === null || value === undefined ? null : attempt(value, false);
               return reservation === null
                 ? yield* Effect.fail(failed())
                 : ({ kind: "acquired", reservation } as const);
@@ -305,7 +440,11 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute({
             label: "route-attachment.completion.release",
-            text: `UPDATE community_route_attachment_completion_attempts SET state='released',retryable_observation=$7,updated_at=clock_timestamp()
+            text: `UPDATE community_route_attachment_completion_attempts
+                SET state=CASE WHEN $8::boolean AND NOT $9::boolean THEN 'not_attempted'
+                               ELSE 'released' END,
+                    retryable_observation=$7 OR ($8::boolean AND $9::boolean),
+                    updated_at=clock_timestamp()
                 WHERE completion_attempt_id=$1 AND namespace_session_id=$2 AND actor_id=$3
                   AND idempotency_key=$4 AND completion_request_sha256=$5 AND fence_token=$6 AND state='leased'`,
             values: [
@@ -316,6 +455,9 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
               input.completion_request_sha256,
               input.reservation.fence_token,
               input.retryable_observation === true,
+              input.not_attempted === true,
+              // A row counted before this lease is never refunded.
+              input.reservation.counted_before,
             ],
             readonly: false,
           });
@@ -370,6 +512,8 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                 row.attachment_status !== "verification_required"
               )
                 return { kind: "lease_lost" } as const;
+              if (!(yield* isCurrentCeremony(tx, input.request)))
+                return { kind: "conflict" } as const;
               const allowed = yield* tx.execute<Row>({
                 label: "route-attachment.completion.recheck-authority",
                 text: "SELECT has_community_route_authority($1,$2) AS allowed,clock_timestamp() AS now",

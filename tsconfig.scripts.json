@@ -2,6 +2,7 @@
   "extends": "./tsconfig.json",
   "include": [
     "scripts/hns-staging-gateway-fixture.ts",
+    "scripts/hns-previous-verifier-bundle.ts",
     "packages",
     "apps",
     "scripts/api-client-provenance.ts",

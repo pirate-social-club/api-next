@@ -329,9 +329,13 @@ export function makeControlPlaneRouteAttachmentOwnershipStartStore(
               if (row.session_status !== null && row.session_status !== undefined) {
                 const start = decodeStart(row);
                 const id = text(row, "namespace_session_id");
-                return start === null || id === null
-                  ? yield* Effect.fail(failed())
-                  : ({ kind: "replay", namespace_session_id: id, start } as const);
+                if (start === null || id === null) return yield* Effect.fail(failed());
+                if (
+                  row.session_status === "pending" &&
+                  Date.parse(start.session.expires_at) <= Date.now()
+                )
+                  return { kind: "challenge_expired" } as const;
+                return { kind: "replay", namespace_session_id: id, start } as const;
               }
               const lease = instant(row.lease_expires_at);
               if (row.state === "acquired" && lease !== null && Date.parse(lease) > Date.now())
@@ -398,9 +402,13 @@ export function makeControlPlaneRouteAttachmentOwnershipStartStore(
                 if (session !== null) {
                   const value = decodeStart(session),
                     id = text(session, "namespace_session_id");
-                  return value === null || id === null
-                    ? yield* Effect.fail(failed())
-                    : ({ kind: "replay", namespace_session_id: id, start: value } as const);
+                  if (value === null || id === null) return yield* Effect.fail(failed());
+                  if (
+                    session.status === "pending" &&
+                    Date.parse(value.session.expires_at) <= Date.now()
+                  )
+                    return { kind: "challenge_expired" } as const;
+                  return { kind: "replay", namespace_session_id: id, start: value } as const;
                 }
                 const lease = instant(row.lease_expires_at);
                 if (row.state === "acquired" && lease !== null && Date.parse(lease) > Date.now())

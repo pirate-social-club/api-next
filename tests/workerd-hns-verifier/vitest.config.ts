@@ -48,6 +48,10 @@ const alias = {
     "../../packages/platform-cf/src/namespace-ownership/hns-private-driver-transport.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/hns-root-import-publication-authorization-postgres": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-root-import-publication-authorization-postgres.ts",
+    import.meta.url,
+  ).pathname,
 };
 
 export default defineConfig({
