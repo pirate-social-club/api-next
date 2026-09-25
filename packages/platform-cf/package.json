@@ -23,6 +23,8 @@
     "./hns-root-import-lifecycle-observability": "./src/hns-root-import-lifecycle-observability.ts",
     "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
     "./spaces-owner-proof-repository": "./src/spaces-owner-proof-repository.ts",
+    "./spaces-final-issuance-verifier": "./src/spaces-final-issuance-verifier.ts",
+    "./spaces-reconciliation-repository": "./src/spaces-reconciliation-repository.ts",
     "./spaces-operator-assignment-repository": "./src/spaces-operator-assignment-repository.ts",
     "./spaces-taproot-inventory": "./src/spaces-taproot-inventory.ts",
     "./spaces-taproot-intent-repository": "./src/spaces-taproot-intent-repository.ts",
