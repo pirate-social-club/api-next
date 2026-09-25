@@ -180,7 +180,8 @@
     "./handle-nationality-authoring-repository": "./src/handle-nationality-authoring-repository.ts",
     "./handle-nationality-qualification-repository": "./src/handle-nationality-qualification-repository.ts",
     "./avatar-store": "./src/avatar-store.ts",
-    "./avatar-storage": "./src/avatar-storage.ts"
+    "./avatar-storage": "./src/avatar-storage.ts",
+    "./song-library-repository": "./src/song-library-repository.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
