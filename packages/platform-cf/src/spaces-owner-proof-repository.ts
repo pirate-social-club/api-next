@@ -14,6 +14,9 @@ import type { SpacesRootAuthorityEvidenceV1 } from "./spaces-root-authority-evid
 
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const hexId = () => randomUUID().replaceAll("-", "");
+// Both routes declare exact-json. The transport rejects the request unless its
+// UTF-8 body is exactly JSON.stringify(decoded), so this reproduces the full
+// accepted HTTP body byte for byte for durable replay comparison.
 const raw = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8");
 const iso = (value: unknown): string => new Date(value as string).toISOString();
 const text = (value: unknown): string => {

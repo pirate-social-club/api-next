@@ -80,6 +80,18 @@ describe("Spaces root authority response boundary", () => {
         false,
       ).operator_num_live,
     ).toBe(true);
+    expect(() =>
+      parseSpacesRootAuthorityEvidenceV1(
+        bytes({
+          ...baseline,
+          operator_num_live: true,
+          operator_num_outpoint: `${"55".repeat(32)}:0`,
+          operator_num_holder_script_pubkey_hex: "not-a-taproot-script",
+        }),
+        "yahoo",
+        false,
+      ),
+    ).toThrow();
   });
 
   it("rejects changed roots, stale anchors, altered bytes, and false signatures", () => {

@@ -100,7 +100,7 @@ export function parseSpacesRootAuthorityEvidenceV1(
       liveOutpoint !== null &&
       outpoint.test(liveOutpoint) &&
       holderScript !== null &&
-      script.test(holderScript) !== null &&
+      script.test(holderScript) &&
       evidence.reverse_delegation_matches
     : liveOutpoint === null &&
       holderScript === null &&
