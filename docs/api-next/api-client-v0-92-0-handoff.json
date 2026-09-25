@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.92.0",
+  "sourceBranch": "feat/megapot-winner-send-record",
+  "sourceBase": "ab0cde83fddd6f2ae42da3c100de2ee442b57674",
+  "validatedSourceCommit": "e7dd288507d9d2f6915cf1288e88b0a7f9c6f00a",
+  "pullRequest": null,
+  "wireContract": "Megapot winner send record. Adds POST /rewards/credits/{creditId}/send {recipient, amount_atomic, idempotency_key} and GET /rewards/credits/{creditId}/send, POST /rewards/winner-sends/{sendId}/transactions {transaction_hash}, POST /rewards/winner-sends/{sendId}/cancellation {transaction_hash} and GET /rewards/winner-sends/{sendId}, each returning the signed-in user's reward_winner_send {send_id, credit_id, status: retryable|pending|confirmed|reverted|settled_unverified|cancelled, chain_id, sender, recipient, token_address, amount_atomic, nonce, attempt, transaction_hashes, cancellation_hashes}. The client must sign the ERC-20 transfer (or the zero-value self-transaction for a cancellation) with exactly the returned nonce. A second open send from the same wallet is 409 \"Another send from this wallet is in progress\". RewardCreditV1 gains a required nullable send {send_id, status}, so Solid must adopt this client before or with the API deploy. All routes are unavailable while Megapot rewards are disabled.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.92.0.tgz",
+    "sha256": "e40214a6231e9106e80631bdf472b79f05b6d73a70db85e1c7bd1aa97ab0ba13"
+  },
+  "validation": {
+    "status": "Local candidate; hosted review and paired Solid adoption pending",
+    "passed": [
+      "Contract generation and freshness",
+      "Immutable package creation and verification of the generated 0.92.0 client",
+      "OpenAPI breaking-change check against source base 732e13a4",
+      "Repository check and complete unit test graph",
+      "Winner send, foundation, gas top-up, rewards song-offer, composed-settlement and activity-qualification PostgreSQL 17 suites"
+    ],
+    "remaining": [
+      "Hosted required checks on the exact pull-request head",
+      "Paired Solid 0.92.0 adoption before or with the API deploy carrying these contracts, because RewardCreditV1 gains the send field.",
+      "Release sequencing: open api-next PR #417 still claims 0.90.0 and migration 0202; it must re-cut its package as the next unused version (0.93.0 once this lands) with a new artifact, digest, ledger row and handoff, and renumber its migration."
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use, chain transaction or live product mutation occurred."
+  }
+}

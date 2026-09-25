@@ -40,6 +40,7 @@ export * from "./rewards/reward-offer-terminal.ts";
 export * from "./rewards/reward-payout.ts";
 export * from "./rewards/reward-projections.ts";
 export * from "./rewards/reward-refund.ts";
+export * from "./rewards/reward-winner-send.ts";
 export * from "./rewards/song-reward-offers.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./song-owner-video-policy.ts";
