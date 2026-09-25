@@ -214,6 +214,7 @@
     "0211_spaces_registry.sql": "728abd7b19dec3742f90d14fd6b184bf532a6e7fcdc9a74ebde73c06ea529021",
     "0212_spaces_final_issuance.sql": "a9b594061f2f39fc28f0c484ac4ebda41c3c56eac80f50945bf8ecb4bd78c1f7",
     "0213_spaces_owner_proof_ceremony.sql": "346ea2a9eb1dcdea6c7ae590baec633ab57a7ff9b7f6e257835a3bb9159acfea",
-    "0214_spaces_operator_ceremony.sql": "94324f48bfa846af0dbcb02d4503d082532153be0278cc6ecfec9a38398b8557"
+    "0214_spaces_operator_ceremony.sql": "94324f48bfa846af0dbcb02d4503d082532153be0278cc6ecfec9a38398b8557",
+    "0215_spaces_taproot_inventory_intent.sql": "3ea2e4407ad75d6358a7c75cd40c741dfa76eeff775d2d3460bc3b591de215b1"
   }
 }

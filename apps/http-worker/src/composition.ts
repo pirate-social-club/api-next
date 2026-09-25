@@ -187,6 +187,8 @@ import {
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
+import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
 import {
   type CloudflareStudyGenerationWorkflowBinding,
   makeCloudflareStudyGenerationWorkflowLauncher,
@@ -266,6 +268,7 @@ import {
   makeSongPlaybackHandlers,
   type SongPlaybackBindings,
 } from "./song-playback-composition.ts";
+import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
@@ -1287,6 +1290,22 @@ export async function createProductionHttpWorker(
       },
     },
   });
+  const spacesTaprootHandlers = makeSpacesTaprootHandlers({
+    // No browser may create a wallet until the staging provider acceptance gate passes.
+    enabled: false,
+    preparations: makeControlPlaneSpacesTaprootPreparationStore(controlPlane),
+    intents: makeControlPlaneSpacesTaprootIntentStore(controlPlane),
+    readInventory: (proof) =>
+      proofVerifier.readPrivyEmbeddedTaprootInventory({
+        accessToken: proof.privy_access_token,
+        identityToken: proof.privy_identity_token ?? null,
+        network: "mainnet",
+      }),
+    canonicalAccountId: (sourceUserId) =>
+      resolvePrivyCredentialAccount(sourceUserId).pipe(
+        Effect.map((identity) => identity.canonicalUserId),
+      ),
+  });
   const activityQualificationHandlers = makeActivityQualificationHandlers({
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -1606,6 +1625,7 @@ export async function createProductionHttpWorker(
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,
+      ...spacesTaprootHandlers,
       ...activityQualificationHandlers,
       ...karaokeReadinessHandlers,
       ...karaokeHandlers,

@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { schnorr } from "@noble/curves/secp256k1.js";
 import {
   HandleSalesRejected,
   SpacesSaleNamespaceNotReady,
@@ -34,6 +35,7 @@ import {
   spacesRoot,
 } from "./spaces-sale-namespace.pg-fixture.ts";
 import { makeControlPlaneSpacesSaleNamespaceStore } from "./spaces-sale-namespace-repository.ts";
+import { makeControlPlaneSpacesTaprootIntentStore } from "./spaces-taproot-intent-repository.ts";
 import { makeControlPlaneSpacesTaprootPreparationStore } from "./spaces-taproot-preparation-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -43,7 +45,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_SALE_NAMESPACE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete";
-const testCount = 14;
+const testCount = 15;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000a001";
@@ -1575,6 +1577,93 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
           delegationAddress: delegation,
         }),
       ).rejects.toThrow("live operator instance");
+    });
+    completed++;
+  });
+
+  test("marks one provider create, reconciles inventory and activates only a signed wallet", async () => {
+    await withSchema(async (admin, connection) => {
+      await configureSpacesNetwork(admin);
+      const accountId = "taproot-intent-owner";
+      const personaId = await seedAccount(admin, accountId, { humanEvidence: false });
+      const assignment = await Effect.runPromise(
+        taproot(connection).prepare({
+          accountId,
+          personaId,
+          idempotencyKey: "taproot-intent-one",
+          network: "regtest",
+        }),
+      );
+      const store = makeControlPlaneSpacesTaprootIntentStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const identity = {
+        accountId,
+        personaId,
+        assignmentId: assignment.assignmentId,
+        network: "regtest" as const,
+      };
+      const key = new Uint8Array(32).fill(7);
+      const outputKey = Buffer.from(schnorr.getPublicKey(key)).toString("hex");
+      const address = regtestAddress(outputKey);
+      const wallet = {
+        providerId: "wallet_taproot_1",
+        index: 2,
+        address,
+        outputScriptHex: `5120${outputKey}`,
+        publicKeyHex: `02${outputKey}`,
+      };
+      expect(await Effect.runPromise(store.prepare(identity, []))).toMatchObject({
+        state: "prepared",
+      });
+      expect(await Effect.runPromise(store.prepare(identity, []))).toMatchObject({
+        state: "prepared",
+      });
+      expect(await Effect.runPromise(store.beginCreate(identity))).toMatchObject({
+        mayCreate: true,
+      });
+      expect(await Effect.runPromise(store.beginCreate(identity))).toMatchObject({
+        mayCreate: false,
+      });
+      expect(await Effect.runPromise(store.status(identity, []))).toMatchObject({
+        kind: "pending",
+      });
+      const candidate = await Effect.runPromise(store.status(identity, [wallet]));
+      if (candidate.kind !== "candidate") throw new Error("missing wallet candidate");
+      // A new process/session recovers the same candidate from durable state.
+      const recovered = makeControlPlaneSpacesTaprootIntentStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      expect(await Effect.runPromise(recovered.status(identity, [wallet]))).toEqual(candidate);
+      expect(
+        await failureOf(store.confirm(identity, [wallet], wallet.providerId, "00".repeat(64))),
+      ).toMatchObject({ reason: "invalid" });
+      const signature = Buffer.from(
+        schnorr.sign(Buffer.from(candidate.challengeDigestHex, "hex"), key),
+      ).toString("hex");
+      expect(
+        await Effect.runPromise(store.confirm(identity, [wallet], wallet.providerId, signature)),
+      ).toMatchObject({
+        address,
+        outputScriptHex: wallet.outputScriptHex,
+        replay: false,
+      });
+      expect(
+        await Effect.runPromise(store.confirm(identity, [wallet], wallet.providerId, signature)),
+      ).toMatchObject({ replay: true });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,hd_wallet_index,privy_wallet_id FROM persona_wallet_assignments WHERE assignment_id=$1",
+            [assignment.assignmentId],
+          )
+        ).rows[0],
+      ).toMatchObject({
+        status: "active",
+        hd_wallet_index: "2",
+        privy_wallet_id: wallet.providerId,
+      });
+      expect(await failureOf(store.beginCreate(identity))).toMatchObject({ reason: "conflict" });
     });
     completed++;
   });

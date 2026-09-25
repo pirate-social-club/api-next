@@ -421,6 +421,7 @@ TRUNCATE TABLE
   "spaces_registry_occupancy_observations",
   "spaces_registry_scope_anomalies",
   "spaces_root_observations",
+  "spaces_taproot_creation_intents",
   "sponsor_daily_ticket_totals",
   "sponsor_withdrawal_effects",
   "study_attempts_v2",

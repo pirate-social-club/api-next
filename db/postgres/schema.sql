@@ -12034,7 +12034,10 @@ BEGIN
      OR NEW.persona_id IS DISTINCT FROM OLD.persona_id
      OR NEW.account_id IS DISTINCT FROM OLD.account_id
      OR NEW.chain_account_kind IS DISTINCT FROM OLD.chain_account_kind
-     OR NEW.hd_wallet_index IS DISTINCT FROM OLD.hd_wallet_index
+     OR (NEW.hd_wallet_index IS DISTINCT FROM OLD.hd_wallet_index AND NOT
+       (OLD.chain_account_kind='bitcoin-taproot' AND OLD.status='pending'
+        AND NEW.status='active' AND OLD.hd_wallet_index IS NULL
+        AND NEW.hd_wallet_index IS NOT NULL))
      OR NEW.reservation_idempotency_key IS DISTINCT FROM OLD.reservation_idempotency_key
      OR NEW.created_at IS DISTINCT FROM OLD.created_at
      OR NEW.bitcoin_network IS DISTINCT FROM OLD.bitcoin_network THEN
@@ -13937,6 +13940,35 @@ BEGIN
     OR NEW.occurrence_count < OLD.occurrence_count
     OR (OLD.alerted_at IS NOT NULL AND NEW.alerted_at IS DISTINCT FROM OLD.alerted_at) THEN
     RAISE EXCEPTION 'Spaces registry scope anomaly transition is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_spaces_taproot_creation_intent_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Taproot creation intent cannot be deleted';
+  END IF;
+  IF NEW.assignment_id IS DISTINCT FROM OLD.assignment_id
+    OR NEW.account_id IS DISTINCT FROM OLD.account_id
+    OR NEW.persona_id IS DISTINCT FROM OLD.persona_id
+    OR NEW.bitcoin_network IS DISTINCT FROM OLD.bitcoin_network
+    OR NEW.baseline_wallets IS DISTINCT FROM OLD.baseline_wallets
+    OR NEW.challenge_nonce_hex IS DISTINCT FROM OLD.challenge_nonce_hex
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Taproot creation intent identity is immutable';
+  END IF;
+  IF OLD.state='prepared' AND NEW.state NOT IN ('prepared','create_started') THEN
+    RAISE EXCEPTION 'Taproot create must be marked before reconciliation';
+  END IF;
+  IF OLD.state='create_started' AND NEW.state NOT IN ('create_started','ambiguous','active') THEN
+    RAISE EXCEPTION 'Taproot create state cannot move backward';
+  END IF;
+  IF OLD.state IN ('ambiguous','active') AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'terminal Taproot create state is immutable';
   END IF;
   RETURN NEW;
 END;
@@ -35056,6 +35088,25 @@ CREATE TABLE spaces_root_observations (
     CONSTRAINT spaces_root_observations_root_state_check CHECK ((root_state = ANY (ARRAY['resolved'::text, 'unresolved'::text])))
 );
 
+CREATE TABLE spaces_taproot_creation_intents (
+    assignment_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    bitcoin_network text NOT NULL,
+    baseline_wallets jsonb NOT NULL,
+    challenge_nonce_hex text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    started_at timestamp with time zone,
+    candidate_privy_wallet_id text,
+    confirm_signature_hex text,
+    confirmed_at timestamp with time zone,
+    CONSTRAINT spaces_taproot_creation_intents_baseline_wallets_check CHECK ((jsonb_typeof(baseline_wallets) = 'array'::text)),
+    CONSTRAINT spaces_taproot_creation_intents_challenge_nonce_hex_check CHECK ((challenge_nonce_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_taproot_creation_intents_check CHECK ((((state = 'prepared'::text) AND (started_at IS NULL) AND (candidate_privy_wallet_id IS NULL) AND (confirm_signature_hex IS NULL) AND (confirmed_at IS NULL)) OR ((state = ANY (ARRAY['create_started'::text, 'ambiguous'::text])) AND (started_at IS NOT NULL) AND (candidate_privy_wallet_id IS NULL) AND (confirm_signature_hex IS NULL) AND (confirmed_at IS NULL)) OR ((state = 'active'::text) AND (started_at IS NOT NULL) AND (confirmed_at >= started_at) AND (candidate_privy_wallet_id IS NOT NULL) AND (confirm_signature_hex ~ '^[0-9a-f]{128}$'::text)))),
+    CONSTRAINT spaces_taproot_creation_intents_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'create_started'::text, 'ambiguous'::text, 'active'::text])))
+);
+
 CREATE TABLE sponsor_daily_ticket_totals (
     sponsor_account_id text NOT NULL,
     sponsor_day date NOT NULL,
@@ -38361,6 +38412,9 @@ ALTER TABLE ONLY spaces_registry_scope_anomalies
 ALTER TABLE ONLY spaces_root_observations
     ADD CONSTRAINT spaces_root_observations_pk PRIMARY KEY (network, canonical_root, observation_generation);
 
+ALTER TABLE ONLY spaces_taproot_creation_intents
+    ADD CONSTRAINT spaces_taproot_creation_intents_pkey PRIMARY KEY (assignment_id);
+
 ALTER TABLE ONLY sponsor_daily_ticket_totals
     ADD CONSTRAINT sponsor_daily_ticket_totals_pkey PRIMARY KEY (sponsor_account_id, sponsor_day, sponsor_kind);
 
@@ -40294,6 +40348,8 @@ CREATE TRIGGER spaces_registry_scope_anomaly_change_guard BEFORE DELETE OR UPDAT
 CREATE TRIGGER spaces_root_observation_insert_guard BEFORE INSERT ON spaces_root_observations FOR EACH ROW EXECUTE FUNCTION guard_spaces_observation_insert_v1();
 
 CREATE TRIGGER spaces_root_observations_append_only BEFORE DELETE OR UPDATE ON spaces_root_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
+CREATE TRIGGER spaces_taproot_creation_intents_change_guard BEFORE DELETE OR UPDATE ON spaces_taproot_creation_intents FOR EACH ROW EXECUTE FUNCTION guard_spaces_taproot_creation_intent_v1();
 
 CREATE TRIGGER sponsor_daily_ticket_totals_change_guard BEFORE DELETE OR UPDATE ON sponsor_daily_ticket_totals FOR EACH ROW EXECUTE FUNCTION guard_sponsor_daily_totals();
 
@@ -42990,6 +43046,18 @@ ALTER TABLE ONLY spaces_registry_scope_anomalies
 
 ALTER TABLE ONLY spaces_root_observations
     ADD CONSTRAINT spaces_root_observations_network_fkey FOREIGN KEY (network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_taproot_creation_intents
+    ADD CONSTRAINT spaces_taproot_creation_intents_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY spaces_taproot_creation_intents
+    ADD CONSTRAINT spaces_taproot_creation_intents_assignment_id_fkey FOREIGN KEY (assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
+
+ALTER TABLE ONLY spaces_taproot_creation_intents
+    ADD CONSTRAINT spaces_taproot_creation_intents_bitcoin_network_fkey FOREIGN KEY (bitcoin_network) REFERENCES spaces_network_configuration(network);
+
+ALTER TABLE ONLY spaces_taproot_creation_intents
+    ADD CONSTRAINT spaces_taproot_creation_intents_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY sponsor_daily_ticket_totals
     ADD CONSTRAINT sponsor_daily_ticket_totals_sponsor_account_id_fkey FOREIGN KEY (sponsor_account_id) REFERENCES users(user_id);

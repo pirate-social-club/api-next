@@ -117,6 +117,11 @@ import {
 } from "./spaces-operator-assignment.ts";
 import { PollSpacesOwnership, StartSpacesOwnership } from "./spaces-owner-proof.ts";
 import {
+  ConfirmPersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  PreparePersonaSpacesTaproot,
+} from "./spaces-taproot-wallet.ts";
+import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
   RequestStudyGenerationV2,
@@ -161,6 +166,9 @@ export const registry = {
   CreatePersona,
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
+  PreparePersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  ConfirmPersonaSpacesTaproot,
   RetirePersona,
   ...platformPirateHandleRegistry,
   ...v1Registry,
