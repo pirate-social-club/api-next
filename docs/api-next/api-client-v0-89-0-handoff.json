@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.89.0",
+  "sourceBranch": "feat/megapot-participant-claim-endpoint",
+  "sourceBase": "d88bcac474adefe10bca56ae87cbdb2558c728b8",
+  "validatedSourceCommit": "513f31a0279c7144e7ccfd3c7660a9149c17bc13",
+  "pullRequest": null,
+  "wireContract": "Spec 015 §5.2a participant claim. Adds POST /rewards/credits/{creditId}/claim, which claims one of the signed-in user's Megapot participant credits and returns the outcome (accepted, subject_conflict, verification_missing, verification_stale, verification_failed, not_claimable) with the credit; an absent or foreign credit is 404. Every reward credit gains claim, null for credits that need no claim, with status unclaimed, accepted or subject_conflict and, once accepted, payout_status pending, recipient_pending, submitted, confirmed or failed_retrying.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.89.0.tgz",
+    "sha256": "4d8790d2022cd60c0ca0982eb0c42c97a6ed4ef45a262dfc3e838ab9e2c45c3c"
+  },
+  "validation": {
+    "status": "Local candidate; hosted review and paired Solid adoption pending",
+    "passed": [],
+    "remaining": [
+      "Hosted required checks on the exact pull-request head",
+      "Paired Solid 0.89.0 adoption (slice C)"
+    ],
+    "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use or live product mutation occurred."
+  }
+}
