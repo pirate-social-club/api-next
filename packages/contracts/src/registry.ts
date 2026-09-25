@@ -40,7 +40,7 @@ import {
   ReserveDanceSessionUpload,
   SubmitDanceSessionForGrading,
 } from "./dance-attempt.ts";
-import { handleSalesRegistry } from "./handle-sales.ts";
+import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
@@ -117,6 +117,16 @@ import {
   UpdateSongOwnerPolicy,
 } from "./song-owner-video-policy.ts";
 import {
+  ConfirmSpacesOperatorAssignment,
+  GetSpacesOperatorAssignments,
+} from "./spaces-operator-assignment.ts";
+import { PollSpacesOwnership, StartSpacesOwnership } from "./spaces-owner-proof.ts";
+import {
+  ConfirmPersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  PreparePersonaSpacesTaproot,
+} from "./spaces-taproot-wallet.ts";
+import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
   RequestStudyGenerationV2,
@@ -155,12 +165,15 @@ export const registry = {
   GetCurrentHnsCommunityRootImport,
   PollHnsCommunityRootImport,
   ActivateHnsCommunityRootImport,
-  ...handleSalesRegistry,
+  ...handleSalesSpacesRegistry,
   ListMyPersonas,
   ListMyPendingPersonaWallets,
   CreatePersona,
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
+  PreparePersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  ConfirmPersonaSpacesTaproot,
   RetirePersona,
   ...platformPirateHandleRegistry,
   ...v1Registry,
@@ -170,6 +183,10 @@ export const registry = {
   ...verification,
   ...money,
   StartNamespaceOwnership,
+  StartSpacesOwnership,
+  PollSpacesOwnership,
+  GetSpacesOperatorAssignments,
+  ConfirmSpacesOperatorAssignment,
   PollNamespaceOwnership,
   CreateKaraokeAttempt,
   GetKaraokeReadiness,

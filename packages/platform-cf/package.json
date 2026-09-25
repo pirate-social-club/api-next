@@ -22,6 +22,11 @@
     "./hns-host-persistence-repository": "./src/hns-host-persistence-repository.ts",
     "./hns-root-import-lifecycle-observability": "./src/hns-root-import-lifecycle-observability.ts",
     "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
+    "./spaces-owner-proof-repository": "./src/spaces-owner-proof-repository.ts",
+    "./spaces-operator-assignment-repository": "./src/spaces-operator-assignment-repository.ts",
+    "./spaces-taproot-inventory": "./src/spaces-taproot-inventory.ts",
+    "./spaces-taproot-intent-repository": "./src/spaces-taproot-intent-repository.ts",
+    "./spaces-taproot-preparation-repository": "./src/spaces-taproot-preparation-repository.ts",
     "./hns-community-publication-queue": "./src/hns-community-publication-queue.ts",
     "./hns-community-root-import-repository": "./src/hns-community-root-import-repository.ts",
     "./hns-activation-current-view-repository": "./src/hns-activation-current-view-repository.ts",
@@ -178,7 +183,9 @@
     "./avatar-storage": "./src/avatar-storage.ts"
   },
   "dependencies": {
+    "@noble/curves": "2.3.0",
     "@pirate/verifier-response-contract": "0.0.0",
+    "@scure/base": "1.2.6",
     "@selfxyz/core": "1.2.0-beta.1",
     "jose": "6.2.2",
     "pg": "8.16.3",

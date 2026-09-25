@@ -430,6 +430,8 @@ jobs:
           /tmp/api-next-control-plane-postgres-hns-observer-suite-complete
           /tmp/api-next-control-plane-postgres-hns-host-persistence-suite-complete
           /tmp/api-next-control-plane-postgres-handle-sales-suite-complete
+          /tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete
+          /tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete
           /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
@@ -469,6 +471,8 @@ jobs:
           CONTROL_PLANE_POSTGRES_HNS_OBSERVER_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-hns-observer-suite-complete
           CONTROL_PLANE_POSTGRES_HNS_HOST_PERSISTENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-hns-host-persistence-suite-complete
           CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-handle-sales-suite-complete
+          CONTROL_PLANE_POSTGRES_SPACES_SALE_NAMESPACE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete
+          CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-dance-reference-suite-complete

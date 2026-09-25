@@ -17,6 +17,8 @@ import {
   NotFound,
   toErrorBody,
 } from "@pirate/contracts";
+import type { SpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
+import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { Schema } from "effect";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -49,6 +51,13 @@ import {
 } from "./hns-handle-host-api-composition.ts";
 import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
+import { makeSpacesOperatorAssignmentHandlers } from "./spaces-operator-assignment-handlers.ts";
+import { makeSpacesOperatorAssignmentTransport } from "./spaces-operator-assignment-transport.ts";
+import { makeSpacesOwnerProofHandlers } from "./spaces-owner-proof-handlers.ts";
+import {
+  makeSpacesRegistryTransport,
+  type SpacesRegistryTransportOptions,
+} from "./spaces-registry-transport.ts";
 
 export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
@@ -156,6 +165,12 @@ export interface HttpWorkerOptions {
   readonly hnsCommunityAppApi?: HnsCommunityAppApiComposition;
   /** Source-closed public handle-host authority. Production remains disabled and unbound. */
   readonly hnsHandleHostApi?: HnsHandleHostApiComposition;
+  /** Private operator registry; absent in every production composition by default. */
+  readonly spacesRegistry?: SpacesRegistryTransportOptions;
+  /** Absent in production until scoped verifier credentials are installed. */
+  readonly spacesOwnerProof?: SpacesOwnerProofStore;
+  /** Absent until scoped host credentials and an independent verifier are composed. */
+  readonly spacesOperatorAssignments?: SpacesOperatorAssignmentStore;
 }
 
 type HttpWorkerEnv = {
@@ -661,6 +676,10 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "ListCommunityHandleOfferingManagement",
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "StartSpacesOwnership",
+  "PollSpacesOwnership",
+  "GetSpacesOperatorAssignments",
+  "ConfirmSpacesOperatorAssignment",
   "GetHandleNationalityAuthoring",
   "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
@@ -749,8 +768,24 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   }
   const hnsHandleHostApi =
     options.hnsHandleHostApi ?? disabledProductionHnsHandleHostApiComposition;
+  const spacesRegistry =
+    options.spacesRegistry === undefined
+      ? undefined
+      : makeSpacesRegistryTransport(options.spacesRegistry);
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
     options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
+  const spacesOwnerProofHandlers =
+    options.spacesOwnerProof === undefined
+      ? undefined
+      : makeSpacesOwnerProofHandlers(options.spacesOwnerProof);
+  const spacesOperatorAssignmentHandlers =
+    options.spacesOperatorAssignments === undefined
+      ? undefined
+      : makeSpacesOperatorAssignmentHandlers(options.spacesOperatorAssignments);
+  const spacesOperatorAssignmentTransport =
+    options.spacesOperatorAssignments === undefined
+      ? undefined
+      : makeSpacesOperatorAssignmentTransport(options.spacesOperatorAssignments);
   const sessionExchangeHandler =
     options.sessionExchange === undefined
       ? undefined
@@ -759,6 +794,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     (binding) =>
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
+        spacesOwnerProofHandlers?.[binding.name] !== undefined ||
+        spacesOperatorAssignmentHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
   );
@@ -779,6 +816,12 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const pathname = requestUrl.pathname;
     if (!hnsCommunityAppApi.enabled && requestUrl.origin === configuredHnsProtectedOrigin) {
       return new Response(null, { status: 503, headers: { "cache-control": "no-store" } });
+    }
+    if (spacesRegistry?.matches(pathname)) {
+      return spacesRegistry.serve(context.req.raw);
+    }
+    if (spacesOperatorAssignmentTransport?.matches(pathname)) {
+      return spacesOperatorAssignmentTransport.serve(context.req.raw);
     }
     if (pathname === "/admin/hns") {
       if (context.req.raw.method !== "GET") {
@@ -869,6 +912,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         const handler =
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
+          spacesOwnerProofHandlers?.[binding.name] ??
+          spacesOperatorAssignmentHandlers?.[binding.name] ??
           (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
             ? makeIdentityRegistrationHandler(options.identityRegistration)

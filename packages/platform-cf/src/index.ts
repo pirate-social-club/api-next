@@ -357,6 +357,15 @@ export {
 } from "./session-tokens";
 export * from "./song-owner-video-policy-repository.ts";
 export * from "./song-reward-offer-repository.ts";
+export {
+  makeSpacesFinalIssuanceVerifier,
+  type SpacesVerifierCredentials,
+  type SpacesVerifierFetch,
+} from "./spaces-final-issuance-verifier.ts";
+export {
+  makeControlPlaneSpacesSaleNamespaceRepository,
+  makeControlPlaneSpacesSaleNamespaceStore,
+} from "./spaces-sale-namespace-repository.ts";
 export * from "./study-spoken-answer-recovery.ts";
 export * from "./study-translation-repository.ts";
 export {

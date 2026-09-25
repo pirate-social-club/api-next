@@ -191,6 +191,8 @@ import {
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
+import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
 import {
   type CloudflareStudyGenerationWorkflowBinding,
   makeCloudflareStudyGenerationWorkflowLauncher,
@@ -270,6 +272,12 @@ import {
   makeSongPlaybackHandlers,
   type SongPlaybackBindings,
 } from "./song-playback-composition.ts";
+import {
+  makeSpacesProductionComposition,
+  type SpacesRuntimeBindings,
+  spacesTaprootRecipientEnabled,
+} from "./spaces-production-composition.ts";
+import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
@@ -282,7 +290,8 @@ import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-acces
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
     SongPlaybackBindings,
-    TelegramBindings {
+    TelegramBindings,
+    SpacesRuntimeBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -838,6 +847,11 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const spacesRuntime = makeSpacesProductionComposition(
+    bindings,
+    controlPlane,
+    config.API_NEXT_ENV,
+  );
   const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
@@ -1291,6 +1305,21 @@ export async function createProductionHttpWorker(
       },
     },
   });
+  const spacesTaprootHandlers = makeSpacesTaprootHandlers({
+    enabled: spacesTaprootRecipientEnabled(bindings, config.API_NEXT_ENV),
+    preparations: makeControlPlaneSpacesTaprootPreparationStore(controlPlane),
+    intents: makeControlPlaneSpacesTaprootIntentStore(controlPlane),
+    readInventory: (proof) =>
+      proofVerifier.readPrivyEmbeddedTaprootInventory({
+        accessToken: proof.privy_access_token,
+        identityToken: proof.privy_identity_token ?? null,
+        network: "mainnet",
+      }),
+    canonicalAccountId: (sourceUserId) =>
+      resolvePrivyCredentialAccount(sourceUserId).pipe(
+        Effect.map((identity) => identity.canonicalUserId),
+      ),
+  });
   const activityQualificationHandlers = makeActivityQualificationHandlers({
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -1598,6 +1627,7 @@ export async function createProductionHttpWorker(
     avatarAuthoring,
   );
   const worker = createHttpWorker({
+    ...spacesRuntime,
     config: {
       corsOrigin: config.CORS_ORIGIN,
       hnsCommunityAppApiProtectedOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
@@ -1622,6 +1652,7 @@ export async function createProductionHttpWorker(
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,
+      ...spacesTaprootHandlers,
       ...activityQualificationHandlers,
       ...karaokeReadinessHandlers,
       ...karaokeHandlers,

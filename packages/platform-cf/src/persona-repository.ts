@@ -1066,6 +1066,25 @@ export function makeControlPlanePersonaWalletRepository() {
                 if (tombstoned.rowCount !== 1) {
                   return yield* new PersonaWalletStoreConflict({ reason: "reservation-mismatch" });
                 }
+                // Spec 014 section 12.4: retirement also tombstones the persona's
+                // optional Taproot recipient. It is never recycled or reassigned,
+                // and the EVM invariant above is unchanged. Pirate's Spaces grants
+                // for the persona are tombstoned by the Spaces grant path; the
+                // finalized native name itself persists outside Pirate.
+                const taproot = yield* transaction.execute({
+                  label: "personas.retire.tombstone-taproot",
+                  text: `UPDATE persona_wallet_assignments
+                            SET status='tombstoned',tombstoned_at=clock_timestamp(),
+                                updated_at=clock_timestamp()
+                          WHERE account_id=$1 AND persona_id=$2
+                            AND chain_account_kind='bitcoin-taproot'
+                            AND status IN ('pending','active')`,
+                  values: [accountId, personaId],
+                  readonly: false,
+                });
+                if (taproot.rowCount !== null && taproot.rowCount > 1) {
+                  return yield* Effect.die("duplicate live Taproot assignment");
+                }
                 const retired = yield* transaction.execute<{ retired_at: Date | string }>({
                   label: "personas.retire.commit",
                   text: `UPDATE personas SET status='retired',retired_at=clock_timestamp()
