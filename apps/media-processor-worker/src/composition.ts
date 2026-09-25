@@ -92,6 +92,8 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
     readonly OPENAI_MODERATION_ENABLED?: string;
+    /** `sampled_frame_openai_v1` enables the Spec 013 v1 automatic video publication gate. */
+    readonly VIDEO_SAFETY_GATE?: string;
     readonly OPENROUTER_API_KEY?: string;
     readonly QENCODE_API_KEY?: string;
     readonly VIDEO_SOURCE_GATEWAY_ORIGIN?: string;
@@ -431,6 +433,8 @@ export function makeMediaProcessorComposition(
             ),
             readPolicy: store.readModerationPolicy,
             evidence: makeVideoSafetyEvidenceStore(runtime),
+            sampledFrameGate:
+              videoModeration !== null && env.VIDEO_SAFETY_GATE === "sampled_frame_openai_v1",
           }),
       }
     : undefined;

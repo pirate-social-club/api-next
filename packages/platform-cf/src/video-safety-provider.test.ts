@@ -35,6 +35,7 @@ async function fixture(
     | "bad-digest"
     | "disabled"
     | "oversized-evidence" = "clean",
+  sampledFrameGate = false,
 ) {
   const bytes = new Uint8Array([255, 216, 255, 217]);
   const sha256 = await mediaSha256Bytes(bytes);
@@ -165,6 +166,7 @@ async function fixture(
     },
   });
   const moderate = makeVideoSafetyProvider({
+    sampledFrameGate,
     image: mode === "disabled" ? null : port,
     text: port,
     readFrame: async (reference) => {
@@ -522,3 +524,53 @@ test("persisted frame results replay after aggregate evidence persistence fails"
   await expect(f.moderate(f.input)).rejects.toThrow("evidence write failed");
   expect(f.calls).toEqual(["image", "image", "image"]);
 });
+
+test("the v1 sampled-frame gate allows clean frames, names itself and leaves minor-safety evidence null", async () => {
+  const f = await fixture("clean", true);
+  const fact = await f.moderate(f.input);
+  expect(fact).toMatchObject({
+    mediaSafety: "allow",
+    captionSafety: "not_applicable",
+    minorSafetyEvidenceRef: null,
+    gateKind: "sampled_frame_openai_v1",
+    adapterRevision: "video-openai-safety-v2",
+  });
+  expect(fact.sampledFrameEvidenceRef).toBe(
+    fact.evidenceRef.replace("evidence_", "sampled_frame_openai_v1_"),
+  );
+  expect(f.calls).toEqual(["image", "image", "image"]);
+  // Persisted results replay without another provider call.
+  expect(await f.moderate(f.input)).toEqual(fact);
+  expect(f.calls).toHaveLength(3);
+});
+
+test("without the gate, clean frames stay in review with no gate evidence", async () => {
+  const fact = await (await fixture("clean", false)).moderate(
+    (await fixture("clean", false)).input,
+  );
+  expect(fact.mediaSafety).toBe("review_required");
+  expect(fact.gateKind).toBeUndefined();
+  expect(fact.sampledFrameEvidenceRef).toBeUndefined();
+});
+
+test("under a policy that permits adult content, the gate allows it rated 18+", async () => {
+  const f = await fixture("adult", true);
+  const fact = await f.moderate(f.input);
+  expect(fact.mediaSafety).toBe("allow");
+  expect(fact.automatedRating).toBe("adult_18");
+  expect(fact.gateKind).toBe("sampled_frame_openai_v1");
+  expect(fact.minorSafetyEvidenceRef).toBeNull();
+});
+
+test.each(["minors", "caption", "adult-review", "bad-digest", "disabled"] as const)(
+  "the v1 sampled-frame gate fails closed: %s",
+  async (mode) => {
+    const f = await fixture(mode, true);
+    const fact = await f.moderate(f.input);
+    expect(fact.mediaSafety).not.toBe("allow");
+    expect(fact.minorSafetyEvidenceRef).toBeNull();
+    expect(fact.gateKind).toBeUndefined();
+    expect(fact.sampledFrameEvidenceRef).toBeUndefined();
+    if (mode === "minors") expect(fact.mediaSafety).toBe("blocked");
+  },
+);

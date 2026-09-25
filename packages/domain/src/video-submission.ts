@@ -136,6 +136,9 @@ export type VideoTrustedAnalysis = Readonly<{
     captionSha256: string | null;
     evidenceRef: string;
     minorSafetyEvidenceRef: string | null;
+    /** Spec 013 v1 automatic video publication amendment; never minor-safety evidence. */
+    gateKind?: "sampled_frame_openai_v1";
+    sampledFrameEvidenceRef?: string;
   }>;
   mediaSafety: "allow" | "review_required" | "blocked";
   captionSafety: "not_applicable" | "allow" | "review_required" | "blocked";
@@ -433,7 +436,17 @@ export function validateVideoTrustedAnalysis(
     analysis.safetyRequest.captionSha256 !== canonicalCaptionSha256 ||
     (state.caption === null && analysis.captionSafety !== "not_applicable") ||
     (state.caption !== null && analysis.captionSafety === "not_applicable") ||
-    (analysis.mediaSafety === "allow" && analysis.safetyRequest.minorSafetyEvidenceRef === null)
+    // Allow needs visual minor-safety evidence, or the owner-enabled v1
+    // sampled-frame gate's own evidence (Spec 013, 2026-09-25), which keeps
+    // minor-safety evidence null rather than standing in for it.
+    (analysis.mediaSafety === "allow" &&
+      analysis.safetyRequest.minorSafetyEvidenceRef === null &&
+      !(
+        analysis.safetyRequest.gateKind === "sampled_frame_openai_v1" &&
+        present(analysis.safetyRequest.sampledFrameEvidenceRef ?? "")
+      )) ||
+    (analysis.safetyRequest.gateKind !== undefined &&
+      analysis.safetyRequest.minorSafetyEvidenceRef !== null)
   )
     return "safety_binding";
   return null;
