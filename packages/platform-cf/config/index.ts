@@ -417,6 +417,11 @@ export const HttpWorkerConfig = Config.all({
   HNS_OWNERSHIP_CONFIGURATION_VERSION: Config.string("HNS_OWNERSHIP_CONFIGURATION_VERSION").pipe(
     Config.withDefault(""),
   ),
+  // Protocols the pinned HNS ownership provider entry advertises beyond
+  // hns-txt-v1. Empty keeps every import on the unchanged contract.
+  HNS_OWNERSHIP_CAPABILITIES: Config.string("HNS_OWNERSHIP_CAPABILITIES").pipe(
+    Config.withDefault(""),
+  ),
   HNS_COMMUNITY_APP_API_ENABLED: Config.boolean("HNS_COMMUNITY_APP_API_ENABLED").pipe(
     Config.withDefault(false),
   ),

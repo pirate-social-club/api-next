@@ -28381,7 +28381,8 @@
                                     "root_resource_unavailable",
                                     "zone_not_provisioned",
                                     "challenge_not_published",
-                                    "provider_unavailable"
+                                    "provider_unavailable",
+                                    "ownership_check_attempts_exhausted"
                                   ]
                                 },
                                 {
@@ -29257,7 +29258,8 @@
                                     "root_resource_unavailable",
                                     "zone_not_provisioned",
                                     "challenge_not_published",
-                                    "provider_unavailable"
+                                    "provider_unavailable",
+                                    "ownership_check_attempts_exhausted"
                                   ]
                                 },
                                 {
@@ -30660,7 +30662,8 @@
                                             "root_resource_unavailable",
                                             "zone_not_provisioned",
                                             "challenge_not_published",
-                                            "provider_unavailable"
+                                            "provider_unavailable",
+                                            "ownership_check_attempts_exhausted"
                                           ]
                                         },
                                         {
@@ -31919,7 +31922,8 @@
                                     "root_resource_unavailable",
                                     "zone_not_provisioned",
                                     "challenge_not_published",
-                                    "provider_unavailable"
+                                    "provider_unavailable",
+                                    "ownership_check_attempts_exhausted"
                                   ]
                                 },
                                 {
@@ -33209,7 +33213,8 @@
                                     "root_resource_unavailable",
                                     "zone_not_provisioned",
                                     "challenge_not_published",
-                                    "provider_unavailable"
+                                    "provider_unavailable",
+                                    "ownership_check_attempts_exhausted"
                                   ]
                                 },
                                 {
@@ -34085,7 +34090,8 @@
                                     "root_resource_unavailable",
                                     "zone_not_provisioned",
                                     "challenge_not_published",
-                                    "provider_unavailable"
+                                    "provider_unavailable",
+                                    "ownership_check_attempts_exhausted"
                                   ]
                                 },
                                 {
@@ -35174,7 +35180,8 @@
                                     "root_resource_unavailable",
                                     "zone_not_provisioned",
                                     "challenge_not_published",
-                                    "provider_unavailable"
+                                    "provider_unavailable",
+                                    "ownership_check_attempts_exhausted"
                                   ]
                                 },
                                 {

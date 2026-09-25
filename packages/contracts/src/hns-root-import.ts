@@ -388,6 +388,9 @@ export const HnsCommunityRootImportFailureReasonV1 = Schema.Literals([
   "zone_not_provisioned",
   "challenge_not_published",
   "provider_unavailable",
+  // Three ownership checks were refused. The import does not resume on its
+  // own and is not retryable by the owner; it needs operator recovery.
+  "ownership_check_attempts_exhausted",
 ]);
 export type HnsCommunityRootImportFailureReasonV1 = Schema.Schema.Type<
   typeof HnsCommunityRootImportFailureReasonV1

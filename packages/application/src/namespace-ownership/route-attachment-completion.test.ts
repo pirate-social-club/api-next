@@ -5,6 +5,7 @@ import {
   type NamespaceOwnershipProviderCompleteResult,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
+  NamespaceOwnershipProviderUnsupportedProtocol,
 } from "./adapter.ts";
 import { makeNamespaceOwnershipProviderRegistry } from "./registry.ts";
 import {
@@ -26,6 +27,7 @@ const input = {
 const stored = {
   namespace_session_id: "namespace-1",
   revision: 1,
+  import_publication: null,
   status: "pending" as const,
   terminal: null,
   session: {
@@ -232,4 +234,145 @@ test("poll release preserves deterministic rejection versus transient failure", 
     ).rejects.toMatchObject({ reason });
     expect(releases).toBe(1);
   }
+});
+
+describe("hns-txt-import-v1 completion for an exposed import", () => {
+  const openWindow = {
+    root_import_session_id: "root-import-1",
+    root_label: "dankmemes",
+    publish_plan_sha256: "7".repeat(64),
+    challenge_value_sha256: "8".repeat(64),
+    window_open: true,
+    reason: "open",
+    valid_until: "2026-09-18T10:00:00.000Z",
+  };
+  // The hns-txt-v1 session is past its own one-hour clock.
+  const exposed = {
+    ...stored,
+    session: { ...stored.session, expires_at: "2026-09-04T08:00:00.000Z" },
+    import_publication: openWindow,
+  };
+
+  async function importServices(
+    completeImport: NamespaceOwnershipProviderAdapter["completeRouteAttachmentImport"],
+    completionStore: RouteAttachmentCompletionStore,
+  ) {
+    return {
+      registry: await Effect.runPromise(
+        makeNamespaceOwnershipProviderRegistry(
+          [
+            {
+              ...provider({ status: "pending" }),
+              ...(completeImport === undefined
+                ? {}
+                : { completeRouteAttachmentImport: completeImport }),
+            },
+          ],
+          { now: () => now },
+        ),
+      ),
+      store: completionStore,
+      ids: { attempt: () => "completion-1", evidence: () => "evidence-1" },
+    };
+  }
+
+  test("a closed window refuses before any reservation", async () => {
+    let reserved = 0;
+    await expect(
+      Effect.runPromise(
+        completeRouteAttachmentOwnership(
+          input,
+          await importServices(
+            () => Effect.die("provider not expected"),
+            store({
+              load: () =>
+                Effect.succeed({
+                  ...exposed,
+                  import_publication: {
+                    ...openWindow,
+                    window_open: false,
+                    reason: "recovery_required",
+                  },
+                }),
+              reserve: () =>
+                Effect.sync(() => reserved++).pipe(Effect.as({ kind: "conflict" as const })),
+            }),
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      reason: "publication_window_closed",
+      window_reason: "recovery_required",
+    });
+    expect(reserved).toBe(0);
+  });
+
+  test("a provider entry without the capability reserves nothing and stays retryable", async () => {
+    let reserved = 0;
+    const result = await Effect.runPromise(
+      completeRouteAttachmentOwnership(
+        input,
+        await importServices(
+          undefined,
+          store({
+            load: () => Effect.succeed(exposed),
+            reserve: () =>
+              Effect.sync(() => reserved++).pipe(Effect.as({ kind: "conflict" as const })),
+          }),
+        ),
+      ),
+    );
+    expect(result).toMatchObject({ status: "unavailable", retry_after_seconds: 60 });
+    expect(reserved).toBe(0);
+  });
+
+  test("an unsupported answer is released as not attempted", async () => {
+    const releases: unknown[] = [];
+    const result = await Effect.runPromise(
+      completeRouteAttachmentOwnership(
+        input,
+        await importServices(
+          () =>
+            Effect.fail(
+              new NamespaceOwnershipProviderUnsupportedProtocol({
+                provider_id: "hns.owner.v1",
+                operation: "complete",
+              }),
+            ),
+          store({
+            load: () => Effect.succeed(exposed),
+            release: (value) =>
+              Effect.sync(() => releases.push(value.not_attempted)).pipe(Effect.as("released")),
+          }),
+        ),
+      ),
+    );
+    expect(result).toMatchObject({ status: "unavailable", retry_after_seconds: 60 });
+    expect(releases).toEqual([true]);
+  });
+
+  test("the import method receives the database window, not the session clock", async () => {
+    let binding: unknown;
+    const result = await Effect.runPromise(
+      completeRouteAttachmentOwnership(
+        input,
+        await importServices(
+          (value) => {
+            binding = value.binding;
+            return Effect.succeed({ status: "pending" as const });
+          },
+          store({ load: () => Effect.succeed(exposed) }),
+        ),
+      ),
+    );
+    expect(result).toMatchObject({ status: "pending" });
+    expect(binding).toEqual({
+      protocol_version: "hns-txt-import-v1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      publish_plan_sha256: "7".repeat(64),
+      challenge_value_sha256: "8".repeat(64),
+      valid_until: "2026-09-18T10:00:00.000Z",
+    });
+  });
 });

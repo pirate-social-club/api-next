@@ -29,6 +29,7 @@ function wireFailure(error: unknown): Error {
     readonly _tag?: string;
     readonly reason?: string;
     readonly retry_after_seconds?: number;
+    readonly window_reason?: string;
   };
   // Preserve the originating failure while retaining the declared quota and
   // ownership responses from the current production contract.
@@ -52,6 +53,33 @@ function wireFailure(error: unknown): Error {
     return new Conflict({ message: "HNS root import conflicts with durable state" });
   if (tagged.reason === "ownership_conflict")
     return new Conflict({ message: "This HNS name is already attached to another community" });
+  // Each of these is final for the request that met it, and none is retried
+  // by waiting: the details name what happened and what can be done next.
+  if (tagged.reason === "preparation_expired")
+    return new Conflict({
+      message: "This HNS import expired before it started. Start a new import.",
+      details: { reason: "root_import_preparation_expired", next_action: "start_new_import" },
+    });
+  if (tagged.reason === "ownership_check_exhausted")
+    return new Conflict({
+      message: "The HNS ownership check was refused three times and cannot continue on its own.",
+      details: {
+        reason: "ownership_check_attempts_exhausted",
+        next_action: "operator_recovery",
+      },
+    });
+  if (tagged.reason === "publication_window_closed")
+    return new Conflict({
+      message: "The HNS publication check is not open for this import.",
+      details: {
+        reason: "publication_window_closed",
+        window_reason: tagged.window_reason ?? "unknown",
+        next_action:
+          tagged.window_reason === "session_state" || tagged.window_reason === "phase_closed"
+            ? "read_import_status"
+            : "operator_recovery",
+      },
+    });
   if (tagged.reason === "ownership_misconfigured")
     return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")

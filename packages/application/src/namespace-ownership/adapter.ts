@@ -279,6 +279,33 @@ export type RouteAttachmentOwnershipProviderCompleteInput = Schema.Schema.Type<
   typeof RouteAttachmentOwnershipProviderCompleteInput
 >;
 
+/**
+ * The trusted binding a community root import carries once its publication
+ * plan is exposed (hns-txt-import-v1). Every field comes from the database
+ * publication window, never from the poll's own session clock; the verifier
+ * re-reads the same authorization itself before it observes anything.
+ */
+export const RouteAttachmentImportPublicationBinding = Schema.Struct({
+  protocol_version: Schema.Literal("hns-txt-import-v1"),
+  root_import_session_id: CanonicalNonEmptyString,
+  root_label: CanonicalNonEmptyString,
+  publish_plan_sha256: Sha256Hex,
+  challenge_value_sha256: Sha256Hex,
+  valid_until: CanonicalIsoInstant,
+});
+export type RouteAttachmentImportPublicationBinding = Schema.Schema.Type<
+  typeof RouteAttachmentImportPublicationBinding
+>;
+
+export const RouteAttachmentImportOwnershipProviderCompleteInput = Schema.Struct({
+  session: RouteAttachmentOwnershipSession,
+  binding: RouteAttachmentImportPublicationBinding,
+  submission: NamespaceOwnershipSubmission,
+});
+export type RouteAttachmentImportOwnershipProviderCompleteInput = Schema.Schema.Type<
+  typeof RouteAttachmentImportOwnershipProviderCompleteInput
+>;
+
 export const NamespaceOwnershipProviderCompleteContext = Schema.Struct({
   namespace_session_id: NamespaceOwnershipProviderStartContext.fields.namespace_session_id,
   observation_id: CanonicalNonEmptyString.check(
@@ -396,8 +423,20 @@ export class NamespaceOwnershipProviderMisconfigured extends Data.TaggedError(
   readonly operation: NamespaceOwnershipProviderOperation;
 }> {}
 
+/**
+ * The provider build does not implement the requested protocol, or has it
+ * disabled. Nothing was observed, so the caller must not count the attempt.
+ */
+export class NamespaceOwnershipProviderUnsupportedProtocol extends Data.TaggedError(
+  "NamespaceOwnershipProviderUnsupportedProtocol",
+)<{
+  readonly provider_id: string;
+  readonly operation: "complete";
+}> {}
+
 export type NamespaceOwnershipProviderFailure =
   | NamespaceOwnershipProviderUnavailable
+  | NamespaceOwnershipProviderUnsupportedProtocol
   | NamespaceOwnershipProviderRejected
   | NamespaceOwnershipProviderUnboundRejected
   | NamespaceOwnershipProviderObservationRejected
@@ -432,6 +471,15 @@ export interface NamespaceOwnershipProviderAdapter {
   >;
   readonly completeRouteAttachment?: (
     input: RouteAttachmentOwnershipProviderCompleteInput,
+    context: NamespaceOwnershipProviderCompleteContext,
+  ) => Effect.Effect<NamespaceOwnershipProviderCompleteResult, NamespaceOwnershipProviderFailure>;
+  /**
+   * hns-txt-import-v1. Present only when the provider registry entry
+   * advertises the capability; its absence means the caller must not reserve
+   * a completion attempt.
+   */
+  readonly completeRouteAttachmentImport?: (
+    input: RouteAttachmentImportOwnershipProviderCompleteInput,
     context: NamespaceOwnershipProviderCompleteContext,
   ) => Effect.Effect<NamespaceOwnershipProviderCompleteResult, NamespaceOwnershipProviderFailure>;
 }

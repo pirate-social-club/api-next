@@ -14,6 +14,7 @@ const Claim = Schema.Struct({
   expected_revision: Schema.Number,
   fence: Schema.Number,
   authorized: Schema.Boolean,
+  window_closed: Schema.Boolean,
 });
 export function makeHnsCommunityPublicationQueue(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -32,14 +33,21 @@ export function makeHnsCommunityPublicationQueue(
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
-              const allowed = yield* tx.execute({
+              // After plan exposure the acknowledgement is bounded by the
+              // lifecycle publication window, never by the one-hour challenge.
+              const allowed = yield* tx.execute<Record<string, unknown>>({
                 label: "hns.publication.authorize",
-                text: `SELECT s.root_import_session_id FROM hns_root_import_sessions s
+                text: `SELECT s.root_import_session_id,
+                   (s.expires_at>clock_timestamp()) AS session_clock_open,
+                   window_state.exposed, window_state.window_open, window_state.reason
+            FROM hns_root_import_sessions s
             JOIN communities c ON c.community_id=s.community_id
             JOIN users u ON u.user_id=s.actor_id
+            CROSS JOIN LATERAL hns_root_import_publication_window_decision_v1(
+              s.root_import_session_id) AS window_state
             WHERE s.root_import_session_id=$1 AND s.actor_id=$2 AND s.community_id=$3
               AND s.revision=$4 AND s.status='awaiting_owner_update'
-              AND s.expires_at>clock_timestamp() AND s.origin_kind='community_attachment'
+              AND s.origin_kind='community_attachment'
               AND c.status='active' AND u.status='active'
               AND has_community_route_authority(s.community_id,s.actor_id)
             FOR UPDATE OF s`,
@@ -51,7 +59,16 @@ export function makeHnsCommunityPublicationQueue(
                 ],
                 readonly: false,
               });
-              if (allowed.rowCount !== 1) return false;
+              const authorized = allowed.rows[0];
+              if (allowed.rowCount !== 1 || authorized === undefined)
+                return { kind: "conflict" } as const;
+              if (authorized.exposed === true && authorized.window_open !== true)
+                return {
+                  kind: "window_closed",
+                  reason: typeof authorized.reason === "string" ? authorized.reason : "unknown",
+                } as const;
+              if (authorized.exposed !== true && authorized.session_clock_open !== true)
+                return { kind: "conflict" } as const;
               // The acknowledgement, its scheduled observation work, and the
               // lifecycle transition are one commit. A replayed acknowledgement
               // is a replay in the reducer — deadlines untouched — and
@@ -88,7 +105,9 @@ export function makeHnsCommunityPublicationQueue(
                 ],
                 readonly: true,
               });
-              return retained.rowCount === 1;
+              return retained.rowCount === 1
+                ? ({ kind: "queued" } as const)
+                : ({ kind: "conflict" } as const);
             }),
           );
         }),
@@ -110,8 +129,14 @@ export function makeHnsCommunityPublicationQueue(
           FROM due WHERE j.root_import_session_id=due.root_import_session_id RETURNING j.*
         ) SELECT j.actor_id,j.community_id,j.root_import_session_id,j.idempotency_key,
           j.expected_revision::integer,j.fence_token::integer AS fence,
-          (s.expires_at>clock_timestamp() AND c.status='active' AND u.status='active'
-            AND has_community_route_authority(j.community_id,j.actor_id)) AS authorized
+          ((CASE WHEN hns_root_import_plan_exposed_v1(s.root_import_session_id)
+                 THEN hns_root_import_publication_window_open_v1(s.root_import_session_id)
+                 ELSE s.expires_at>clock_timestamp() END)
+            AND c.status='active' AND u.status='active'
+            AND has_community_route_authority(j.community_id,j.actor_id)) AS authorized,
+          (hns_root_import_plan_exposed_v1(s.root_import_session_id)
+            AND NOT hns_root_import_publication_window_open_v1(s.root_import_session_id))
+            AS window_closed
           FROM leased j JOIN hns_root_import_sessions s USING(root_import_session_id)
           JOIN communities c ON c.community_id=j.community_id JOIN users u ON u.user_id=j.actor_id`,
             values: [],
@@ -120,8 +145,13 @@ export function makeHnsCommunityPublicationQueue(
           if (rows.rows.length === 0) return null;
           const decoded = Schema.decodeUnknownOption(Claim)(rows.rows[0]);
           if (Option.isNone(decoded)) return yield* new HnsCommunityRootImportStorageFailed({});
-          const { fence, authorized, ...input } = decoded.value;
-          return { input, fence, authorized };
+          const { fence, authorized, window_closed, ...input } = decoded.value;
+          return {
+            input,
+            fence,
+            authorized,
+            ...(window_closed ? { refusal_code: "publication_window_closed" } : {}),
+          };
         }),
       ),
     settle: (claim, state, failure) =>
