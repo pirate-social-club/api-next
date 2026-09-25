@@ -1058,7 +1058,7 @@ suite("Postgres 17 activity qualification repository", () => {
     }
   });
 
-  test("projects Study qualification into one Very-gated Megapot share per account", async () => {
+  test("projects Study qualification into one Megapot share per account without entry verification", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const identity = await seedAccountSong(admin, "pool-share");
       const participant = await seedParticipant(admin, identity, "pool-share-missing");
@@ -1232,12 +1232,14 @@ suite("Postgres 17 activity qualification repository", () => {
              WHERE pool_leg_id=$3 AND drawing_id=100) AS shares`,
         [identity.communityId, identity.postId, legId, offerId],
       );
+      // Spec 015 §5.2a: entry needs no Very evidence and consumes no subject;
+      // verification moves to the participant claim.
       expect(counts.rows[0]).toEqual({
-        consumptions: "1",
+        consumptions: "0",
         decisions: "2",
         eligibility: "2",
         qualifications: "4",
-        shares: "1",
+        shares: "2",
       });
 
       const shares = await admin.query<{
@@ -1246,16 +1248,20 @@ suite("Postgres 17 activity qualification repository", () => {
         readonly qualification_id: string;
       }>(
         `SELECT account_id,persona_id,qualification_id
-           FROM megapot_pool_shares WHERE pool_leg_id=$1 AND drawing_id=100`,
+           FROM megapot_pool_shares WHERE pool_leg_id=$1 AND drawing_id=100
+          ORDER BY account_id`,
         [legId],
       );
-      expect(shares.rows).toEqual([
-        {
-          account_id: identity.accountId,
-          persona_id: identity.personaId,
-          qualification_id: "qualification_qualification-pool-share-eligible",
-        },
-      ]);
+      expect(shares.rows).toHaveLength(2);
+      expect(shares.rows.find((row) => row.account_id === identity.accountId)).toEqual({
+        account_id: identity.accountId,
+        persona_id: identity.personaId,
+        qualification_id: "qualification_qualification-pool-share-eligible",
+      });
+      expect(shares.rows.find((row) => row.account_id === participant.accountId)).toMatchObject({
+        account_id: participant.accountId,
+        persona_id: participant.personaId,
+      });
 
       const decisions = await admin.query<{
         readonly account_id: string;
@@ -1281,9 +1287,9 @@ suite("Postgres 17 activity qualification repository", () => {
         },
         {
           account_id: participant.accountId,
-          decision_outcome: "needs_evidence",
-          outcome: "ineligible",
-          reason: "verification_missing",
+          decision_outcome: "pass",
+          outcome: "eligible",
+          reason: null,
         },
       ]);
       const consumptions = await admin.query<{
@@ -1292,12 +1298,12 @@ suite("Postgres 17 activity qualification repository", () => {
       }>(`SELECT campaign_id,user_id FROM reward_subject_consumptions WHERE campaign_id=$1`, [
         offerId,
       ]);
-      expect(consumptions.rows).toEqual([{ campaign_id: offerId, user_id: identity.accountId }]);
+      expect(consumptions.rows).toEqual([]);
     });
   });
 
   for (const reward of ["megapot", "asset"] as const) {
-    test(`independent ${reward} admission ignores membership and refuses absent or revoked proof`, async () => {
+    test(`independent ${reward} admission ${reward === "megapot" ? "admits without entry proof" : "ignores membership and refuses absent or revoked proof"}`, async () => {
       await withSchema(async ({ admin, scopedConnection }) => {
         const owner = await seedAccountSong(admin, `money-${reward}`);
         const { legId } =
@@ -1358,6 +1364,9 @@ suite("Postgres 17 activity qualification repository", () => {
           },
         ] as const;
         for (const scenario of scenarios) {
+          // Spec 015 §5.2a: Megapot pool entry needs no Very evidence; asset
+          // bonuses keep the §8.1 admission rule.
+          const expectedReason = reward === "megapot" ? null : scenario.reason;
           const suffix = `${reward}-${scenario.key}`;
           const actor = await seedParticipant(admin, owner, suffix);
           if (scenario.proof !== "missing") {
@@ -1450,8 +1459,8 @@ suite("Postgres 17 activity qualification repository", () => {
           );
           expect(decision.rows).toEqual([
             {
-              outcome: scenario.reason === null ? "eligible" : "ineligible",
-              reason: scenario.reason,
+              outcome: expectedReason === null ? "eligible" : "ineligible",
+              reason: expectedReason,
             },
           ]);
           const awardCount = async () =>
@@ -1463,7 +1472,7 @@ suite("Postgres 17 activity qualification repository", () => {
                 [legId, actor.accountId],
               )
             ).rows[0]?.count;
-          expect(await awardCount()).toBe(scenario.reason === null ? 1 : 0);
+          expect(await awardCount()).toBe(expectedReason === null ? 1 : 0);
           expect(
             (
               await admin.query(`SELECT status FROM study_sessions WHERE session_id=$1`, [
@@ -1474,12 +1483,13 @@ suite("Postgres 17 activity qualification repository", () => {
           if (scenario.key === "unverified-nonmember") {
             await seedVeryRewardEvidence(admin, actor.accountId, `${suffix}-later`, "6");
             // A later proof and reading qualification evidence cannot replay admission.
+            const settled = expectedReason === null ? 1 : 0;
             await admin.query(
               `SELECT account_id,score_bps FROM activity_qualifications
                WHERE community_id=$1 ORDER BY score_bps DESC`,
               [owner.communityId],
             );
-            expect(await awardCount()).toBe(0);
+            expect(await awardCount()).toBe(settled);
             expect(
               (
                 await admin.query(
@@ -1489,6 +1499,7 @@ suite("Postgres 17 activity qualification repository", () => {
                 )
               ).rows,
             ).toEqual(decision.rows);
+            expect(await awardCount()).toBe(settled);
           }
           if (scenario.key === "verified-nonmember") {
             const duplicate = await seedParticipant(admin, owner, `${suffix}-duplicate-subject`);
@@ -1511,7 +1522,7 @@ suite("Postgres 17 activity qualification repository", () => {
               ).rows,
             ).toEqual([{ count: 0 }]);
           }
-          if (scenario.reason !== null && reward === "megapot") {
+          if (expectedReason !== null && reward === "megapot") {
             const eligibility = await admin.query<{ eligibility_decision_id: string }>(
               `SELECT eligibility_decision_id FROM reward_eligibility_decisions
                WHERE leg_id=$1 AND account_id=$2`,
@@ -1539,7 +1550,7 @@ suite("Postgres 17 activity qualification repository", () => {
     });
   }
 
-  test("never-joined unverified account completes Study and appears in standings without monetary or posting effects", async () => {
+  test("never-joined unverified account completes Study, holds a pool share and has no posting effects or credits", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const owner = await seedAccountSong(admin, "never-joined-owner");
       const actor = await seedParticipant(admin, owner, "never-joined", false);
@@ -1615,7 +1626,9 @@ suite("Postgres 17 activity qualification repository", () => {
             [actor.accountId],
           )
         ).rows,
-      ).toEqual([{ memberships: 0, follows: 0, posts: 0, shares: 0, credits: 0 }]);
+        // Spec 015 §5.2a: a pool share needs no entry verification; money only
+        // moves after a win and an accepted claim, so no credit exists here.
+      ).toEqual([{ memberships: 0, follows: 0, posts: 0, shares: 1, credits: 0 }]);
       expect(
         (
           await admin.query(
@@ -1624,7 +1637,7 @@ suite("Postgres 17 activity qualification repository", () => {
             [legId, actor.accountId],
           )
         ).rows,
-      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
+      ).toEqual([{ outcome: "eligible", reason: null }]);
       // The same command key cannot replay protected song content after rating changes.
       await admin.query("SET session_replication_role = replica");
       try {
@@ -1641,7 +1654,7 @@ suite("Postgres 17 activity qualification repository", () => {
     });
   });
 
-  test("ratified participation keeps completion after membership loss and admits money only from independent evidence", async () => {
+  test("ratified participation keeps completion after membership loss and admits pool shares without entry evidence", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const identity = await seedAccountSong(admin, "participation-money");
       const missing = await seedParticipant(admin, identity, "participation-missing");
@@ -1705,30 +1718,34 @@ suite("Postgres 17 activity qualification repository", () => {
       );
       expect(decisions.rows).toEqual(
         [
-          { account_id: missing.accountId, outcome: "ineligible", reason: "verification_missing" },
+          { account_id: missing.accountId, outcome: "eligible", reason: null },
           { account_id: identity.accountId, outcome: "eligible", reason: null },
         ].sort((left, right) => left.account_id.localeCompare(right.account_id)),
       );
+      const poolAccounts = [missing.accountId, identity.accountId]
+        .sort()
+        .map((account_id) => ({ account_id }));
       const shares = await admin.query(
-        "SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1",
+        "SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1 ORDER BY account_id",
         [legId],
       );
-      expect(shares.rows).toEqual([{ account_id: identity.accountId }]);
+      expect(shares.rows).toEqual(poolAccounts);
       const qualifications = await admin.query(
         `SELECT count(*)::integer AS count
         FROM activity_qualifications WHERE community_id=$1`,
         [identity.communityId],
       );
       expect(qualifications.rows).toEqual([{ count: 2 }]);
-      // Later verification is not an instruction to replay a past qualification.
+      // Later verification neither replays nor duplicates a past qualification.
       await seedVeryRewardEvidence(admin, missing.accountId, "participation-later", "2");
       expect(
         (
-          await admin.query("SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1", [
-            legId,
-          ])
+          await admin.query(
+            "SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1 ORDER BY account_id",
+            [legId],
+          )
         ).rows,
-      ).toEqual([{ account_id: identity.accountId }]);
+      ).toEqual(poolAccounts);
       expect(
         (
           await admin.query(
@@ -1737,7 +1754,7 @@ suite("Postgres 17 activity qualification repository", () => {
             [legId, missing.accountId],
           )
         ).rows,
-      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
+      ).toEqual([{ outcome: "eligible", reason: null }]);
     });
   });
 

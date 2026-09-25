@@ -57,6 +57,7 @@ export const GoldenObservation = Schema.Struct({
       reserved_atomic: RehearsalAtomic,
       state: Schema.String,
       receipt_confirmed: Schema.Boolean,
+      claim_status: Schema.NullOr(Schema.Literals(["accepted", "subject_conflict"])),
     }),
   ),
 });
@@ -71,11 +72,12 @@ function participantDecisions(p: GoldenParticipant, observation: GoldenObservati
 }
 
 /**
- * Every planned activity must qualify. The share projection (migration 0134)
- * emits one eligibility decision per account, leg and drawing: only the first
- * qualifying activity of an admitted account gets a decision, and later ones
- * are skipped once the share exists. A refused account gets one decision per
- * qualification because no share ever stops the projection.
+ * Every planned activity must qualify. Under Spec 015 §5.2a (migration 0203)
+ * Megapot entry needs no Very evidence: every qualifying participant, whether
+ * or not it holds evidence, gets exactly one eligible decision and one share,
+ * for its first qualifying activity; later qualifying activities are skipped
+ * once the share exists. `expected_admission` now only records whether the
+ * account holds Very evidence, which matters when it claims a win.
  */
 function participantAdmissionSatisfied(
   p: GoldenParticipant,
@@ -90,19 +92,8 @@ function participantAdmissionSatisfied(
     ),
   );
   if (!qualified) return false;
-  const decisions = participantDecisions(p, observation);
-  if (p.expected_admission === "eligible")
-    return decisions.some(
-      (d) =>
-        d.outcome === "eligible" && p.activities.includes(d.activity_key as "study" | "karaoke"),
-    );
-  return p.activities.every((activity) =>
-    decisions.some(
-      (d) =>
-        d.activity_key === activity &&
-        d.outcome === "ineligible" &&
-        d.reason === "verification_missing",
-    ),
+  return participantDecisions(p, observation).some(
+    (d) => d.outcome === "eligible" && p.activities.includes(d.activity_key as "study" | "karaoke"),
   );
 }
 
@@ -110,20 +101,20 @@ export function assertGoldenAdmission(
   input: MultiGoldenInput,
   observation: GoldenObservation,
 ): void {
-  const positives = input.participants.filter((p) => p.expected_admission === "eligible");
+  const participants = input.participants;
   if (
     observation.community_id !== input.community_id ||
     observation.post_id !== input.post_id ||
     observation.audio_revision !== input.audio_revision ||
-    observation.shares.length !== positives.length ||
-    positives.some(
+    observation.shares.length !== participants.length ||
+    participants.some(
       (p) =>
         observation.shares.filter(
           (s) => s.account_id === p.account_id && s.persona_id === p.persona_id,
         ).length !== 1,
     ) ||
-    input.participants.some((p) => !participantAdmissionSatisfied(p, observation)) ||
-    positives.some((p) => participantDecisions(p, observation).length !== 1)
+    participants.some((p) => !participantAdmissionSatisfied(p, observation)) ||
+    participants.some((p) => participantDecisions(p, observation).length !== 1)
   ) {
     throw new Error("Admission does not match the exact participant expectations.");
   }
@@ -140,36 +131,33 @@ export function goldenAdmissionProgress(
     observation.audio_revision !== input.audio_revision
   )
     throw new Error("Observed drawing scope changed.");
-  const eligible = input.participants.filter((p) => p.expected_admission === "eligible");
+  const participants = input.participants;
   if (
-    observation.shares.length > eligible.length ||
+    observation.shares.length > participants.length ||
     observation.shares.some(
       (s) =>
-        eligible.filter((p) => p.account_id === s.account_id && p.persona_id === s.persona_id)
+        participants.filter((p) => p.account_id === s.account_id && p.persona_id === s.persona_id)
           .length !== 1,
     ) ||
     new Set(observation.shares.map((s) => `${s.account_id}:${s.persona_id}`)).size !==
       observation.shares.length ||
     observation.decisions.some((d) => {
-      const participant = input.participants.find(
+      const participant = participants.find(
         (p) => p.account_id === d.account_id && p.persona_id === d.persona_id,
       );
       return (
         participant !== undefined &&
         participant.activities.includes(d.activity_key as "study" | "karaoke") &&
-        (d.outcome !==
-          (participant.expected_admission === "eligible" ? "eligible" : "ineligible") ||
-          (participant.expected_admission === "verification_missing" &&
-            d.reason !== "verification_missing"))
+        d.outcome !== "eligible"
       );
     })
   )
     throw new Error("Admission contains an unexpected share or decision.");
-  if (eligible.some((p) => participantDecisions(p, observation).length > 1))
+  if (participants.some((p) => participantDecisions(p, observation).length > 1))
     throw new Error("Admission contains an unexpected share or decision.");
   if (
-    observation.shares.length < eligible.length ||
-    input.participants.some((p) => !participantAdmissionSatisfied(p, observation))
+    observation.shares.length < participants.length ||
+    participants.some((p) => !participantAdmissionSatisfied(p, observation))
   )
     return "pending";
   assertGoldenAdmission(input, observation);
@@ -195,7 +183,7 @@ export function evaluateGoldenSettlement(
   ) {
     throw new Error("Rehearsal economic bounds exceeded.");
   }
-  const positives = input.participants.filter((p) => p.expected_admission === "eligible");
+  const participants = input.participants;
   const terminal =
     observation.drawing_status === "no_win" || observation.drawing_status === "credited";
   if (
@@ -212,9 +200,9 @@ export function evaluateGoldenSettlement(
     return { state: "reconciliation_pending" as const, terminal: false as const };
   }
   if (
-    observation.beneficiaries.length !== positives.length ||
+    observation.beneficiaries.length !== participants.length ||
     observation.beneficiaries.some((beneficiary, ordinal) => beneficiary.ordinal !== ordinal) ||
-    positives.some(
+    participants.some(
       (p) =>
         observation.beneficiaries.filter(
           (b) => b.account_id === p.account_id && b.persona_id === p.persona_id,
@@ -240,13 +228,17 @@ export function evaluateGoldenSettlement(
   }
   if (
     net < 1n ||
-    observation.credits.length !== positives.length ||
+    observation.credits.length !== participants.length ||
     BigInt(observation.claim_receipt_atomic) !== net
   ) {
     return { state: "reconciliation_pending" as const, terminal: false as const };
   }
+  // Spec 015 §5.2a: a participant credit is paid only after an accepted
+  // claim. Claimed credits must be paid in full with a confirmed receipt;
+  // unclaimed and subject-conflict credits stay held, untouched and owed.
   let paid = 0n;
-  const count = BigInt(positives.length);
+  let held = 0n;
+  const count = BigInt(participants.length);
   for (const beneficiary of observation.beneficiaries) {
     const credit = observation.credits.find(
       (c) =>
@@ -257,6 +249,14 @@ export function evaluateGoldenSettlement(
     const expected = net / count + (BigInt(beneficiary.ordinal) < net % count ? 1n : 0n);
     if (!credit || BigInt(credit.amount_atomic) !== expected)
       throw new Error("Allocation split mismatch.");
+    if (credit.claim_status !== "accepted") {
+      if (BigInt(credit.paid_atomic) !== 0n || credit.receipt_confirmed)
+        throw new Error("Unclaimed credit was paid.");
+      if (BigInt(credit.reserved_atomic) !== 0n)
+        return { state: "reconciliation_pending" as const, terminal: false as const };
+      held += expected;
+      continue;
+    }
     if (
       credit.state !== "sent" ||
       !credit.receipt_confirmed ||
@@ -267,11 +267,13 @@ export function evaluateGoldenSettlement(
     }
     paid += BigInt(credit.paid_atomic);
   }
-  if (paid !== net) throw new Error("Payout conservation mismatch.");
+  if (paid + held !== net) throw new Error("Payout conservation mismatch.");
   return {
     state: "reconciled_win" as const,
     terminal: true as const,
     unexplained_delta_atomic: "0",
+    paid_atomic: paid.toString(),
+    held_unclaimed_atomic: held.toString(),
   };
 }
 

@@ -9,6 +9,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
@@ -2484,7 +2485,18 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         },
       ]);
       const creditId = allocation.allocations[0]?.creditId;
-      if (creditId === null || creditId === undefined) throw new Error("missing payout credit");
+      const winnerAccountId = allocation.allocations[0]?.accountId;
+      if (creditId === null || creditId === undefined || winnerAccountId === undefined)
+        throw new Error("missing payout credit");
+      // Spec 015 §5.2a: a participant credit is held until its account claims it
+      // with current Very evidence; only then does payout pick it up.
+      await expect(Effect.runPromise(work.loadCredits(50))).resolves.not.toContain(creditId);
+      await seedVeryRewardEvidence(admin, winnerAccountId, "payout-claim", "c".repeat(64));
+      const participantClaim = await admin.query<{ outcome: string; claim_status: string }>(
+        "SELECT outcome, claim_status FROM accept_megapot_participant_claim_v1($1, $2)",
+        [creditId, winnerAccountId],
+      );
+      expect(participantClaim.rows).toEqual([{ outcome: "accepted", claim_status: "accepted" }]);
       await expect(Effect.runPromise(work.loadCredits(50))).resolves.toContain(creditId);
       const projections = makeControlPlaneRewardProjectionStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),

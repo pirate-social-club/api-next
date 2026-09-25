@@ -43,6 +43,17 @@ REVOKE INSERT, UPDATE, DELETE ON
   song_derivative_video_policy_observations
 FROM api_next_app;
 REVOKE INSERT, UPDATE, DELETE ON song_owner_policies FROM api_next_app;
+
+-- Megapot participant claims and their subject guards change only through the
+-- claim routine; the audited exception belongs to the operator role below.
+REVOKE INSERT, UPDATE, DELETE ON
+  megapot_participant_claims,
+  megapot_participant_claim_guards
+FROM api_next_app;
+REVOKE ALL ON FUNCTION accept_megapot_participant_claim_v1(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION operator_accept_megapot_participant_claim_v1(TEXT, TEXT, TEXT, TEXT)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION accept_megapot_participant_claim_v1(TEXT, TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION append_song_owner_policy_revision_v1(
   TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT
 ) TO api_next_app;
@@ -126,6 +137,9 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_activation_v1(
 -- path cannot retire infrastructure or resume a parked incident.
 CREATE ROLE api_next_operator LOGIN;
 GRANT USAGE ON SCHEMA public TO api_next_operator;
+GRANT EXECUTE ON FUNCTION operator_accept_megapot_participant_claim_v1(
+  TEXT, TEXT, TEXT, TEXT
+) TO api_next_operator;
 GRANT EXECUTE ON FUNCTION record_hns_root_import_authority_supersession_v1(
   TEXT, BIGINT, TEXT, TEXT
 ) TO api_next_operator;
