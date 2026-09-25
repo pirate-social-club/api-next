@@ -10,9 +10,12 @@ export type {
   PublicSongAssetBonusProjection,
   PublicSongMegapotPoolProjection,
   RewardCredit,
+  RewardCreditClaim,
+  RewardCreditClaimOutcome,
   RewardProjectionFailure,
   RewardProjectionStore,
 } from "./reward-projections.ts";
+export { RewardProjectionRejected } from "./reward-projections.ts";
 
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";

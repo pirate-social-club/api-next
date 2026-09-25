@@ -4,20 +4,14 @@ import {
   continueHnsCommunityPublication,
   preflightEncodeHnsResourceV1,
 } from "@pirate/application/namespace-ownership";
-import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Effect } from "effect";
-import { makeHnsLifecycleObservePort } from "../../hns-authority-provisioner/src/lifecycle-evidence.ts";
 import { runHnsRootImportLifecycleJobOnce } from "../../hns-authority-provisioner/src/lifecycle-executor.ts";
-import {
-  makePostgresHnsLifecycleReadinessPorts,
-  makePostgresHnsRootImportLifecycleQueue,
-} from "../../hns-authority-provisioner/src/lifecycle-queue.ts";
-import { runHnsRootImportReadinessOnce } from "../../hns-authority-provisioner/src/lifecycle-readiness.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import {
   type AcknowledgedImport,
   activate,
   enabledConfiguration,
+  lifecyclePortsFor,
   prepareAcknowledgedImport,
 } from "./hns-community-activation.pg-fixture.ts";
 
@@ -33,63 +27,6 @@ const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
   throw new Error("Postgres required");
 const pgTest = url ? test : test.skip;
-
-function lifecyclePortsFor(base: AcknowledgedImport) {
-  const observer = makeHsdRootResourceObserver({
-    rpc_url: base.hsd.url,
-    authorization: "Basic fixture",
-    chain_network: "regtest",
-    genesis_block_hash: `${"0".repeat(63)}1`,
-    tree_interval_blocks: 36,
-    safe_minimum_confirmations: 12,
-    maximum_tip_age_seconds: 86_400,
-    maximum_future_tip_seconds: 3_600,
-  });
-  const queue = makePostgresHnsRootImportLifecycleQueue(
-    base.scopedConnectionString,
-    makeHnsLifecycleObservePort({
-      observe_chain: (rootLabel, view) => observer(rootLabel, view),
-    }),
-  );
-  const authorityView = (ordinal: 1 | 2) => ({
-    authority_nameserver: `ns${ordinal}.pirate`,
-    authority_address_family: "GLUE4" as const,
-    authority_address: `192.0.2.${52 + ordinal}`,
-    dnssec_validation: "secure" as const,
-    challenge_present: true as const,
-    validated_dnskey_response_sha256: String(ordinal).repeat(64),
-    validated_control_response_sha256: String(ordinal + 2).repeat(64),
-    validated_chain_authority_digest: "5".repeat(64),
-    observed_zone_bytes: base.zoneResult.managed_zone_bytes,
-    observed_zone_sha256: base.zoneResult.managed_rrset_sha256,
-  });
-  const readiness = makePostgresHnsLifecycleReadinessPorts(
-    base.scopedConnectionString,
-    {
-      observe_current_resource: (rootLabel: string) => observer(rootLabel, "current"),
-      reconcile_zone: async () => {},
-      inspect_zone: async () => ({ ...base.zoneResult, created: false }),
-      observe_live: async () => ({
-        authority_views: [authorityView(1), authorityView(2)],
-        gateway: {
-          normalized_host: "app.harbor",
-          gateway_address: base.zoneResult.gateway_ipv4,
-          certificate_spki_sha256: base.zoneResult.gateway_certificate_spki_sha256,
-          http_status: 421 as const,
-        },
-      }),
-    },
-    { environment: "staging", valid_for_seconds: 3600 },
-    queue.finalize,
-  );
-  return {
-    ports: {
-      ...queue,
-      readiness: (job: Parameters<typeof runHnsRootImportReadinessOnce>[0], executorId: string) =>
-        runHnsRootImportReadinessOnce(job, executorId, readiness),
-    },
-  };
-}
 
 async function phaseOf(base: AcknowledgedImport) {
   const result = await base.admin.query<{
@@ -199,8 +136,17 @@ pgTest(
         ).rows[0]?.ownership_result_sha256,
       ).toMatch(/^[0-9a-f]{64}$/u);
 
-      // Current observation advances to the safe-commitment wait.
-      await ensureJob(base, "observe_current");
+      // Current observation advances to the safe-commitment wait. The
+      // acknowledgement scheduled it; nothing is inserted by the test.
+      expect(
+        (
+          await base.admin.query<{ count: number }>(
+            `SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs
+              WHERE root_import_session_id=$1 AND job_kind='observe_current' AND state='queued'`,
+            [base.sessionId],
+          )
+        ).rows[0]?.count,
+      ).toBe(1);
       expect(await runOne()).toMatchObject({ claimed: true, outcome: "completed" });
       expect(await phaseOf(base)).toMatchObject({ phase: "waiting_safe_commitment" });
 

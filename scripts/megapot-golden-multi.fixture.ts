@@ -100,7 +100,6 @@ export function onePalmRehearsalInput(): MultiGoldenInput {
 export function rehearsalObservation(
   input: MultiGoldenInput = rehearsalInput(),
 ): GoldenObservation {
-  const positives = input.participants.filter((p) => p.expected_admission === "eligible");
   return {
     leg_id: "leg",
     drawing_id: "101",
@@ -121,7 +120,7 @@ export function rehearsalObservation(
     other_unresolved_drawings: 0,
     refund_receipt_atomic: "900",
     claim_receipt_atomic: "0",
-    shares: positives.map((p) => ({ account_id: p.account_id, persona_id: p.persona_id })),
+    shares: input.participants.map((p) => ({ account_id: p.account_id, persona_id: p.persona_id })),
     qualifications: input.participants.flatMap((p) =>
       p.activities.map((activity_key) => ({
         account_id: p.account_id,
@@ -129,24 +128,20 @@ export function rehearsalObservation(
         activity_key,
       })),
     ),
-    beneficiaries: positives.map((p, ordinal) => ({
+    beneficiaries: input.participants.map((p, ordinal) => ({
       ordinal,
       account_id: p.account_id,
       persona_id: p.persona_id,
     })),
-    // Mirrors migration 0134: an admitted account gets one decision, for its
-    // first qualifying activity; a refused account gets one per qualification.
-    decisions: input.participants.flatMap((p) =>
-      (p.expected_admission === "eligible" ? p.activities.slice(0, 1) : p.activities).map(
-        (activity_key) => ({
-          account_id: p.account_id,
-          persona_id: p.persona_id,
-          activity_key,
-          outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
-          reason: p.expected_admission === "eligible" ? null : "verification_missing",
-        }),
-      ),
-    ),
+    // Mirrors migration 0203: every participant, verified or not, gets one
+    // eligible decision, for its first qualifying activity.
+    decisions: input.participants.map((p) => ({
+      account_id: p.account_id,
+      persona_id: p.persona_id,
+      activity_key: p.activities[0]!,
+      outcome: "eligible",
+      reason: null,
+    })),
     credits: [],
   };
 }

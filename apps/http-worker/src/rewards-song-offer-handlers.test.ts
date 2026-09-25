@@ -8,6 +8,7 @@ import type {
   SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
 import {
+  RewardProjectionRejected,
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -108,6 +109,8 @@ const assetIntent: RewardFundingIntent = {
 const unexpected = (): never => {
   throw new Error("unexpected fake call");
 };
+
+const claimCalls: { accountId: string; creditId: string }[] = [];
 
 function fixture(
   fundingIntent: RewardFundingIntent = intent,
@@ -262,10 +265,39 @@ function fixture(
             createdAt: now,
             updatedAt: now,
             settledAt: null,
+            claim: { status: "accepted", payoutStatus: "pending" },
           },
         ],
         nextCursor: null,
       }),
+    issueClaimVerificationIntent: ({ accountId }) => {
+      claimCalls.push({ accountId, creditId: "intent" });
+      return Effect.succeed({ intentId: "reward-claim_1" });
+    },
+    claimCredit: ({ accountId, creditId }) => {
+      claimCalls.push({ accountId, creditId });
+      return creditId === "credit_2"
+        ? Effect.succeed({
+            outcome: "verification_missing" as const,
+            credit: {
+              creditId: "credit_2",
+              payoutPersonaId: "persona_1",
+              chainId: 84_532,
+              tokenAddress: leg.tokenAddress,
+              tokenDecimals: 6,
+              amountAtomic: 150n,
+              reservedAtomic: 0n,
+              paidAtomic: 0n,
+              sourceKind: "megapot_allocation" as const,
+              state: "credited" as const,
+              createdAt: now,
+              updatedAt: now,
+              settledAt: null,
+              claim: { status: "unclaimed" as const, payoutStatus: null },
+            },
+          })
+        : Effect.fail(new RewardProjectionRejected({ reason: "not-found" }));
+    },
   };
   const handlers = makeSongRewardOfferHandlers({
     rewardCatalogAuthority: options.production
@@ -709,6 +741,60 @@ describe("song reward offer HTTP handlers", () => {
         },
       ],
     });
+  });
+
+  test("claims a participant credit as the signed-in account only", async () => {
+    claimCalls.length = 0;
+    const unauthenticated = await fixture().request("/rewards/credits/credit_2/claim", {
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    expect(claimCalls).toEqual([]);
+
+    const headers = { authorization: "Bearer test" };
+    const claimed = await fixture().request("/rewards/credits/credit_2/claim", {
+      method: "POST",
+      headers,
+    });
+    expect(claimed.status).toBe(200);
+    expect(claimed.headers.get("cache-control")).toBe("no-store");
+    expect(await claimed.json()).toMatchObject({
+      outcome: "verification_missing",
+      credit: {
+        credit_id: "credit_2",
+        amount_atomic: "150",
+        state: "credited",
+        claim: { status: "unclaimed", payout_status: null },
+      },
+    });
+    const missing = await fixture().request("/rewards/credits/credit_9/claim", {
+      method: "POST",
+      headers,
+    });
+    expect(missing.status).toBe(404);
+    expect(claimCalls.map((call) => call.creditId)).toEqual(["credit_2", "credit_9"]);
+    expect(new Set(claimCalls.map((call) => call.accountId)).size).toBe(1);
+
+    const credits = await fixture().request("/rewards/credits?limit=25", { headers });
+    expect(await credits.json()).toMatchObject({
+      items: [{ credit_id: "credit_1", claim: { status: "accepted", payout_status: "pending" } }],
+    });
+  });
+
+  test("issues a reward-claim Very intent for the signed-in account only", async () => {
+    claimCalls.length = 0;
+    const unauthenticated = await fixture().request("/rewards/claim-verification-intents", {
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    const issued = await fixture().request("/rewards/claim-verification-intents", {
+      method: "POST",
+      headers: { authorization: "Bearer test" },
+    });
+    expect(issued.status).toBe(200);
+    expect(issued.headers.get("cache-control")).toBe("no-store");
+    expect(await issued.json()).toEqual({ intent_id: "reward-claim_1", provider_id: "very.web" });
+    expect(claimCalls).toEqual([{ accountId: "account_1", creditId: "intent" }]);
   });
 
   test("maps an internally reclaimable terminal plan to the stable wire status", async () => {

@@ -102,7 +102,7 @@ export async function runMultiGolden(
         activities: p.activities,
         expected_admission: p.expected_admission,
       })),
-      expected_shares: input.participants.filter((p) => p.expected_admission === "eligible").length,
+      expected_shares: input.participants.length,
       activity_mode: input.activity_mode ?? "runner",
       authorization_supplied: input.authorization !== null,
       funding_mode: input.app_funded_pool ? "app-funded" : "runner-created",
