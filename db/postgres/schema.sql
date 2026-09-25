@@ -12745,6 +12745,210 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_winner_send() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  outcome_row reward_winner_send_outcomes%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'reward winner sends are never deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'retryable' OR NEW.attempt <> 1 THEN
+      RAISE EXCEPTION 'a reward winner send must begin retryable at attempt 1';
+    END IF;
+    -- Only the caller's own claimed, paid Megapot participant credit.
+    IF NOT EXISTS (
+      SELECT 1
+        FROM reward_ledger_credits credit
+        JOIN megapot_participant_claims claim
+          ON claim.credit_id = credit.credit_id AND claim.status = 'accepted'
+       WHERE credit.credit_id = NEW.credit_id
+         AND credit.account_id = NEW.account_id
+         AND credit.payout_persona_id = NEW.persona_id
+         AND credit.source_kind = 'megapot_allocation'
+         AND credit.state = 'sent'
+         AND credit.chain_id = NEW.chain_id
+         AND credit.token_address = NEW.token_address
+    ) THEN
+      RAISE EXCEPTION 'a reward winner send requires a claimed and paid participant credit';
+    END IF;
+    -- The sender is the wallet that received the credit's confirmed USDC payout.
+    IF NOT EXISTS (
+      SELECT 1
+        FROM reward_payout_effects payout
+        JOIN reward_chain_effects payout_effect
+          ON payout_effect.effect_id = payout.payout_effect_id
+         AND payout_effect.state = 'confirmed'
+        JOIN reward_erc20_transfer_receipt_evidence evidence
+          ON evidence.effect_id = payout.payout_effect_id
+         AND evidence.transfer_purpose = 'reward_payout'
+         AND evidence.recipient_address = payout.destination_address
+       WHERE payout.credit_id = NEW.credit_id
+         AND payout.account_id = NEW.account_id
+         AND payout.payout_persona_id = NEW.persona_id
+         AND payout.destination_address = NEW.sender_address
+         AND payout.wallet_assignment_id = NEW.wallet_assignment_id
+    ) THEN
+      RAISE EXCEPTION 'a reward winner send must come from the confirmed payout wallet';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(
+    NEW.send_id, NEW.credit_id, NEW.account_id, NEW.persona_id, NEW.wallet_assignment_id,
+    NEW.chain_id, NEW.token_address, NEW.sender_address, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.send_id, OLD.credit_id, OLD.account_id, OLD.persona_id, OLD.wallet_assignment_id,
+    OLD.chain_id, OLD.token_address, OLD.sender_address, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'reward winner send identity is immutable';
+  END IF;
+  IF OLD.status IN ('confirmed', 'cancelled') THEN
+    RAISE EXCEPTION 'a confirmed or cancelled reward winner send is terminal';
+  END IF;
+  IF OLD.status = 'settled_unverified' THEN
+    -- Only late-hash recovery: the same attempt, proven by a finalized receipt.
+    IF NEW.status NOT IN ('confirmed', 'reverted', 'cancelled')
+       OR NEW.attempt <> OLD.attempt OR NOT EXISTS (
+      SELECT 1 FROM reward_winner_send_outcomes outcome
+       WHERE outcome.send_id = NEW.send_id AND outcome.attempt = NEW.attempt
+         AND outcome.outcome = NEW.status
+    ) THEN
+      RAISE EXCEPTION 'a settled_unverified reward winner send requires a proven outcome';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.attempt <> OLD.attempt THEN
+    -- A new attempt only after the current one was mined and reverted at depth.
+    SELECT * INTO outcome_row FROM reward_winner_send_outcomes
+     WHERE send_id = OLD.send_id AND attempt = OLD.attempt AND outcome = 'reverted';
+    IF NEW.attempt <> OLD.attempt + 1 OR OLD.status <> 'reverted'
+       OR NEW.status <> 'retryable' OR outcome_row.outcome IS NULL THEN
+      RAISE EXCEPTION 'a reward winner send may start a new attempt only after a revert';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM reward_winner_send_attempts
+       WHERE send_id = NEW.send_id AND attempt = NEW.attempt
+    ) THEN
+      RAISE EXCEPTION 'a reward winner send attempt must be recorded before it is current';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.status = OLD.status THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.status = 'reverted' THEN
+    RAISE EXCEPTION 'a reverted reward winner send changes only by a new attempt';
+  END IF;
+  IF NEW.status IN ('retryable', 'pending') THEN
+    RETURN NEW;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM reward_winner_send_outcomes outcome
+     WHERE outcome.send_id = NEW.send_id AND outcome.attempt = NEW.attempt
+       AND outcome.outcome = NEW.status
+  ) THEN
+    RAISE EXCEPTION 'a final reward winner send status requires its recorded outcome';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_winner_send_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  send_record reward_winner_sends%ROWTYPE;
+  previous_nonce BIGINT;
+  paid NUMERIC(78, 0);
+BEGIN
+  SELECT * INTO send_record FROM reward_winner_sends WHERE send_id = NEW.send_id FOR UPDATE;
+  IF send_record.send_id IS NULL OR send_record.account_id <> NEW.account_id THEN
+    RAISE EXCEPTION 'a reward winner send attempt must belong to its record''s account';
+  END IF;
+  IF NEW.recipient_address IN (send_record.sender_address, send_record.token_address) THEN
+    RAISE EXCEPTION 'a reward winner send recipient cannot be the sender or the token';
+  END IF;
+  SELECT credit.paid_atomic INTO paid FROM reward_ledger_credits credit
+   WHERE credit.credit_id = send_record.credit_id;
+  IF paid IS NULL OR NEW.amount_atomic > paid THEN
+    RAISE EXCEPTION 'a reward winner send amount cannot exceed the credit''s paid amount';
+  END IF;
+  -- A wallet's nonces only move forward: every earlier reservation by this
+  -- sender on this chain was consumed before a new one could open.
+  IF EXISTS (
+    SELECT 1
+      FROM reward_winner_send_attempts attempt
+      JOIN reward_winner_sends send ON send.send_id = attempt.send_id
+     WHERE send.chain_id = send_record.chain_id
+       AND send.sender_address = send_record.sender_address
+       AND attempt.nonce >= NEW.nonce
+  ) THEN
+    RAISE EXCEPTION 'a reward winner send nonce must exceed every nonce its sender reserved';
+  END IF;
+  IF NEW.attempt = 1 THEN
+    IF send_record.attempt <> 1 OR send_record.status <> 'retryable' THEN
+      RAISE EXCEPTION 'the first reward winner send attempt belongs to a new record';
+    END IF;
+    RETURN NEW;
+  END IF;
+  SELECT attempt.nonce INTO previous_nonce FROM reward_winner_send_attempts attempt
+   WHERE attempt.send_id = NEW.send_id AND attempt.attempt = NEW.attempt - 1;
+  IF NEW.attempt <> send_record.attempt + 1 OR send_record.status <> 'reverted'
+     OR previous_nonce IS NULL OR NEW.nonce <= previous_nonce
+     OR NOT EXISTS (
+       SELECT 1 FROM reward_winner_send_outcomes outcome
+        WHERE outcome.send_id = NEW.send_id AND outcome.attempt = send_record.attempt
+          AND outcome.outcome = 'reverted'
+     ) THEN
+    RAISE EXCEPTION 'a reward winner send retry needs a reverted attempt and a higher nonce';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_winner_send_outcome() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM reward_winner_sends send
+     WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
+       AND (send.status IN ('retryable', 'pending')
+         OR (send.status = 'settled_unverified'
+           AND NEW.outcome IN ('confirmed', 'reverted', 'cancelled')))
+  ) THEN
+    RAISE EXCEPTION 'a reward winner send outcome must settle its open current attempt';
+  END IF;
+  -- cancelled cites a cancel hash; confirmed and reverted cite a transfer.
+  IF NEW.transaction_hash IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM reward_winner_send_transactions transaction
+     WHERE transaction.transaction_hash = NEW.transaction_hash
+       AND transaction.send_id = NEW.send_id AND transaction.attempt = NEW.attempt
+       AND transaction.kind = CASE WHEN NEW.outcome = 'cancelled' THEN 'cancel' ELSE 'transfer' END
+  ) THEN
+    RAISE EXCEPTION 'a reward winner send outcome must cite a hash accepted for its attempt';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_winner_send_transaction() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM reward_winner_sends send
+     WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
+       AND send.status IN ('retryable', 'pending', 'settled_unverified')
+  ) THEN
+    RAISE EXCEPTION 'a reward winner send transaction must belong to its open current attempt';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_song_dance_presentation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -25633,6 +25837,41 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION validate_reward_winner_send_attempt_present() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM reward_winner_send_attempts attempt
+      JOIN reward_winner_sends send ON send.send_id = attempt.send_id
+     WHERE attempt.send_id = NEW.send_id AND attempt.attempt = send.attempt
+  ) THEN
+    RAISE EXCEPTION 'a reward winner send has no current attempt';
+  END IF;
+  RETURN NULL;
+END
+$$;
+
+CREATE FUNCTION validate_reward_winner_send_late_transaction() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM reward_winner_sends send
+      JOIN reward_winner_send_outcomes outcome
+        ON outcome.send_id = send.send_id AND outcome.attempt = send.attempt
+       AND outcome.outcome = 'settled_unverified'
+     WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
+       AND send.status = 'settled_unverified'
+       AND NEW.created_at > outcome.created_at
+  ) THEN
+    RAISE EXCEPTION 'a hash accepted after settled_unverified must prove a final outcome';
+  END IF;
+  RETURN NULL;
+END
+$$;
+
 CREATE FUNCTION validate_route_v1_committed_community() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -34206,6 +34445,75 @@ CREATE TABLE reward_uniqueness_authorities (
     CONSTRAINT reward_uniqueness_authorities_scope_shape_check CHECK ((((scope_kind = 'issuer_rp_scope'::text) AND (issuer_rp_action_scope IS NULL)) OR ((scope_kind = 'issuer_rp_action_scope'::text) AND (issuer_rp_action_scope IS NOT NULL))))
 );
 
+CREATE TABLE reward_winner_send_attempts (
+    send_id text NOT NULL,
+    attempt integer NOT NULL,
+    account_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    recipient_address text NOT NULL,
+    amount_atomic numeric(78,0) NOT NULL,
+    nonce bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_winner_send_attempts_amount_atomic_check CHECK ((amount_atomic > (0)::numeric)),
+    CONSTRAINT reward_winner_send_attempts_attempt_check CHECK ((attempt >= 1)),
+    CONSTRAINT reward_winner_send_attempts_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT reward_winner_send_attempts_nonce_check CHECK ((nonce >= 0)),
+    CONSTRAINT reward_winner_send_attempts_recipient_address_check CHECK (((recipient_address ~ '^0x[0-9a-f]{40}$'::text) AND (recipient_address <> '0x0000000000000000000000000000000000000000'::text)))
+);
+
+CREATE TABLE reward_winner_send_outcomes (
+    send_id text NOT NULL,
+    attempt integer NOT NULL,
+    outcome text NOT NULL,
+    transaction_hash text,
+    block_number bigint,
+    block_hash text,
+    observed_head_block_number bigint NOT NULL,
+    observed_confirmed_nonce bigint NOT NULL,
+    confirmations integer NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_winner_send_outcome_shape CHECK ((((outcome = ANY (ARRAY['confirmed'::text, 'reverted'::text, 'cancelled'::text])) AND (transaction_hash IS NOT NULL) AND (block_number IS NOT NULL) AND (block_hash IS NOT NULL) AND (observed_head_block_number >= block_number)) OR ((outcome = 'settled_unverified'::text) AND (transaction_hash IS NULL) AND (block_number IS NULL) AND (block_hash IS NULL)))),
+    CONSTRAINT reward_winner_send_outcomes_block_hash_check CHECK ((block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_winner_send_outcomes_block_number_check CHECK ((block_number >= 0)),
+    CONSTRAINT reward_winner_send_outcomes_confirmations_check CHECK ((confirmations > 0)),
+    CONSTRAINT reward_winner_send_outcomes_observed_confirmed_nonce_check CHECK ((observed_confirmed_nonce >= 0)),
+    CONSTRAINT reward_winner_send_outcomes_observed_head_block_number_check CHECK ((observed_head_block_number >= 0)),
+    CONSTRAINT reward_winner_send_outcomes_outcome_check CHECK ((outcome = ANY (ARRAY['confirmed'::text, 'reverted'::text, 'settled_unverified'::text, 'cancelled'::text])))
+);
+
+CREATE TABLE reward_winner_send_transactions (
+    transaction_hash text NOT NULL,
+    send_id text NOT NULL,
+    attempt integer NOT NULL,
+    kind text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_winner_send_transactions_kind_check CHECK ((kind = ANY (ARRAY['transfer'::text, 'cancel'::text]))),
+    CONSTRAINT reward_winner_send_transactions_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE reward_winner_sends (
+    send_id text NOT NULL,
+    credit_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    wallet_assignment_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    token_address text NOT NULL,
+    sender_address text NOT NULL,
+    attempt integer NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_winner_send_sender_not_token CHECK ((sender_address <> token_address)),
+    CONSTRAINT reward_winner_send_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT reward_winner_sends_attempt_check CHECK ((attempt >= 1)),
+    CONSTRAINT reward_winner_sends_chain_id_check CHECK ((chain_id = 84532)),
+    CONSTRAINT reward_winner_sends_send_id_check CHECK (((btrim(send_id) <> ''::text) AND (send_id = btrim(send_id)) AND (octet_length(send_id) <= 128))),
+    CONSTRAINT reward_winner_sends_sender_address_check CHECK ((sender_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_winner_sends_status_check CHECK ((status = ANY (ARRAY['retryable'::text, 'pending'::text, 'confirmed'::text, 'reverted'::text, 'settled_unverified'::text, 'cancelled'::text]))),
+    CONSTRAINT reward_winner_sends_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text))
+);
+
 CREATE TABLE schema_migrations (
     version text NOT NULL,
     checksum text NOT NULL,
@@ -38175,6 +38483,24 @@ ALTER TABLE ONLY reward_subject_consumptions
 ALTER TABLE ONLY reward_uniqueness_authorities
     ADD CONSTRAINT reward_uniqueness_authorities_pkey PRIMARY KEY (campaign_id);
 
+ALTER TABLE ONLY reward_winner_send_attempts
+    ADD CONSTRAINT reward_winner_send_attempts_account_id_idempotency_key_key UNIQUE (account_id, idempotency_key);
+
+ALTER TABLE ONLY reward_winner_send_attempts
+    ADD CONSTRAINT reward_winner_send_attempts_pkey PRIMARY KEY (send_id, attempt);
+
+ALTER TABLE ONLY reward_winner_send_attempts
+    ADD CONSTRAINT reward_winner_send_attempts_send_id_nonce_key UNIQUE (send_id, nonce);
+
+ALTER TABLE ONLY reward_winner_send_outcomes
+    ADD CONSTRAINT reward_winner_send_outcomes_pkey PRIMARY KEY (send_id, attempt, outcome);
+
+ALTER TABLE ONLY reward_winner_send_transactions
+    ADD CONSTRAINT reward_winner_send_transactions_pkey PRIMARY KEY (transaction_hash);
+
+ALTER TABLE ONLY reward_winner_sends
+    ADD CONSTRAINT reward_winner_sends_pkey PRIMARY KEY (send_id);
+
 ALTER TABLE ONLY schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
 
@@ -39064,6 +39390,16 @@ CREATE UNIQUE INDEX reward_gas_topup_wallet_active_uidx ON reward_gas_topup_wall
 CREATE INDEX reward_gas_topup_work_idx ON reward_gas_topups USING btree (created_at, topup_id) WHERE (status = ANY (ARRAY['requested'::text, 'broadcast'::text]));
 
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
+
+CREATE INDEX reward_winner_send_transactions_attempt_idx ON reward_winner_send_transactions USING btree (send_id, attempt, created_at);
+
+CREATE INDEX reward_winner_sends_account_idx ON reward_winner_sends USING btree (account_id, created_at);
+
+CREATE INDEX reward_winner_sends_credit_idx ON reward_winner_sends USING btree (credit_id, created_at);
+
+CREATE UNIQUE INDEX reward_winner_sends_credit_live_uidx ON reward_winner_sends USING btree (credit_id) WHERE (status <> 'cancelled'::text);
+
+CREATE UNIQUE INDEX reward_winner_sends_open_sender_uidx ON reward_winner_sends USING btree (chain_id, sender_address) WHERE (status = ANY (ARRAY['retryable'::text, 'pending'::text]));
 
 CREATE UNIQUE INDEX song_reward_funding_transaction_log_uidx ON song_reward_leg_funding_effects USING btree (chain_id, transaction_hash, log_index) WHERE ((transaction_hash IS NOT NULL) AND (log_index IS NOT NULL));
 
@@ -40244,6 +40580,24 @@ CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE O
 CREATE TRIGGER reward_subject_consumptions_validate BEFORE INSERT ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_reward_subject_consumption();
 
 CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE ON reward_uniqueness_authorities FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER reward_winner_send_attempts_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER reward_winner_send_attempts_guard BEFORE INSERT ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send_attempt();
+
+CREATE TRIGGER reward_winner_send_outcomes_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_outcomes FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER reward_winner_send_outcomes_guard BEFORE INSERT ON reward_winner_send_outcomes FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send_outcome();
+
+CREATE TRIGGER reward_winner_send_transactions_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_transactions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER reward_winner_send_transactions_guard BEFORE INSERT ON reward_winner_send_transactions FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send_transaction();
+
+CREATE CONSTRAINT TRIGGER reward_winner_send_transactions_late_proof AFTER INSERT ON reward_winner_send_transactions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_winner_send_late_transaction();
+
+CREATE CONSTRAINT TRIGGER reward_winner_sends_attempt_present AFTER INSERT OR UPDATE ON reward_winner_sends DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_winner_send_attempt_present();
+
+CREATE TRIGGER reward_winner_sends_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_winner_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send();
 
 CREATE TRIGGER song_dance_presentations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_dance_presentations FOR EACH ROW EXECUTE FUNCTION guard_song_dance_presentation();
 
@@ -42734,6 +43088,33 @@ ALTER TABLE ONLY reward_subject_consumptions
 
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_receipt_fk FOREIGN KEY (evidence_receipt_id, subject_key_id, binding_event_id, binding_epoch, user_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
+
+ALTER TABLE ONLY reward_winner_send_attempts
+    ADD CONSTRAINT reward_winner_send_attempts_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY reward_winner_send_attempts
+    ADD CONSTRAINT reward_winner_send_attempts_send_id_fkey FOREIGN KEY (send_id) REFERENCES reward_winner_sends(send_id);
+
+ALTER TABLE ONLY reward_winner_send_outcomes
+    ADD CONSTRAINT reward_winner_send_outcomes_send_id_attempt_fkey FOREIGN KEY (send_id, attempt) REFERENCES reward_winner_send_attempts(send_id, attempt);
+
+ALTER TABLE ONLY reward_winner_send_outcomes
+    ADD CONSTRAINT reward_winner_send_outcomes_transaction_hash_fkey FOREIGN KEY (transaction_hash) REFERENCES reward_winner_send_transactions(transaction_hash);
+
+ALTER TABLE ONLY reward_winner_send_transactions
+    ADD CONSTRAINT reward_winner_send_transactions_send_id_attempt_fkey FOREIGN KEY (send_id, attempt) REFERENCES reward_winner_send_attempts(send_id, attempt);
+
+ALTER TABLE ONLY reward_winner_sends
+    ADD CONSTRAINT reward_winner_sends_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY reward_winner_sends
+    ADD CONSTRAINT reward_winner_sends_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY reward_winner_sends
+    ADD CONSTRAINT reward_winner_sends_credit_id_fkey FOREIGN KEY (credit_id) REFERENCES reward_ledger_credits(credit_id);
+
+ALTER TABLE ONLY reward_winner_sends
+    ADD CONSTRAINT reward_winner_sends_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
 
 ALTER TABLE ONLY song_dance_presentations
     ADD CONSTRAINT song_dance_presentations_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);

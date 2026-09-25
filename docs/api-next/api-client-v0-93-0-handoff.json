@@ -4,30 +4,24 @@
   "package": "@pirate/api-client",
   "version": "0.93.0",
   "sourceBranch": "feat/spaces-native-claims",
-  "sourceBase": "ab0cde83fddd6f2ae42da3c100de2ee442b57674",
+  "sourceBase": "705d3ed8127052bdc70b90786e5041e4f8c538f8",
   "validatedSourceCommit": null,
   "pullRequest": null,
-  "wireContract": "Spec 012 §5.3.13.3.1. Adds owner-only GET /communities/:communityId/spaces-operator-assignments?root=<canonical_root> returning a minimal candidate and POST /communities/:communityId/spaces-operator-assignments/confirm with exact JSON {idempotency_key,operator_assignment_id,expected_generation,namespace_authority_reference,expected_authority_generation}. The owner sees the delegation address; no wallet secret, host endpoint or service credential is returned. The separate private operator prepare/report channel is not part of this browser client. The routes are not composed in production until scoped credentials and verifier configuration are accepted.",
+  "wireContract": "Integrated client generated from the Spaces native claims, owner proof, operator assignment, and disabled Taproot recipient contracts together with current main rewards contracts. No Spaces route or driver is enabled by this release alone.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.93.0.tgz",
-    "sha256": "08d3ba951cc4a3e1c894800c6bee204b83e36dc76b49c51b1b582b6f21f755b4"
+    "sha256": "97c62760a0ba0d4d8426cccc586d5e852e40ce7fac7c2264f8103d0e4abbbf21"
   },
   "validation": {
-    "status": "Local candidate; hosted review pending",
+    "status": "Local integrated candidate; repository and hosted gates pending",
     "passed": [
-      "Generated OpenAPI and browser client from the registered exact-JSON contracts",
-      "Targeted PostgreSQL 17 assignment, capability and funding tests (3 passed)",
-      "Private operator transport tests (3 passed)",
-      "Full bun run check, including migration and immutable client verification",
-      "Node tests (20 passed) and all six Worker phases (190 passed)",
-      "Unit run: 4,894 passed, one skipped; manifest and unrelated timed-out karaoke suite passed when rerun in isolation"
+      "Generated OpenAPI and browser client from merged registered contracts"
     ],
     "remaining": [
-      "A clean full-unit run on the staged source if required by release policy",
-      "Hosted required checks on a reviewed pull-request head",
-      "Scoped operator credential provisioning and disabled-first runtime composition",
-      "Paired Solid owner-screen adoption before or with the API deploy"
+      "Complete repository check, PostgreSQL 17, and secret-boundary gates",
+      "Hosted review and paired Solid adoption",
+      "Disabled-first runtime composition and staging acceptance"
     ],
-    "operationalBoundary": "No package registry publication, deployment, credential use, wallet access, chain transaction, or live product mutation occurred."
+    "operationalBoundary": "No package registry publication, deployment, provider wallet creation, chain transaction, or live product mutation occurred."
   }
 }

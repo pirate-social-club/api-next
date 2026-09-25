@@ -306,6 +306,8 @@ export * from "./reward-payout-repository.ts";
 export * from "./reward-projection-repository.ts";
 export * from "./reward-refund-coordinator.ts";
 export * from "./reward-refund-repository.ts";
+export * from "./reward-winner-send-chain.ts";
+export * from "./reward-winner-send-repository.ts";
 export { makeControlPlaneRouteAttachmentCompletionStore } from "./route-attachment-completion-repository.ts";
 export {
   makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,

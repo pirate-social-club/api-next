@@ -409,12 +409,20 @@ const CREDIT_SELECT = `
                  WHERE payout.credit_id = credit.credit_id
                    AND effect.state IN ('reverted','replaced','reclaimable_failed','terminal_failed')
               ) THEN 'failed_retrying'
-              ELSE 'pending' END AS payout_status
+              ELSE 'pending' END AS payout_status,
+         winner_send.send_id AS winner_send_id, winner_send.status AS winner_send_status
     FROM reward_ledger_credits credit
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=credit.chain_id
      AND asset.token_address=credit.token_address
     LEFT JOIN megapot_participant_claims claim ON claim.credit_id = credit.credit_id
+    LEFT JOIN LATERAL (
+      SELECT send.send_id, send.status
+        FROM reward_winner_sends send
+       WHERE send.credit_id = credit.credit_id AND send.account_id = credit.account_id
+       ORDER BY (send.status <> 'cancelled') DESC, send.created_at DESC, send.send_id DESC
+       LIMIT 1
+    ) winner_send ON true
     LEFT JOIN LATERAL (
       SELECT assignment_id
         FROM persona_wallet_assignments
@@ -444,6 +452,28 @@ function creditClaimFromRow(row: Row): RewardCreditClaim | null {
   };
 }
 
+const winnerSendStatuses = new Set([
+  "retryable",
+  "pending",
+  "confirmed",
+  "reverted",
+  "settled_unverified",
+  "cancelled",
+]);
+
+function creditSendFromRow(row: Row): RewardCredit["send"] {
+  const sendId = nullableText(row, "winner_send_id");
+  const status = nullableText(row, "winner_send_status");
+  if (sendId === null && status === null) return null;
+  if (sendId === null || status === null || !winnerSendStatuses.has(status)) {
+    throw new Error("invalid reward credit send row");
+  }
+  return {
+    sendId,
+    status: status as NonNullable<RewardCredit["send"]>["status"],
+  };
+}
+
 function rewardCreditFromRow(row: Row): RewardCredit {
   const state = text(row, "state") as RewardCreditState;
   const sourceKind = text(row, "source_kind");
@@ -468,6 +498,7 @@ function rewardCreditFromRow(row: Row): RewardCredit {
     updatedAt: iso(row, "updated_at"),
     settledAt: nullableIso(row, "settled_at"),
     claim: creditClaimFromRow(row),
+    send: creditSendFromRow(row),
   };
 }
 

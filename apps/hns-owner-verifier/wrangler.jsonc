@@ -47,7 +47,8 @@
         "HNS_PROVIDER_CONFIGURATION_DIGEST": "e838222720d4f69477d58a3f76f772b8bbdee608c0592a62c1dff6068becf9e8",
         "HNS_CHAIN_DRIVER_REFERENCE": "hsd-json-rpc:staging-regtest",
         "HNS_SNAPSHOT_STORE_REFERENCE": "postgres:hns-control-observer-v1",
-        "HNS_OBSERVER_DEADLINE_MS": "12000"
+        "HNS_OBSERVER_DEADLINE_MS": "12000",
+        "HNS_PROVIDER_CAPABILITIES": "hns-txt-import-v1"
       }
     },
     "production": {

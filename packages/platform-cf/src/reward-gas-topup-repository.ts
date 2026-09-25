@@ -297,7 +297,7 @@ const PAYOUT_RECIPIENT_CONFIRMED = `(
  * The wallet that received the credit's confirmed USDC payout, never the
  * persona's current wallet: a later wallet change does not move the gas.
  */
-const CONFIRMED_PAYOUT_WALLET = `
+export const CONFIRMED_PAYOUT_WALLET = `
   SELECT payout.wallet_assignment_id AS assignment_id,
          payout.destination_address AS address
     FROM reward_payout_effects payout
