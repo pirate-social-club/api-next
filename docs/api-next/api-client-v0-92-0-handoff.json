@@ -5,8 +5,8 @@
   "version": "0.92.0",
   "sourceBranch": "fix/hns-root-import-separated-clocks",
   "sourceBase": "732e13a48aa1846a7140f7447134f587fd5172cf",
-  "validatedSourceCommit": "pending",
-  "pullRequest": null,
+  "validatedSourceCommit": "dd2498a7a1d38958020c344b0e3e7ca744ffbe0c",
+  "pullRequest": 435,
   "wireContract": "Spec 012 separated clocks. HnsCommunityRootImportFailureReasonV1 gains ownership_check_attempts_exhausted: three ownership checks were refused and the import is held for operator recovery; it is not retryable by the owner, and once an operator retires it a new import can start. Start refusals for an expired sessionless preparation and publication checks against a closed window return 409 conflict with details {reason, next_action} (root_import_preparation_expired / start_new_import; publication_window_closed / operator_recovery or read_import_status; ownership_check_attempts_exhausted / operator_recovery). After plan exposure the lifecycle projection's deadline, not the session expires_at, is the clock a client shows. Includes 0.91.0's reward winner gas top-up contract.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.92.0.tgz",
@@ -16,7 +16,10 @@
     "status": "Local candidate; hosted review and paired Solid adoption pending",
     "passed": [
       "Contract generation and freshness",
-      "Immutable package creation of the generated 0.92.0 client"
+      "Immutable package creation and verification of the generated 0.92.0 client",
+      "Repository check and complete unit test graph (4,807 pass) at dd2498a7",
+      "PostgreSQL 17 required gate, six phases on fresh containers, all passing at dd2498a7",
+      "Mixed-version tests against the previous verifier build rebuilt from 6f029fbb"
     ],
     "remaining": [
       "Hosted required checks on the exact pull-request head",
