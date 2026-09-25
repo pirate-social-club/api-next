@@ -321,7 +321,7 @@ export function makeControlPlaneSpacesTaprootIntentStore(
                     `UPDATE spaces_taproot_creation_intents SET state='ambiguous' WHERE assignment_id=$1`,
                     [identity.assignmentId],
                   );
-                  throw new SpacesTaprootIntentRefused("conflict");
+                  return { ambiguous: true as const };
                 }
                 if (result.kind !== "candidate" || result.wallet.providerId !== providerId)
                   throw new SpacesTaprootIntentRefused("conflict");

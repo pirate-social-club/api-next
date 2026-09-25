@@ -1664,6 +1664,50 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
         privy_wallet_id: wallet.providerId,
       });
       expect(await failureOf(store.beginCreate(identity))).toMatchObject({ reason: "conflict" });
+
+      const ambiguousAccount = "taproot-ambiguous-owner";
+      const ambiguousPersona = await seedAccount(admin, ambiguousAccount, { humanEvidence: false });
+      const ambiguousAssignment = await Effect.runPromise(
+        taproot(connection).prepare({
+          accountId: ambiguousAccount,
+          personaId: ambiguousPersona,
+          idempotencyKey: "taproot-ambiguous-one",
+          network: "regtest",
+        }),
+      );
+      const ambiguousIdentity = {
+        accountId: ambiguousAccount,
+        personaId: ambiguousPersona,
+        assignmentId: ambiguousAssignment.assignmentId,
+        network: "regtest" as const,
+      };
+      const otherKey = new Uint8Array(32).fill(8);
+      const otherOutputKey = Buffer.from(schnorr.getPublicKey(otherKey)).toString("hex");
+      const otherWallet = {
+        providerId: "wallet_taproot_2",
+        index: 3,
+        address: regtestAddress(otherOutputKey),
+        outputScriptHex: `5120${otherOutputKey}`,
+        publicKeyHex: `02${otherOutputKey}`,
+      };
+      await Effect.runPromise(store.prepare(ambiguousIdentity, []));
+      await Effect.runPromise(store.beginCreate(ambiguousIdentity));
+      expect(
+        await failureOf(
+          store.confirm(ambiguousIdentity, [wallet, otherWallet], wallet.providerId, signature),
+        ),
+      ).toMatchObject({ reason: "conflict" });
+      expect(await Effect.runPromise(store.status(ambiguousIdentity, [wallet]))).toMatchObject({
+        kind: "ambiguous",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT state FROM spaces_taproot_creation_intents WHERE assignment_id=$1",
+            [ambiguousAssignment.assignmentId],
+          )
+        ).rows[0],
+      ).toMatchObject({ state: "ambiguous" });
     });
     completed++;
   });
