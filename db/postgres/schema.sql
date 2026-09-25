@@ -1117,12 +1117,18 @@ BEGIN
     RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
     RETURN;
   END IF;
+  -- Since the single-owner cutover (0169) no executor claims legacy
+  -- observe_root_v1 work; the lifecycle runner observes this operation. The
+  -- request is still recorded, born in the cutover's named disposition so it
+  -- is never queued or claimable.
   INSERT INTO hns_root_import_observation_jobs (
     observation_job_id, root_import_session_id, operation_kind,
-    request_bytes, request_sha256, state
+    request_bytes, request_sha256, state, failure_code, completed_at,
+    created_at, updated_at
   ) VALUES (
     input_observation_job_id, session.root_import_session_id, 'observe_root_v1',
-    input_observation_request_bytes, input_observation_request_sha256, 'queued'
+    input_observation_request_bytes, input_observation_request_sha256, 'failed',
+    'readiness_single_owner_cutover', database_now, database_now, database_now
   );
   UPDATE hns_root_import_sessions
      SET status = 'observing', revision = session.revision + 1,
@@ -2595,9 +2601,19 @@ BEGIN
       IF kind IS NULL OR due IS NULL THEN
         RAISE EXCEPTION 'invalid HNS lifecycle requested work';
       END IF;
-      INSERT INTO hns_root_import_lifecycle_jobs(
-        root_import_session_id, job_kind, due_at, generation
-      ) VALUES (input_session_id, kind, due, requested_generation);
+      -- One queued job per kind and generation: a new request moves an
+      -- already queued job earlier instead of queuing a duplicate.
+      UPDATE hns_root_import_lifecycle_jobs AS pending
+         SET due_at = LEAST(pending.due_at, due), updated_at = database_now
+       WHERE pending.root_import_session_id = input_session_id
+         AND pending.job_kind = kind
+         AND pending.generation = requested_generation
+         AND pending.state = 'queued';
+      IF NOT FOUND THEN
+        INSERT INTO hns_root_import_lifecycle_jobs(
+          root_import_session_id, job_kind, due_at, generation
+        ) VALUES (input_session_id, kind, due, requested_generation);
+      END IF;
     END LOOP;
     INSERT INTO hns_root_import_lifecycle_history(
       root_import_session_id, event_id, event_name, outcome,

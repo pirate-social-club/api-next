@@ -1178,24 +1178,16 @@ suite("Postgres 17 HNS root-import repository", () => {
           return;
         }
 
-        // The retired client observation job is still queued after the real
-        // lifecycle path accepted evidence. Give it the removal migration's
-        // named disposition for an existing operation crossing the cutover;
+        // The retired client observation request is recorded in the removal
+        // migration's named disposition from the start (0207), never queued;
         // renewal must succeed without it ever reaching completed.
         const clientObservation = await admin.query<{ observation_job_id: string; state: string }>(
           `SELECT observation_job_id, state FROM hns_root_import_observation_jobs
             WHERE root_import_session_id='root-import-session'`,
         );
         expect(clientObservation.rows).toMatchObject([
-          { observation_job_id: "observation-root-import", state: "queued" },
+          { observation_job_id: "observation-root-import", state: "failed" },
         ]);
-        await admin.query(
-          `UPDATE hns_root_import_observation_jobs
-              SET state='failed', failure_code='readiness_single_owner_cutover',
-                  completed_at=clock_timestamp(), updated_at=clock_timestamp()
-            WHERE observation_job_id=$1`,
-          [clientObservation.rows[0]?.observation_job_id],
-        );
 
         const scheduled = await admin.query<{
           eligible_roots: number;
@@ -1533,7 +1525,7 @@ suite("Postgres 17 HNS root-import repository", () => {
       // observation job. The observation claim is not a readiness route after
       // the cutover, so this fixture leases the client job directly to
       // exercise the lock against the real session state, then returns it to
-      // the queue before the lifecycle claim runs.
+      // the cutover disposition it was recorded in before the lifecycle claim runs.
       const observationJob = await admin.query<{ observation_job_id: string }>(
         `SELECT observation_job_id FROM hns_root_import_sessions
           WHERE root_import_session_id=$1`,
@@ -1548,6 +1540,7 @@ suite("Postgres 17 HNS root-import repository", () => {
             SET state='leased', attempt_count=1, lease_fence=1,
                 leased_by='authority-executor',
                 lease_expires_at=clock_timestamp() + interval '10 minutes',
+                completed_at=NULL, failure_code=NULL,
                 updated_at=clock_timestamp()
           WHERE observation_job_id=$1`,
         [observationJobId],
@@ -1576,8 +1569,9 @@ suite("Postgres 17 HNS root-import repository", () => {
       ).toEqual([{ admitted: true }]);
       await admin.query(
         `UPDATE hns_root_import_observation_jobs
-            SET state='queued', leased_by=NULL, lease_expires_at=NULL,
-                lease_fence=0, updated_at=clock_timestamp()
+            SET state='failed', leased_by=NULL, lease_expires_at=NULL,
+                lease_fence=0, failure_code='readiness_single_owner_cutover',
+                completed_at=clock_timestamp(), updated_at=clock_timestamp()
           WHERE observation_job_id=$1`,
         [observationJobId],
       );
@@ -1969,7 +1963,11 @@ suite("Postgres 17 HNS root-import repository", () => {
       event_id: "fixture:preparation_completed",
       occurred_at_epoch_ms: Date.now(),
     });
-    await queueLifecycleFixtureJob(admin, "observe_current");
+    // Plan exposure itself scheduled the current observation at the cadence;
+    // the fixture only advances the clock for it.
+    if (!(await makeNextLifecycleFixtureJobDue(admin, "observe_current"))) {
+      throw new Error("preparation did not schedule the current observation");
+    }
     await runLifecycleFixtureObservation(admin, {
       event: {
         event: "current_observation",
