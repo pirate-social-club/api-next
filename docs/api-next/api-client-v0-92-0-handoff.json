@@ -4,8 +4,8 @@
   "package": "@pirate/api-client",
   "version": "0.92.0",
   "sourceBranch": "feat/spaces-native-claims",
-  "sourceBase": "0d0421467d9f42b575931651651ffb77f662ffc8",
-  "validatedSourceCommit": null,
+  "sourceBase": "ab0cde83fddd6f2ae42da3c100de2ee442b57674",
+  "validatedSourceCommit": "164396f0c2584172c95548232b708d3ce8e0efaa",
   "pullRequest": null,
   "wireContract": "Spec 012 §5.3.13.3.1. Adds browser-session-only POST /communities/:communityId/spaces-ownership/start with exact JSON {idempotency_key,canonical_root} and POST /communities/:communityId/spaces-ownership/poll with exact JSON {ceremony_id,idempotency_key,signature_hex}. Start returns a bounded owner challenge or verification_pending. Poll returns verification_pending, verified evidence, or a terminal rejection. The owner wallet signs only on the owner device. The routes are not composed in production until scoped verifier credentials and the installed verifier wire are accepted.",
   "artifact": {
