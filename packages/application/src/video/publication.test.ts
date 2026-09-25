@@ -233,6 +233,24 @@ describe("video publication application", () => {
     await expect(retryVideoSubmission(input, services)).rejects.toMatchObject({
       details: { reason_code: "retry_not_allowed" },
     });
+    // A video the v1 sampled-frame gate could not clear is terminal: not
+    // retryable in its projection, and a retry is refused.
+    const gateRecord: VideoSubmissionRecord = {
+      ...record,
+      state: {
+        ...record.state,
+        reconciliationRequired: false,
+        failureCode: "safety_gate_unresolved",
+      },
+    };
+    record = gateRecord;
+    expect(projectVideoSubmission(gateRecord)).toMatchObject({
+      reason_code: "publication_failed",
+      retryable: false,
+    });
+    await expect(retryVideoSubmission(input, services)).rejects.toMatchObject({
+      details: { reason_code: "retry_not_allowed" },
+    });
     const membershipRecord: VideoSubmissionRecord = {
       ...record,
       state: { ...record.state, reconciliationRequired: false, failureCode: "membership_required" },

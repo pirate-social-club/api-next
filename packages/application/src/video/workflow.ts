@@ -57,6 +57,8 @@ export interface VideoWorkflowStep {
 }
 export type VideoWorkflowServices = VideoAnalysisRuntimeServices &
   Readonly<{
+    /** Spec 013 v1 sampled-frame gate, enforced again at decision time. */
+    sampledFrameGate?: boolean;
     outbox: Pick<VideoAnalysisOutboxStore, "get">;
     reconciliation: VideoAttemptReconciliationStore;
     stageFacts: VideoStageFactStore;
@@ -547,6 +549,10 @@ export async function runVideoAnalysisWorkflow(
             captionSha256: await canonicalVideoCaptionSha256(record.state.caption),
             evidenceRef: safety.evidenceRef,
             minorSafetyEvidenceRef: safety.minorSafetyEvidenceRef,
+            ...(safety.gateKind === undefined ? {} : { gateKind: safety.gateKind }),
+            ...(safety.sampledFrameEvidenceRef === undefined
+              ? {}
+              : { sampledFrameEvidenceRef: safety.sampledFrameEvidenceRef }),
           },
           mediaSafety: safety.mediaSafety,
           captionSafety: safety.captionSafety,
