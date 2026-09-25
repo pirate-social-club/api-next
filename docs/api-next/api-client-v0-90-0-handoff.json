@@ -6,7 +6,7 @@
   "sourceBranch": "feat/megapot-reward-claim-verification-intent",
   "sourceBase": "7f0a2d2941eddb0f1c433c09c3e906311d488145",
   "validatedSourceCommit": "2afe441dc02a4901e5ac7882b855b485568c3cef",
-  "pullRequest": null,
+  "pullRequest": 430,
   "wireContract": "Spec 015 §5.2a. Adds POST /rewards/claim-verification-intents, which issues or reuses an account-scoped intent for the signed-in user and returns {intent_id, provider_id: very.web}. The client starts the Very ceremony with POST /verification/sessions using that intent, then repeats POST /rewards/credits/{creditId}/claim. The ceremony declares the community_join purpose so one palm keeps one Very subject.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.90.0.tgz",
@@ -23,7 +23,8 @@
     ],
     "remaining": [
       "Hosted required checks on the exact pull-request head",
-      "Paired Solid 0.90.0 adoption (slice C). Solid must adopt 0.90.0 (which includes 0.89.0's reward credit claim property) before or with the API deploy carrying these contracts."
+      "Paired Solid 0.90.0 adoption (slice C). Solid must adopt 0.90.0 (which includes 0.89.0's reward credit claim property) before or with the API deploy carrying these contracts.",
+      "Release sequencing: api-next PR #417 also claims 0.90.0; whichever merges second re-cuts its package as the next unused version with a new artifact, digest, ledger row and handoff."
     ],
     "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use or live product mutation occurred."
   }
