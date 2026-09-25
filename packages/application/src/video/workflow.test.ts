@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
+import {
+  attachImmutableVideo,
+  createSongReferenceVideoSubmission,
+} from "../../../domain/src/video-submission.ts";
 import type { MediaTransformAttempt } from "../media/transform.ts";
 import {
   analysisState,
@@ -22,10 +26,48 @@ import {
   videoWorkflowPollMs,
 } from "./workflow.ts";
 
-function fixture() {
+/** A sealed song-reference video (a 10-second take), the v1 journey. */
+function songReferenceState() {
+  return {
+    ...attachImmutableVideo(
+      createSongReferenceVideoSubmission({
+        submissionId: "video-analysis-submission",
+        operationId: "video-analysis-operation",
+        communityId: "video-analysis-community",
+        actorAccountId: analysisState().actorAccountId,
+        authorPersonaId: analysisState().authorPersonaId,
+        reservationId: "video-analysis-reservation",
+        caption: null,
+        authorDeclaredRating: "general",
+        songPlan: {
+          planId: "song-video-plan:video-analysis-submission",
+          songPostId: "song-post",
+          songAssetId: "song-asset",
+          audioRevision: 1,
+          canonicalAudioSha256: HASHES[4] as string,
+          songDurationSamples: 10_080_000,
+          clipStartSamples: 0,
+          // 10 s, matching the fixture probe's 10 s source.
+          clipDurationSamples: 480_000,
+          intervalPolicyRevision: 2,
+        },
+      }),
+      {
+        videoRevision: 1,
+        immutableRef: "media://immutable/video-analysis-operation/video/1",
+        canonicalSha256: HASHES[0] as string,
+        contentType: "video/mp4",
+        sizeBytes: 1_024,
+      },
+    ),
+    posterTimestampMs: 1_500,
+  };
+}
+
+function fixture(options: { songReference?: boolean } = {}) {
   let now = Date.parse("2026-09-05T00:00:00Z");
   let record: VideoSubmissionRecord = {
-    state: analysisState(),
+    state: options.songReference ? songReferenceState() : analysisState(),
     eventSequence: 1,
     authorPersona: publicPersona,
     updatedAt: new Date(now).toISOString(),
@@ -506,11 +548,16 @@ test("provider polls are fast for the first minute and keep the 30-minute window
   expect(delays.reduce((sum, delay) => sum + delay, 0)).toBe(VIDEO_WORKFLOW_CAPABILITY_MS);
 });
 
-/** A safety fact as the v1 sampled-frame gate produces it. */
+/** A safety fact as the v1 sampled-frame gate produces it; `gateOn` is the flag at decision time. */
 function gateSafety(
   f: ReturnType<typeof fixture>,
   outcome: "allow" | "review_required" | "blocked",
+  gateOn = true,
 ) {
+  Object.assign(f.runtime, { sampledFrameGate: gateOn });
+  Object.assign(f.runtime.store, {
+    observeSongReferencePolicy: async () => ({ permitted: true, contentRating: "general" }),
+  });
   const moderate = f.runtime.analysisProviders.moderate;
   Object.assign(f.runtime.analysisProviders, {
     moderate: async (input: Parameters<typeof moderate>[0]) => {
@@ -530,7 +577,7 @@ function gateSafety(
   Object.assign(f.step, {
     waitForEvent: async () => {
       waited += 1;
-      throw new Error("the v1 gate must never wait for a moderator");
+      throw new Error("waited for a moderator");
     },
   });
   return { waited: () => waited };
@@ -562,10 +609,9 @@ test("v1 gate: a check the gate could not allow fails privately, never waits and
   expect(f.record().state).toMatchObject({
     status: "processing_failed",
     phase: null,
-    failureCode: "transform_failed",
+    failureCode: "safety_gate_unresolved",
     postId: null,
   });
-  expect(f.record().state.status).not.toBe("manual_review");
   expect(f.calls.publications).toBe(0);
   expect(gate.waited()).toBe(0);
 });
@@ -576,4 +622,58 @@ test("v1 gate: a blocked video stays blocked", async () => {
   await runVideoAnalysisWorkflow(f.identity, f.step, f.runtime);
   expect(f.record().state.status).toBe("blocked");
   expect(f.calls.publications).toBe(0);
+});
+
+test("v1 gate: a gate allow persisted before the flag was turned off cannot publish", async () => {
+  const f = fixture();
+  // The safety fact is recorded as a gate allow, but the gate is off when the
+  // decision runs: the decision discards it and the video waits for review.
+  const gate = gateSafety(f, "allow", false);
+  await expect(runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).rejects.toThrow(
+    "waited for a moderator",
+  );
+  expect(f.stageFacts.get("safety")?.snapshot).toMatchObject({
+    gateKind: "sampled_frame_openai_v1",
+  });
+  expect(f.record().state.status).toBe("manual_review");
+  expect(f.record().state.analysis?.safetyRequest.gateKind).toBeUndefined();
+  expect(f.record().state.analysis?.mediaSafety).toBe("review_required");
+  expect(f.calls.publications).toBe(0);
+  expect(gate.waited()).toBe(1);
+});
+
+test("v1 gate, song video: a clean take goes straight to render with no approval", async () => {
+  const f = fixture({ songReference: true });
+  const gate = gateSafety(f, "allow");
+  // No render host is composed in this fixture; the run stops at the render stage.
+  await expect(runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).rejects.toThrow();
+  expect(f.record().state).toMatchObject({
+    intent: "song_reference",
+    status: "processing",
+    phase: "render",
+    postId: null,
+  });
+  expect(f.record().state.decision?.outcome).toEqual({ kind: "publish" });
+  expect(f.record().state.analysis?.safetyRequest).toMatchObject({
+    gateKind: "sampled_frame_openai_v1",
+    minorSafetyEvidenceRef: null,
+  });
+  expect(f.calls.publications).toBe(0);
+  expect(gate.waited()).toBe(0);
+});
+
+test("v1 gate, song video: an uncleared take never renders or posts", async () => {
+  const f = fixture({ songReference: true });
+  const gate = gateSafety(f, "review_required");
+  await runVideoAnalysisWorkflow(f.identity, f.step, f.runtime);
+  expect(f.record().state).toMatchObject({
+    intent: "song_reference",
+    status: "processing_failed",
+    phase: null,
+    failureCode: "safety_gate_unresolved",
+    postId: null,
+  });
+  expect(f.record().state.decision).toBeNull();
+  expect(f.calls.publications).toBe(0);
+  expect(gate.waited()).toBe(0);
 });

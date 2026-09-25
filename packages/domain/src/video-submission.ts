@@ -300,6 +300,8 @@ export type VideoSubmissionState = Readonly<{
     | "membership_required"
     | "provider_submission_unconfirmed"
     | "upload_seal_conflict"
+    /** Spec 013 v1 amendment: the sampled-frame gate could not allow; terminal. */
+    | "safety_gate_unresolved"
     | null;
   /** Present only after an author has persisted a terminal abandonment. */
   abandonmentReason?:

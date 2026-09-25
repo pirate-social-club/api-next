@@ -210,6 +210,7 @@ export type VideoTechnicalFailureCode = Exclude<
   | "upload_seal_conflict"
   | "membership_required"
   | "provider_submission_unconfirmed"
+  | "safety_gate_unresolved"
 >;
 
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
@@ -384,7 +385,8 @@ export interface VideoPublicationStore {
       | VideoTechnicalFailureCode
       | "poster_undecodable"
       | "poster_timestamp_out_of_range"
-      | "provider_submission_unconfirmed";
+      | "provider_submission_unconfirmed"
+      | "safety_gate_unresolved";
     evidenceRef: string;
     /**
      * An execution whose outcome is unknown: the failure is not retryable
@@ -488,7 +490,31 @@ export type VideoPublicationServices = Readonly<{
 export type VideoPublicationCommitServices = Pick<
   VideoPublicationServices,
   "store" | "nowIso" | "randomUuid"
->;
+> & {
+  /** Whether the Spec 013 v1 sampled-frame gate is on now; enforced at decision time. */
+  readonly sampledFrameGate?: boolean;
+};
+
+/**
+ * With the gate off, an analysis carrying a gate allow (from a safety fact
+ * persisted while it was on) is decided as if the gate never allowed it.
+ */
+function withoutDisabledGate(
+  analysis: VideoTrustedAnalysis,
+  gateOn: boolean,
+): VideoTrustedAnalysis {
+  if (gateOn || analysis.safetyRequest.gateKind === undefined) return analysis;
+  const {
+    gateKind: _gate,
+    sampledFrameEvidenceRef: _evidence,
+    ...safetyRequest
+  } = analysis.safetyRequest;
+  return {
+    ...analysis,
+    safetyRequest,
+    mediaSafety: analysis.mediaSafety === "allow" ? "review_required" : analysis.mediaSafety,
+  };
+}
 
 function decodeBody<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
@@ -632,7 +658,8 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
           !state.reconciliationRequired &&
           state.failureCode !== "provider_submission_unconfirmed" &&
           state.retryCount < 3 &&
-          state.failureCode !== "upload_seal_conflict",
+          state.failureCode !== "upload_seal_conflict" &&
+          state.failureCode !== "safety_gate_unresolved",
       };
     case "abandoned":
       return {
@@ -1306,24 +1333,27 @@ export async function acceptTrustedVideoAnalysis(
     record.state.intent === "song_reference"
       ? await services.store.observeSongReferencePolicy({ submission: record.state })
       : null;
+  // The gate flag is enforced here too: a safety fact persisted while the gate
+  // was on cannot publish through it once the gate is off.
+  const analysis = withoutDisabledGate(input.analysis, services.sampledFrameGate === true);
   const { decision, nextState } = (() => {
     try {
       const decision =
         song === null
           ? decideOriginalAudioVideo({
               state: record.state,
-              analysis: input.analysis,
+              analysis,
               canonicalCaptionSha256: captionSha256,
               decidedAt: services.nowIso(),
             })
           : decideSongReferenceVideo({
               state: record.state,
-              analysis: input.analysis,
+              analysis,
               canonicalCaptionSha256: captionSha256,
               decidedAt: services.nowIso(),
               song,
             });
-      const nextState = attachVideoDecision(record.state, input.analysis, decision);
+      const nextState = attachVideoDecision(record.state, analysis, decision);
       return { decision, nextState };
     } catch {
       throw new VideoWorkflowTerminalError("analysis_rejected");
@@ -1335,20 +1365,20 @@ export async function acceptTrustedVideoAnalysis(
   // approval; the author sees that it could not be posted. Blocks stay blocks.
   if (
     decision.outcome.kind === "review" &&
-    input.analysis.safetyRequest.gateKind === "sampled_frame_openai_v1"
+    analysis.safetyRequest.gateKind === "sampled_frame_openai_v1"
   ) {
     return projectVideoSubmission(
       await services.store.recordProcessingFailure({
         submission: record.state,
         observedEventSequence: record.eventSequence,
-        failureCode: "transform_failed",
-        evidenceRef: `video-safety-gate-unresolved:${input.analysis.safetyRequest.evidenceRef}`,
+        failureCode: "safety_gate_unresolved",
+        evidenceRef: `video-safety-gate-unresolved:${analysis.safetyRequest.evidenceRef}`,
       }),
     );
   }
   let committed = await services.store.commitAnalysisDecision({
     submission: record.state,
-    analysis: input.analysis,
+    analysis,
     decision,
     nextState,
   });
@@ -1555,7 +1585,8 @@ export async function retryVideoSubmission(
     record.state.reconciliationRequired ||
     record.state.failureCode === "provider_submission_unconfirmed" ||
     record.state.retryCount >= 3 ||
-    record.state.failureCode === "upload_seal_conflict"
+    record.state.failureCode === "upload_seal_conflict" ||
+    record.state.failureCode === "safety_gate_unresolved"
   ) {
     throw new Conflict({
       message: "Video retry is not allowed",

@@ -498,6 +498,8 @@ export function makeMediaProcessorComposition(
     env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
           videoWorkflow: {
+            sampledFrameGate:
+              videoModeration !== null && env.VIDEO_SAFETY_GATE === "sampled_frame_openai_v1",
             store: makeControlPlaneVideoPublicationStore(runtime),
             reconciliation: makeControlPlaneVideoPublicationStore(runtime),
             outbox: videoAnalysisRepository,

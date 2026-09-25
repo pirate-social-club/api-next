@@ -1628,7 +1628,10 @@ export function makeControlPlaneVideoPublicationStore(
                 extraValues: [
                   input.evidenceRef,
                   current.state.retryCount,
-                  !next.reconciliationRequired && current.state.retryCount < 3,
+                  // A gate the sampled-frame check could not clear is terminal.
+                  !next.reconciliationRequired &&
+                    current.state.retryCount < 3 &&
+                    input.failureCode !== "safety_gate_unresolved",
                   current.state.phase,
                 ],
               });
@@ -1768,6 +1771,7 @@ export function makeControlPlaneVideoPublicationStore(
                   "poster_undecodable",
                   "poster_timestamp_out_of_range",
                   "upload_seal_conflict",
+                  "safety_gate_unresolved",
                 ].includes(current.state.failureCode)
               ) {
                 throw new Error("video technical retry rejected");

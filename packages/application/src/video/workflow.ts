@@ -57,6 +57,8 @@ export interface VideoWorkflowStep {
 }
 export type VideoWorkflowServices = VideoAnalysisRuntimeServices &
   Readonly<{
+    /** Spec 013 v1 sampled-frame gate, enforced again at decision time. */
+    sampledFrameGate?: boolean;
     outbox: Pick<VideoAnalysisOutboxStore, "get">;
     reconciliation: VideoAttemptReconciliationStore;
     stageFacts: VideoStageFactStore;

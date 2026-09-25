@@ -1358,6 +1358,7 @@ export const VideoPostSubmissionV1 = Schema.Union([
       "upload_seal_conflict",
       "poster_undecodable",
       "poster_timestamp_out_of_range",
+      "safety_gate_unresolved",
     ]),
     retry_count: Schema.Literals([0, 1, 2, 3]),
     retryable: Schema.Boolean,
