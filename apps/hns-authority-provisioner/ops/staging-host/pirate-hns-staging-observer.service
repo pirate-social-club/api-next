@@ -1,0 +1,32 @@
+[Unit]
+Description=Private HNS staging regtest observer
+After=pirate-hns-staging-docker.service
+Requires=pirate-hns-staging-docker.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+Slice=pirate-hns-staging.slice
+WorkingDirectory=/srv/pirate-hns-staging/observer
+Environment=HNS_OBSERVER_DRIVER_HSD_REFERENCE=hsd-json-rpc:staging-regtest
+Environment=HNS_OBSERVER_DRIVER_HSD_RPC_URL=http://127.0.0.1:24037/
+Environment=HNS_OBSERVER_DRIVER_PORT=4082
+Environment=HNS_OBSERVER_DRIVER_HSD_API_KEY_FILE=/run/credentials/pirate-hns-staging-observer.service/hsd_api_key
+LoadCredential=hsd_api_key:/etc/pirate-hns-staging/fixture-hsd-api-key
+ExecStart=/usr/local/bin/bun /srv/pirate-hns-staging/observer/pirate-hns-observer-driver.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=96M
+CPUQuota=15%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

@@ -48,7 +48,10 @@ import {
   persona,
   responseBytes,
   responseSha256,
+  seedPublishedSongFixture,
+  seedSongOwner,
   seedVideoActors,
+  songReferenceFinalizedFixture,
   submissionId,
   trustedAnalysis,
   videoSha256,
@@ -91,6 +94,118 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
 }
 
 suite("video publication PostgreSQL", () => {
+  test("approved song-reference review wakes render without publishing an unsealed capture", async () => {
+    await fixture(async (admin, connection) => {
+      await seedSongOwner(admin);
+      const song = {
+        songPostId: "post-video-review-song",
+        communityId: community,
+        audioAssetRef: "media://song/video-review-audio",
+        canonicalAudioSha256: "f".repeat(64),
+        durationSamples: 30 * 48_000,
+        title: "Review render fixture",
+        contentRating: "general" as const,
+        derivativeVideo: "allowed" as const,
+        licensePreset: "commercial-remix" as const,
+        commercialRemixShareBps: 1_000,
+      };
+      await seedPublishedSongFixture(admin, song);
+      const { store, finalized } = await songReferenceFinalizedFixture(connection, {
+        identity: {
+          reservationId: "media-reservation-00000000-0000-4000-8000-000000000099",
+          submissionId,
+          operationId,
+        },
+        planId: `song-video-plan:${submissionId}`,
+        song,
+        clipStartSamples: 0,
+        clipDurationSamples: 10 * 48_000,
+        source: { sha256: videoSha256, sizeBytes: 1_024 },
+      });
+      const base = trustedAnalysis();
+      const analysis: VideoTrustedAnalysis = {
+        ...base,
+        audio: { intent: "song_reference" },
+        mediaSafety: "review_required",
+      };
+      const services = {
+        store,
+        nowIso: () => new Date().toISOString(),
+        randomUuid: () => crypto.randomUUID(),
+      };
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "manual_review",
+      });
+      const held = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (held === null) throw new Error("held song video missing");
+      expect(held.state).toMatchObject({ status: "manual_review", phase: null, master: null });
+      expect(
+        await store.moderate({
+          submission: held.state,
+          actor: { kind: "user", userId: actor },
+          expectedCreationRevision: held.state.creationRevision,
+          action: { kind: "approve", hold: "safety", evidenceRef: null },
+          endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+          idempotencyKey: "approve-song-review-render",
+          requestHash: "8".repeat(64),
+          responseBytes,
+          responseSha256,
+        }),
+      ).toEqual({ kind: "none" });
+      const approved = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (approved === null) throw new Error("approved song video missing");
+      expect(approved.state).toMatchObject({
+        status: "processing",
+        phase: "render",
+        master: null,
+        decision: { outcome: { kind: "publish" } },
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM media_video_publication_wakeups WHERE action_id=$1",
+            [`video-moderation:${actor}:approve-song-review-render`],
+          )
+        ).rows[0]?.n,
+      ).toBe(1);
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "processing",
+        phase: "publish",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,phase FROM media_post_submissions WHERE submission_id=$1",
+            [submissionId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "processing", phase: "render" });
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const effectIdentity = `video-analysis:${operationId}:v1:c1`;
+      const claim = await outbox.claim(effectIdentity, "render-recovery-fixture");
+      if (claim === null) throw new Error("render recovery outbox claim missing");
+      expect(await outbox.markLaunched(claim, `vaw-${"a".repeat(64)}`)).toBe(true);
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => `vaw-${"a".repeat(64)}`,
+          },
+        }),
+      ).toMatchObject({ inspected: 1, recovered: 1, terminal: 0 });
+      expect((await outbox.get(effectIdentity))?.continuation).toBe(1);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]
+          ?.n,
+      ).toBe(0);
+      expect(finalized.state.master).toBeNull();
+    });
+  });
+
   test("persisted JSONB multipart manifest replays by ordered part identity, not object key order", async () => {
     await fixture(async (admin, connection) => {
       const store = makeControlPlaneVideoPublicationStore(
@@ -1376,12 +1491,13 @@ suite("video publication PostgreSQL", () => {
       );
       expect(await access()).toBe(false);
 
-      await admin.query(
-        `INSERT INTO home_feed_projection
-          (community_id,feed_item_id,post_id,rank_score,projected_at)
-         VALUES ($1,'feed-video-publication','post-video-publication',1,clock_timestamp())`,
+      // Publication itself projects the video into Home.
+      const projection = await admin.query(
+        `SELECT feed_item_id FROM home_feed_projection
+          WHERE community_id=$1 AND post_id='post-video-publication'`,
         [community],
       );
+      expect(projection.rows).toHaveLength(1);
       const contentStore = makeControlPlaneContentStore(layer);
       const feedStore = makeControlPlaneFeedStore(layer);
       const projectedPost = await Effect.runPromise(
@@ -1410,13 +1526,52 @@ suite("video publication PostgreSQL", () => {
         post: { post_type: "video", body: null },
         video: publicVideo,
       });
-      expect(projectedFeed.items[0]).toMatchObject({
+      // Home lists a video only once Stream can play it.
+      const feedIds = (feed: typeof projectedFeed) =>
+        feed.items.map((item) => (item as { post?: { post?: { id?: string } } }).post?.post?.id);
+      expect(feedIds(projectedFeed)).not.toContain("post-video-publication");
+      await admin.query(
+        `UPDATE media_video_stream_ingests
+            SET state='ready',creator_marker=$2,source_sha256=$3,provider_video_id=$4,
+                acceptance_deadline_ms=1000,encoding_deadline_ms=2000
+          WHERE operation_id=(SELECT operation_id FROM media_publication_projections
+                               WHERE community_id=$1 AND post_id='post-video-publication')`,
+        [community, "c".repeat(64), "d".repeat(64), "e".repeat(32)],
+      );
+      const readyFeed = await Effect.runPromise(
+        Effect.scoped(feedStore.listHome({ query: {}, viewerUserId: actor })),
+      );
+      expect(feedIds(readyFeed)).toContain("post-video-publication");
+      const readyItem = readyFeed.items.find(
+        (item) =>
+          (item as { post?: { post?: { id?: string } } }).post?.post?.id ===
+          "post-video-publication",
+      );
+      expect(readyItem).toMatchObject({
         post: {
           post: { id: "post-video-publication", post_type: "video", body: null },
-          video: publicVideo,
+          video: {
+            playback: { status: "ready", provider: "stream", playback_ref: "e".repeat(32) },
+          },
         },
       });
-      const publicProjection = JSON.stringify({ projectedPost, projectedFeed });
+      // Replayed publication must not add a second Home row.
+      await admin.query(
+        `INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at)
+         SELECT community_id, feed_item_id, post_id, 0, clock_timestamp() FROM home_feed_projection
+          WHERE community_id=$1 AND post_id='post-video-publication'
+         ON CONFLICT (community_id,post_id) DO NOTHING`,
+        [community],
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM home_feed_projection WHERE community_id=$1 AND post_id='post-video-publication'",
+            [community],
+          )
+        ).rows[0],
+      ).toEqual({ n: 1 });
+      const publicProjection = JSON.stringify({ projectedPost, projectedFeed, readyFeed });
       for (const privateEvidence of [
         videoSha256,
         audioSha256,

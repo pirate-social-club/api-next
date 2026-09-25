@@ -110,7 +110,9 @@ export type HnsCommunityRootImportPreparation = Readonly<{
   readonly actor_id: string;
   readonly community_id: string;
   readonly attachment_intent_id: string;
+  /** The preparation's current ceremony; a renewed challenge moves it on. */
   readonly ceremony_intent_id: string;
+  readonly ceremony_generation: number;
   readonly root_label: string;
   readonly attachment_revision: number;
   readonly root_import_session_id: string;
@@ -126,6 +128,7 @@ export type HnsCommunityRootImportPrepareOutcome =
     }>
   | Readonly<{ readonly kind: "rate_limited"; readonly retry_after_seconds: number }>
   | Readonly<{ readonly kind: "ownership_conflict" }>
+  | Readonly<{ readonly kind: "preparation_expired" }>
   | Readonly<{ readonly kind: "conflict" }>
   | Readonly<{ readonly kind: "not_found" }>;
 
@@ -144,6 +147,8 @@ export type HnsCommunityRootImportStartOutcome =
       readonly kind: "created" | "replay";
       readonly session: HnsCommunityRootImportSessionResponseV1;
     }>
+  /** The challenge expired between preparation and session insert. */
+  | Readonly<{ readonly kind: "challenge_expired" }>
   | Readonly<{ readonly kind: "conflict" }>
   | Readonly<{ readonly kind: "not_found" }>;
 
@@ -347,8 +352,18 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
     | "ownership_unavailable"
     | "ownership_misconfigured"
     | "provider_unavailable"
-    | "rate_limited";
+    | "rate_limited"
+    // The preparation or its attachment intent expired before a session
+    // existed. A new start is possible; this one cannot resume.
+    | "preparation_expired"
+    // Three ownership checks were refused. The import cannot resume on its
+    // own; it needs operator recovery.
+    | "ownership_check_exhausted"
+    // The exposed plan's publication window is closed or held for recovery.
+    | "publication_window_closed";
   readonly retry_after_seconds?: number;
+  /** The database's reason for a closed publication window. */
+  readonly window_reason?: string;
   /**
    * The chain-observation classification behind a `provider_unavailable`
    * refusal. Bounded to the observation model's classes; never a provider
@@ -380,6 +395,19 @@ export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
 }> {}
 
 function ownershipFailure(error: unknown) {
+  if (error instanceof RouteAttachmentCompletionRejected) {
+    // Budget exhaustion is not a configuration fault and is not retryable:
+    // no further attempt can be reserved for this ownership session.
+    if (error.reason === "attempt_budget_exhausted") {
+      return new HnsCommunityRootImportRejected({ reason: "ownership_check_exhausted" });
+    }
+    if (error.reason === "publication_window_closed") {
+      return new HnsCommunityRootImportRejected({
+        reason: "publication_window_closed",
+        ...(error.window_reason === undefined ? {} : { window_reason: error.window_reason }),
+      });
+    }
+  }
   return new HnsCommunityRootImportRejected({
     reason:
       error instanceof NamespaceOwnershipProviderRejected ||
@@ -387,10 +415,21 @@ function ownershipFailure(error: unknown) {
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
       error instanceof NamespaceOwnershipProviderMisconfigured ||
       (error instanceof RouteAttachmentCompletionRejected &&
-        (error.reason === "provider_misconfigured" || error.reason === "attempt_budget_exhausted"))
+        error.reason === "provider_misconfigured")
         ? "ownership_misconfigured"
         : "ownership_unavailable",
   });
+}
+
+/**
+ * The ownership start key for a ceremony generation. Generation 1 keeps the
+ * original key so an existing reservation still replays; a renewed challenge
+ * gets its own key and never replays the expired one.
+ */
+function ownershipStartKey(preparation: HnsCommunityRootImportPreparation): string {
+  return preparation.ceremony_generation === 1
+    ? preparation.start_request_sha256
+    : `${preparation.start_request_sha256}:generation:${preparation.ceremony_generation}`;
 }
 
 const encoder = new TextEncoder();
@@ -460,6 +499,9 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
   if (prepared.kind === "ownership_conflict") {
     return yield* new HnsCommunityRootImportRejected({ reason: "ownership_conflict" });
   }
+  if (prepared.kind === "preparation_expired") {
+    return yield* new HnsCommunityRootImportRejected({ reason: "preparation_expired" });
+  }
   if (prepared.kind === "rate_limited") {
     return yield* new HnsCommunityRootImportRejected({
       reason: "rate_limited",
@@ -474,7 +516,7 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
       attachment_intent_id: authority.attachment_intent_id,
       ceremony_intent_id: authority.ceremony_intent_id,
       expected_revision: authority.attachment_revision,
-      idempotency_key: authority.start_request_sha256,
+      idempotency_key: ownershipStartKey(authority),
     })
     .pipe(Effect.mapError(ownershipFailure));
   if (
@@ -482,6 +524,7 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
     ownership.community_id !== authority.community_id ||
     ownership.attachment_intent_id !== authority.attachment_intent_id ||
     ownership.ceremony_intent_id !== authority.ceremony_intent_id ||
+    ownership.generation !== authority.ceremony_generation ||
     ownership.challenge.ownership_source !== "hns_parent_chain_txt" ||
     ownership.challenge.challenge_name !== authority.root_label
   ) {
@@ -498,6 +541,10 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
   }
   if (outcome.kind === "conflict") {
     return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
+  }
+  if (outcome.kind === "challenge_expired") {
+    // Retryable: the next start renews the challenge before any session.
+    return yield* new HnsCommunityRootImportRejected({ reason: "ownership_unavailable" });
   }
   return outcome.session;
 });

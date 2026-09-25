@@ -136,6 +136,9 @@ export type VideoTrustedAnalysis = Readonly<{
     captionSha256: string | null;
     evidenceRef: string;
     minorSafetyEvidenceRef: string | null;
+    /** Spec 013 v1 automatic video publication amendment; never minor-safety evidence. */
+    gateKind?: "sampled_frame_openai_v1";
+    sampledFrameEvidenceRef?: string;
   }>;
   mediaSafety: "allow" | "review_required" | "blocked";
   captionSafety: "not_applicable" | "allow" | "review_required" | "blocked";
@@ -245,6 +248,8 @@ export type SongReferenceSubmissionPlan = Readonly<{
   songDurationSamples: number;
   clipStartSamples: number;
   clipDurationSamples: number;
+  /** The interval policy revision its reservation recorded. */
+  intervalPolicyRevision: number;
 }>;
 
 /** The master accepted for a song-reference submission, sealed after verification. */
@@ -295,6 +300,8 @@ export type VideoSubmissionState = Readonly<{
     | "membership_required"
     | "provider_submission_unconfirmed"
     | "upload_seal_conflict"
+    /** Spec 013 v1 amendment: the sampled-frame gate could not allow; terminal. */
+    | "safety_gate_unresolved"
     | null;
   /** Present only after an author has persisted a terminal abandonment. */
   abandonmentReason?:
@@ -431,7 +438,17 @@ export function validateVideoTrustedAnalysis(
     analysis.safetyRequest.captionSha256 !== canonicalCaptionSha256 ||
     (state.caption === null && analysis.captionSafety !== "not_applicable") ||
     (state.caption !== null && analysis.captionSafety === "not_applicable") ||
-    (analysis.mediaSafety === "allow" && analysis.safetyRequest.minorSafetyEvidenceRef === null)
+    // Allow needs visual minor-safety evidence, or the owner-enabled v1
+    // sampled-frame gate's own evidence (Spec 013, 2026-09-25), which keeps
+    // minor-safety evidence null rather than standing in for it.
+    (analysis.mediaSafety === "allow" &&
+      analysis.safetyRequest.minorSafetyEvidenceRef === null &&
+      !(
+        analysis.safetyRequest.gateKind === "sampled_frame_openai_v1" &&
+        present(analysis.safetyRequest.sampledFrameEvidenceRef ?? "")
+      )) ||
+    (analysis.safetyRequest.gateKind !== undefined &&
+      analysis.safetyRequest.minorSafetyEvidenceRef !== null)
   )
     return "safety_binding";
   return null;
@@ -668,6 +685,37 @@ export const SONG_VIDEO_INTERVAL_POLICY_V1 = Object.freeze({
     (VIDEO_INGEST_POLICY_V1.maxDurationMs * SONG_VIDEO_SAMPLE_RATE_HZ) / 1_000,
 });
 
+/**
+ * Spec 013 song-backed video length amendment, 2026-09-24: a new song-backed
+ * video lasts 3 to 15 seconds. New interval checks and reservations apply this
+ * revision; a reservation keeps the revision it recorded, so an interval
+ * reserved under revision 1 is still judged by revision 1.
+ */
+const SONG_VIDEO_INTERVAL_POLICY_V2 = Object.freeze({
+  version: "song-video-interval-policy-v2" as const,
+  policyRevision: 2,
+  sampleRateHz: SONG_VIDEO_SAMPLE_RATE_HZ,
+  minClipDurationSamples: SONG_VIDEO_INTERVAL_POLICY_V1.minClipDurationSamples,
+  maxClipDurationSamples: (15_000 * SONG_VIDEO_SAMPLE_RATE_HZ) / 1_000,
+});
+
+export type SongVideoIntervalPolicy =
+  | typeof SONG_VIDEO_INTERVAL_POLICY_V1
+  | typeof SONG_VIDEO_INTERVAL_POLICY_V2;
+
+/** The revision new interval checks and reservations apply. */
+export const CURRENT_SONG_VIDEO_INTERVAL_POLICY: SongVideoIntervalPolicy =
+  SONG_VIDEO_INTERVAL_POLICY_V2;
+
+/** The interval policy a reservation recorded, or undefined for an unknown revision. */
+export function songVideoIntervalPolicy(revision: number): SongVideoIntervalPolicy | undefined {
+  if (revision === SONG_VIDEO_INTERVAL_POLICY_V1.policyRevision)
+    return SONG_VIDEO_INTERVAL_POLICY_V1;
+  if (revision === SONG_VIDEO_INTERVAL_POLICY_V2.policyRevision)
+    return SONG_VIDEO_INTERVAL_POLICY_V2;
+  return undefined;
+}
+
 export type SongVideoIntervalRefusal =
   | "invalid_interval"
   | "interval_too_short"
@@ -684,11 +732,14 @@ export type SongVideoIntervalCheck =
  * end equals the canonical duration is accepted, and one sample past it is not.
  * The duration must be the server-probed canonical count, never a client value.
  */
-export function checkSongVideoInterval(input: {
-  readonly clipStartSamples: number;
-  readonly clipDurationSamples: number;
-  readonly songDurationSamples: number;
-}): SongVideoIntervalCheck {
+export function checkSongVideoInterval(
+  input: {
+    readonly clipStartSamples: number;
+    readonly clipDurationSamples: number;
+    readonly songDurationSamples: number;
+  },
+  policy: SongVideoIntervalPolicy = CURRENT_SONG_VIDEO_INTERVAL_POLICY,
+): SongVideoIntervalCheck {
   const { clipStartSamples, clipDurationSamples, songDurationSamples } = input;
   if (
     !Number.isSafeInteger(clipStartSamples) ||
@@ -700,10 +751,10 @@ export function checkSongVideoInterval(input: {
   ) {
     return { accepted: false, reason: "invalid_interval" };
   }
-  if (clipDurationSamples < SONG_VIDEO_INTERVAL_POLICY_V1.minClipDurationSamples) {
+  if (clipDurationSamples < policy.minClipDurationSamples) {
     return { accepted: false, reason: "interval_too_short" };
   }
-  if (clipDurationSamples > SONG_VIDEO_INTERVAL_POLICY_V1.maxClipDurationSamples) {
+  if (clipDurationSamples > policy.maxClipDurationSamples) {
     return { accepted: false, reason: "interval_too_long" };
   }
   const clipEndSamples = clipStartSamples + clipDurationSamples;
@@ -829,6 +880,21 @@ export function resolveSongVideoPolicyConfiguration(
  * capture; publication accepts only a verified, sealed master.
  * ------------------------------------------------------------------ */
 
+function intervalAcceptedUnderRecordedPolicy(plan: SongReferenceSubmissionPlan): boolean {
+  const policy = songVideoIntervalPolicy(plan.intervalPolicyRevision);
+  return (
+    policy !== undefined &&
+    checkSongVideoInterval(
+      {
+        clipStartSamples: plan.clipStartSamples,
+        clipDurationSamples: plan.clipDurationSamples,
+        songDurationSamples: plan.songDurationSamples,
+      },
+      policy,
+    ).accepted
+  );
+}
+
 export function createSongReferenceVideoSubmission(
   input: Readonly<{
     submissionId: string;
@@ -849,11 +915,8 @@ export function createSongReferenceVideoSubmission(
     !present(plan.songAssetId) ||
     !positiveInteger(plan.audioRevision) ||
     !SHA256.test(plan.canonicalAudioSha256) ||
-    !checkSongVideoInterval({
-      clipStartSamples: plan.clipStartSamples,
-      clipDurationSamples: plan.clipDurationSamples,
-      songDurationSamples: plan.songDurationSamples,
-    }).accepted
+    // Judged by the revision its reservation recorded, not today's.
+    !intervalAcceptedUnderRecordedPolicy(plan)
   )
     throw new Error("song-reference submission plan is invalid");
   return {

@@ -1,6 +1,11 @@
 import {
   decodeHnsActiveLeaseRenewalRequestBytes,
+  decodeHnsImportPublicationPollRequestV1,
+  encodeHnsImportPublicationPollResultV1,
   HNS_ACTIVE_LEASE_RENEWAL_REQUEST_MAX_BYTES,
+  HNS_IMPORT_PUBLICATION_POLL_REQUEST_MAX_BYTES,
+  HNS_TXT_IMPORT_PROTOCOL_VERSION,
+  hnsImportChallengeValueSha256,
   RouteAttachmentOwnershipProviderStartInput,
   RouteAttachmentOwnershipSession,
 } from "@pirate/application/namespace-ownership";
@@ -10,8 +15,13 @@ import {
   HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES,
   type HnsOwnerSameRootRecoveryProviderStartV1,
 } from "@pirate/application/route-revalidation";
+import type {
+  HnsImportPublicationAuthorization,
+  HnsImportPublicationAuthorizationInput,
+} from "@pirate/platform-cf/hns-root-import-publication-authorization-postgres";
 import { Option, Schema } from "effect";
 import {
+  composeHnsImportPublicationAuthorizer,
   composeHnsNameProofRuntime,
   composeHnsTargetObserverRuntime,
   type HnsTargetCompositionBindings,
@@ -34,6 +44,7 @@ import {
 
 const START_PATH = "/internal/hns-owner/v1/start";
 const POLL_PATH = "/internal/hns-owner/v1/poll";
+const IMPORT_POLL_PATH = "/internal/hns-owner/v1/import-poll";
 const ACTIVE_LEASE_RENEWAL_PATH = "/internal/hns-owner/v1/active-lease-renewal";
 const NAME_PROOF_PATH = "/internal/hns-owner/v1/verify-name-signature";
 const SESSION_HEADER = "Pirate-Namespace-Session-Id";
@@ -150,6 +161,12 @@ export type Env = Readonly<{
   readonly HNS_PROVIDER_ENVIRONMENT?: string;
   readonly HNS_PROVIDER_CONFIGURATION_REFERENCE?: string;
   readonly HNS_PROVIDER_CONFIGURATION_VERSION?: string;
+  /**
+   * Protocols this deployment answers beyond hns-txt-v1, comma separated.
+   * Only hns-txt-import-v1 is known. Absent or empty answers an import poll
+   * with a typed unsupported_protocol refusal.
+   */
+  readonly HNS_PROVIDER_CAPABILITIES?: string;
 }> &
   HnsTargetCompositionBindings;
 
@@ -493,6 +510,150 @@ function sessionMatchesPinned(
   );
 }
 
+function importCapability(env: Env): "enabled" | "disabled" | "misconfigured" {
+  const entries = (env.HNS_PROVIDER_CAPABILITIES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (entries.some((entry) => entry !== HNS_TXT_IMPORT_PROTOCOL_VERSION)) return "misconfigured";
+  return entries.includes(HNS_TXT_IMPORT_PROTOCOL_VERSION) ? "enabled" : "disabled";
+}
+
+type ImportPublicationAuthorizer = (
+  input: HnsImportPublicationAuthorizationInput,
+) => Promise<HnsImportPublicationAuthorization | null>;
+
+/**
+ * hns-txt-import-v1. The session's own one-hour clock is not consulted: the
+ * verifier reads the import's publication authorization from the database and
+ * observes only while it holds. The observation itself is the unchanged
+ * route-attachment observation, wrapped with the binding it was made under.
+ */
+async function handleImportPoll(
+  request: Request,
+  env: Env,
+  authorizer: ImportPublicationAuthorizer | undefined,
+  resolveObserver: () => Promise<HnsTargetObserverRuntime | undefined>,
+): Promise<Response> {
+  const capability = importCapability(env);
+  if (capability === "misconfigured") return errorResponse(502, "provider_misconfigured");
+  if (capability === "disabled") return errorResponse(501, "unsupported_protocol");
+  const header = sessionHeader(request);
+  const observationHeader = request.headers.get(OBSERVATION_HEADER);
+  if (
+    header === null ||
+    request.headers.get("content-type") !== "application/json" ||
+    request.headers.get("accept") !== "application/json" ||
+    observationHeader === null ||
+    !safeText(observationHeader, 256)
+  ) {
+    return errorResponse(400, "invalid_request");
+  }
+  const source = configuredSource(env);
+  const pinned = pinnedConfiguration(env);
+  const evidenceTtl = evidenceTtlSeconds(env);
+  if (source === null || pinned === null || evidenceTtl === null) {
+    return errorResponse(502, "provider_misconfigured");
+  }
+  const body = await boundedBody(request, HNS_IMPORT_PUBLICATION_POLL_REQUEST_MAX_BYTES);
+  if (body === null) return errorResponse(400, "invalid_request");
+  let poll: ReturnType<typeof decodeHnsImportPublicationPollRequestV1>;
+  try {
+    poll = decodeHnsImportPublicationPollRequestV1(body);
+  } catch {
+    return errorResponse(400, "invalid_request");
+  }
+  const session = poll.session;
+  if (
+    !safeText(session.actor_id, 256) ||
+    !safeText(session.community_id, 256) ||
+    !safeText(session.attachment_intent_id, 256) ||
+    !safeText(session.ceremony_intent_id, 256) ||
+    !safeText(session.environment, 256) ||
+    session.provider_id !== "hns.owner.v1" ||
+    session.protocol_version !== "hns-txt-v1" ||
+    !exactRoute(session.route) ||
+    !exactConfiguration(session.provider_configuration) ||
+    !matchesPinnedConfiguration(session.provider_configuration, pinned) ||
+    session.environment !== pinned.environment ||
+    poll.binding.root_label !== session.route.root_label ||
+    (await hnsImportChallengeValueSha256(`pirate-verification=${session.upstream_session_ref}`)) !==
+      poll.binding.challenge_value_sha256
+  ) {
+    return errorResponse(400, "invalid_request");
+  }
+  if (authorizer === undefined) return errorResponse(502, "provider_misconfigured");
+  let authority: HnsImportPublicationAuthorization | null;
+  try {
+    authority = await authorizer({
+      actor_id: session.actor_id,
+      community_id: session.community_id,
+      root_label: session.route.root_label,
+      namespace_session_id: header,
+      upstream_session_ref: session.upstream_session_ref,
+      challenge_value_sha256: poll.binding.challenge_value_sha256,
+      publish_plan_sha256: poll.binding.publish_plan_sha256,
+    });
+  } catch {
+    return errorResponse(503, "provider_unavailable");
+  }
+  if (
+    authority === null ||
+    authority.root_import_session_id !== poll.binding.root_import_session_id ||
+    authority.root_label !== session.route.root_label
+  ) {
+    return errorResponse(409, "publication_not_authorized");
+  }
+  const targetObserver = await resolveObserver();
+  const observed = {
+    ...session,
+    route: { ...session.route, root_label: authority.root_label },
+  } as unknown as HnsOwnerControlTargetSession;
+  if (
+    targetObserver === undefined ||
+    targetObserver.configuration.ownership_source !== source ||
+    targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl ||
+    !matchesHnsTargetObserverControlConfiguration(observed, targetObserver)
+  ) {
+    return errorResponse(502, "provider_misconfigured");
+  }
+  let output: Uint8Array;
+  try {
+    output = await observeHnsOwnerControlSession(observed, targetObserver, observationHeader);
+  } catch (error) {
+    if (error instanceof HnsTargetObserverFacadeError) {
+      return error.reason === "unavailable"
+        ? errorResponse(503, "provider_unavailable")
+        : error.reason === "misconfigured"
+          ? errorResponse(502, "provider_misconfigured")
+          : errorResponse(502, "invalid_response");
+    }
+    return errorResponse(502, "invalid_response");
+  }
+  const target = strictJson(output, POLL_RESPONSE_MAX_BYTES);
+  if (!isObject(target)) return errorResponse(502, "invalid_response");
+  if (target.status === "unavailable") return errorResponse(503, "provider_unavailable");
+  if (target.status === "rejected") return errorResponse(422, "provider_rejected");
+  if (target.status !== "pending" && target.status !== "verified") {
+    return errorResponse(502, "invalid_response");
+  }
+  const result = encodeHnsImportPublicationPollResultV1({
+    root_import_session_id: authority.root_import_session_id,
+    root_label: authority.root_label,
+    publish_plan_sha256: poll.binding.publish_plan_sha256,
+    challenge_value_sha256: poll.binding.challenge_value_sha256,
+    upstream_session_ref: session.upstream_session_ref,
+    valid_until: authority.valid_until,
+    observation_bytes: output,
+  });
+  const buffer = new ArrayBuffer(result.byteLength);
+  new Uint8Array(buffer).set(result);
+  return new Response(buffer, {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
 function parseStart(value: unknown): StartInput | null {
   if (!isObject(value)) return null;
   if (value.operation_kind === "route_attachment") {
@@ -788,6 +949,7 @@ export async function handleRequest(
     readonly targetObserver?: HnsTargetObserverRuntime;
     readonly resolveTargetObserver?: () => Promise<HnsTargetObserverRuntime | undefined>;
     readonly nameProof?: HnsNameProofRuntime;
+    readonly importAuthorizer?: ImportPublicationAuthorizer;
   }> = {},
 ): Promise<Response> {
   const resolveObserver = async () =>
@@ -799,11 +961,15 @@ export async function handleRequest(
   if (
     url.pathname !== START_PATH &&
     url.pathname !== POLL_PATH &&
+    url.pathname !== IMPORT_POLL_PATH &&
     url.pathname !== ACTIVE_LEASE_RENEWAL_PATH &&
     url.pathname !== NAME_PROOF_PATH
   )
     return errorResponse(404, "not_found");
   if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+  if (url.pathname === IMPORT_POLL_PATH) {
+    return handleImportPoll(request, env, options.importAuthorizer, resolveObserver);
+  }
   if (url.pathname === NAME_PROOF_PATH) {
     if (
       request.headers.get("content-type") !== "application/json" ||
@@ -1070,7 +1236,12 @@ const app = {
         ...(nameProof === undefined ? {} : { nameProof }),
       });
     }
+    const importAuthorizer =
+      new URL(request.url).pathname === IMPORT_POLL_PATH
+        ? composeHnsImportPublicationAuthorizer(env)
+        : undefined;
     return handleRequest(request, env, {
+      ...(importAuthorizer === undefined ? {} : { importAuthorizer }),
       resolveTargetObserver: async () => {
         try {
           return await composeHnsTargetObserverRuntime(env, request.signal);

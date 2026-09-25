@@ -3,29 +3,28 @@
   "kind": "api-client-release-handoff",
   "package": "@pirate/api-client",
   "version": "0.89.0",
-  "sourceBranch": "feat/persona-song-library",
-  "sourceBase": "90df0c764fa614f27fc92c74c96c15e87f9e0367",
-  "validatedSourceCommit": "a71f61245c3b923cf9f6c05f148cb94e54f8b92b",
-  "pullRequest": 414,
-  "wireContract": "Add two additive reads: GET /personas/{persona_id}/songs lists the selected persona's private song activity library (songs enter on study, karaoke or dance session start, deduplicated, most recent first, paginated), and GET /songs/trending lists public trending songs ranked by distinct active accounts over seven days with a three-account minimum. No existing operation changes.",
+  "sourceBranch": "feat/megapot-participant-claim-endpoint",
+  "sourceBase": "d88bcac474adefe10bca56ae87cbdb2558c728b8",
+  "validatedSourceCommit": "513f31a0279c7144e7ccfd3c7660a9149c17bc13",
+  "pullRequest": 429,
+  "wireContract": "Spec 015 §5.2a participant claim. Adds POST /rewards/credits/{creditId}/claim, which claims one of the signed-in user's Megapot participant credits and returns the outcome (accepted, subject_conflict, verification_missing, verification_stale, verification_failed, not_claimable) with the credit; an absent or foreign credit is 404. Every reward credit gains claim, null for credits that need no claim, with status unclaimed, accepted or subject_conflict and, once accepted, payout_status pending, recipient_pending, submitted, confirmed or failed_retrying.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.89.0.tgz",
-    "sha256": "822ee0c0469a0391f081a75a69d8186a161e38b649c771af41c5425471886002"
+    "sha256": "4d8790d2022cd60c0ca0982eb0c42c97a6ed4ef45a262dfc3e838ab9e2c45c3c"
   },
   "validation": {
-    "status": "Rebased candidate passed required local repository and PostgreSQL gates and all hosted required checks; exact-head review findings addressed",
+    "status": "Local candidate; hosted review and paired Solid adoption pending",
     "passed": [
-      "Contract generation",
-      "PostgreSQL baseline regeneration with migration 0202 after current main through 0201",
-      "Immutable package creation from the generated 0.89.0 client",
-      "Repository check and complete unit, Node and Workerd test graph",
-      "Baseline-backed preparation of every song library statement",
-      "Hosted required checks including PostgreSQL 17 general shards 0-3, namespace, recovery and PostgreSQL 18 shape"
+      "Contract generation and freshness",
+      "Immutable package creation and verification of the generated 0.89.0 client",
+      "OpenAPI breaking-change check against source base d88bcac4",
+      "Repository check and complete unit test graph (4749 pass)",
+      "Rewards, foundation and role-template PostgreSQL 17 suites (78 pass; four load timeouts passed on isolated rerun)"
     ],
     "remaining": [
-      "Paired Solid 0.89.0 adoption and local browser qualification",
-      "Guarded staging HTTP release"
+      "Hosted required checks on the exact pull-request head",
+      "Paired Solid 0.89.0 adoption (slice C). Deploy ordering: the 0.88.0 client rejects unknown response properties, so an API serving the new claim field breaks 0.88.0 reward-credit reads; Solid must adopt 0.89.0 before or with the API deploy that carries this contract."
     ],
-    "operationalBoundary": "No package registry publication, migration execution, deployment, credential use or live product mutation occurred."
+    "operationalBoundary": "No package registry publication, migration execution, deployment, provider call, credential use or live product mutation occurred."
   }
 }

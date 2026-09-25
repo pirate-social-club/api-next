@@ -1,0 +1,44 @@
+{
+  "admin": { "disabled": true },
+  "apps": {
+    "tls": {
+      "certificates": {
+        "load_files": [{
+          "certificate": "/etc/pirate-hns-staging/tls/certificate.pem",
+          "key": "/etc/pirate-hns-staging/tls/private-key.pem",
+          "tags": ["staging-fixture"]
+        }]
+      }
+    },
+    "http": {
+      "servers": {
+        "staging": {
+          "listen": [":443"],
+          "protocols": ["h1", "h2"],
+          "automatic_https": { "disable": true },
+          "tls_connection_policies": [{
+            "certificate_selection": { "any_tag": ["staging-fixture"] }
+          }],
+          "routes": [{
+            "handle": [
+              { "handler": "headers", "request": { "delete": ["X-Pirate-Gateway-*"] } },
+              { "handler": "headers", "request": { "delete": ["X-Pirate-Hns-Forwarder-*"] } },
+              {
+                "handler": "reverse_proxy",
+                "upstreams": [{ "dial": "172.31.254.1:4269" }],
+                "headers": {
+                  "request": {
+                    "set": {
+                      "X-Pirate-Gateway-External-Scheme": ["https"],
+                      "X-Pirate-Gateway-Tls-Sni": ["{http.request.tls.server_name}"]
+                    }
+                  }
+                }
+              }
+            ]
+          }]
+        }
+      }
+    }
+  }
+}

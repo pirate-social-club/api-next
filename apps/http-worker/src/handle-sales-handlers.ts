@@ -84,6 +84,12 @@ export function makeHandleSalesHandlers(
   return {
     CreateHandleSaleNamespace: async (request) => {
       const path = request.params as { readonly communityId: string };
+      if ((request.body as { readonly family?: string }).family === "spaces") {
+        throw new RetryableHandleRequestRejected({
+          message: "Spaces namespace setup is not available",
+          details: { reason: "service_unavailable" },
+        });
+      }
       const body = request.body as {
         readonly idempotency_key: string;
         readonly namespace_authority_reference: string;
@@ -111,6 +117,12 @@ export function makeHandleSalesHandlers(
         readonly communityId: string;
         readonly activationId: string;
       };
+      if ((request.body as { readonly family?: string }).family === "spaces") {
+        throw new RetryableHandleRequestRejected({
+          message: "Spaces namespace setup is not available",
+          details: { reason: "service_unavailable" },
+        });
+      }
       const body = request.body as {
         readonly idempotency_key: string;
         readonly expected_sale_namespace_activation_hash: string;

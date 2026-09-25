@@ -253,6 +253,20 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-handle-sales-suite-complete\n",
   },
   {
+    name: "postgres Spaces sale namespace",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_SPACES_SALE_NAMESPACE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete",
+    contents: "api-next-control-plane-postgres-spaces-sale-namespace-suite-complete\n",
+  },
+  {
+    name: "postgres Spaces handle claims",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete",
+    contents: "api-next-control-plane-postgres-spaces-handle-claims-suite-complete\n",
+  },
+  {
     name: "postgres community moderation foundation",
     path:
       process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL ??

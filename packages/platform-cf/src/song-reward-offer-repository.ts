@@ -281,6 +281,34 @@ const lockAction = (
     readonly: false,
   });
 
+/**
+ * Hold the song owner-policy head until the transaction ends, so a policy
+ * revision cannot interleave with the terms frozen below. The runtime role may
+ * not lock the head directly; the guarded routine takes FOR SHARE for it. The
+ * authority query that follows runs on a fresh snapshot and therefore reads
+ * the latest committed revision, which cannot change until commit.
+ */
+const lockOwnerPolicyHead = (
+  db: ControlPlaneTransaction,
+  scope: { readonly communityId: string; readonly postId: string } | { readonly offerId: string },
+) =>
+  "offerId" in scope
+    ? db.execute({
+        label: "song-reward-offer.owner-policy.lock",
+        text: `SELECT head.owner_account_id
+                 FROM song_reward_offers offer
+                 CROSS JOIN LATERAL lock_song_owner_policy_head_v1(offer.community_id, offer.post_id) head
+                WHERE offer.offer_id=$1`,
+        values: [scope.offerId],
+        readonly: false,
+      })
+    : db.execute({
+        label: "song-reward-offer.owner-policy.lock",
+        text: "SELECT owner_account_id FROM lock_song_owner_policy_head_v1($1, $2)",
+        values: [scope.communityId, scope.postId],
+        readonly: false,
+      });
+
 const lockQualificationPolicies = Effect.fn("SongRewardOffer.lockQualificationPolicies")(function* (
   transaction: ControlPlaneTransaction,
   activities: readonly string[],
@@ -398,6 +426,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 replayed: true,
               };
             }
+            const lockedHead = yield* lockOwnerPolicyHead(transaction, {
+              communityId: input.communityId,
+              postId: input.postId,
+            });
+            if (lockedHead.rows.length !== 1) return yield* rejected("song-unavailable");
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.open.authority",
               text: `SELECT publication.audio_revision,
@@ -426,8 +459,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                         AND revision.owner_account_id=head.owner_account_id
                         AND revision.policy_revision=head.current_policy_revision
                         AND revision.policy_hash=head.current_policy_hash
-                        WHERE community.community_id=$1 AND community.status='active'
-                       FOR SHARE OF head`,
+                        WHERE community.community_id=$1 AND community.status='active'`,
               values: [input.communityId, input.accountId, input.personaId, input.postId],
               readonly: false,
             });
@@ -551,6 +583,28 @@ export function makeControlPlaneSongRewardOfferRepository() {
         mapped,
       ),
 
+    fundingSender: (input: Parameters<SongRewardOfferStore["fundingSender"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "song-reward-offer.funding-sender.read",
+          text: `SELECT wallet.address
+                   FROM personas persona
+                   JOIN persona_wallet_assignments wallet
+                     ON wallet.account_id=persona.account_id
+                    AND wallet.persona_id=persona.persona_id
+                    AND wallet.chain_account_kind='evm'
+                    AND wallet.status='active'
+                  WHERE persona.account_id=$1 AND persona.persona_id=$2
+                    AND persona.status='active'
+                  LIMIT 2`,
+          values: [input.accountId, input.personaId],
+          readonly: true,
+        });
+        if (result.rows.length !== 1) return yield* rejected("persona-ineligible");
+        return text(result.rows[0] as Row, "address").toLowerCase();
+      }).pipe(mapped),
+
     addMegapotPoolLeg: (input: Parameters<SongRewardOfferStore["addMegapotPoolLeg"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -573,6 +627,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
               }
               return { leg: yield* readLeg(transaction, text(row, "leg_id")), replayed: true };
             }
+            const lockedHead = yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
+            if (lockedHead.rows.length !== 1) return yield* rejected("not-found");
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.leg.authority",
               text: `SELECT offer.status AS offer_status, offer.ends_at,
@@ -618,8 +674,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                           ORDER BY observed.block_number DESC, observed.observation_id DESC LIMIT 1
                        ) observation ON true
                       WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
-                        AND offer.ends_at > clock_timestamp()
-                       FOR SHARE OF head`,
+                        AND offer.ends_at > clock_timestamp()`,
               values: [input.offerId, input.accountId, input.personaId],
               readonly: false,
             });
@@ -752,6 +807,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 replayed: true,
               };
             }
+            const lockedHead = yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
+            if (lockedHead.rows.length !== 1) return yield* rejected("not-found");
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.asset-leg.authority",
               text: `SELECT offer.status AS offer_status,
@@ -793,8 +850,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                         AND attestation.environment=asset.environment
                         AND attestation.status='active'
                        WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
-                        AND offer.ends_at > clock_timestamp()
-                       FOR SHARE OF head`,
+                        AND offer.ends_at > clock_timestamp()`,
               values: [
                 input.offerId,
                 input.accountId,
@@ -966,6 +1022,7 @@ export const makeControlPlaneSongRewardOfferStore = (
   return {
     listAdmittedAssets: (input) => provide(repository.listAdmittedAssets(input)),
     qualificationPolicies: () => provide(repository.qualificationPolicies()),
+    fundingSender: (input) => provide(repository.fundingSender(input)),
     openOffer: (input) => provide(repository.openOffer(input)),
     addMegapotPoolLeg: (input) => provide(repository.addMegapotPoolLeg(input)),
     addAssetBonusLeg: (input) => provide(repository.addAssetBonusLeg(input)),

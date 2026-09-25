@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { makeVideoSourceUrl } from "./video-source-gateway.ts";
-import { makeVideoStreamTransport } from "./video-stream-transport.ts";
+import {
+  makeVideoStreamTransport,
+  type VideoStreamTransportEvent,
+} from "./video-stream-transport.ts";
 
 const gateway = "https://video-source-staging.pirate.sc";
 const grantUrl = makeVideoSourceUrl(gateway, "g".repeat(43));
@@ -31,6 +34,7 @@ const video = {
 function fixture(issuedUrl = grantUrl) {
   const calls: { url: string; init: RequestInit | undefined }[] = [];
   const grants: unknown[] = [];
+  const events: VideoStreamTransportEvent[] = [];
   let reply: (url: string) => Response = (url) =>
     Response.json({
       success: true,
@@ -54,11 +58,13 @@ function fixture(issuedUrl = grantUrl) {
       calls.push({ url: String(url), init });
       return reply(String(url));
     }) as typeof fetch,
+    log: (event) => events.push(event),
   });
   return {
     transport,
     calls,
     grants,
+    events,
     reply: (fn: typeof reply) => {
       reply = fn;
     },
@@ -81,7 +87,7 @@ test("Stream copy uses exact sealed facts and a signed-only server template", as
   expect(f.calls).toHaveLength(1);
   expect(f.calls[0]?.init?.redirect).toBe("manual");
   expect(JSON.parse(String(f.calls[0]?.init?.body))).toEqual({
-    input: grantUrl,
+    url: grantUrl,
     creator: identity.creator,
     meta: video.meta,
     requireSignedURLs: true,
@@ -262,4 +268,65 @@ test("provider ignoring the two-result limit cannot create unbounded download lo
   f.reply(() => Response.json({ success: true, result: [video, video, video] }));
   await expect(f.transport.observe(identity)).rejects.toThrow("Stream observation unavailable");
   expect(f.calls).toHaveLength(1);
+});
+
+test("a refused copy logs its status, codes and sanitized message, never the grant or token", async () => {
+  const f = fixture();
+  f.reply(() =>
+    Response.json(
+      {
+        success: false,
+        errors: [{ code: 10005, message: "Bad Request: The request was invalid." }],
+        messages: [{ code: 10005, message: `Could not determine the size of ${grantUrl}` }],
+      },
+      { status: 400 },
+    ),
+  );
+  await expect(f.transport.copy(source)).rejects.toThrow("Stream transport unavailable");
+  expect(f.events).toEqual([
+    {
+      event: "stream_step_failed",
+      step: "copy",
+      status: 400,
+      codes: [10005, 10005],
+      messages: ["Bad Request: The request was invalid.", "Could not determine the size of <url>"],
+    },
+  ]);
+  const logged = JSON.stringify(f.events);
+  expect(logged).not.toContain("g".repeat(43));
+  expect(logged).not.toContain("fixture-token");
+  expect(logged).not.toContain("video-source-staging");
+});
+
+test("a network failure logs only the step and error name", async () => {
+  const f = fixture();
+  f.reply(() => {
+    throw new TypeError("connect ECONNREFUSED https://api.cloudflare.com fixture-token");
+  });
+  await expect(f.transport.copy(source)).rejects.toThrow("Stream transport unavailable");
+  expect(f.events).toEqual([{ event: "stream_step_failed", step: "copy", error: "TypeError" }]);
+});
+
+test("fetch is called unbound, as workerd requires for the global fetch", async () => {
+  const f = fixture();
+  let receiver: unknown = "unset";
+  const transport = makeVideoStreamTransport({
+    accountId: "d".repeat(32),
+    apiToken: "fixture-token",
+    sourceGatewayOrigin: gateway,
+    nowMs: () => 0,
+    grants: { issue: async (input) => ({ url: grantUrl, expiresAtMs: input.expiresAtMs }) },
+    fetch: async function (this: unknown, url: RequestInfo | URL) {
+      receiver = this;
+      if (this !== undefined) throw new TypeError("Illegal invocation");
+      return Response.json({
+        success: true,
+        result: String(url).endsWith("/copy") ? { uid: "c".repeat(32) } : [],
+      });
+    } as typeof fetch,
+    log: (event) => f.events.push(event),
+  });
+  await transport.copy(source);
+  expect(receiver).toBeUndefined();
+  expect(f.events).toEqual([]);
 });

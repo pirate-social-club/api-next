@@ -40,7 +40,7 @@ import {
   ReserveDanceSessionUpload,
   SubmitDanceSessionForGrading,
 } from "./dance-attempt.ts";
-import { handleSalesRegistry } from "./handle-sales.ts";
+import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
@@ -90,17 +90,26 @@ import {
 import {
   AddAssetBonusLeg,
   AddMegapotPoolLeg,
+  AttachRewardWinnerSendTransaction,
+  CancelRewardWinnerSend,
+  ClaimRewardCredit,
+  CreateRewardWinnerSend,
   GetAssetBonusFunding,
   GetMegapotPoolFunding,
   GetMegapotPoolStanding,
+  GetRewardCreditWinnerSend,
+  GetRewardGasTopup,
   GetRewardQualificationPolicies,
+  GetRewardWinnerSend,
   GetSongMegapotPool,
+  IssueRewardClaimVerificationIntent,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
   ListSongAssetBonuses,
   ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
+  RequestRewardGasTopup,
 } from "./rewards-song-offers.ts";
 import { GetTrendingSongs, ListPersonaSongs } from "./song-library.ts";
 import {
@@ -108,6 +117,16 @@ import {
   GetSongOwnerPolicy,
   UpdateSongOwnerPolicy,
 } from "./song-owner-video-policy.ts";
+import {
+  ConfirmSpacesOperatorAssignment,
+  GetSpacesOperatorAssignments,
+} from "./spaces-operator-assignment.ts";
+import { PollSpacesOwnership, StartSpacesOwnership } from "./spaces-owner-proof.ts";
+import {
+  ConfirmPersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  PreparePersonaSpacesTaproot,
+} from "./spaces-taproot-wallet.ts";
 import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
@@ -149,12 +168,15 @@ export const registry = {
   GetCurrentHnsCommunityRootImport,
   PollHnsCommunityRootImport,
   ActivateHnsCommunityRootImport,
-  ...handleSalesRegistry,
+  ...handleSalesSpacesRegistry,
   ListMyPersonas,
   ListMyPendingPersonaWallets,
   CreatePersona,
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
+  PreparePersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  ConfirmPersonaSpacesTaproot,
   RetirePersona,
   ...platformPirateHandleRegistry,
   ...v1Registry,
@@ -164,6 +186,10 @@ export const registry = {
   ...verification,
   ...money,
   StartNamespaceOwnership,
+  StartSpacesOwnership,
+  PollSpacesOwnership,
+  GetSpacesOperatorAssignments,
+  ConfirmSpacesOperatorAssignment,
   PollNamespaceOwnership,
   CreateKaraokeAttempt,
   GetKaraokeReadiness,
@@ -207,6 +233,15 @@ export const registry = {
   GetMegapotPoolStanding,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
+  ClaimRewardCredit,
+  IssueRewardClaimVerificationIntent,
+  RequestRewardGasTopup,
+  GetRewardGasTopup,
+  CreateRewardWinnerSend,
+  GetRewardCreditWinnerSend,
+  AttachRewardWinnerSendTransaction,
+  CancelRewardWinnerSend,
+  GetRewardWinnerSend,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,

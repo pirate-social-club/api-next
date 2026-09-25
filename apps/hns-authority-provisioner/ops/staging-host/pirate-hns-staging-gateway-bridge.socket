@@ -1,0 +1,16 @@
+[Unit]
+Description=Private HNS staging TLS-to-gateway socket
+After=pirate-hns-staging-docker.service
+Requires=pirate-hns-staging-docker.service
+
+[Socket]
+ListenStream=172.31.254.1:4269
+BindToDevice=phnsstage0
+Accept=no
+NoDelay=yes
+Service=pirate-hns-staging-gateway-bridge.service
+IPAddressDeny=any
+IPAddressAllow=172.31.254.2/32
+
+[Install]
+WantedBy=sockets.target

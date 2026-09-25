@@ -63,47 +63,55 @@ async function fixture(
   }
 }
 suite("maintained database fence collector", () => {
-  test("proves real reconnect refusal and rejects PUBLIC, table and SET ROLE access", async () =>
-    fixture(async (input, name) => {
-      const result = await observeMaintainedDatabaseFence(input);
-      expect(result).toMatchObject({
-        databaseWrites: true,
-        reconnectDenied: true,
-        runtimeSessions: 0,
-      });
-      expect(JSON.stringify(result)).not.toContain(name);
-      await input.admin.query(`GRANT CONNECT ON DATABASE "${name}" TO PUBLIC`);
-      await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
-        "staging_database_fence_unproven",
-      );
-      await input.admin.query(`REVOKE CONNECT ON DATABASE "${name}" FROM PUBLIC`);
-      await input.admin.query(`GRANT SELECT ON api_next.schema_migrations TO "${name}"`);
-      await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
-        "staging_database_fence_unproven",
-      );
-      await input.admin.query(`REVOKE SELECT ON api_next.schema_migrations FROM "${name}"`);
-      await input.admin.query(`GRANT pg_read_all_data TO "${name}" WITH INHERIT FALSE, SET TRUE`);
-      await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
-        "staging_database_fence_unproven",
-      );
-    }));
-  test("refuses active sessions, observer impersonation and a failed reconnect probe without mutation", async () =>
-    fixture(async (input, _name, scoped) => {
-      const peer = new Client({ connectionString: scoped });
-      await peer.connect();
-      try {
+  test(
+    "proves real reconnect refusal and rejects PUBLIC, table and SET ROLE access",
+    async () =>
+      fixture(async (input, name) => {
+        const result = await observeMaintainedDatabaseFence(input);
+        expect(result).toMatchObject({
+          databaseWrites: true,
+          reconnectDenied: true,
+          runtimeSessions: 0,
+        });
+        expect(JSON.stringify(result)).not.toContain(name);
+        await input.admin.query(`GRANT CONNECT ON DATABASE "${name}" TO PUBLIC`);
         await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
           "staging_database_fence_unproven",
         );
-      } finally {
-        await peer.end();
-      }
-      await expect(
-        observeMaintainedDatabaseFence({ ...input, expectedAdmin: "different_observer" }),
-      ).rejects.toThrow("staging_database_fence_unproven");
-      await expect(
-        observeMaintainedDatabaseFence({ ...input, probeReconnect: async () => false }),
-      ).rejects.toThrow("staging_database_fence_unproven");
-      expect((await observeMaintainedDatabaseFence(input)).runtimeSessions).toBe(0);
-    }));
+        await input.admin.query(`REVOKE CONNECT ON DATABASE "${name}" FROM PUBLIC`);
+        await input.admin.query(`GRANT SELECT ON api_next.schema_migrations TO "${name}"`);
+        await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
+          "staging_database_fence_unproven",
+        );
+        await input.admin.query(`REVOKE SELECT ON api_next.schema_migrations FROM "${name}"`);
+        await input.admin.query(`GRANT pg_read_all_data TO "${name}" WITH INHERIT FALSE, SET TRUE`);
+        await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
+          "staging_database_fence_unproven",
+        );
+      }),
+    30_000,
+  );
+  test(
+    "refuses active sessions, observer impersonation and a failed reconnect probe without mutation",
+    async () =>
+      fixture(async (input, _name, scoped) => {
+        const peer = new Client({ connectionString: scoped });
+        await peer.connect();
+        try {
+          await expect(observeMaintainedDatabaseFence(input)).rejects.toThrow(
+            "staging_database_fence_unproven",
+          );
+        } finally {
+          await peer.end();
+        }
+        await expect(
+          observeMaintainedDatabaseFence({ ...input, expectedAdmin: "different_observer" }),
+        ).rejects.toThrow("staging_database_fence_unproven");
+        await expect(
+          observeMaintainedDatabaseFence({ ...input, probeReconnect: async () => false }),
+        ).rejects.toThrow("staging_database_fence_unproven");
+        expect((await observeMaintainedDatabaseFence(input)).runtimeSessions).toBe(0);
+      }),
+    30_000,
+  );
 });

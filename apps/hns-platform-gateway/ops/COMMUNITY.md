@@ -54,6 +54,31 @@ synthetic nonpublic SPKI digest used only for authority-tuple equality during
 the loopback preflight. It is not evidence of a certificate, TLS termination,
 TLSA record, DNSSEC validation, or public reachability.
 
+The separate `staging-private-tls` mode uses schema
+`pirate-hns-community-app-gateway-staging-private-tls-v1`. It preserves the
+staging loopback listener pair and therefore cannot run concurrently with
+staging-shadow. It binds `staging_gateway_listener` to `127.0.0.1:4269`,
+`staging_health_listener` to `127.0.0.1:4271`, `private_tls_listener` to
+`172.31.254.2:443`, and the maintained `tls_terminator_contract`. It requires
+the real certificate's `gateway_certificate_spki_sha256`, not a synthetic
+pin. `public_tls_termination` remains false because this is an isolated
+private container, not a public ingress. All common artifact, source,
+credential, authority, origin and registry fields remain mandatory.
+
+This manifest binds intended configuration; loading it does not observe a
+certificate or prove TLSA agreement. Readiness and acceptance must separately
+compare the actual peer SPKI with the provisioned TLSA and approved manifest.
+Populate `community/deployment-manifest.staging-private-tls.template.json` only
+after the real certificate, protected Solid origin, Access application,
+forwarder registry and read-only database endpoint have been qualified. Reject
+any remaining `__UNRESOLVED_` field before writing compact manifest bytes.
+The Caddy profile lives under the authority provisioner's `ops/staging-host`.
+Its bridge-to-loopback transport and the gateway's read-only database role,
+staging forwarder registry and outbound Access pair must be qualified before
+installation. No production credential or broad runtime database role is a
+substitute. The production, shadow and synthetic staging manifest schemas do
+not accept this mode, and its schema accepts none of their manifests.
+
 The four credential names in the manifest are logical systemd credential
 names. Values never enter the manifest. The authority database URL must belong
 to a separate server-enforced read-only role and use `sslmode=verify-full`.
@@ -65,6 +90,17 @@ mutate, migrate, own, or administer anything. The forwarder registry is the
 same exact registry reference and version installed at both Worker consumers.
 The Access pair is outbound only and is added solely to the configured Solid
 protected origin.
+
+For the isolated staging target, `scripts/staging-hns-gateway-role-cli.ts`
+prints the exact dependency grant plan and digest with `--role <sql-role>`.
+Execution additionally requires `--execute --approve-plan-sha256 <digest>`
+and an administrator URL supplied through the approved secret wrapper. It
+verifies the provider database and branch, applies the grants transactionally,
+and refuses any extra table read or table write privilege at readback. The
+credential itself is not an argument or receipt. The operator must first
+create a dedicated role without inherited broad roles and retain its
+connection URL in staging-only custody. The command does not create a role,
+install credentials, start a gateway, or make a product state change.
 
 The production, shadow, and rollback unit names are respectively
 `pirate-hns-community-app-gateway.service`,

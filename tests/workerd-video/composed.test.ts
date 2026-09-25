@@ -36,7 +36,10 @@ import {
   operationId,
   responseBytes,
   responseSha256,
+  seedPublishedSongFixture,
+  seedSongOwner,
   seedVideoActors,
+  songReferenceFinalizedFixture,
   submissionId,
 } from "../../packages/platform-cf/src/video-publication.pg-fixture.ts";
 import { makeVideoPublicationWakeupStore } from "../../packages/platform-cf/src/video-publication-wakeup-repository.ts";
@@ -64,10 +67,39 @@ beforeEach(async (context) => {
   await seedVideoActors(admin);
   const url = new URL(bindings.VIDEO_TEST_DATABASE);
   url.searchParams.set("options", "-c search_path=api_next,pg_catalog");
-  fixture = await finalizedFixture(
-    url.toString(),
-    context.task.name.includes("safety caption") ? "Review this caption" : null,
-  );
+  if (context.task.name.includes("song-reference review")) {
+    await seedSongOwner(admin);
+    const song = {
+      songPostId: "post-composed-review-song",
+      communityId: community,
+      audioAssetRef: "media://song/composed-review-audio",
+      canonicalAudioSha256: "f".repeat(64),
+      durationSamples: 30 * 48_000,
+      title: "Composed review song",
+      contentRating: "general" as const,
+      derivativeVideo: "allowed" as const,
+      licensePreset: "commercial-remix" as const,
+      commercialRemixShareBps: 1_000,
+    };
+    await seedPublishedSongFixture(admin, song);
+    fixture = await songReferenceFinalizedFixture(url.toString(), {
+      identity: {
+        reservationId: "media-reservation-00000000-0000-4000-8000-000000000098",
+        submissionId,
+        operationId,
+      },
+      planId: `song-video-plan:${submissionId}`,
+      song,
+      clipStartSamples: 0,
+      clipDurationSamples: 10 * 48_000,
+      source: { sha256: "a".repeat(64), sizeBytes: 1_024 },
+    });
+  } else {
+    fixture = await finalizedFixture(
+      url.toString(),
+      context.task.name.includes("safety caption") ? "Review this caption" : null,
+    );
+  }
 });
 afterEach(async () => {
   await admin?.end();
@@ -348,8 +380,14 @@ function harness(
     },
     MEDIA_IMMUTABLE_ORIGINALS: {
       head: async () => ({
-        etag: "immutable-etag",
-        version: "immutable-version",
+        etag:
+          fixture.finalized.state.intent === "song_reference"
+            ? `immutable-etag-${submissionId}`
+            : "immutable-etag",
+        version:
+          fixture.finalized.state.intent === "song_reference"
+            ? `immutable-version-${submissionId}`
+            : "immutable-version",
         size: 1024,
         httpMetadata: { contentType: "video/mp4" },
       }),
@@ -1164,6 +1202,39 @@ test("recognition: both MP3 clips no-match publish after safety approval through
     await admin.query("SELECT fact_snapshot FROM media_video_stage_facts WHERE stage='recognition'")
   ).rows[0];
   expect(fact.fact_snapshot.snapshot.privateEvidence).toHaveLength(2);
+});
+
+test("song-reference review approval resumes the composed Workflow into render, not publication", async () => {
+  const h = harness(false, "clean");
+  h.beforeWait(async () => {
+    const before = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+    expect(before?.state.reviewReasons).toEqual(["media_review_required"]);
+    expect((await h.approveEndpoint("safety")).status).toBe(200);
+    const after = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+    expect(after?.state).toMatchObject({ status: "processing", phase: "render" });
+  });
+  h.crash("render-dispatch");
+  await expect(h.run(await h.launch())).rejects.toThrow("injected Worker termination");
+  const record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(record?.state).toMatchObject({
+    status: "processing",
+    phase: "render",
+    master: null,
+    decision: { outcome: { kind: "publish" } },
+  });
+  expect(
+    (
+      await admin.query(
+        "SELECT count(*)::int AS n FROM media_song_video_render_attempts WHERE plan_id=$1",
+        [`song-video-plan:${submissionId}`],
+      )
+    ).rows[0]?.n,
+  ).toBe(1);
+  expect(
+    (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]?.n,
+  ).toBe(0);
+  expect(h.moderationCalls).toEqual(["image", "image", "image"]);
+  expect(h.starts).toHaveLength(2);
 });
 
 test("recognition: primary inconclusive and alternate external match require soundtrack evidence approval", async () => {

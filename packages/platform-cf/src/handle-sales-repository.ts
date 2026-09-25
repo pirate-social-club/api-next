@@ -10,18 +10,25 @@ import {
 } from "@pirate/application";
 import type {
   CommunityHandleOffering,
-  CommunityHandleOfferingManagementItemV2,
+  CommunityHandleOfferingManagementItemV3,
+  CommunityHandleOfferingV4,
   HandleClaimV2,
   HandleGrantPrivateV2,
   HandleQuote,
   HandleQuoteV2,
   HandleReservationV2,
   HandleSaleNamespaceCandidateV1,
-  HandleSaleNamespaceManagementItemV1,
-  HandleSalesManagementContextV1,
+  HandleSaleNamespaceCandidateV2,
+  HandleSaleNamespaceManagementItemV2,
+  HandleSalesManagementContextV2,
+  HandleSpacesQuoteV1,
+  HandleSpacesReservationV1,
   PublicHandleGrantV3,
-  PublicPersonaProfileV1,
+  PublicHandleGrantV4,
+  PublicPersonaProfileV2,
   SaleNamespaceActivationV1,
+  SaleNamespaceActivationV2,
+  SpacesSaleNamespaceActivationV1,
 } from "@pirate/contracts";
 import { HandleNationalityQuotePinV1 } from "@pirate/contracts";
 import {
@@ -35,6 +42,7 @@ import {
   handleDirectGrantRecipientTokenRequestHash,
   handleFreePricingRevisionHash,
   handleGrantFinalizeV2Hash,
+  handleIssuanceOperationIdV1,
   handleOfferingRevisionV2Hash,
   handleOfferingRevisionV3Hash,
   handlePersonaLinkConfirmationRequestHash,
@@ -68,6 +76,14 @@ import {
   text,
 } from "./handle-sales-internals.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
+import {
+  createSpacesQuote,
+  createSpacesReservation,
+  readSpacesClaim,
+  spacesQuoteFromRow,
+  spacesReservationFromRow,
+  submitSpacesClaim,
+} from "./spaces-handle-claims.ts";
 
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -177,7 +193,17 @@ const pageLimit = (value: number | undefined): number => {
   return resolved;
 };
 
-const activationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
+/**
+ * Decodes only the HNS activation shape. A Spaces activation shares the table
+ * but is a checked sibling (spec 012 §5.3.13.3) with its own decoder, so an
+ * HNS read path fails closed on it instead of serializing it as HNS.
+ */
+const activationFromRow = (row: Row): SaleNamespaceActivationV1 => {
+  if (row.family !== "hns") throw new Error("invalid HNS sale-namespace activation family");
+  return hnsActivationFromRow(row);
+};
+
+const hnsActivationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
   sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
   sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
   sale_namespace_activation_hash: text(row, "sale_namespace_activation_hash"),
@@ -203,7 +229,40 @@ const activationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
   revoked_at: row.revoked_at === null ? null : instant(row.revoked_at),
 });
 
-const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
+const spacesActivationFromRow = (row: Row): SpacesSaleNamespaceActivationV1 => {
+  if (row.family !== "spaces") throw new Error("invalid Spaces activation family");
+  return {
+    sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
+    sale_namespace_activation_generation: integer(row, "sale_namespace_activation_generation"),
+    sale_namespace_activation_hash: text(row, "sale_namespace_activation_hash"),
+    community_id: text(row, "community_id"),
+    family: "spaces",
+    network: text(row, "spaces_network") as SpacesSaleNamespaceActivationV1["network"],
+    canonical_root: text(row, "canonical_root"),
+    display_root: text(row, "display_root"),
+    namespace_authority: {
+      kind: "verified_namespace_v1",
+      namespace_authority_reference: text(row, "spaces_namespace_authority_reference"),
+      namespace_authority_generation: integer(row, "spaces_namespace_authority_generation"),
+    },
+    operator: {
+      kind: "spaces_operator_assignment_v1",
+      operator_assignment_id: text(row, "spaces_operator_assignment_id"),
+      operator_assignment_generation: integer(row, "spaces_operator_assignment_generation"),
+    },
+    operator_funding_terms: { kind: "spaces_operator_funding_confirm_v1", confirmed: true },
+    status: text(row, "status") as SpacesSaleNamespaceActivationV1["status"],
+    created_at: instant(row.created_at),
+    activated_at: row.activated_at === null ? null : instant(row.activated_at),
+    suspended_at: row.suspended_at === null ? null : instant(row.suspended_at),
+    revoked_at: row.revoked_at === null ? null : instant(row.revoked_at),
+  };
+};
+
+const anyActivationFromRow = (row: Row): SaleNamespaceActivationV2 =>
+  row.family === "spaces" ? spacesActivationFromRow(row) : activationFromRow(row);
+
+const publicGrantFromRow = (row: Row): PublicHandleGrantV4 => {
   const persona = publicPersonaFromSql(row.owner_persona);
   if (persona === undefined || persona === null) throw new Error("invalid public persona");
   const grantGeneration = integer(row, "grant_generation");
@@ -211,22 +270,34 @@ const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
   const namespaceRoot = text(row, "namespace_root");
   const handleLabel = text(row, "handle_label");
   const activationEffective = boolean(row, "activation_effective");
-  return {
+  const common = {
     grant_id: text(row, "grant_id"),
     grant_generation: grantGeneration,
     community_id: text(row, "community_id"),
     owner_persona: persona,
     sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
     sale_namespace_activation_generation: activationGeneration,
-    fulfillment: {
-      kind: text(row, "fulfillment_kind") as PublicHandleGrantV3["fulfillment"]["kind"],
-    },
-    handle: {
-      family: text(row, "family") as PublicHandleGrantV3["handle"]["family"],
-      namespace_root: namespaceRoot,
-      handle_label: handleLabel,
-    },
     display_identifier: text(row, "display_identifier"),
+    issued_at: instant(row.issued_at),
+  } as const;
+  if (row.family === "spaces") {
+    if (text(row, "fulfillment_kind") !== "spaces_native_v1")
+      throw new Error("invalid Spaces grant fulfillment");
+    return {
+      ...common,
+      fulfillment: { kind: "spaces_native_v1" },
+      handle: { family: "spaces", namespace_root: namespaceRoot, handle_label: handleLabel },
+      host: { kind: "not_applicable" },
+    };
+  }
+  if (row.family !== "hns") throw new Error("invalid public grant family");
+  const fulfillment = text(row, "fulfillment_kind");
+  if (fulfillment !== "hosted_persona_v1" && fulfillment !== "delegated_zone_v1")
+    throw new Error("invalid HNS grant fulfillment");
+  return {
+    ...common,
+    fulfillment: { kind: fulfillment },
+    handle: { family: "hns", namespace_root: namespaceRoot, handle_label: handleLabel },
     host: activationEffective
       ? {
           kind: "available",
@@ -235,11 +306,15 @@ const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
           grant_generation: grantGeneration,
         }
       : { kind: "unavailable", reason: "sale_namespace_inactive" },
-    issued_at: instant(row.issued_at),
   };
 };
 
-const offeringFromRow = (row: Row): CommunityHandleOffering => {
+/**
+ * Decodes HNS and Spaces offering rows with their own grammar and policy.
+ */
+const offeringFromRow = (row: Row): CommunityHandleOfferingV4 => {
+  if (row.family !== "hns" && row.family !== "spaces")
+    throw new Error("invalid handle offering family");
   const exactLabel = nullableText(row, "exact_label");
   const labelScope =
     text(row, "label_scope_kind") === "exact_label_v2"
@@ -303,9 +378,52 @@ const offeringFromRow = (row: Row): CommunityHandleOffering => {
     status: text(row, "status") as CommunityHandleOffering["status"],
     created_at: instant(row.created_at),
   } as const;
+  if (row.family === "spaces") {
+    if (
+      text(row, "label_scope_kind") !== "label_rule_v2" ||
+      text(row, "label_grammar_id") !== "spaces_subspace_label_v1" ||
+      text(row, "allocation_kind") !== "first_come_v1" ||
+      text(row, "fulfillment_kind") !== "spaces_native_v1" ||
+      policy.kind !== "curated_policy_v1"
+    )
+      throw new Error("invalid Spaces offering shape");
+    return {
+      ...offering,
+      family: "spaces",
+      label_scope: {
+        kind: "label_rule_v2",
+        label_grammar_id: "spaces_subspace_label_v1",
+        reserved_labels_id: text(row, "reserved_labels_id"),
+        reserved_labels_revision: integer(row, "reserved_labels_revision"),
+        reserved_labels_hash: text(row, "reserved_labels_hash"),
+        availability: {
+          kind: "length_band_v1",
+          min_label_length: integer(row, "min_label_length"),
+          max_label_length: integer(row, "max_label_length"),
+        },
+      },
+      allocation: { kind: "first_come_v1" },
+      fulfillment: { kind: "spaces_native_v1" },
+      qualification_policy: policy,
+      issuance: {
+        family: "spaces",
+        driver_id: text(row, "issuance_driver_id"),
+        driver_version: text(row, "issuance_driver_version"),
+      },
+    };
+  }
+  const fulfillment = text(row, "fulfillment_kind");
+  if (fulfillment !== "hosted_persona_v1" && fulfillment !== "delegated_zone_v1")
+    throw new Error("invalid HNS offering fulfillment");
+  const hnsOffering = {
+    ...offering,
+    family: "hns" as const,
+    fulfillment: { kind: fulfillment },
+    issuance: { ...offering.issuance, family: "hns" as const },
+  } as const;
   return policy.kind === "curated_nationality_v1"
-    ? { ...offering, qualification_policy: policy }
-    : { ...offering, qualification_policy: policy };
+    ? { ...hnsOffering, qualification_policy: policy }
+    : { ...hnsOffering, qualification_policy: policy };
 };
 
 const saleNamespaceCandidateFromRow = (row: Row): HandleSaleNamespaceCandidateV1 => {
@@ -353,7 +471,61 @@ const saleNamespaceCandidateFromRow = (row: Row): HandleSaleNamespaceCandidateV1
   };
 };
 
-const saleNamespaceManagementItemFromRow = (row: Row): HandleSaleNamespaceManagementItemV1 => {
+const spacesSaleNamespaceCandidateFromRow = (row: Row): HandleSaleNamespaceCandidateV2 => {
+  const reason = nullableText(row, "readiness_reason") as
+    | "namespace_authority_unavailable"
+    | "owner_challenge_required"
+    | "anchor_pending"
+    | "publication_unverified"
+    | "delegation_required"
+    | "operator_capability_unverified"
+    | "commitment_history_unverified"
+    | "driver_disabled"
+    | null;
+  const common = {
+    family: "spaces" as const,
+    network: text(row, "network") as "mainnet" | "testnet4" | "regtest",
+    canonical_root: text(row, "canonical_root"),
+    display_root: text(row, "display_root"),
+  };
+  if (reason !== null) return { kind: "unavailable_v1", ...common, reason };
+  return {
+    kind: "ready_v1",
+    ...common,
+    namespace_authority_reference: text(row, "namespace_authority_reference"),
+    expected_namespace_authority_generation: integer(row, "namespace_authority_generation"),
+    operator_assignment_id: text(row, "operator_assignment_id"),
+    expected_operator_assignment_generation: integer(row, "operator_assignment_generation"),
+  };
+};
+
+const saleNamespaceManagementItemFromRow = (row: Row): HandleSaleNamespaceManagementItemV2 => {
+  if (row.family === "spaces") {
+    const reason = nullableText(row, "spaces_readiness_reason") as
+      | "namespace_authority_unavailable"
+      | "owner_challenge_required"
+      | "anchor_pending"
+      | "publication_unverified"
+      | "delegation_required"
+      | "operator_capability_unverified"
+      | "commitment_history_unverified"
+      | "driver_disabled"
+      | null;
+    const balance = text(row, "confirmed_balance_sats");
+    if (!/^(?:0|[1-9][0-9]{0,19})$/u.test(balance))
+      throw new Error("invalid Spaces funding balance");
+    return {
+      activation: spacesActivationFromRow(row),
+      readiness: reason === null ? { kind: "ready_v1" } : { kind: "not_ready_v1", reason },
+      funding: {
+        status: text(row, "funding_status") as "funded_v1" | "commits_paused_insufficient_funds_v1",
+        confirmed_balance_sats: balance,
+        top_up_address: null,
+        observed_at: instant(row.funding_observed_at),
+      },
+      pending_claim_count: integer(row, "pending_claim_count"),
+    };
+  }
   const reason = nullableText(row, "ineffective_reason") as
     | "activation_inactive"
     | "community_inactive"
@@ -366,7 +538,7 @@ const saleNamespaceManagementItemFromRow = (row: Row): HandleSaleNamespaceManage
   };
 };
 
-const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagementItemV2 => {
+const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagementItemV3 => {
   const reason = nullableText(row, "ineffective_reason") as
     | "community_inactive"
     | "offering_inactive"
@@ -379,6 +551,7 @@ const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagem
 };
 
 const quoteFromRow = (row: Row): HandleQuote => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle quote family");
   const quote: HandleQuoteV2 = {
     quote_id: text(row, "quote_id"),
     quote_hash: text(row, "quote_hash"),
@@ -420,7 +593,19 @@ const quoteFromRow = (row: Row): HandleQuote => {
   return { ...quote, eligibility: { kind: "curated_nationality_v1", snapshot: pin.eligibility } };
 };
 
-const reservationFromRow = (row: Row): HandleReservationV2 => ({
+const reservationFromRow = (row: Row): HandleReservationV2 => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle reservation family");
+  return hnsReservationFromRow(row);
+};
+
+/** Quotes, reservations, and claims are decoded by their own family. */
+const anyQuoteFromRow = (row: Row): HandleQuote | HandleSpacesQuoteV1 =>
+  row.family === "spaces" ? spacesQuoteFromRow(row) : quoteFromRow(row);
+
+const anyReservationFromRow = (row: Row): HandleReservationV2 | HandleSpacesReservationV1 =>
+  row.family === "spaces" ? spacesReservationFromRow(row) : reservationFromRow(row);
+
+const hnsReservationFromRow = (row: Row): HandleReservationV2 => ({
   reservation_id: text(row, "reservation_id"),
   reservation_hash: text(row, "reservation_hash"),
   quote_id: text(row, "quote_id"),
@@ -465,7 +650,12 @@ const grantFromRow = (row: Row, prefix = ""): HandleGrantPrivateV2 => ({
   issued_at: instant(row[`${prefix}issued_at`]),
 });
 
-const claimFromRow = (row: Row): HandleClaimV2 => ({
+const claimFromRow = (row: Row): HandleClaimV2 => {
+  if (row.family !== "hns") throw new Error("invalid HNS handle claim family");
+  return hnsClaimFromRow(row);
+};
+
+const hnsClaimFromRow = (row: Row): HandleClaimV2 => ({
   claim_id: text(row, "claim_id"),
   owner_persona_id: text(row, "owner_persona_id"),
   offering_id: text(row, "offering_id"),
@@ -521,7 +711,8 @@ const ACTIVATION_SELECT = `
 
 const OFFERING_SELECT = `
   SELECT revision.*,
-         policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,
+         policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,
+         policy.provider_binding_hash,policy.nationality_policy,
          policy.subject_account_id
     FROM community_handle_offering_revisions AS revision
     JOIN handle_qualification_policy_revisions AS policy
@@ -631,6 +822,15 @@ const mutationReplay = (
     readonly: false,
   });
 
+/**
+ * The seller offering mutation serves the HNS hosted-persona wire. Its SQL and
+ * these literals stay HNS-only until the Spaces offering compiler path and
+ * contract unions land (spec 012 §5.3.13.11-§5.3.13.12).
+ */
+const OFFERING_MUTATION_FAMILY = "hns" as const;
+const OFFERING_MUTATION_GRAMMAR_ID = "hns_ascii_ldh_1_63_v1" as const;
+const OFFERING_MUTATION_FULFILLMENT = "hosted_persona_v1" as const;
+
 type OfferingMutationInput = Parameters<HandleSalesStore["createOffering"]>[0] &
   Partial<{
     offeringId: string;
@@ -710,6 +910,13 @@ const mutateOffering = (
     });
     const activationRow = activationResult.rows[0];
     if (activationRow === undefined) return yield* reject("sale_namespace_inactive", true);
+    // The offering command, grammar, driver, and family literals below are the
+    // HNS wire. A Spaces offering is admitted only by its own compiler path
+    // once the public contract unions exist, so a Spaces activation is refused
+    // here before any write.
+    if (activationRow.family !== OFFERING_MUTATION_FAMILY) {
+      return yield* reject("offering_unavailable");
+    }
     const requestedStatus = isCreate ? "active" : input.requestedStatus;
     if (requestedStatus === undefined) return yield* reject("offering_unavailable");
     if (requestedStatus === "active") {
@@ -795,11 +1002,16 @@ const mutateOffering = (
     const policyRow = one(policy.rows, "qualification policy");
     const pricingRow = one(pricing.rows, "pricing");
     const driverRow = one(driver.rows, "issuance driver");
+    // The platform members-only policy is admitted only on spaces_native_v1
+    // offerings (spec 012 §5.3.13.12); HNS offerings keep §5.3.3 unchanged.
+    if (policyRow.policy_kind === "spaces_membership_v1") {
+      return yield* reject("offering_unavailable");
+    }
     const labelScope =
       input.terms.label_scope.kind === "exact_label_v2"
         ? {
             kind: "exact_label_v2" as const,
-            label_grammar_id: "hns_ascii_ldh_1_63_v1" as const,
+            label_grammar_id: OFFERING_MUTATION_GRAMMAR_ID,
             handle_label: input.terms.label_scope.handle_label,
             reserved_labels_id: input.terms.label_scope.reserved_labels_id,
             reserved_labels_revision: input.terms.label_scope.expected_reserved_labels_revision,
@@ -807,7 +1019,7 @@ const mutateOffering = (
           }
         : {
             kind: "label_rule_v2" as const,
-            label_grammar_id: "hns_ascii_ldh_1_63_v1" as const,
+            label_grammar_id: OFFERING_MUTATION_GRAMMAR_ID,
             reserved_labels_id: input.terms.label_scope.reserved_labels_id,
             reserved_labels_revision: input.terms.label_scope.expected_reserved_labels_revision,
             reserved_labels_hash: text(reservedRow, "reserved_labels_hash"),
@@ -854,7 +1066,7 @@ const mutateOffering = (
         });
         if (
           text(driverRow, "fulfillment_kind") !== input.terms.fulfillment_kind ||
-          input.terms.fulfillment_kind !== "hosted_persona_v1"
+          input.terms.fulfillment_kind !== OFFERING_MUTATION_FULFILLMENT
         ) {
           throw new Error("driver mismatch");
         }
@@ -890,7 +1102,7 @@ const mutateOffering = (
       offering_id: offeringId,
       offering_revision: revision,
       community_id: input.communityId,
-      family: "hns" as const,
+      family: OFFERING_MUTATION_FAMILY,
       namespace_root: activation.canonical_root,
       sale_namespace_activation_id: activation.sale_namespace_activation_id,
       sale_namespace_activation_generation: activation.sale_namespace_activation_generation,
@@ -1457,7 +1669,7 @@ export function makeControlPlaneHandleSalesRepository() {
         return yield* Effect.try({
           try: () => {
             const selectedRows = result.rows.slice(0, paging.limit);
-            const selected = selectedRows.map(activationFromRow);
+            const selected = selectedRows.map(anyActivationFromRow);
             const last = selectedRows[selectedRows.length - 1];
             return {
               items: selected,
@@ -2039,38 +2251,157 @@ export function makeControlPlaneHandleSalesRepository() {
                 values: [],
                 readonly: false,
               });
+              const spacesCandidates = yield* transaction.execute<Row>({
+                label: "handle-sales.management.spaces-candidates.read",
+                text: `WITH ranked_authority AS (
+                         SELECT evidence.*,
+                                row_number() OVER (
+                                  PARTITION BY evidence.network,evidence.canonical_root
+                                  ORDER BY evidence.namespace_authority_generation DESC,
+                                           evidence.namespace_authority_reference COLLATE "C" DESC
+                                ) AS authority_rank
+                           FROM spaces_namespace_authority_evidence AS evidence
+                          WHERE evidence.community_id=$1
+                            AND evidence.controlling_account_id=$3
+                       )
+                       SELECT authority.network,authority.canonical_root,authority.display_root,
+                              authority.namespace_authority_reference,
+                              authority.namespace_authority_generation,
+                              assignment.operator_assignment_id,
+                              assignment.current_generation AS operator_assignment_generation,
+                              spaces_sale_namespace_readiness_reason_v1(
+                                authority.network,authority.canonical_root,$1,
+                                authority.namespace_authority_reference,
+                                authority.namespace_authority_generation,
+                                assignment.operator_assignment_id,
+                                assignment.current_generation,$2::timestamptz
+                              ) AS readiness_reason
+                         FROM ranked_authority AS authority
+                         LEFT JOIN spaces_operator_assignment_current AS assignment
+                           ON assignment.network=authority.network
+                          AND assignment.canonical_root=authority.canonical_root
+                          AND assignment.status='active'
+                        WHERE authority.authority_rank=1
+                        ORDER BY authority.network COLLATE "C",
+                                 authority.canonical_root COLLATE "C"`,
+                values: [input.communityId, observedAt, input.accountId],
+                readonly: false,
+              });
+              const spacesPreset = yield* transaction.execute<Row>({
+                label: "handle-sales.management.spaces-preset.read",
+                text: `SELECT reserved.reserved_labels_id,
+                              reserved.reserved_labels_revision,
+                              policy.policy_id AS broad_qualification_policy_id,
+                              policy.policy_revision AS broad_qualification_policy_revision,
+                              pricing.pricing_id,pricing.pricing_revision,
+                              driver.driver_id AS issuance_driver_id,
+                              driver.driver_version AS issuance_driver_version
+                         FROM LATERAL (
+                           SELECT * FROM handle_reserved_label_revisions
+                            WHERE family='spaces' AND status='active'
+                            ORDER BY created_at DESC,reserved_labels_revision DESC,
+                                     reserved_labels_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS reserved
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_qualification_policy_revisions
+                            WHERE policy_kind='spaces_membership_v1'
+                              AND community_id IS NULL AND status='active'
+                            ORDER BY created_at DESC,policy_revision DESC,
+                                     policy_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS policy
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_pricing_revisions
+                            WHERE pricing_kind='free_v1' AND atomic_amount=0 AND status='active'
+                            ORDER BY created_at DESC,pricing_revision DESC,
+                                     pricing_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS pricing
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_issuance_driver_revisions
+                            WHERE family='spaces' AND fulfillment_kind='spaces_native_v1'
+                              AND status <> 'retired'
+                            ORDER BY created_at DESC,driver_version COLLATE "C" DESC,
+                                     driver_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS driver`,
+                values: [],
+                readonly: false,
+              });
               return yield* Effect.try({
-                try: (): HandleSalesManagementContextV1 => {
+                try: (): HandleSalesManagementContextV2 => {
                   const presetRow = one(preset.rows, "handle offering authoring preset");
+                  const spacesPresetRow = spacesPreset.rows[0];
                   return {
                     community_id: input.communityId,
-                    sale_namespace_candidates: candidates.rows.map(saleNamespaceCandidateFromRow),
-                    offering_authoring_preset: {
-                      kind: "hns_hosted_persona_free_v1",
-                      reserved_labels_id: text(presetRow, "reserved_labels_id"),
-                      expected_reserved_labels_revision: integer(
-                        presetRow,
-                        "reserved_labels_revision",
-                      ),
-                      broad_qualification_policy_id: text(
-                        presetRow,
-                        "broad_qualification_policy_id",
-                      ),
-                      expected_broad_qualification_policy_revision: integer(
-                        presetRow,
-                        "broad_qualification_policy_revision",
-                      ),
-                      expected_account_directory_binding_version: text(
-                        presetRow,
-                        "account_directory_binding_version",
-                      ),
-                      pricing_id: text(presetRow, "pricing_id"),
-                      expected_pricing_revision: integer(presetRow, "pricing_revision"),
-                      issuance_driver_id: text(presetRow, "issuance_driver_id"),
-                      expected_issuance_driver_version: text(presetRow, "issuance_driver_version"),
-                      quote_ttl_seconds: 120,
-                      reservation_ttl_seconds: 300,
-                    },
+                    sale_namespace_candidates: [
+                      ...candidates.rows.map(saleNamespaceCandidateFromRow),
+                      ...spacesCandidates.rows.map(spacesSaleNamespaceCandidateFromRow),
+                    ],
+                    offering_authoring_presets: [
+                      {
+                        kind: "hns_hosted_persona_free_v1",
+                        reserved_labels_id: text(presetRow, "reserved_labels_id"),
+                        expected_reserved_labels_revision: integer(
+                          presetRow,
+                          "reserved_labels_revision",
+                        ),
+                        broad_qualification_policy_id: text(
+                          presetRow,
+                          "broad_qualification_policy_id",
+                        ),
+                        expected_broad_qualification_policy_revision: integer(
+                          presetRow,
+                          "broad_qualification_policy_revision",
+                        ),
+                        expected_account_directory_binding_version: text(
+                          presetRow,
+                          "account_directory_binding_version",
+                        ),
+                        pricing_id: text(presetRow, "pricing_id"),
+                        expected_pricing_revision: integer(presetRow, "pricing_revision"),
+                        issuance_driver_id: text(presetRow, "issuance_driver_id"),
+                        expected_issuance_driver_version: text(
+                          presetRow,
+                          "issuance_driver_version",
+                        ),
+                        quote_ttl_seconds: 120,
+                        reservation_ttl_seconds: 300,
+                      },
+                      ...(spacesPresetRow === undefined
+                        ? []
+                        : [
+                            {
+                              kind: "spaces_native_free_v1" as const,
+                              reserved_labels_id: text(spacesPresetRow, "reserved_labels_id"),
+                              expected_reserved_labels_revision: integer(
+                                spacesPresetRow,
+                                "reserved_labels_revision",
+                              ),
+                              broad_qualification_policy_id: text(
+                                spacesPresetRow,
+                                "broad_qualification_policy_id",
+                              ),
+                              expected_broad_qualification_policy_revision: integer(
+                                spacesPresetRow,
+                                "broad_qualification_policy_revision",
+                              ),
+                              pricing_id: text(spacesPresetRow, "pricing_id"),
+                              expected_pricing_revision: integer(
+                                spacesPresetRow,
+                                "pricing_revision",
+                              ),
+                              issuance_driver_id: text(spacesPresetRow, "issuance_driver_id"),
+                              expected_issuance_driver_version: text(
+                                spacesPresetRow,
+                                "issuance_driver_version",
+                              ),
+                              quote_ttl_seconds: 120,
+                              reservation_ttl_seconds: 300,
+                            },
+                          ]),
+                    ],
                     observed_at: observedAt,
                   };
                 },
@@ -2134,7 +2465,27 @@ export function makeControlPlaneHandleSalesRepository() {
                                   OR dependency.dns_delegation_current IS DISTINCT FROM TRUE
                                   THEN 'dns_or_gateway_unhealthy'
                                 ELSE NULL
-                              END AS ineffective_reason
+                              END AS ineffective_reason,
+                              CASE WHEN latest.family='spaces' THEN
+                                spaces_sale_namespace_readiness_reason_v1(
+                                  latest.spaces_network,latest.canonical_root,
+                                  latest.community_id,
+                                  latest.spaces_namespace_authority_reference,
+                                  latest.spaces_namespace_authority_generation,
+                                  latest.spaces_operator_assignment_id,
+                                  latest.spaces_operator_assignment_generation,
+                                  $2::timestamptz
+                                )
+                              END AS spaces_readiness_reason,
+                              funding.funding_status,
+                              funding.confirmed_balance_sats::text AS confirmed_balance_sats,
+                              funding.observed_at AS funding_observed_at,
+                              (SELECT count(*)::integer FROM handle_claims AS claim
+                                WHERE latest.family='spaces'
+                                  AND claim.family='spaces'
+                                  AND claim.sale_namespace_activation_id
+                                      =latest.sale_namespace_activation_id
+                                  AND claim.state='issuance_pending') AS pending_claim_count
                          FROM latest
                          JOIN communities AS community ON community.community_id=latest.community_id
                          LEFT JOIN LATERAL current_hns_sale_namespace_dependency_v1(
@@ -2145,6 +2496,20 @@ export function makeControlPlaneHandleSalesRepository() {
                            latest.dns_zone_activation_generation,
                            $2::timestamptz
                          ) AS dependency ON TRUE
+                         LEFT JOIN LATERAL (
+                           SELECT observation.funding_status,
+                                  observation.confirmed_balance_sats,
+                                  observation.observed_at
+                             FROM spaces_operator_funding_observations AS observation
+                            WHERE latest.family='spaces'
+                              AND observation.operator_assignment_id
+                                  =latest.spaces_operator_assignment_id
+                              AND observation.operator_assignment_generation
+                                  =latest.spaces_operator_assignment_generation
+                              AND observation.recorded_at <= $2::timestamptz
+                            ORDER BY observation.observation_generation DESC
+                            LIMIT 1
+                         ) AS funding ON TRUE
                         WHERE (
                           $3::timestamptz IS NULL
                           OR (latest.created_at,latest.sale_namespace_activation_id COLLATE "C")
@@ -2228,17 +2593,31 @@ export function makeControlPlaneHandleSalesRepository() {
                                    revision.sale_namespace_activation_generation DESC
                        )
                        SELECT offering.*,
-                              policy.policy_kind,policy.policy_id,policy.policy_revision,policy.policy_hash,policy.nationality_policy,
+                              policy.policy_kind,policy.policy_id,policy.policy_revision,
+                              policy.policy_hash,policy.provider_binding_hash,
+                              policy.nationality_policy,
                               policy.subject_account_id,
                               CASE
                                 WHEN community.status <> 'active' THEN 'community_inactive'
                                 WHEN offering.status <> 'active' THEN 'offering_inactive'
                                 WHEN activation.sale_namespace_activation_id IS NULL
                                   OR activation.status <> 'active'
-                                  OR dependency.namespace_authority_current IS DISTINCT FROM TRUE
+                                  THEN 'sale_namespace_inactive'
+                                WHEN offering.family='spaces' AND
+                                  spaces_sale_namespace_readiness_reason_v1(
+                                    activation.spaces_network,activation.canonical_root,
+                                    activation.community_id,
+                                    activation.spaces_namespace_authority_reference,
+                                    activation.spaces_namespace_authority_generation,
+                                    activation.spaces_operator_assignment_id,
+                                    activation.spaces_operator_assignment_generation,
+                                    $2::timestamptz
+                                  ) IS NOT NULL THEN 'sale_namespace_inactive'
+                                WHEN offering.family='hns' AND (
+                                  dependency.namespace_authority_current IS DISTINCT FROM TRUE
                                   OR dependency.dns_zone_current IS DISTINCT FROM TRUE
                                   OR dependency.dns_delegation_current IS DISTINCT FROM TRUE
-                                  THEN 'sale_namespace_inactive'
+                                ) THEN 'sale_namespace_inactive'
                                 ELSE NULL
                               END AS ineffective_reason
                          FROM latest_offering AS offering
@@ -2501,7 +2880,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 });
                 return {
                   kind: "quoted" as const,
-                  quote: quoteFromRow(one(quote.rows, "quote replay")),
+                  quote: anyQuoteFromRow(one(quote.rows, "quote replay")),
                   replayed: true,
                 };
               }
@@ -2530,6 +2909,14 @@ export function makeControlPlaneHandleSalesRepository() {
                 readonly: false,
               });
               if (requested.rows[0] === undefined) return yield* reject("persona_unavailable");
+              if (requested.rows[0].family === "spaces") {
+                return yield* createSpacesQuote(transaction, {
+                  input,
+                  offering: requested.rows[0],
+                  endpoint,
+                  requestHash: hash,
+                });
+              }
               const requestedOffering = offeringFromRow(requested.rows[0]);
               const activationEffective = yield* transaction.execute<Row>({
                 label: "handle-sales.quote.activation-effective.read",
@@ -2880,7 +3267,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   return yield* reject("idempotency_conflict");
                 }
                 return {
-                  reservation: reservationFromRow(replay.rows[0]),
+                  reservation: anyReservationFromRow(replay.rows[0]),
                   replayed: true,
                 };
               }
@@ -2959,6 +3346,15 @@ export function makeControlPlaneHandleSalesRepository() {
                 readonly: false,
               });
               if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
+              if (quoteRow.family === "spaces") {
+                return yield* createSpacesReservation(transaction, {
+                  input,
+                  quote: quoteRow,
+                  now,
+                  endpoint,
+                  requestHash: hash,
+                });
+              }
               const policyKind = text(quoteRow, "policy_kind");
               const nationality =
                 policyKind === "curated_nationality_v1"
@@ -3199,6 +3595,14 @@ export function makeControlPlaneHandleSalesRepository() {
                 if (text(replay.rows[0], "request_hash") !== hash) {
                   return yield* reject("idempotency_conflict");
                 }
+                if (replay.rows[0].family === "spaces") {
+                  const spacesClaim = yield* readSpacesClaim(transaction, {
+                    claimId: text(replay.rows[0], "claim_id"),
+                    accountId: input.accountId,
+                  });
+                  if (spacesClaim === null) throw new Error("replayed Spaces claim is missing");
+                  return { claim: spacesClaim, replayed: true };
+                }
                 return { claim: claimFromRow(replay.rows[0]), replayed: true };
               }
               const reservationResult = yield* transaction.execute<Row>({
@@ -3250,6 +3654,15 @@ export function makeControlPlaneHandleSalesRepository() {
                   });
                 }
                 return yield* reject("reservation_expired");
+              }
+              if (row.family === "spaces") {
+                return yield* submitSpacesClaim(transaction, {
+                  input,
+                  reservation: row,
+                  now,
+                  endpoint,
+                  requestHash: hash,
+                });
               }
               const currentOffering = yield* transaction.execute<Row>({
                 label: "handle-sales.claim.offering-current.read",
@@ -3357,6 +3770,10 @@ export function makeControlPlaneHandleSalesRepository() {
               ) {
                 return yield* reject("account_grant_limit_reached");
               }
+              const issuanceOperationId = handleIssuanceOperationIdV1({
+                fulfillment_kind: "hosted_persona_v1",
+                claim_id: input.claimId,
+              });
               const finalizeHash = handleGrantFinalizeV2Hash({
                 claim_id: input.claimId,
                 reservation_id: input.reservationId,
@@ -3373,7 +3790,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 namespace_root: text(row, "namespace_root"),
                 handle_label: text(row, "handle_label"),
                 owner_persona_id: input.personaId,
-                issuance_operation_id: input.issuanceOperationId,
+                issuance_operation_id: issuanceOperationId,
                 claim_request_hash: hash,
               }).sha256;
               yield* transaction.execute({
@@ -3407,7 +3824,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   text(row, "display_identifier"),
                   integer(row, "pricing_revision"),
                   text(row, "pricing_hash"),
-                  input.issuanceOperationId,
+                  issuanceOperationId,
                   finalizeHash,
                   input.grantId,
                   now,
@@ -3517,6 +3934,15 @@ export function makeControlPlaneHandleSalesRepository() {
           }),
         );
         if (result.rows[0] === undefined) return null;
+        if (result.rows[0].family === "spaces") {
+          return yield* mapped(
+            readSpacesClaim(db, {
+              claimId: input.claimId,
+              accountId: input.accountId,
+              readonly: true,
+            }),
+          ).pipe(Effect.catchDefect(() => Effect.fail(storage("invalid-row"))));
+        }
         return yield* Effect.try({
           try: () => claimFromRow(one(result.rows, "owner claim")),
           catch: () => storage("invalid-row"),
@@ -3645,7 +4071,7 @@ export function makeControlPlaneHandleSalesRepository() {
       }),
     getPublicGrant: (input: Parameters<HandleSalesStore["getPublicGrant"]>[0]) =>
       Effect.gen(function* () {
-        if (input.family !== "hns" || input.namespaceRoot === "pirate") return null;
+        if (input.family === "hns" && input.namespaceRoot === "pirate") return null;
         const db = yield* ControlPlaneDb;
         const result = yield* mapped(
           db.execute<Row>({
@@ -3673,10 +4099,10 @@ export function makeControlPlaneHandleSalesRepository() {
                           ) AS activation_effective
                      FROM handle_grants AS handle_grant
                      JOIN personas AS persona ON persona.persona_id=handle_grant.owner_persona_id
-                    WHERE handle_grant.family='hns' AND handle_grant.namespace_root=$1
+                    WHERE handle_grant.family=$3 AND handle_grant.namespace_root=$1
                       AND handle_grant.handle_label=$2
                       AND handle_grant.status='active' AND persona.status='active'`,
-            values: [input.namespaceRoot, input.handleLabel],
+            values: [input.namespaceRoot, input.handleLabel, input.family],
             readonly: true,
           }),
         );
@@ -3740,7 +4166,7 @@ export function makeControlPlaneHandleSalesRepository() {
         );
         if (result.rows.length === 0) return null;
         return yield* Effect.try({
-          try: (): PublicPersonaProfileV1 => {
+          try: (): PublicPersonaProfileV2 => {
             const first = result.rows[0] as Row;
             const persona = publicPersonaFromSql(first.owner_persona);
             if (persona === undefined || persona === null) {

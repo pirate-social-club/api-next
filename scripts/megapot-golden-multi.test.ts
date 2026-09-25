@@ -118,18 +118,19 @@ describe("multi-participant golden boundaries", () => {
         { ...input, authorization: null },
         { execute: false, reconcileOnly: false, environment: {} },
       ),
-    ).toMatchObject({ mode: "dry-run", expected_shares: 1, live_calls: 0 });
+    ).toMatchObject({ mode: "dry-run", expected_shares: 2, live_calls: 0 });
 
     const observation = rehearsalObservation(input);
     expect(observation.qualifications).toHaveLength(3);
-    expect(observation.shares).toHaveLength(1);
+    // Spec 015 §5.2a: the unverified account holds a share too.
+    expect(observation.shares).toHaveLength(2);
     expect(() => assertGoldenAdmission(input, observation)).not.toThrow();
     expect(evaluateGoldenSettlement(input, observation, rehearsalTime).state).toBe(
       "reconciled_no_win",
     );
 
-    const beneficiary = observation.beneficiaries[0];
-    if (!beneficiary) throw new Error("fixture");
+    const [claimed, unclaimed] = observation.beneficiaries;
+    if (!claimed || !unclaimed) throw new Error("fixture");
     expect(
       evaluateGoldenSettlement(
         input,
@@ -140,24 +141,34 @@ describe("multi-participant golden boundaries", () => {
           claim_receipt_atomic: "101",
           credits: [
             {
-              ...beneficiary,
-              amount_atomic: "101",
-              paid_atomic: "101",
+              ...claimed,
+              amount_atomic: "51",
+              paid_atomic: "51",
               reserved_atomic: "0",
               state: "sent",
               receipt_confirmed: true,
+              claim_status: "accepted",
+            },
+            {
+              ...unclaimed,
+              amount_atomic: "50",
+              paid_atomic: "0",
+              reserved_atomic: "0",
+              state: "pending",
+              receipt_confirmed: false,
+              claim_status: null,
             },
           ],
         },
         rehearsalTime,
-      ).state,
-    ).toBe("reconciled_win");
+      ),
+    ).toMatchObject({ state: "reconciled_win", paid_atomic: "51", held_unclaimed_atomic: "50" });
   });
   test("dry run needs no credentials, files, provider, or authorization", async () => {
     const input = { ...rehearsalInput(), authorization: null };
     expect(
       await runMultiGolden(input, { execute: false, reconcileOnly: false, environment: {} }),
-    ).toMatchObject({ mode: "dry-run", expected_shares: 2, live_calls: 0 });
+    ).toMatchObject({ mode: "dry-run", expected_shares: 3, live_calls: 0 });
     await expect(
       runMultiGolden(input, { execute: true, reconcileOnly: false, environment: {} }),
     ).rejects.toThrow("authorization");
@@ -323,26 +334,61 @@ describe("golden settlement acceptance", () => {
       evaluateGoldenSettlement(input, { ...observation, ticket_count: 2 }, rehearsalTime),
     ).toThrow("bounds");
   });
-  test("a natural win requires confirmed payout for every frozen beneficiary", () => {
+  test("a natural win pays claimed credits and holds unclaimed ones", () => {
     const input = rehearsalInput();
     const base = rehearsalObservation();
+    const verified = new Set(
+      input.participants
+        .filter((p) => p.expected_admission === "eligible")
+        .map((p) => p.account_id),
+    );
     const observation = {
       ...base,
       drawing_status: "credited",
       net_winnings_atomic: "601",
       claim_receipt_atomic: "601",
-      credits: base.beneficiaries.map((b) => ({
-        ...b,
-        amount_atomic: b.ordinal === 0 ? "301" : "300",
-        paid_atomic: b.ordinal === 0 ? "301" : "300",
-        reserved_atomic: "0",
-        state: "sent",
-        receipt_confirmed: true,
-      })),
+      credits: base.beneficiaries.map((b) => {
+        const amount = b.ordinal === 0 ? "201" : "200";
+        const claimed = verified.has(b.account_id);
+        return {
+          ...b,
+          amount_atomic: amount,
+          paid_atomic: claimed ? amount : "0",
+          reserved_atomic: "0",
+          state: claimed ? "sent" : "pending",
+          receipt_confirmed: claimed,
+          claim_status: claimed ? ("accepted" as const) : null,
+        };
+      }),
     };
-    expect(evaluateGoldenSettlement(input, observation, rehearsalTime).state).toBe(
-      "reconciled_win",
-    );
+    expect(evaluateGoldenSettlement(input, observation, rehearsalTime)).toMatchObject({
+      state: "reconciled_win",
+      held_unclaimed_atomic: "200",
+    });
+    expect(() =>
+      evaluateGoldenSettlement(
+        input,
+        {
+          ...observation,
+          credits: observation.credits.map((c) =>
+            c.claim_status === null ? { ...c, paid_atomic: c.amount_atomic } : c,
+          ),
+        },
+        rehearsalTime,
+      ),
+    ).toThrow("Unclaimed credit was paid");
+    expect(
+      evaluateGoldenSettlement(
+        input,
+        {
+          ...observation,
+          credits: observation.credits.map((c) =>
+            c.claim_status === null ? { ...c, claim_status: "accepted" as const } : c,
+          ),
+        },
+        rehearsalTime,
+      ).terminal,
+    ).toBe(false);
     expect(() =>
       evaluateGoldenSettlement(
         input,
@@ -358,7 +404,9 @@ describe("golden settlement acceptance", () => {
         input,
         {
           ...observation,
-          credits: observation.credits.map((c) => ({ ...c, receipt_confirmed: false })),
+          credits: observation.credits.map((c) =>
+            c.claim_status === "accepted" ? { ...c, receipt_confirmed: false } : c,
+          ),
         },
         rehearsalTime,
       ).terminal,
@@ -392,7 +440,7 @@ describe("golden settlement acceptance", () => {
     };
     const observation = rehearsalObservation();
     expect(() => assertGoldenAdmission(input, observation)).toThrow();
-    // Migration 0134 skips the decision for the second qualifying activity
+    // Migration 0203 skips the decision for the second qualifying activity
     // once the account holds a share, so only the qualification is added.
     const updated = {
       ...observation,
@@ -426,7 +474,7 @@ describe("golden settlement acceptance", () => {
     expect(() =>
       assertGoldenAdmission(base, {
         ...observation,
-        decisions: observation.decisions.filter((d) => d.reason !== "verification_missing"),
+        decisions: observation.decisions.filter((d) => d.account_id !== "negative"),
       }),
     ).toThrow();
   });
