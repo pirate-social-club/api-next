@@ -6,6 +6,15 @@ import type { RewardFundingIntent } from "./reward-funding.ts";
 
 export { Clock, IdGen } from "../ports.ts";
 export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
+export {
+  makeRewardGasTopupRequester,
+  RewardGasTopupBalanceUnavailable,
+  type RewardGasTopupFailure,
+  RewardGasTopupRejected,
+  type RewardGasTopupRequester,
+  RewardGasTopupStorageFailed,
+  type RewardGasTopupView,
+} from "./reward-gas-topup.ts";
 export type {
   PublicSongAssetBonusProjection,
   PublicSongMegapotPoolProjection,

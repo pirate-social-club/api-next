@@ -208,6 +208,7 @@ export type MegapotRewardsCycleSnapshotFields = Readonly<{
   readonly terminal_offer_count: number;
   readonly refunded_count: number;
   readonly paid_count: number;
+  readonly gas_topup_count: number;
   readonly failure_count: number;
   readonly failure_tags: readonly string[];
   readonly failure_diagnostics: readonly string[];

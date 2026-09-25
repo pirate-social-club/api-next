@@ -10179,6 +10179,20 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_megapot_custody_not_gas_wallet() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM reward_gas_topup_wallets wallet
+     WHERE wallet.signer_address = lower(NEW.custody_address)
+  ) THEN
+    RAISE EXCEPTION 'a Megapot custody address cannot be a reward gas top-up wallet';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_megapot_drawing_sweep() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11434,6 +11448,149 @@ BEGIN
        OR refund_record.amount_atomic <> NEW.amount_atomic THEN
       RAISE EXCEPTION 'reward refund receipt does not match refund reservation';
     END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_gas_topup() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+  active_signer TEXT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'reward gas top-ups are never deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'requested' OR NEW.effect_id IS NOT NULL THEN
+      RAISE EXCEPTION 'a reward gas top-up must begin requested without an effect';
+    END IF;
+    -- The recipient is the wallet that received the credit's confirmed USDC payout.
+    IF NOT EXISTS (
+      SELECT 1
+        FROM reward_payout_effects payout
+        JOIN reward_chain_effects payout_effect
+          ON payout_effect.effect_id = payout.payout_effect_id
+         AND payout_effect.state = 'confirmed'
+        JOIN reward_erc20_transfer_receipt_evidence evidence
+          ON evidence.effect_id = payout.payout_effect_id
+         AND evidence.transfer_purpose = 'reward_payout'
+       WHERE payout.credit_id = NEW.credit_id
+         AND payout.account_id = NEW.account_id
+         AND payout.payout_persona_id = NEW.persona_id
+         AND payout.destination_address = NEW.recipient_address
+         AND payout.wallet_assignment_id = NEW.wallet_assignment_id
+         AND evidence.recipient_address = NEW.recipient_address
+    ) THEN
+      RAISE EXCEPTION 'a reward gas top-up must target the confirmed payout wallet';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(
+    NEW.topup_id, NEW.account_id, NEW.persona_id, NEW.credit_id, NEW.wallet_assignment_id,
+    NEW.recipient_address, NEW.chain_id, NEW.balance_before_wei, NEW.target_balance_wei,
+    NEW.budget_day, NEW.idempotency_key, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.topup_id, OLD.account_id, OLD.persona_id, OLD.credit_id, OLD.wallet_assignment_id,
+    OLD.recipient_address, OLD.chain_id, OLD.balance_before_wei, OLD.target_balance_wei,
+    OLD.budget_day, OLD.idempotency_key, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'reward gas top-up identity is immutable';
+  END IF;
+  -- The amount may only shrink, and only before a chain effect exists.
+  IF NEW.amount_wei <> OLD.amount_wei AND (
+    NEW.amount_wei > OLD.amount_wei OR OLD.status <> 'requested' OR NEW.status <> 'requested'
+    OR OLD.effect_id IS NOT NULL OR NEW.effect_id IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'a reward gas top-up amount may only shrink before it is sent';
+  END IF;
+  IF OLD.effect_id IS NOT NULL AND NEW.effect_id IS DISTINCT FROM OLD.effect_id THEN
+    RAISE EXCEPTION 'a reward gas top-up effect binding is immutable';
+  END IF;
+  IF OLD.status IN ('confirmed', 'released') THEN
+    RAISE EXCEPTION 'a confirmed or released reward gas top-up is terminal';
+  END IF;
+  IF NOT (
+    NEW.status = OLD.status
+    OR (OLD.status = 'requested' AND NEW.status IN ('broadcast', 'released'))
+    OR (OLD.status = 'broadcast' AND NEW.status IN ('confirmed', 'released'))
+  ) THEN
+    RAISE EXCEPTION 'invalid reward gas top-up transition';
+  END IF;
+  IF NEW.effect_id IS NOT NULL AND OLD.effect_id IS NULL THEN
+    SELECT * INTO chain_record FROM reward_chain_effects WHERE effect_id = NEW.effect_id;
+    SELECT wallet.signer_address INTO active_signer
+      FROM reward_gas_topup_wallets wallet
+     WHERE wallet.chain_id = NEW.chain_id AND wallet.status = 'active';
+    IF chain_record.effect_id IS NULL
+       OR chain_record.effect_kind <> 'gas_topup'
+       OR chain_record.chain_id <> NEW.chain_id
+       OR active_signer IS NULL
+       OR chain_record.signer_address <> active_signer
+       OR chain_record.target_address <> NEW.recipient_address
+       OR chain_record.value_wei <> NEW.amount_wei
+       OR chain_record.reserved_amount_atomic <> 0 THEN
+      RAISE EXCEPTION 'reward gas top-up effect does not match the top-up';
+    END IF;
+  END IF;
+  IF NEW.status <> OLD.status AND NEW.effect_id IS NOT NULL THEN
+    SELECT * INTO chain_record FROM reward_chain_effects WHERE effect_id = NEW.effect_id;
+    IF (NEW.status = 'broadcast' AND chain_record.transaction_hash IS NULL)
+       OR (NEW.status = 'confirmed' AND chain_record.state <> 'confirmed')
+       OR (NEW.status = 'released' AND chain_record.state NOT IN ('reverted', 'terminal_failed',
+         'reclaimable_failed')) THEN
+      RAISE EXCEPTION 'reward gas top-up status disagrees with its chain effect';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_gas_topup_effect_signer() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.effect_kind = 'gas_topup' AND NOT EXISTS (
+    SELECT 1 FROM reward_gas_topup_wallets wallet
+     WHERE wallet.chain_id = NEW.chain_id
+       AND wallet.signer_address = NEW.signer_address
+       AND wallet.status = 'active'
+  ) THEN
+    RAISE EXCEPTION 'a gas top-up effect must be signed by the active gas wallet';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_gas_topup_wallet() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'reward gas top-up wallets are never deleted';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.chain_id <> OLD.chain_id OR NEW.signer_address <> OLD.signer_address
+       OR NEW.created_at <> OLD.created_at THEN
+      RAISE EXCEPTION 'reward gas top-up wallet identity is immutable';
+    END IF;
+    IF OLD.status = 'retired' THEN
+      RAISE EXCEPTION 'a retired reward gas top-up wallet is terminal';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.status <> 'active' THEN
+    RAISE EXCEPTION 'a reward gas top-up wallet must begin active';
+  END IF;
+  -- Separate from Megapot custody: the gas wallet may never be a custody signer.
+  IF EXISTS (
+    SELECT 1 FROM megapot_deployment_attestations attestation
+     WHERE attestation.chain_id = NEW.chain_id
+       AND lower(attestation.custody_address) = NEW.signer_address
+  ) THEN
+    RAISE EXCEPTION 'the reward gas top-up wallet cannot be a Megapot custody signer';
   END IF;
   RETURN NEW;
 END
@@ -16077,6 +16234,33 @@ CREATE FUNCTION reject_text_moderation_append_only_change() RETURNS trigger
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END;
+$$;
+
+CREATE FUNCTION release_reward_gas_topup_on_terminal_effect() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  topup reward_gas_topups%ROWTYPE;
+BEGIN
+  SELECT * INTO topup FROM reward_gas_topups
+   WHERE effect_id = NEW.effect_id AND status IN ('requested', 'broadcast')
+   FOR UPDATE;
+  IF topup.topup_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  UPDATE reward_gas_topups
+     SET status = 'released', release_reason = 'effect_' || NEW.state,
+         released_at = clock_timestamp(), updated_at = clock_timestamp()
+   WHERE topup_id = topup.topup_id;
+  UPDATE reward_gas_topup_daily_budgets
+     SET reserved_wei = reserved_wei - topup.amount_wei, updated_at = clock_timestamp()
+   WHERE chain_id = topup.chain_id AND budget_day = topup.budget_day
+     AND reserved_wei >= topup.amount_wei;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward gas top-up budget reservation is missing';
+  END IF;
+  RETURN NULL;
+END
 $$;
 
 CREATE FUNCTION require_active_author_persona() RETURNS trigger
@@ -23149,6 +23333,29 @@ BEGIN
     RAISE EXCEPTION 'reward ledger credit lacks exact asset claim';
   END IF;
   RETURN NULL;
+END
+$$;
+
+CREATE FUNCTION validate_reward_native_transfer_receipt_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+BEGIN
+  SELECT * INTO chain_record FROM reward_chain_effects WHERE effect_id = NEW.effect_id;
+  IF chain_record.effect_id IS NULL
+     OR chain_record.effect_kind <> 'gas_topup'
+     OR chain_record.state <> 'confirmed'
+     OR chain_record.signer_address <> NEW.sender_address
+     OR chain_record.target_address <> NEW.recipient_address
+     OR chain_record.value_wei <> NEW.amount_wei
+     OR chain_record.transaction_hash <> NEW.transaction_hash
+     OR chain_record.receipt_block_number <> NEW.block_number
+     OR chain_record.receipt_block_hash <> NEW.block_hash
+     OR chain_record.receipt_hash <> NEW.receipt_hash THEN
+    RAISE EXCEPTION 'native transfer receipt evidence does not match its chain effect';
+  END IF;
+  RETURN NEW;
 END
 $$;
 
@@ -31587,7 +31794,7 @@ CREATE TABLE reward_chain_effects (
     CONSTRAINT reward_chain_effects_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT reward_chain_effects_confirmations_check CHECK (((confirmations IS NULL) OR (confirmations >= 0))),
     CONSTRAINT reward_chain_effects_effect_id_check CHECK (((btrim(effect_id) <> ''::text) AND (effect_id = btrim(effect_id)) AND (octet_length(effect_id) <= 128))),
-    CONSTRAINT reward_chain_effects_effect_kind_check CHECK ((effect_kind = ANY (ARRAY['usdc_approval'::text, 'ticket_purchase'::text, 'winnings_claim'::text, 'reward_payout'::text, 'reward_refund'::text, 'sponsor_withdrawal'::text]))),
+    CONSTRAINT reward_chain_effects_effect_kind_check CHECK ((effect_kind = ANY (ARRAY['usdc_approval'::text, 'ticket_purchase'::text, 'winnings_claim'::text, 'reward_payout'::text, 'reward_refund'::text, 'sponsor_withdrawal'::text, 'gas_topup'::text]))),
     CONSTRAINT reward_chain_effects_lease_fence_token_check CHECK ((lease_fence_token >= 0)),
     CONSTRAINT reward_chain_effects_receipt_block_hash_check CHECK (((receipt_block_hash IS NULL) OR (receipt_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT reward_chain_effects_receipt_block_number_check CHECK (((receipt_block_number IS NULL) OR (receipt_block_number >= 0))),
@@ -31658,6 +31865,68 @@ CREATE TABLE reward_erc20_transfer_receipt_evidence (
     CONSTRAINT reward_erc20_transfer_receipt_evidence_transfer_purpose_check CHECK ((transfer_purpose = ANY (ARRAY['reward_payout'::text, 'reward_refund'::text, 'sponsor_withdrawal'::text])))
 );
 
+CREATE TABLE reward_gas_topup_daily_budgets (
+    chain_id bigint NOT NULL,
+    budget_day date NOT NULL,
+    ceiling_wei numeric(78,0) NOT NULL,
+    reserved_wei numeric(78,0) DEFAULT 0 NOT NULL,
+    confirmed_wei numeric(78,0) DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_gas_topup_budget_conservation CHECK (((reserved_wei + confirmed_wei) <= ceiling_wei)),
+    CONSTRAINT reward_gas_topup_budget_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT reward_gas_topup_daily_budgets_ceiling_wei_check CHECK ((ceiling_wei >= (0)::numeric)),
+    CONSTRAINT reward_gas_topup_daily_budgets_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT reward_gas_topup_daily_budgets_confirmed_wei_check CHECK ((confirmed_wei >= (0)::numeric)),
+    CONSTRAINT reward_gas_topup_daily_budgets_reserved_wei_check CHECK ((reserved_wei >= (0)::numeric))
+);
+
+CREATE TABLE reward_gas_topup_wallets (
+    chain_id bigint NOT NULL,
+    signer_address text NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    retired_at timestamp with time zone,
+    CONSTRAINT reward_gas_topup_wallet_shape CHECK ((((status = 'active'::text) AND (retired_at IS NULL)) OR ((status = 'retired'::text) AND (retired_at IS NOT NULL) AND (retired_at >= created_at)))),
+    CONSTRAINT reward_gas_topup_wallets_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT reward_gas_topup_wallets_signer_address_check CHECK ((signer_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_gas_topup_wallets_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))
+);
+
+CREATE TABLE reward_gas_topups (
+    topup_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    credit_id text NOT NULL,
+    wallet_assignment_id text NOT NULL,
+    recipient_address text NOT NULL,
+    chain_id bigint NOT NULL,
+    balance_before_wei numeric(78,0) NOT NULL,
+    target_balance_wei numeric(78,0) NOT NULL,
+    amount_wei numeric(78,0) NOT NULL,
+    budget_day date NOT NULL,
+    idempotency_key text NOT NULL,
+    status text NOT NULL,
+    release_reason text,
+    effect_id text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    broadcast_at timestamp with time zone,
+    confirmed_at timestamp with time zone,
+    released_at timestamp with time zone,
+    CONSTRAINT reward_gas_topup_shape CHECK ((((status = 'requested'::text) AND (broadcast_at IS NULL) AND (confirmed_at IS NULL) AND (released_at IS NULL) AND (release_reason IS NULL)) OR ((status = 'broadcast'::text) AND (effect_id IS NOT NULL) AND (broadcast_at IS NOT NULL) AND (confirmed_at IS NULL) AND (released_at IS NULL) AND (release_reason IS NULL)) OR ((status = 'confirmed'::text) AND (effect_id IS NOT NULL) AND (broadcast_at IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (released_at IS NULL) AND (release_reason IS NULL)) OR ((status = 'released'::text) AND (confirmed_at IS NULL) AND (released_at IS NOT NULL) AND (release_reason IS NOT NULL) AND (btrim(release_reason) <> ''::text)))),
+    CONSTRAINT reward_gas_topup_shortfall CHECK (((balance_before_wei + amount_wei) <= target_balance_wei)),
+    CONSTRAINT reward_gas_topup_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT reward_gas_topups_amount_wei_check CHECK ((amount_wei > (0)::numeric)),
+    CONSTRAINT reward_gas_topups_balance_before_wei_check CHECK ((balance_before_wei >= (0)::numeric)),
+    CONSTRAINT reward_gas_topups_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT reward_gas_topups_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT reward_gas_topups_recipient_address_check CHECK ((recipient_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_gas_topups_status_check CHECK ((status = ANY (ARRAY['requested'::text, 'broadcast'::text, 'confirmed'::text, 'released'::text]))),
+    CONSTRAINT reward_gas_topups_target_balance_wei_check CHECK ((target_balance_wei > (0)::numeric)),
+    CONSTRAINT reward_gas_topups_topup_id_check CHECK (((btrim(topup_id) <> ''::text) AND (topup_id = btrim(topup_id)) AND (octet_length(topup_id) <= 128)))
+);
+
 CREATE TABLE reward_ledger_credits (
     credit_id text NOT NULL,
     account_id text NOT NULL,
@@ -31684,6 +31953,28 @@ CREATE TABLE reward_ledger_credits (
     CONSTRAINT reward_ledger_credits_source_reference_check CHECK ((btrim(source_reference) <> ''::text)),
     CONSTRAINT reward_ledger_credits_state_check CHECK ((state = ANY (ARRAY['credited'::text, 'payout_reserved'::text, 'payout_pending'::text, 'sent'::text, 'reconciliation_required'::text]))),
     CONSTRAINT reward_ledger_credits_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text))
+);
+
+CREATE TABLE reward_native_transfer_receipt_evidence (
+    effect_id text NOT NULL,
+    sender_address text NOT NULL,
+    recipient_address text NOT NULL,
+    amount_wei numeric(78,0) NOT NULL,
+    transaction_hash text NOT NULL,
+    block_number bigint NOT NULL,
+    block_hash text NOT NULL,
+    receipt_hash text NOT NULL,
+    confirmations integer NOT NULL,
+    confirmed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_native_transfer_receipt_evidence_amount_wei_check CHECK ((amount_wei > (0)::numeric)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_block_hash_check CHECK ((block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_block_number_check CHECK ((block_number >= 0)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_confirmations_check CHECK ((confirmations > 0)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_receipt_hash_check CHECK ((receipt_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_recipient_address_check CHECK ((recipient_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_sender_address_check CHECK ((sender_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_native_transfer_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE reward_payout_effects (
@@ -35111,11 +35402,29 @@ ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
 ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
     ADD CONSTRAINT reward_erc20_transfer_receipt_evidence_pkey PRIMARY KEY (effect_id);
 
+ALTER TABLE ONLY reward_gas_topup_daily_budgets
+    ADD CONSTRAINT reward_gas_topup_daily_budgets_pkey PRIMARY KEY (chain_id, budget_day);
+
+ALTER TABLE ONLY reward_gas_topup_wallets
+    ADD CONSTRAINT reward_gas_topup_wallets_pkey PRIMARY KEY (chain_id, signer_address);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_account_id_idempotency_key_key UNIQUE (account_id, idempotency_key);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_effect_id_key UNIQUE (effect_id);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_pkey PRIMARY KEY (topup_id);
+
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_pkey PRIMARY KEY (credit_id);
 
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_source_kind_source_reference_account__key UNIQUE (source_kind, source_reference, account_id);
+
+ALTER TABLE ONLY reward_native_transfer_receipt_evidence
+    ADD CONSTRAINT reward_native_transfer_receipt_evidence_pkey PRIMARY KEY (effect_id);
 
 ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_credit_id_key UNIQUE (credit_id);
@@ -35858,6 +36167,16 @@ CREATE UNIQUE INDEX reward_chain_effect_transaction_hash_uidx ON reward_chain_ef
 CREATE INDEX reward_chain_effect_work_idx ON reward_chain_effects USING btree (state, lease_expires_at, updated_at, effect_id);
 
 CREATE INDEX reward_eligibility_decisions_lookup_idx ON reward_eligibility_decisions USING btree (leg_id, account_id, purpose, drawing_id, decided_at DESC);
+
+CREATE INDEX reward_gas_topup_account_day_idx ON reward_gas_topups USING btree (account_id, budget_day);
+
+CREATE UNIQUE INDEX reward_gas_topup_credit_open_uidx ON reward_gas_topups USING btree (credit_id) WHERE (status <> 'released'::text);
+
+CREATE INDEX reward_gas_topup_recipient_open_idx ON reward_gas_topups USING btree (recipient_address) WHERE (status = ANY (ARRAY['requested'::text, 'broadcast'::text]));
+
+CREATE UNIQUE INDEX reward_gas_topup_wallet_active_uidx ON reward_gas_topup_wallets USING btree (chain_id) WHERE (status = 'active'::text);
+
+CREATE INDEX reward_gas_topup_work_idx ON reward_gas_topups USING btree (created_at, topup_id) WHERE (status = ANY (ARRAY['requested'::text, 'broadcast'::text]));
 
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
 
@@ -36749,6 +37068,8 @@ CREATE CONSTRAINT TRIGGER megapot_allocation_row_exact AFTER INSERT ON megapot_a
 
 CREATE TRIGGER megapot_allocations_append_only BEFORE DELETE OR UPDATE ON megapot_allocations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
+CREATE TRIGGER megapot_attestation_custody_not_gas_wallet BEFORE INSERT OR UPDATE OF custody_address ON megapot_deployment_attestations FOR EACH ROW EXECUTE FUNCTION guard_megapot_custody_not_gas_wallet();
+
 CREATE CONSTRAINT TRIGGER megapot_beneficiary_leaf_exact AFTER INSERT ON megapot_pool_snapshot_private_leaves DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_beneficiary_snapshot();
 
 CREATE TRIGGER megapot_beneficiary_leaves_append_only BEFORE DELETE OR UPDATE ON megapot_pool_snapshot_private_leaves FOR EACH ROW EXECUTE FUNCTION reject_megapot_snapshot_change();
@@ -36959,15 +37280,27 @@ CREATE TRIGGER reward_chain_effect_transitions_append_only BEFORE DELETE OR UPDA
 
 CREATE TRIGGER reward_chain_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_chain_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_chain_effect();
 
+CREATE TRIGGER reward_chain_effects_gas_topup_signer BEFORE INSERT ON reward_chain_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup_effect_signer();
+
+CREATE TRIGGER reward_chain_effects_gas_topup_terminal_release AFTER UPDATE OF state ON reward_chain_effects FOR EACH ROW WHEN (((new.effect_kind = 'gas_topup'::text) AND (new.state = ANY (ARRAY['terminal_failed'::text, 'reclaimable_failed'::text])) AND (old.state IS DISTINCT FROM new.state))) EXECUTE FUNCTION release_reward_gas_topup_on_terminal_effect();
+
 CREATE TRIGGER reward_eligibility_decisions_append_only BEFORE DELETE OR UPDATE ON reward_eligibility_decisions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_erc20_transfer_receipt_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_erc20_transfer_receipt_evidence FOR EACH ROW EXECUTE FUNCTION guard_reward_erc20_transfer_receipt();
+
+CREATE TRIGGER reward_gas_topup_wallets_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_gas_topup_wallets FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup_wallet();
+
+CREATE TRIGGER reward_gas_topups_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_gas_topups FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup();
 
 CREATE CONSTRAINT TRIGGER reward_ledger_credit_source_pair AFTER INSERT ON reward_ledger_credits DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_ledger_credit_source();
 
 CREATE TRIGGER reward_ledger_credits_change_guard BEFORE DELETE OR UPDATE ON reward_ledger_credits FOR EACH ROW EXECUTE FUNCTION guard_reward_ledger_credit();
 
 CREATE TRIGGER reward_ledger_credits_participant_claim_gate BEFORE UPDATE ON reward_ledger_credits FOR EACH ROW EXECUTE FUNCTION guard_megapot_participant_credit_claim();
+
+CREATE TRIGGER reward_native_transfer_receipt_evidence_append_only BEFORE DELETE OR UPDATE ON reward_native_transfer_receipt_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER reward_native_transfer_receipt_evidence_validate BEFORE INSERT ON reward_native_transfer_receipt_evidence FOR EACH ROW EXECUTE FUNCTION validate_reward_native_transfer_receipt_evidence();
 
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 
@@ -39281,6 +39614,24 @@ ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
 ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
     ADD CONSTRAINT reward_erc20_transfer_receipt_evidence_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_chain_effects(effect_id);
 
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_chain_id_budget_day_fkey FOREIGN KEY (chain_id, budget_day) REFERENCES reward_gas_topup_daily_budgets(chain_id, budget_day);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_credit_id_fkey FOREIGN KEY (credit_id) REFERENCES reward_ledger_credits(credit_id);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_chain_effects(effect_id);
+
+ALTER TABLE ONLY reward_gas_topups
+    ADD CONSTRAINT reward_gas_topups_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
+
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -39289,6 +39640,9 @@ ALTER TABLE ONLY reward_ledger_credits
 
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_chain_id_token_address_fkey FOREIGN KEY (chain_id, token_address) REFERENCES reward_asset_whitelist(chain_id, token_address);
+
+ALTER TABLE ONLY reward_native_transfer_receipt_evidence
+    ADD CONSTRAINT reward_native_transfer_receipt_evidence_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_chain_effects(effect_id);
 
 ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_account_id_payout_persona_id_fkey FOREIGN KEY (account_id, payout_persona_id) REFERENCES personas(account_id, persona_id);

@@ -237,6 +237,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         attestationId: "megapot-base-sepolia-v2",
         rpcUrl: "https://megapot-rpc.test/",
         custodyPrivateKey: `0x${"1".repeat(64)}`,
+        gasTopupPrivateKey: null,
         commitmentBucket: {
           get: async () => null,
           put: async () => ({ uploaded: new Date() }),

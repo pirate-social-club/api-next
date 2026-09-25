@@ -4,10 +4,12 @@ import type {
   MegapotPoolLeg,
   RewardFundingIntent,
   RewardFundingStore,
+  RewardGasTopupRequester,
   RewardProjectionStore,
   SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
 import {
+  RewardGasTopupRejected,
   RewardProjectionRejected,
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
@@ -118,6 +120,7 @@ function fixture(
     catalog?: SongRewardOfferStore["listAdmittedAssets"];
     policies?: SongRewardOfferStore["qualificationPolicies"];
     production?: boolean;
+    gasTopups?: RewardGasTopupRequester | null;
   } = {},
 ) {
   const ids = ["open-action", "open-offer", "leg-action", "pool-leg", "observe-action"];
@@ -314,6 +317,7 @@ function fixture(
     store,
     fundingStore,
     projections,
+    gasTopups: options.gasTopups ?? null,
     funding: {
       plan: () => Effect.succeed({ kind: "planned", intent: fundingIntent }),
       observe: ({ transactionHash }) =>
@@ -795,6 +799,80 @@ describe("song reward offer HTTP handlers", () => {
     expect(issued.headers.get("cache-control")).toBe("no-store");
     expect(await issued.json()).toEqual({ intent_id: "reward-claim_1", provider_id: "very.web" });
     expect(claimCalls).toEqual([{ accountId: "account_1", creditId: "intent" }]);
+  });
+
+  test("requests and reads gas top-ups for the signed-in account only", async () => {
+    const requests: { accountId: string; creditId: string; idempotencyKey: string }[] = [];
+    const gasTopups: RewardGasTopupRequester = {
+      request: (input) => {
+        requests.push(input);
+        return Effect.succeed(
+          input.creditId === "credit_full"
+            ? { status: "not_needed" as const, topupId: null, amountWei: null }
+            : { status: "pending" as const, topupId: "gas-topup_1", amountWei: 30_000n },
+        );
+      },
+      get: ({ accountId, topupId }) =>
+        accountId === "account_1" && topupId === "gas-topup_1"
+          ? Effect.succeed({
+              topupId,
+              creditId: "credit_1",
+              status: "broadcast" as const,
+              amountWei: 30_000n,
+              transactionHash: hash("e"),
+            })
+          : Effect.fail(new RewardGasTopupRejected({ reason: "not-found" })),
+    };
+    const worker = fixture(intent, { gasTopups });
+    const post = (body: unknown, authorized = true) =>
+      worker.request("/rewards/gas-topups", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(authorized ? { authorization: "Bearer test" } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    expect((await post({ credit_id: "credit_1", idempotency_key: "key_1" }, false)).status).toBe(
+      401,
+    );
+    expect((await worker.request("/rewards/gas-topups/gas-topup_1")).status).toBe(401);
+
+    const pending = await post({ credit_id: "credit_1", idempotency_key: "key_1" });
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toEqual({
+      status: "pending",
+      topup_id: "gas-topup_1",
+      amount_wei: "30000",
+    });
+    const full = await post({ credit_id: "credit_full", idempotency_key: "key_2" });
+    expect(await full.json()).toEqual({ status: "not_needed", topup_id: null, amount_wei: null });
+    // The account always comes from the session, never the body.
+    expect(requests.map((entry) => entry.accountId)).toEqual(["account_1", "account_1"]);
+
+    const own = await worker.request("/rewards/gas-topups/gas-topup_1", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(own.status).toBe(200);
+    expect(await own.json()).toEqual({
+      status: "broadcast",
+      amount_wei: "30000",
+      transaction_hash: hash("e"),
+    });
+    const foreign = await worker.request("/rewards/gas-topups/gas-topup_other", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(foreign.status).toBe(404);
+  });
+
+  test("reports gas top-ups as unavailable when their limits are not configured", async () => {
+    const response = await fixture().request("/rewards/gas-topups", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test" },
+      body: JSON.stringify({ credit_id: "credit_1", idempotency_key: "key_1" }),
+    });
+    expect(await response.json()).toMatchObject({ error: { code: "provider_unavailable" } });
   });
 
   test("maps an internally reclaimable terminal plan to the stable wire status", async () => {
