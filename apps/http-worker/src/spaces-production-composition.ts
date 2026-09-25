@@ -8,10 +8,23 @@ import type { HttpWorkerOptions } from "./transport.ts";
 
 export type SpacesRuntimeBindings = Readonly<{
   SPACES_RUNTIME_ENABLED?: string;
+  SPACES_TAPROOT_RECIPIENT_ENABLED?: string;
   SPACES_VERIFIER_ACCESS_CLIENT_ID?: string;
   SPACES_VERIFIER_ACCESS_CLIENT_SECRET?: string;
   SPACES_VERIFIER_BEARER_TOKEN?: string;
 }>;
+
+/** Recipient creation is enabled only for the explicitly configured staging pilot. */
+export function spacesTaprootRecipientEnabled(
+  bindings: SpacesRuntimeBindings,
+  environment: "development" | "staging" | "production",
+): boolean {
+  const flag = bindings.SPACES_TAPROOT_RECIPIENT_ENABLED;
+  if (flag === undefined || flag === "false") return false;
+  if (flag !== "true" || environment !== "staging" || bindings.SPACES_RUNTIME_ENABLED !== "true")
+    throw new Error("Spaces Taproot recipient configuration is invalid");
+  return true;
+}
 
 type SpacesOptions = Pick<
   HttpWorkerOptions,

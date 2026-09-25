@@ -275,6 +275,7 @@ import {
 import {
   makeSpacesProductionComposition,
   type SpacesRuntimeBindings,
+  spacesTaprootRecipientEnabled,
 } from "./spaces-production-composition.ts";
 import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
@@ -1305,8 +1306,7 @@ export async function createProductionHttpWorker(
     },
   });
   const spacesTaprootHandlers = makeSpacesTaprootHandlers({
-    // No browser may create a wallet until the staging provider acceptance gate passes.
-    enabled: false,
+    enabled: spacesTaprootRecipientEnabled(bindings, config.API_NEXT_ENV),
     preparations: makeControlPlaneSpacesTaprootPreparationStore(controlPlane),
     intents: makeControlPlaneSpacesTaprootIntentStore(controlPlane),
     readInventory: (proof) =>

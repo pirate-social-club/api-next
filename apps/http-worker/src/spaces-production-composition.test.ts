@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { makeDirectPostgresControlPlaneLayer } from "@pirate/platform-cf/postgres";
-import { makeSpacesProductionComposition } from "./spaces-production-composition.ts";
+import {
+  makeSpacesProductionComposition,
+  spacesTaprootRecipientEnabled,
+} from "./spaces-production-composition.ts";
 
 const layer = makeDirectPostgresControlPlaneLayer("postgres://unused:unused@127.0.0.1/unused");
 const credentials = {
@@ -10,6 +13,34 @@ const credentials = {
 };
 
 describe("Spaces production composition", () => {
+  test("keeps recipient setup disabled unless the full staging pilot is explicitly enabled", () => {
+    expect(spacesTaprootRecipientEnabled({}, "staging")).toBe(false);
+    expect(
+      spacesTaprootRecipientEnabled({ SPACES_TAPROOT_RECIPIENT_ENABLED: "false" }, "staging"),
+    ).toBe(false);
+    expect(() =>
+      spacesTaprootRecipientEnabled({ SPACES_TAPROOT_RECIPIENT_ENABLED: "true" }, "staging"),
+    ).toThrow("Spaces Taproot recipient configuration is invalid");
+    expect(() =>
+      spacesTaprootRecipientEnabled(
+        { SPACES_RUNTIME_ENABLED: "true", SPACES_TAPROOT_RECIPIENT_ENABLED: "true" },
+        "production",
+      ),
+    ).toThrow("Spaces Taproot recipient configuration is invalid");
+    expect(() =>
+      spacesTaprootRecipientEnabled(
+        { SPACES_RUNTIME_ENABLED: "true", SPACES_TAPROOT_RECIPIENT_ENABLED: "TRUE" },
+        "staging",
+      ),
+    ).toThrow("Spaces Taproot recipient configuration is invalid");
+    expect(
+      spacesTaprootRecipientEnabled(
+        { SPACES_RUNTIME_ENABLED: "true", SPACES_TAPROOT_RECIPIENT_ENABLED: "true" },
+        "staging",
+      ),
+    ).toBe(true);
+  });
+
   test("keeps every ceremony and registry route absent by default", () => {
     expect(makeSpacesProductionComposition({}, layer, "staging")).toEqual({});
     expect(
