@@ -527,6 +527,157 @@ BEGIN
 END;
 $$;
 
+-- A held import must have a real exit. Recovery could only authorize the
+-- action a finding names, and a finding without matching authority evidence
+-- could name none, so nothing ever left recovery_required for failed. The
+-- retire action ends the import: any finding may support it, and applying it
+-- only ever targets failed, after which the retention rules release its
+-- provider resources and the owner can start again.
+ALTER TABLE hns_root_import_recovery_findings
+  DROP CONSTRAINT hns_root_import_recovery_findings_supported_action_check,
+  ADD CONSTRAINT hns_root_import_recovery_findings_supported_action_check
+    CHECK (supported_action IN ('resume', 'adopt', 'restore_authority', 'retire')),
+  DROP CONSTRAINT hns_recovery_finding_action_shape,
+  ADD CONSTRAINT hns_recovery_finding_action_shape CHECK (
+    supported_action IS NULL
+    OR supported_action = 'retire'
+    OR classification IN ('matching_authority_available', 'recoverable_authority_missing')
+  );
+ALTER TABLE hns_root_import_recovery_authorizations
+  DROP CONSTRAINT hns_root_import_recovery_authorizations_action_check,
+  ADD CONSTRAINT hns_root_import_recovery_authorizations_action_check
+    CHECK (action IN ('resume', 'adopt', 'restore_authority', 'retire'));
+
+CREATE OR REPLACE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, revision bigint, generation bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding hns_root_import_recovery_findings%ROWTYPE;
+  recovery_grant hns_root_import_recovery_authorizations%ROWTYPE;
+  committed RECORD;
+  rebound BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_evidence_freshness_seconds IS NULL
+    OR input_evidence_freshness_seconds NOT BETWEEN 1 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS recovery evidence freshness bound';
+  END IF;
+  -- The row lock is held for the whole application: the generation check, the
+  -- transition, the rebinding, and the single-use consumption are one
+  -- serialized unit, so a concurrent application cannot interleave between
+  -- them.
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'lifecycle_absent'::TEXT, NULL::BIGINT, NULL::BIGINT;
+    RETURN;
+  END IF;
+  IF lifecycle.phase <> 'recovery_required' THEN
+    RETURN QUERY SELECT 'phase_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF lifecycle.revision <> input_expected_revision THEN
+    RETURN QUERY SELECT 'revision_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  SELECT * INTO finding FROM hns_root_import_recovery_findings
+   WHERE root_import_session_id = input_session_id AND evidence_ref = input_evidence_ref;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'finding_absent'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF finding.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF finding.recorded_at <= database_now - (input_evidence_freshness_seconds * interval '1 second')
+  THEN
+    RETURN QUERY SELECT 'evidence_stale'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  SELECT * INTO recovery_grant FROM hns_root_import_recovery_authorizations
+   WHERE recovery_finding_id = finding.recovery_finding_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'authorization_absent'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF recovery_grant.consumed_at IS NOT NULL THEN
+    RETURN QUERY SELECT 'authorization_consumed'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF recovery_grant.expires_at <= database_now THEN
+    RETURN QUERY SELECT 'authorization_expired'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+  IF recovery_grant.authority_generation <> lifecycle.generation THEN
+    RETURN QUERY SELECT 'generation_conflict'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+
+  -- Retirement ends the import; it never resumes a phase (0206).
+  IF recovery_grant.action = 'retire' AND input_target_phase <> 'failed' THEN
+    RETURN QUERY SELECT 'retire_target_invalid'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+
+  IF recovery_grant.action = 'adopt' THEN
+    IF finding.covenant_resource_sha256 IS NULL THEN
+      RETURN QUERY SELECT 'adoption_evidence_missing'::TEXT, lifecycle.revision,
+                          lifecycle.generation;
+      RETURN;
+    END IF;
+    IF input_target_phase <> 'checking_publication' THEN
+      RETURN QUERY SELECT 'adoption_target_invalid'::TEXT, lifecycle.revision,
+                          lifecycle.generation;
+      RETURN;
+    END IF;
+  END IF;
+
+  -- Decide first, and only then rebind. The commit function returns a
+  -- non-raising `replay` outcome when the event identity already exists; a
+  -- replay must not move the generation, rewrite the digest, clear the
+  -- anchors, or spend the authorization.
+  SELECT * INTO committed FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id,
+    lifecycle.revision,
+    'recovery:' || input_evidence_ref,
+    'recovery_decided',
+    'transition',
+    'recovery_' || recovery_grant.action || ':' || finding.reason,
+    input_target_phase,
+    '{}'::jsonb,
+    coalesce(input_requested_work, '[]'::jsonb),
+    NULL,
+    NULL,
+    CASE WHEN recovery_grant.action = 'adopt' THEN lifecycle.generation + 1 ELSE NULL END
+  );
+  IF committed.outcome IS DISTINCT FROM 'transition' THEN
+    RETURN QUERY SELECT committed.outcome::TEXT, committed.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+
+  IF recovery_grant.action = 'adopt' THEN
+    UPDATE hns_root_import_lifecycle
+       SET generation = lifecycle.generation + 1,
+           plan_encoded_resource_sha256 = finding.covenant_resource_sha256,
+           first_current_observation_at = NULL,
+           finality_deadline_at = NULL,
+           readiness_observed_at = NULL,
+           updated_at = database_now
+     WHERE root_import_session_id = input_session_id
+    RETURNING hns_root_import_lifecycle.generation INTO rebound;
+  ELSE
+    rebound := lifecycle.generation;
+  END IF;
+  UPDATE hns_root_import_recovery_authorizations
+     SET consumed_at = database_now
+   WHERE recovery_authorization_id = recovery_grant.recovery_authorization_id;
+  RETURN QUERY SELECT 'applied'::TEXT, committed.revision, rebound;
+END;
+$$;
+
 -- Holds an exposed community import for operator recovery, with authority
 -- retained and no provider action: a recovery finding naming the reason, then
 -- the lifecycle transition, through the existing writers. It is the path for
@@ -555,7 +706,7 @@ BEGIN
   END IF;
   SELECT * INTO finding FROM record_hns_root_import_recovery_finding_v1(
     input_session_id, lifecycle.generation, input_evidence_ref,
-    'insufficient_evidence', input_reason, NULL, NULL, NULL, NULL,
+    'insufficient_evidence', input_reason, 'retire', NULL, NULL, NULL,
     lifecycle.plan_encoded_resource_sha256, NULL, NULL, NULL, NULL
   );
   IF finding.outcome NOT IN ('recorded', 'replayed') THEN
@@ -1448,6 +1599,7 @@ BEGIN
     'hns_community_root_import_current_ceremony_v1(text)',
     'renew_hns_community_root_import_challenge_v1(text,text,text,text,jsonb,text)',
     'hold_hns_root_import_for_recovery_v1(text,text,text)',
+    'apply_hns_root_import_recovery_v1(text,text,bigint,text,jsonb,integer)',
     'guard_hns_root_import_session_insert()',
     'begin_hns_root_import_provision_v1(text,text,text,bigint,text,text,text,text,bytea,text)',
     'begin_hns_root_import_provision_v2(text,text,text,bigint,text,text,text,text,bytea,text,text,text,bytea,text)',

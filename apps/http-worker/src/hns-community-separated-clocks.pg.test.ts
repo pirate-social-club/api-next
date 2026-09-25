@@ -352,7 +352,7 @@ pgTest(
 );
 
 pgTest(
-  "an exhausted ownership check budget is reported honestly, not as retryable",
+  "verifier outages never spend the ownership check budget",
   async () => {
     if (url === undefined) throw new Error("Postgres required");
     const base = await prepareAcknowledgedImport({
@@ -360,37 +360,116 @@ pgTest(
       initialObservation: "unavailable",
     });
     try {
-      await drainPublication(base, 4);
-      expect(await counts(base.admin)).toMatchObject({ counted_attempts: 3, not_attempted: 0 });
+      await drainPublication(base, 5);
+      expect(await counts(base.admin)).toMatchObject({ counted_attempts: 0, not_attempted: 1 });
       const job = await base.admin.query(
         "SELECT state, failure_code FROM hns_community_publication_jobs",
       );
-      expect(job.rows).toEqual([{ state: "failed", failure_code: "ownership_check_exhausted" }]);
-      const projected = (await (await base.call(base.sessionUrl)).json()) as {
-        status: string;
-        failure_reason: string;
-        retry_after_seconds: number | null;
-      };
-      expect(projected).toMatchObject({
-        status: "failed",
-        failure_reason: "ownership_check_attempts_exhausted",
-        retry_after_seconds: null,
-      });
-      // The next action is real: the import is held for operator recovery,
-      // with a finding naming why and authority retained.
-      const held = await base.admin.query(
-        `SELECT lifecycle.phase, lifecycle.pending_reason, finding.reason AS finding
+      expect(job.rows).toEqual([{ state: "pending", failure_code: null }]);
+      expect(await lifecycle(base as never)).toMatchObject({ phase: "checking_publication" });
+    } finally {
+      await base.cleanup();
+    }
+  },
+  BUDGET_MS,
+);
+
+pgTest(
+  "an exhausted ownership check is held for recovery, and retirement is a real exit",
+  async () => {
+    if (url === undefined) throw new Error("Postgres required");
+    const base = await prepareAcknowledgedImport({
+      connectionString: url,
+      acknowledge: false,
+      initialObservation: "rejected",
+    });
+    try {
+      const { admin } = base;
+      const ownership = (
+        await admin.query<Record<string, string>>(
+          "SELECT * FROM community_route_attachment_namespace_sessions",
+        )
+      ).rows[0];
+      if (ownership === undefined) throw new Error("ownership session missing");
+      const complete = (key: string) =>
+        Effect.runPromiseExit(
+          base.services.completion.complete({
+            actor_id: base.actor,
+            community_id: base.community,
+            attachment_intent_id: String(ownership.attachment_intent_id),
+            ceremony_intent_id: String(ownership.ceremony_intent_id),
+            session_id: String(ownership.namespace_session_id),
+            expected_revision: Number(ownership.expected_revision),
+            idempotency_key: key,
+            channel: "poll_result",
+          }),
+        );
+      for (const key of ["refused-1", "refused-2", "refused-3"]) await complete(key);
+      expect(await counts(admin)).toMatchObject({ counted_attempts: 3, not_attempted: 0 });
+      const exhausted = await complete("refused-4");
+      const error =
+        exhausted._tag === "Failure" ? Cause.findErrorOption(exhausted.cause) : Option.none();
+      expect(Option.getOrUndefined(error)).toMatchObject({ reason: "attempt_budget_exhausted" });
+      const held = await admin.query(
+        `SELECT lifecycle.phase, lifecycle.pending_reason, lifecycle.revision::int AS revision,
+                finding.reason, finding.supported_action, finding.evidence_ref
            FROM hns_root_import_lifecycle AS lifecycle
            JOIN hns_root_import_recovery_findings AS finding
              ON finding.root_import_session_id = lifecycle.root_import_session_id`,
       );
       expect(held.rows).toEqual([
-        {
+        expect.objectContaining({
           phase: "recovery_required",
           pending_reason: "ownership_check_attempts_exhausted",
-          finding: "ownership_check_attempts_exhausted",
-        },
+          reason: "ownership_check_attempts_exhausted",
+          supported_action: "retire",
+        }),
       ]);
+      const projected = (await (await base.call(base.sessionUrl)).json()) as {
+        lifecycle: { phase: string; permitted_actions: string[] };
+      };
+      expect(projected.lifecycle).toMatchObject({
+        phase: "recovery_required",
+        permitted_actions: ["poll", "recover"],
+      });
+
+      // The operator's retirement: authorize the finding's action, then apply
+      // it. Retirement cannot resume a phase, only end the import.
+      const finding = held.rows[0] as { revision: number; evidence_ref: string };
+      const authorized = await admin.query(
+        "SELECT outcome FROM authorize_hns_root_import_recovery_v1($1,$2,'retire',600,3600)",
+        [base.sessionId, finding.evidence_ref],
+      );
+      expect(authorized.rows).toEqual([{ outcome: "recorded" }]);
+      const resume = await admin.query(
+        `SELECT outcome FROM apply_hns_root_import_recovery_v1(
+           $1,$2,$3,'checking_publication','[]'::jsonb,3600)`,
+        [base.sessionId, finding.evidence_ref, finding.revision],
+      );
+      expect(resume.rows).toEqual([{ outcome: "retire_target_invalid" }]);
+      const retired = await admin.query(
+        `SELECT outcome FROM apply_hns_root_import_recovery_v1(
+           $1,$2,$3,'failed',
+           jsonb_build_array(jsonb_build_object('kind','retention_review',
+             'due_at', clock_timestamp() + interval '7 days')),
+           3600)`,
+        [base.sessionId, finding.evidence_ref, finding.revision],
+      );
+      expect(retired.rows).toEqual([{ outcome: "applied" }]);
+      const after = await admin.query(
+        `SELECT lifecycle.phase,
+                hns_root_import_session_clock_passed_v1(
+                  session.root_import_session_id, session.expires_at, clock_timestamp()) AS released,
+                EXISTS (SELECT 1 FROM hns_root_import_lifecycle_jobs AS job
+                         WHERE job.root_import_session_id = session.root_import_session_id
+                           AND job.job_kind = 'retention_review') AS retention_scheduled
+           FROM hns_root_import_lifecycle AS lifecycle
+           JOIN hns_root_import_sessions AS session
+             ON session.root_import_session_id = lifecycle.root_import_session_id`,
+      );
+      // Retired: its clock no longer holds the root, and the retention rules
+      // take over releasing its provider resources.
+      expect(after.rows).toEqual([{ phase: "failed", released: true, retention_scheduled: true }]);
     } finally {
       await base.cleanup();
     }

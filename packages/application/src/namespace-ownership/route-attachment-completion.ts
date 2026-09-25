@@ -8,6 +8,7 @@ import {
   NamespaceOwnershipProviderMisconfigured,
   NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnboundRejected,
   NamespaceOwnershipProviderUnsupportedProtocol,
   type RouteAttachmentOwnershipSession,
@@ -367,10 +368,12 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
         onSuccess: (value) => Effect.succeed({ kind: "observed" as const, value }),
         onFailure: (error) =>
           error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
-          error instanceof NamespaceOwnershipProviderPublicationClosed
+          error instanceof NamespaceOwnershipProviderPublicationClosed ||
+          (useImport && error instanceof NamespaceOwnershipProviderUnavailable)
             ? // Nothing about the owner's proof was judged: the verifier could
-              // not answer the protocol, or found the window closed. The
-              // reservation is released as not attempted.
+              // not answer the protocol, was unreachable, or found the window
+              // closed. Only an answer that judged the proof spends an attempt,
+              // so the reservation is released as not attempted.
               services.store
                 .release({
                   request: input,
@@ -382,7 +385,7 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
                   Effect.as(
                     error instanceof NamespaceOwnershipProviderPublicationClosed
                       ? { kind: "window_closed" as const }
-                      : { kind: "unsupported" as const },
+                      : { kind: "deferred" as const },
                   ),
                 )
             : services.store
@@ -414,7 +417,7 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
         window_reason: "verifier_denied",
       });
     }
-    if (attempted.kind === "unsupported") {
+    if (attempted.kind === "deferred") {
       yield* Effect.logWarning("verifier did not answer hns-txt-import-v1; import check deferred");
       return response(
         stored,

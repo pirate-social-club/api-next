@@ -130,7 +130,7 @@ export async function prepareAcknowledgedImport(input: {
     readonly resumeKey?: string;
   }>;
   /** The chain answer the verifier's observer gives until the owner publishes. */
-  readonly initialObservation?: "pending" | "unavailable";
+  readonly initialObservation?: "pending" | "unavailable" | "rejected";
 }): Promise<AcknowledgedImport> {
   const importProtocol = input.importProtocol ?? { http: true, verifier: true };
   const schema = input.schema ?? `hns_activation_${randomUUID().replaceAll("-", "")}`;
@@ -171,7 +171,8 @@ export async function prepareAcknowledgedImport(input: {
       reference: "hns-owner-staging",
       version: "hns-owner-config-v1",
     };
-    let chain: "pending" | "verified" | "unavailable" = input.initialObservation ?? "pending";
+    let chain: "pending" | "verified" | "unavailable" | "rejected" =
+      input.initialObservation ?? "pending";
     const observations: string[] = [];
     const importAuthorizer = makeControlPlaneHnsImportPublicationAuthorizer(layer);
     const transport = makeHnsOwnerServiceBindingTransport({
