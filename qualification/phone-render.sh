@@ -65,8 +65,10 @@ import json,sys
 rows=json.load(open(sys.argv[1])); submission=sys.argv[2]
 if len(rows)!=1: raise SystemExit('STOP: expected exactly one render attempt')
 r=rows[0]
-if r['status']!='processing' or r['phase']!='render' or 'safety' not in r['approved_holds']:
-    raise SystemExit('STOP: submission is not approved for render')
+# The render phase is reached only after a publish decision: a moderator approval
+# or, under the v1 sampled-frame gate, an automatic allow with no approval.
+if r['status']!='processing' or r['phase']!='render':
+    raise SystemExit('STOP: submission is not in the render phase')
 if r['attempt_state']!='started' or r['execution_phase'] not in ('submitting','submitted') or r['execution_claim_id'] is not None:
     raise SystemExit('STOP: render attempt is not freshly claimable')
 prefix_song='media-post-media-operation-'
