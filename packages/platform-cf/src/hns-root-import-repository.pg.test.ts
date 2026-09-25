@@ -1179,7 +1179,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         }
 
         // The retired client observation request is recorded in the removal
-        // migration's named disposition from the start (0207), never queued;
+        // migration's named disposition from the start (0204), never queued;
         // renewal must succeed without it ever reaching completed.
         const clientObservation = await admin.query<{ observation_job_id: string; state: string }>(
           `SELECT observation_job_id, state FROM hns_root_import_observation_jobs

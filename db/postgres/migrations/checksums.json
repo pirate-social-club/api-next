@@ -204,6 +204,6 @@
     "0201_song_transform_author_retry.sql": "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c",
     "0202_song_owner_policy_head_lock.sql": "40d776d31595a8e860e8f7d2bf036c155270a9f9907cbc9c3129c05066523fdc",
     "0203_megapot_claim_time_verification.sql": "a37ce5b7c6fa2b2ecfd0515d5e0356fcac7fcbb56352d31102a62ffb0faeaf5e",
-    "0207_hns_lifecycle_observation_scheduling.sql": "11a3c84d3d457c6f0c0b6cc244f01e96400894ec1bd324b085ef34183ff43ac5"
+    "0204_hns_lifecycle_observation_scheduling.sql": "11a3c84d3d457c6f0c0b6cc244f01e96400894ec1bd324b085ef34183ff43ac5"
   }
 }
