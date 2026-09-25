@@ -1060,7 +1060,13 @@ export async function createVideoSubmission(
     actorAccountId: input.actor.userId,
     authorPersonaId: body.persona_id,
     reservationId: body.video_reservation_id,
-    caption: body.caption ?? null,
+    // A blank caption is no caption: stored as null it is not moderated, while
+    // an empty string would reach text moderation, be refused, and hold the
+    // video at the safety gate.
+    caption:
+      body.caption === undefined || body.caption === null || body.caption.trim() === ""
+        ? null
+        : body.caption,
     authorDeclaredRating: body.author_declared_rating ?? "general",
   } as const;
   const state =
