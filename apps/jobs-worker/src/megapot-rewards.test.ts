@@ -70,6 +70,7 @@ describe("Megapot rewards scheduled cycle", () => {
         terminalOffers: 1,
         refunded: 1,
         paid: 0,
+        gasTopups: 0,
         failures: ["RewardRefundRejected"],
         failureDiagnostics: [],
         agedPending: [
@@ -137,6 +138,7 @@ describe("Megapot rewards scheduled cycle", () => {
           terminalOffers: 0,
           refunded: 0,
           paid: 0,
+          gasTopups: 0,
           failures: [],
           failureDiagnostics: [],
           agedPending: [],
@@ -174,6 +176,7 @@ describe("Megapot rewards scheduled cycle", () => {
           terminalOffers: 0,
           refunded: 0,
           paid: 0,
+          gasTopups: 0,
           failures: [],
           failureDiagnostics: [],
           agedPending: null,
@@ -296,6 +299,33 @@ describe("Megapot rewards scheduled cycle", () => {
     expect(calls).toContain("approval");
     expect(calls).not.toContain("purchase");
     expect(result.purchased).toBe(0);
+  });
+
+  test("sends open gas top-ups after payouts and skips the step without a gas signer", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    const skipped = await Effect.runPromise(runMegapotRewardsCycle({ work, runtime }));
+    expect(skipped.gasTopups).toBe(0);
+
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          gasTopups: {
+            listOpen: () => Effect.succeed(["topup-fail", "topup-pass"]),
+            send: (topupId) => {
+              calls.push(`gas-topup:${topupId}`);
+              return topupId === "topup-fail"
+                ? Effect.fail({ _tag: "RewardGasTopupCoordinatorFailed" as const })
+                : Effect.succeed({ kind: "submitted" });
+            },
+          },
+        },
+      }),
+    );
+    expect(result.gasTopups).toBe(1);
+    expect(result.failures).toContain("RewardGasTopupCoordinatorFailed");
+    expect(calls.lastIndexOf("gas-topup:topup-fail")).toBeGreaterThan(calls.lastIndexOf("payout"));
   });
 
   test("does not count a pre-broadcast terminal closure as a purchase", async () => {

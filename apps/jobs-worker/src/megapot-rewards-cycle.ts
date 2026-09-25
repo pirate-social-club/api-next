@@ -44,6 +44,15 @@ export interface MegapotRewardsRuntime {
   readonly closeExpiredOffers: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
   readonly refund: (fundingEffectId: string) => Effect.Effect<unknown, unknown>;
   readonly payout: (creditId: string) => Effect.Effect<unknown, unknown>;
+  /**
+   * Winner gas top-ups, sent after payouts. Absent or null when the gas
+   * signer secret or the active gas wallet row is missing; the step is then
+   * skipped.
+   */
+  readonly gasTopups?: Readonly<{
+    listOpen: (limit: number) => Effect.Effect<readonly string[], unknown>;
+    send: (topupId: string) => Effect.Effect<unknown, unknown>;
+  }> | null;
 }
 
 export type MegapotRewardsCycleSummary = Readonly<{
@@ -58,6 +67,7 @@ export type MegapotRewardsCycleSummary = Readonly<{
   terminalOffers: number;
   refunded: number;
   paid: number;
+  gasTopups: number;
   failures: readonly string[];
   failureDiagnostics: readonly string[];
   agedPending: readonly MegapotAgedPending[] | null;
@@ -175,6 +185,7 @@ export function writeMegapotRewardsCycleSnapshot(
       terminal_offer_count: summary.terminalOffers,
       refunded_count: summary.refunded,
       paid_count: summary.paid,
+      gas_topup_count: summary.gasTopups,
       failure_count: summary.failures.length,
       failure_tags: summary.failures,
       failure_diagnostics: summary.failureDiagnostics,
@@ -336,6 +347,15 @@ export function runMegapotRewardsCycle(input: {
     );
     recordFailures(payoutFailures);
 
+    let gasTopups = 0;
+    const gasTopupRuntime = input.runtime.gasTopups ?? null;
+    if (gasTopupRuntime !== null) {
+      const open = yield* gasTopupRuntime.listOpen(limit);
+      const [gasTopupFailures, sent] = yield* partition(open, gasTopupRuntime.send);
+      recordFailures(gasTopupFailures);
+      gasTopups = sent.length;
+    }
+
     const agedPending = yield* input.work
       .loadAgedPending(MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS)
       .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -352,6 +372,7 @@ export function runMegapotRewardsCycle(input: {
       terminalOffers: terminalOffers.length,
       refunded: refunded.length,
       paid: paid.length,
+      gasTopups,
       failures,
       failureDiagnostics,
       agedPending,

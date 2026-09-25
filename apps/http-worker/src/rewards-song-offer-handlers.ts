@@ -10,6 +10,8 @@ import {
   type RewardFundingIntent,
   type RewardFundingPlanner,
   type RewardFundingStore,
+  type RewardGasTopupFailure,
+  type RewardGasTopupRequester,
   type RewardProjectionFailure,
   type RewardProjectionStore,
   type SongRewardOffer,
@@ -39,6 +41,8 @@ export type SongRewardOfferHandlerServices = Readonly<{
   funding: RewardFundingPlanner;
   fundingStore: RewardFundingStore;
   projections: RewardProjectionStore;
+  /** Null when the gas top-up limits or gas wallet are not configured. */
+  gasTopups?: RewardGasTopupRequester | null;
   requiredConfirmations: number;
   externalFallbackPolicy: Readonly<{
     referralAllocationVersion: string;
@@ -62,6 +66,8 @@ export type SongRewardOfferHandlers = Readonly<{
   ListMyRewardCredits: EndpointHandler;
   ClaimRewardCredit: EndpointHandler;
   IssueRewardClaimVerificationIntent: EndpointHandler;
+  RequestRewardGasTopup: EndpointHandler;
+  GetRewardGasTopup: EndpointHandler;
 }>;
 
 const rewardUnavailable = (): never => {
@@ -91,6 +97,8 @@ export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandler
     ListMyRewardCredits: rewardUnavailable,
     ClaimRewardCredit: rewardUnavailable,
     IssueRewardClaimVerificationIntent: rewardUnavailable,
+    RequestRewardGasTopup: rewardUnavailable,
+    GetRewardGasTopup: rewardUnavailable,
   };
 }
 
@@ -141,6 +149,8 @@ export function makeLazySongRewardOfferHandlers(
     ListMyRewardCredits: handler("ListMyRewardCredits"),
     ClaimRewardCredit: handler("ClaimRewardCredit"),
     IssueRewardClaimVerificationIntent: handler("IssueRewardClaimVerificationIntent"),
+    RequestRewardGasTopup: handler("RequestRewardGasTopup"),
+    GetRewardGasTopup: handler("GetRewardGasTopup"),
   };
 }
 
@@ -210,6 +220,23 @@ function wireFailure(error: unknown): Error {
     return tagged.reason === "not-found"
       ? new NotFound({ message: "Reward projection is unavailable" })
       : new BadRequest({ message: "Reward projection cursor is invalid" });
+  }
+  if (tagged._tag === "RewardGasTopupRejected") {
+    if (tagged.reason === "not-found") {
+      return new NotFound({ message: "Gas top-up target is unavailable" });
+    }
+    if (tagged.reason === "gas-wallet-unavailable") {
+      return new ProviderUnavailable({ message: "Gas top-ups are unavailable" });
+    }
+    return new Conflict({ message: "Gas top-up conflicts with durable state" });
+  }
+  if (tagged._tag === "RewardGasTopupStorageFailed") {
+    return tagged.reason === "unavailable" || tagged.reason === "outcome-unknown"
+      ? new ProviderUnavailable({ message: "Gas top-up storage is unavailable" })
+      : new InternalError({ message: "Gas top-up failed" });
+  }
+  if (tagged._tag === "RewardGasTopupBalanceUnavailable") {
+    return new ProviderUnavailable({ message: "Gas top-up balance is unavailable" });
   }
   if (tagged._tag === "RewardProjectionStorageFailed") {
     return new InternalError({ message: "Reward projection failed" });
@@ -750,6 +777,56 @@ export function makeSongRewardOfferHandlers(
           .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
       );
       return { intent_id: result.intentId, provider_id: "very.web" as const };
+    },
+    RequestRewardGasTopup: async (request) => {
+      // The account is the signed-in user, never a request field.
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const gasTopups = services.gasTopups ?? null;
+      if (gasTopups === null) {
+        throw new ProviderUnavailable({ message: "Gas top-ups are unavailable" });
+      }
+      const body = request.body as {
+        readonly credit_id: string;
+        readonly idempotency_key: string;
+      };
+      const result = await Effect.runPromise(
+        gasTopups
+          .request({
+            accountId: principal.subject,
+            creditId: body.credit_id,
+            idempotencyKey: body.idempotency_key,
+          })
+          .pipe(Effect.mapError((error) => wireFailure(error))),
+      );
+      return {
+        status: result.status,
+        topup_id: result.topupId,
+        amount_wei: result.amountWei?.toString() ?? null,
+      };
+    },
+    GetRewardGasTopup: async (request) => {
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const gasTopups = services.gasTopups ?? null;
+      if (gasTopups === null) {
+        throw new ProviderUnavailable({ message: "Gas top-ups are unavailable" });
+      }
+      const path = request.params as { readonly topupId: string };
+      const topup = await Effect.runPromise(
+        gasTopups
+          .get({ accountId: principal.subject, topupId: path.topupId })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardGasTopupFailure))),
+      );
+      return {
+        status: topup.status,
+        amount_wei: topup.amountWei.toString(),
+        transaction_hash: topup.transactionHash,
+      };
     },
   };
 }

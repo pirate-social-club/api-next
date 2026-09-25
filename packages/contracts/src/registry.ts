@@ -94,6 +94,7 @@ import {
   GetAssetBonusFunding,
   GetMegapotPoolFunding,
   GetMegapotPoolStanding,
+  GetRewardGasTopup,
   GetRewardQualificationPolicies,
   GetSongMegapotPool,
   IssueRewardClaimVerificationIntent,
@@ -103,6 +104,7 @@ import {
   ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
+  RequestRewardGasTopup,
 } from "./rewards-song-offers.ts";
 import {
   GetPublicSongOwnerPolicy,
@@ -208,6 +210,8 @@ export const registry = {
   ListMyRewardCredits,
   ClaimRewardCredit,
   IssueRewardClaimVerificationIntent,
+  RequestRewardGasTopup,
+  GetRewardGasTopup,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,

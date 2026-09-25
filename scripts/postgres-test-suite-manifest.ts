@@ -34,6 +34,7 @@ export const freshSchemaPostgresTestSuites = [
   "scripts/megapot-golden-adopted-pool.pg.test.ts",
   "apps/http-worker/src/rewards-golden-retry.pg.test.ts",
   "packages/platform-cf/src/reward-claim-verification-intent.pg.test.ts",
+  "packages/platform-cf/src/reward-gas-topup.pg.test.ts",
   "packages/platform-cf/src/rewards-composed-settlement.pg.test.ts",
   "packages/platform-cf/src/avatars.pg.test.ts",
   "packages/platform-cf/src/activity-participation-authority.pg.test.ts",

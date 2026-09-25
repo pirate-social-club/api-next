@@ -291,6 +291,13 @@
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        // Winner gas top-ups (inactive while MEGAPOT_REWARDS_ENABLED is false):
+        // 0.00005 ETH target and per-transfer cap, 3 per account per UTC day,
+        // 0.005 ETH platform budget per UTC day.
+        "MEGAPOT_GAS_TOPUP_TARGET_WEI": "50000000000000",
+        "MEGAPOT_GAS_TOPUP_MAX_WEI": "50000000000000",
+        "MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT": "3",
+        "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI": "5000000000000000",
         "MEDIA_UPLOADS_ENABLED": "true",
         "VIDEO_SONG_REFERENCE_ENABLED": "false",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",

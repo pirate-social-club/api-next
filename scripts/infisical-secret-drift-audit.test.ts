@@ -55,6 +55,7 @@ describe("Infisical secret drift audit", () => {
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
           "MEGAPOT_CUSTODY_PRIVATE_KEY",
+          "MEGAPOT_GAS_TOPUP_PRIVATE_KEY",
           "MEGAPOT_V2_RPC_URL",
         ],
         "/services/api-next/operator": [
@@ -128,6 +129,7 @@ describe("Infisical secret drift audit", () => {
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
           "MEGAPOT_CUSTODY_PRIVATE_KEY",
+          "MEGAPOT_GAS_TOPUP_PRIVATE_KEY",
           "MEGAPOT_V2_RPC_URL",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
@@ -158,6 +160,7 @@ describe("Infisical secret drift audit", () => {
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
           "MEGAPOT_CUSTODY_PRIVATE_KEY",
+          "MEGAPOT_GAS_TOPUP_PRIVATE_KEY",
           "MEGAPOT_V2_RPC_URL",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",

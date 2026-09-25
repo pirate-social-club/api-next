@@ -8,6 +8,10 @@ import {
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
+import {
+  makeRewardGasTopupRequester,
+  RewardGasTopupBalanceUnavailable,
+} from "@pirate/application/rewards/song-reward-offers";
 import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
 import type {
   DanceAttemptSessionAuthorityResolver,
@@ -77,6 +81,7 @@ import {
   HttpWorkerConfig,
   type HttpWorkerConfigValue,
   loadConfigFrom,
+  parseRewardGasTopupConfig,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
@@ -166,6 +171,7 @@ import {
 import { makeControlPlaneRewardClaimIntentResolver } from "@pirate/platform-cf/reward-claim-verification-intent";
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
+import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
 import {
@@ -392,6 +398,10 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_V2_RPC_URL?: string;
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
+  readonly MEGAPOT_GAS_TOPUP_TARGET_WEI?: string;
+  readonly MEGAPOT_GAS_TOPUP_MAX_WEI?: string;
+  readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
+  readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
    * Song-backed video (Spec 013 §5A). Off unless exactly "true". The request path
@@ -601,6 +611,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_V2_RPC_URL: bindings.MEGAPOT_V2_RPC_URL,
     MEGAPOT_ATTESTATION_ID: bindings.MEGAPOT_ATTESTATION_ID,
     MEGAPOT_REQUIRED_CONFIRMATIONS: bindings.MEGAPOT_REQUIRED_CONFIRMATIONS,
+    MEGAPOT_GAS_TOPUP_TARGET_WEI: bindings.MEGAPOT_GAS_TOPUP_TARGET_WEI,
+    MEGAPOT_GAS_TOPUP_MAX_WEI: bindings.MEGAPOT_GAS_TOPUP_MAX_WEI,
+    MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
+    MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
   };
 }
 
@@ -612,6 +626,9 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   try {
     const config = loadConfigFrom(HttpWorkerConfig, configSource(bindings));
     assertMegapotRewardRuntimePosture(config);
+    // Malformed or partial gas top-up limits fail closed here; absent limits
+    // leave top-ups disabled.
+    parseRewardGasTopupConfig(config);
     if (
       config.MEGAPOT_REWARDS_ENABLED &&
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
@@ -1426,6 +1443,21 @@ export async function createProductionHttpWorker(
             },
           });
           const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
+          const gasTopupLimits = parseRewardGasTopupConfig(config);
+          const gasTopups =
+            gasTopupLimits === null
+              ? null
+              : makeRewardGasTopupRequester({
+                  store: makeControlPlaneRewardGasTopupRequestStore(controlPlane),
+                  readNativeBalance: (address) =>
+                    Effect.tryPromise({
+                      try: () => rpc.readNativeBalance(address),
+                      catch: () =>
+                        new RewardGasTopupBalanceUnavailable({ reason: "rpc-unavailable" }),
+                    }),
+                  limits: gasTopupLimits,
+                  ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+                });
           return makeSongRewardOfferHandlers({
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
@@ -1439,6 +1471,7 @@ export async function createProductionHttpWorker(
             store: makeControlPlaneSongRewardOfferStore(controlPlane),
             fundingStore: rewardFundingStore,
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
+            gasTopups,
             funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
             requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
             externalFallbackPolicy: null,

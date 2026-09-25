@@ -9,6 +9,7 @@ import {
   JobsWorkerConfig,
   loadConfig,
   loadConfigFrom,
+  parseRewardGasTopupConfig,
   secret,
 } from "./index.ts";
 
@@ -603,5 +604,46 @@ describe("config system (000 §9)", () => {
         service: "pirate-hns-owner-verifier-production",
       },
     ]);
+  });
+});
+
+describe("winner gas top-up limits", () => {
+  const staging = {
+    MEGAPOT_GAS_TOPUP_TARGET_WEI: "50000000000000",
+    MEGAPOT_GAS_TOPUP_MAX_WEI: "50000000000000",
+    MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "3",
+    MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "5000000000000000",
+  };
+
+  test("absent limits disable top-ups and a complete set parses", () => {
+    expect(
+      parseRewardGasTopupConfig({
+        MEGAPOT_GAS_TOPUP_TARGET_WEI: "",
+        MEGAPOT_GAS_TOPUP_MAX_WEI: "",
+        MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "",
+        MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "",
+      }),
+    ).toBeNull();
+    expect(parseRewardGasTopupConfig(staging)).toEqual({
+      targetBalanceWei: 50_000_000_000_000n,
+      maxTopupWei: 50_000_000_000_000n,
+      accountDailyCount: 3,
+      platformDailyWei: 5_000_000_000_000_000n,
+    });
+  });
+
+  test("a partial, malformed or inconsistent set fails closed", () => {
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_MAX_WEI: "-1" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_MAX_WEI: "60000000000000" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "0" }),
+    ).toThrow();
   });
 });

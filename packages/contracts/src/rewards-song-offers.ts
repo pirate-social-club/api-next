@@ -624,6 +624,46 @@ export const ClaimRewardCredit = endpoint({
   errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
 
+/**
+ * Owner decision 2026-09-25. A winner who claimed and was paid USDC to their
+ * payout persona's embedded wallet may ask for a bounded, platform-funded Base
+ * native-ETH gas top-up so they can send that USDC onward. The server reads the
+ * wallet's ETH balance and tops up only the shortfall to a fixed target, capped
+ * per transfer, per account per UTC day and by a platform daily budget.
+ * not_needed: the balance already meets the target and nothing is stored.
+ * pending: a top-up exists for this request (or is already open for the same
+ * wallet); poll GET /rewards/gas-topups/{topupId}. limit_reached: a daily cap
+ * refused it. Idempotent per idempotency_key for the signed-in account.
+ */
+export const RequestRewardGasTopup = endpoint({
+  method: "POST",
+  path: "/rewards/gas-topups",
+  auth: Auth.user(),
+  request: {
+    body: Schema.Struct({ credit_id: Identifier, idempotency_key: Identifier }),
+  },
+  response: Schema.Struct({
+    status: Schema.Literals(["not_needed", "pending", "limit_reached"]),
+    topup_id: Schema.NullOr(Identifier),
+    amount_wei: Schema.NullOr(AtomicAmount),
+  }),
+  errors: [AuthError, BadRequest, Conflict, NotFound, InternalError, ProviderUnavailable],
+});
+
+/** The caller's own gas top-up. released means nothing was or will be sent. */
+export const GetRewardGasTopup = endpoint({
+  method: "GET",
+  path: "/rewards/gas-topups/:topupId",
+  auth: Auth.user(),
+  request: { path: Schema.Struct({ topupId: Identifier }) },
+  response: Schema.Struct({
+    status: Schema.Literals(["requested", "broadcast", "confirmed", "released"]),
+    amount_wei: AtomicAmount,
+    transaction_hash: Schema.NullOr(TransactionHash),
+  }),
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
+});
+
 /** Current server policy preview. Creation freezes and returns the actual policies. */
 export const GetRewardQualificationPolicies = endpoint({
   method: "GET",
