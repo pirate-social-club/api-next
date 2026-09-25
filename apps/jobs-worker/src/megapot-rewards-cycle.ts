@@ -55,6 +55,39 @@ export interface MegapotRewardsRuntime {
   }> | null;
 }
 
+type GasTopupRuntime = NonNullable<MegapotRewardsRuntime["gasTopups"]>;
+
+/**
+ * Resolves the gas top-up step without ever failing the rewards job. A failed
+ * gas wallet lookup yields a runtime whose listing fails, so the cycle records
+ * it as a gas top-up failure and continues without top-ups. No active wallet
+ * skips the step; a different active wallet skips it and reports a mismatch.
+ */
+export function resolveGasTopupRuntime(input: {
+  readonly loadActiveSigner: () => Effect.Effect<string | null, unknown>;
+  readonly configuredSigner: string;
+  readonly makeRuntime: (activeSigner: string) => GasTopupRuntime;
+}): Effect.Effect<Readonly<{ runtime: GasTopupRuntime | null; signerMismatch: boolean }>, never> {
+  return input.loadActiveSigner().pipe(
+    Effect.map((activeSigner) => {
+      if (activeSigner === null) return { runtime: null, signerMismatch: false };
+      if (activeSigner !== input.configuredSigner) {
+        return { runtime: null, signerMismatch: true };
+      }
+      return { runtime: input.makeRuntime(activeSigner), signerMismatch: false };
+    }),
+    Effect.catch((error) =>
+      Effect.succeed({
+        runtime: {
+          listOpen: () => Effect.fail(error),
+          send: () => Effect.fail(error),
+        } satisfies GasTopupRuntime,
+        signerMismatch: false,
+      }),
+    ),
+  );
+}
+
 export type MegapotRewardsCycleSummary = Readonly<{
   reconciled: number;
   observed: number;
@@ -103,7 +136,7 @@ const AGED_PENDING_ALERT_COPY: Readonly<
 > = {
   chain_effects: {
     key: "megapot-rewards:aged-chain-effects",
-    body: "Custody-signed reward chain effects exceeded the reconciliation grace period.",
+    body: "Reward chain effects or gas top-ups exceeded the reconciliation grace period.",
   },
   funding_effects: {
     key: "megapot-rewards:aged-funding-effects",
@@ -350,7 +383,16 @@ export function runMegapotRewardsCycle(input: {
     let gasTopups = 0;
     const gasTopupRuntime = input.runtime.gasTopups ?? null;
     if (gasTopupRuntime !== null) {
-      const open = yield* gasTopupRuntime.listOpen(limit);
+      // A failed listing is recorded like any candidate failure, so the
+      // liveness projection and the summary are still produced.
+      const open = yield* gasTopupRuntime.listOpen(limit).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            recordFailures([error]);
+            return [] as readonly string[];
+          }),
+        ),
+      );
       const [gasTopupFailures, sent] = yield* partition(open, gasTopupRuntime.send);
       recordFailures(gasTopupFailures);
       gasTopups = sent.length;

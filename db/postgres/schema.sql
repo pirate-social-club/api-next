@@ -10179,6 +10179,20 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_megapot_custody_not_gas_wallet() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM reward_gas_topup_wallets wallet
+     WHERE wallet.signer_address = lower(NEW.custody_address)
+  ) THEN
+    RAISE EXCEPTION 'a Megapot custody address cannot be a reward gas top-up wallet';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_megapot_drawing_sweep() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11453,18 +11467,44 @@ BEGIN
     IF NEW.status <> 'requested' OR NEW.effect_id IS NOT NULL THEN
       RAISE EXCEPTION 'a reward gas top-up must begin requested without an effect';
     END IF;
+    -- The recipient is the wallet that received the credit's confirmed USDC payout.
+    IF NOT EXISTS (
+      SELECT 1
+        FROM reward_payout_effects payout
+        JOIN reward_chain_effects payout_effect
+          ON payout_effect.effect_id = payout.payout_effect_id
+         AND payout_effect.state = 'confirmed'
+        JOIN reward_erc20_transfer_receipt_evidence evidence
+          ON evidence.effect_id = payout.payout_effect_id
+         AND evidence.transfer_purpose = 'reward_payout'
+       WHERE payout.credit_id = NEW.credit_id
+         AND payout.account_id = NEW.account_id
+         AND payout.payout_persona_id = NEW.persona_id
+         AND payout.destination_address = NEW.recipient_address
+         AND payout.wallet_assignment_id = NEW.wallet_assignment_id
+         AND evidence.recipient_address = NEW.recipient_address
+    ) THEN
+      RAISE EXCEPTION 'a reward gas top-up must target the confirmed payout wallet';
+    END IF;
     RETURN NEW;
   END IF;
   IF ROW(
     NEW.topup_id, NEW.account_id, NEW.persona_id, NEW.credit_id, NEW.wallet_assignment_id,
     NEW.recipient_address, NEW.chain_id, NEW.balance_before_wei, NEW.target_balance_wei,
-    NEW.amount_wei, NEW.budget_day, NEW.idempotency_key, NEW.created_at
+    NEW.budget_day, NEW.idempotency_key, NEW.created_at
   ) IS DISTINCT FROM ROW(
     OLD.topup_id, OLD.account_id, OLD.persona_id, OLD.credit_id, OLD.wallet_assignment_id,
     OLD.recipient_address, OLD.chain_id, OLD.balance_before_wei, OLD.target_balance_wei,
-    OLD.amount_wei, OLD.budget_day, OLD.idempotency_key, OLD.created_at
+    OLD.budget_day, OLD.idempotency_key, OLD.created_at
   ) THEN
     RAISE EXCEPTION 'reward gas top-up identity is immutable';
+  END IF;
+  -- The amount may only shrink, and only before a chain effect exists.
+  IF NEW.amount_wei <> OLD.amount_wei AND (
+    NEW.amount_wei > OLD.amount_wei OR OLD.status <> 'requested' OR NEW.status <> 'requested'
+    OR OLD.effect_id IS NOT NULL OR NEW.effect_id IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'a reward gas top-up amount may only shrink before it is sent';
   END IF;
   IF OLD.effect_id IS NOT NULL AND NEW.effect_id IS DISTINCT FROM OLD.effect_id THEN
     RAISE EXCEPTION 'a reward gas top-up effect binding is immutable';
@@ -16194,6 +16234,33 @@ CREATE FUNCTION reject_text_moderation_append_only_change() RETURNS trigger
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END;
+$$;
+
+CREATE FUNCTION release_reward_gas_topup_on_terminal_effect() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  topup reward_gas_topups%ROWTYPE;
+BEGIN
+  SELECT * INTO topup FROM reward_gas_topups
+   WHERE effect_id = NEW.effect_id AND status IN ('requested', 'broadcast')
+   FOR UPDATE;
+  IF topup.topup_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  UPDATE reward_gas_topups
+     SET status = 'released', release_reason = 'effect_' || NEW.state,
+         released_at = clock_timestamp(), updated_at = clock_timestamp()
+   WHERE topup_id = topup.topup_id;
+  UPDATE reward_gas_topup_daily_budgets
+     SET reserved_wei = reserved_wei - topup.amount_wei, updated_at = clock_timestamp()
+   WHERE chain_id = topup.chain_id AND budget_day = topup.budget_day
+     AND reserved_wei >= topup.amount_wei;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward gas top-up budget reservation is missing';
+  END IF;
+  RETURN NULL;
+END
 $$;
 
 CREATE FUNCTION require_active_author_persona() RETURNS trigger
@@ -36103,6 +36170,8 @@ CREATE INDEX reward_eligibility_decisions_lookup_idx ON reward_eligibility_decis
 
 CREATE INDEX reward_gas_topup_account_day_idx ON reward_gas_topups USING btree (account_id, budget_day);
 
+CREATE UNIQUE INDEX reward_gas_topup_credit_open_uidx ON reward_gas_topups USING btree (credit_id) WHERE (status <> 'released'::text);
+
 CREATE INDEX reward_gas_topup_recipient_open_idx ON reward_gas_topups USING btree (recipient_address) WHERE (status = ANY (ARRAY['requested'::text, 'broadcast'::text]));
 
 CREATE UNIQUE INDEX reward_gas_topup_wallet_active_uidx ON reward_gas_topup_wallets USING btree (chain_id) WHERE (status = 'active'::text);
@@ -36999,6 +37068,8 @@ CREATE CONSTRAINT TRIGGER megapot_allocation_row_exact AFTER INSERT ON megapot_a
 
 CREATE TRIGGER megapot_allocations_append_only BEFORE DELETE OR UPDATE ON megapot_allocations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
+CREATE TRIGGER megapot_attestation_custody_not_gas_wallet BEFORE INSERT OR UPDATE OF custody_address ON megapot_deployment_attestations FOR EACH ROW EXECUTE FUNCTION guard_megapot_custody_not_gas_wallet();
+
 CREATE CONSTRAINT TRIGGER megapot_beneficiary_leaf_exact AFTER INSERT ON megapot_pool_snapshot_private_leaves DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_beneficiary_snapshot();
 
 CREATE TRIGGER megapot_beneficiary_leaves_append_only BEFORE DELETE OR UPDATE ON megapot_pool_snapshot_private_leaves FOR EACH ROW EXECUTE FUNCTION reject_megapot_snapshot_change();
@@ -37210,6 +37281,8 @@ CREATE TRIGGER reward_chain_effect_transitions_append_only BEFORE DELETE OR UPDA
 CREATE TRIGGER reward_chain_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_chain_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_chain_effect();
 
 CREATE TRIGGER reward_chain_effects_gas_topup_signer BEFORE INSERT ON reward_chain_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup_effect_signer();
+
+CREATE TRIGGER reward_chain_effects_gas_topup_terminal_release AFTER UPDATE OF state ON reward_chain_effects FOR EACH ROW WHEN (((new.effect_kind = 'gas_topup'::text) AND (new.state = ANY (ARRAY['terminal_failed'::text, 'reclaimable_failed'::text])) AND (old.state IS DISTINCT FROM new.state))) EXECUTE FUNCTION release_reward_gas_topup_on_terminal_effect();
 
 CREATE TRIGGER reward_eligibility_decisions_append_only BEFORE DELETE OR UPDATE ON reward_eligibility_decisions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 

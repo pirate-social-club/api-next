@@ -625,15 +625,18 @@ export const ClaimRewardCredit = endpoint({
 });
 
 /**
- * Owner decision 2026-09-25. A winner who claimed and was paid USDC to their
- * payout persona's embedded wallet may ask for a bounded, platform-funded Base
- * native-ETH gas top-up so they can send that USDC onward. The server reads the
- * wallet's ETH balance and tops up only the shortfall to a fixed target, capped
- * per transfer, per account per UTC day and by a platform daily budget.
- * not_needed: the balance already meets the target and nothing is stored.
- * pending: a top-up exists for this request (or is already open for the same
- * wallet); poll GET /rewards/gas-topups/{topupId}. limit_reached: a daily cap
- * refused it. Idempotent per idempotency_key for the signed-in account.
+ * Owner decision 2026-09-25. A winner who claimed and was paid USDC may ask
+ * for a bounded, platform-funded Base native-ETH gas top-up so they can send
+ * that USDC onward. The gas goes to the wallet that received the confirmed
+ * payout, even if the persona's wallet changed since. The server reads that
+ * wallet's ETH balance and tops up only the shortfall to a fixed target,
+ * capped per transfer, once per credit, per account per UTC day and by a
+ * platform daily budget. not_needed: the balance already meets the target and
+ * nothing is stored. pending: a top-up exists for this request, credit or
+ * wallet; poll GET /rewards/gas-topups/{topupId}. limit_reached: a cap refused
+ * it, including a credit whose top-up already confirmed. Idempotent per
+ * idempotency_key for the signed-in account. The amount sent can be lower than
+ * amount_wei if the wallet was partly funded before sending.
  */
 export const RequestRewardGasTopup = endpoint({
   method: "POST",

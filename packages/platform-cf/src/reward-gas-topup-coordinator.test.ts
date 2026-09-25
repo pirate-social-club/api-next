@@ -37,6 +37,7 @@ const candidate: RewardGasTopupCandidate = {
 function fixture(
   overrides: Partial<RewardGasTopupRpc> = {},
   candidateOverrides: Partial<RewardGasTopupCandidate> = {},
+  payoutRecipientConfirmed = true,
 ) {
   const calls: string[] = [];
   let progress: RewardGasTopupProgress | null = null;
@@ -44,14 +45,15 @@ function fixture(
   const store: RewardGasTopupSendStore = {
     loadActiveSigner: () => Effect.succeed(SIGNER),
     listOpen: () => Effect.succeed([current.topupId]),
-    loadCandidate: () => Effect.succeed(current),
+    loadCandidate: () => Effect.succeed({ ...current, payoutRecipientConfirmed }),
     findProgress: () => Effect.succeed(progress),
     releaseUnsent: ({ reason }) => Effect.sync(() => void calls.push(`release:${reason}`)),
     reserveNonce: (input) =>
       Effect.sync(() => {
-        calls.push(`reserve:${input.observedPendingNonce}`);
+        calls.push(`reserve:${input.observedPendingNonce}:${input.amountWei}`);
         const reservation = {
           ...input.candidate,
+          amountWei: input.amountWei,
           effectId: input.effectId,
           nonce: input.observedPendingNonce,
           effectVersion: 2,
@@ -152,7 +154,7 @@ describe("reward gas top-up coordinator", () => {
     expect(parsed.data ?? "0x").toBe("0x");
     run.setReceipt({});
     expect(await Effect.runPromise(run.send())).toMatchObject({ kind: "confirmed" });
-    expect(run.calls).toEqual(["reserve:4", "prepare", "submission:accepted:-", "confirm:6"]);
+    expect(run.calls).toEqual(["reserve:4:30000", "prepare", "submission:accepted:-", "confirm:6"]);
   });
 
   test("releases without a nonce when the recipient was funded since the request", async () => {
@@ -163,6 +165,25 @@ describe("reward gas top-up coordinator", () => {
       reason: "recipient_funded",
     });
     expect(run.calls).toEqual(["release:recipient_funded"]);
+  });
+
+  test("sends only the current shortfall after a partial deposit", async () => {
+    const run = fixture({
+      readNativeBalance: async (account) => (account === SIGNER ? 10n ** 18n : 42_000n),
+    });
+    expect((await Effect.runPromise(run.send())).kind).toBe("submitted");
+    expect(run.calls[0]).toBe("reserve:4:8000");
+    expect(parseTransaction(run.sent[0] as Hex).value).toBe(8_000n);
+  });
+
+  test("releases as recipient_changed when the payout record no longer matches", async () => {
+    const run = fixture({}, {}, false);
+    expect(await Effect.runPromise(run.send())).toEqual({
+      kind: "released",
+      topupId: "gas-topup_1",
+      reason: "recipient_changed",
+    });
+    expect(run.calls).toEqual(["release:recipient_changed"]);
   });
 
   test("refuses when the gas wallet cannot cover value, gas and the reserve floor", async () => {

@@ -241,9 +241,16 @@ export interface RewardGasTopupSendStore {
     chainId: number,
   ) => Effect.Effect<string | null, RewardGasTopupFailure>;
   readonly listOpen: (limit: number) => Effect.Effect<readonly string[], RewardGasTopupFailure>;
+  /**
+   * payoutRecipientConfirmed is false when the top-up's recipient no longer
+   * matches its credit's confirmed payout record or accepted claim.
+   */
   readonly loadCandidate: (
     topupId: string,
-  ) => Effect.Effect<RewardGasTopupCandidate, RewardGasTopupFailure>;
+  ) => Effect.Effect<
+    RewardGasTopupCandidate & Readonly<{ payoutRecipientConfirmed: boolean }>,
+    RewardGasTopupFailure
+  >;
   readonly findProgress: (
     effectId: string,
   ) => Effect.Effect<RewardGasTopupProgress | null, RewardGasTopupFailure>;
@@ -252,8 +259,14 @@ export interface RewardGasTopupSendStore {
     readonly topupId: string;
     readonly reason: string;
   }) => Effect.Effect<void, RewardGasTopupFailure>;
+  /**
+   * amountWei is what will be sent: at most the reserved amount. A smaller
+   * value shrinks the top-up and returns the difference to the day's budget
+   * in the same transaction, before the chain effect is created.
+   */
   readonly reserveNonce: (input: {
     readonly candidate: RewardGasTopupCandidate;
+    readonly amountWei: bigint;
     readonly effectId: string;
     readonly observedPendingNonce: bigint;
     readonly observedBlockNumber: bigint;

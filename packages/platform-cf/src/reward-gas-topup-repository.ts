@@ -139,6 +139,29 @@ function findByKeyIn(
   });
 }
 
+/**
+ * Gas to move one payout: an unreleased top-up for the credit is returned
+ * while open and caps the credit once confirmed. A released one does not.
+ */
+function creditCapIn(
+  executor: Pick<ControlPlaneTransaction, "execute">,
+  creditId: string,
+): Effect.Effect<RewardGasTopupReservation | null, RewardGasTopupFailure | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const result = yield* executor.execute<Row>({
+      label: "reward-gas-topup.credit-open.read",
+      text: `${VIEW_SELECT} WHERE topup.credit_id=$1 AND topup.status <> 'released'`,
+      values: [creditId],
+      readonly: false,
+    });
+    const existing = yield* oneView(result.rows);
+    if (existing === null) return null;
+    return existing.status === "confirmed"
+      ? ({ kind: "limit_reached" } as const)
+      : ({ kind: "open", topup: existing } as const);
+  });
+}
+
 function reserveIn(
   transaction: ControlPlaneTransaction,
   input: Parameters<RewardGasTopupRequestStore["reserve"]>[0],
@@ -175,6 +198,8 @@ function reserveIn(
       true,
     );
     if (replayed !== null) return { kind: "replayed", topup: replayed } as const;
+    const perCredit = yield* creditCapIn(transaction, context.creditId);
+    if (perCredit !== null) return perCredit;
     const open = yield* transaction.execute<Row>({
       label: "reward-gas-topup.open-recipient.read",
       text: `${VIEW_SELECT}
@@ -247,6 +272,46 @@ function reserveIn(
   });
 }
 
+/** True while the top-up's recipient is still its credit's confirmed payout wallet. */
+const PAYOUT_RECIPIENT_CONFIRMED = `(
+  EXISTS (
+    SELECT 1
+      FROM reward_payout_effects payout
+      JOIN reward_chain_effects payout_effect
+        ON payout_effect.effect_id=payout.payout_effect_id
+       AND payout_effect.state='confirmed'
+      JOIN reward_erc20_transfer_receipt_evidence evidence
+        ON evidence.effect_id=payout.payout_effect_id
+       AND evidence.transfer_purpose='reward_payout'
+       AND evidence.recipient_address=payout.destination_address
+     WHERE payout.credit_id=topup.credit_id
+       AND payout.destination_address=topup.recipient_address
+       AND payout.wallet_assignment_id=topup.wallet_assignment_id
+  ) AND EXISTS (
+    SELECT 1 FROM megapot_participant_claims claim
+     WHERE claim.credit_id=topup.credit_id AND claim.status='accepted'
+  )
+)`;
+
+/**
+ * The wallet that received the credit's confirmed USDC payout, never the
+ * persona's current wallet: a later wallet change does not move the gas.
+ */
+const CONFIRMED_PAYOUT_WALLET = `
+  SELECT payout.wallet_assignment_id AS assignment_id,
+         payout.destination_address AS address
+    FROM reward_payout_effects payout
+    JOIN reward_chain_effects payout_effect
+      ON payout_effect.effect_id=payout.payout_effect_id
+     AND payout_effect.state='confirmed'
+    JOIN reward_erc20_transfer_receipt_evidence evidence
+      ON evidence.effect_id=payout.payout_effect_id
+     AND evidence.transfer_purpose='reward_payout'
+     AND evidence.recipient_address=payout.destination_address
+   WHERE payout.credit_id=credit.credit_id
+     AND payout.account_id=credit.account_id
+     AND payout.payout_persona_id=credit.payout_persona_id`;
+
 function contextFromRow(row: Row): RewardGasTopupRequestContext {
   return {
     creditId: text(row, "credit_id"),
@@ -285,14 +350,7 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
                           wallet.assignment_id, wallet.address,
                           gas.signer_address AS gas_signer_address
                      FROM reward_ledger_credits credit
-                     LEFT JOIN LATERAL (
-                       SELECT assignment_id, address
-                         FROM persona_wallet_assignments
-                        WHERE account_id=credit.account_id
-                          AND persona_id=credit.payout_persona_id
-                          AND chain_account_kind='evm' AND status='active'
-                        ORDER BY assigned_at, assignment_id LIMIT 1
-                     ) wallet ON true
+                     LEFT JOIN LATERAL (${CONFIRMED_PAYOUT_WALLET}) wallet ON true
                      LEFT JOIN reward_gas_topup_wallets gas
                        ON gas.chain_id=credit.chain_id AND gas.status='active'
                     WHERE credit.credit_id=$1 AND credit.account_id=$2`,
@@ -309,19 +367,40 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
           ) {
             return yield* rejected("credit-not-eligible");
           }
+          // Gas goes only to the wallet that received the confirmed USDC payout.
           if (row.assignment_id === null || row.address === null) {
-            return yield* rejected("recipient-pending");
+            return yield* rejected("credit-not-eligible");
           }
           if (row.gas_signer_address === null) return yield* rejected("gas-wallet-unavailable");
           return yield* parse(() => contextFromRow(row));
         }),
       ),
     reserve: (input: Parameters<RewardGasTopupRequestStore["reserve"]>[0]) =>
-      mapped(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.withTransaction((transaction) => reserveIn(transaction, input));
-        }),
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* mapped(db.withTransaction((transaction) => reserveIn(transaction, input)));
+      }).pipe(
+        // Two requests on either side of a UTC day boundary lock different
+        // budget rows, so the unique key or credit index can still race. The
+        // loser replays what the winner committed instead of failing.
+        Effect.catchTag("RewardGasTopupStorageFailed", (error) =>
+          error.reason !== "conflict"
+            ? Effect.fail(error)
+            : Effect.gen(function* () {
+                const db = yield* ControlPlaneDb;
+                const replayed = yield* mapped(
+                  findByKeyIn(
+                    db,
+                    { accountId: input.context.accountId, idempotencyKey: input.idempotencyKey },
+                    false,
+                  ),
+                );
+                if (replayed !== null) return { kind: "replayed", topup: replayed } as const;
+                const capped = yield* mapped(creditCapIn(db, input.context.creditId));
+                if (capped !== null) return capped;
+                return yield* Effect.fail(error);
+              }),
+        ),
       ),
     get: (input: Parameters<RewardGasTopupRequestStore["get"]>[0]) =>
       mapped(
@@ -462,7 +541,9 @@ function reserveNonceIn(
       text: `SELECT topup.topup_id, topup.account_id, topup.credit_id,
                     topup.recipient_address, topup.chain_id, topup.amount_wei,
                     topup.target_balance_wei, topup.status, topup.effect_id,
-                    gas.signer_address AS gas_signer_address
+                    topup.chain_id AS budget_chain_id, topup.budget_day::text AS budget_day,
+                    gas.signer_address AS gas_signer_address,
+                    ${PAYOUT_RECIPIENT_CONFIRMED} AS payout_recipient_confirmed
                FROM reward_gas_topups topup
                LEFT JOIN reward_gas_topup_wallets gas
                  ON gas.chain_id=topup.chain_id AND gas.status='active'
@@ -478,12 +559,42 @@ function reserveNonceIn(
     if (row.gas_signer_address === null) return yield* rejected("gas-wallet-unavailable");
     const current = yield* parse(() => candidateFromRow(row, "gas_signer_address"));
     if (
+      row.payout_recipient_confirmed !== true ||
       current.recipientAddress !== candidate.recipientAddress ||
       current.amountWei !== candidate.amountWei ||
       current.chainId !== candidate.chainId ||
-      current.signerAddress !== candidate.signerAddress
+      current.signerAddress !== candidate.signerAddress ||
+      input.amountWei <= 0n ||
+      input.amountWei > current.amountWei
     ) {
       return yield* rejected("effect-conflict");
+    }
+    // Never overshoot the target: shrink the reservation to what is sent and
+    // return the difference to the day's budget before the effect exists, so
+    // the effect's value equals the top-up amount.
+    if (input.amountWei < current.amountWei) {
+      const shrunk = yield* transaction.execute({
+        label: "reward-gas-topup.amount.shrink",
+        text: `UPDATE reward_gas_topups SET amount_wei=$2, updated_at=clock_timestamp()
+                WHERE topup_id=$1 AND status='requested' AND effect_id IS NULL
+                  AND amount_wei=$3`,
+        values: [candidate.topupId, input.amountWei.toString(), current.amountWei.toString()],
+        readonly: false,
+      });
+      if (shrunk.rowCount !== 1) return yield* rejected("effect-conflict");
+      const returned = yield* transaction.execute({
+        label: "reward-gas-topup.budget.shrink",
+        text: `UPDATE reward_gas_topup_daily_budgets
+                  SET reserved_wei=reserved_wei-$3, updated_at=clock_timestamp()
+                WHERE chain_id=$1 AND budget_day=$2::date AND reserved_wei >= $3`,
+        values: [
+          row.budget_chain_id,
+          row.budget_day,
+          (current.amountWei - input.amountWei).toString(),
+        ],
+        readonly: false,
+      });
+      if (returned.rowCount !== 1) return yield* rejected("effect-conflict");
     }
     const nonceResult = yield* transaction.execute<Row>({
       label: "reward-gas-topup.nonce.read",
@@ -555,7 +666,7 @@ function reserveNonceIn(
         candidate.chainId,
         candidate.signerAddress,
         candidate.recipientAddress,
-        candidate.amountWei.toString(),
+        input.amountWei.toString(),
       ],
       readonly: false,
     });
@@ -587,7 +698,14 @@ function reserveNonceIn(
     });
     if (bound.rowCount !== 1) return yield* rejected("effect-conflict");
     return {
-      ...candidate,
+      topupId: candidate.topupId,
+      accountId: candidate.accountId,
+      creditId: candidate.creditId,
+      recipientAddress: candidate.recipientAddress,
+      chainId: candidate.chainId,
+      amountWei: input.amountWei,
+      targetBalanceWei: candidate.targetBalanceWei,
+      signerAddress: candidate.signerAddress,
       effectId: input.effectId,
       nonce,
       effectVersion: 2,
@@ -757,7 +875,8 @@ export function makeControlPlaneRewardGasTopupSendRepository() {
             text: `SELECT topup.topup_id, topup.account_id, topup.credit_id,
                           topup.recipient_address, topup.chain_id, topup.amount_wei,
                           topup.target_balance_wei, topup.status, topup.effect_id,
-                          gas.signer_address AS gas_signer_address
+                          gas.signer_address AS gas_signer_address,
+                          ${PAYOUT_RECIPIENT_CONFIRMED} AS payout_recipient_confirmed
                      FROM reward_gas_topups topup
                      LEFT JOIN reward_gas_topup_wallets gas
                        ON gas.chain_id=topup.chain_id AND gas.status='active'
@@ -772,7 +891,10 @@ export function makeControlPlaneRewardGasTopupSendRepository() {
             return yield* rejected("effect-conflict");
           }
           if (row.gas_signer_address === null) return yield* rejected("gas-wallet-unavailable");
-          return yield* parse(() => candidateFromRow(row, "gas_signer_address"));
+          return yield* parse(() => ({
+            ...candidateFromRow(row, "gas_signer_address"),
+            payoutRecipientConfirmed: row.payout_recipient_confirmed === true,
+          }));
         }),
       ),
     findProgress: (effectId: string) =>

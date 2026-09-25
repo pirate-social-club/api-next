@@ -1,8 +1,9 @@
 /**
  * Owner decision 2026-09-25: a winner who claimed and was paid USDC gets a
- * bounded, platform-funded native gas top-up. Prerequisite rows (users,
- * personas, wallets, the paid and claimed credits, the custody attestation)
- * are seeded with triggers disabled; every top-up, budget, wallet, effect,
+ * bounded, platform-funded native gas top-up to the wallet that received the
+ * payout. Prerequisite rows (users, personas, wallets, the paid and claimed
+ * credits, their confirmed payout records, the custody attestation) are
+ * seeded with triggers disabled; every top-up, budget, gas wallet, effect,
  * nonce and evidence row is written through the production repositories and
  * guard triggers.
  */
@@ -14,7 +15,7 @@ import {
 } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { type Hex, keccak256 } from "viem";
+import { type Hex, keccak256, parseTransaction } from "viem";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import type { MegapotTransactionReceipt } from "./megapot-v2.ts";
 import {
@@ -53,47 +54,79 @@ const LIMITS: RewardGasTopupLimits = {
   platformDailyWei: 80_000n,
 };
 
-// Winner holds four paid, claimed credits on four personas with four wallets;
-// other holds one. Refusal fixtures cover unclaimed, unpaid and walletless.
 const WALLETS = {
   w1: address("a1"),
   w2: address("a2"),
   w3: address("a3"),
   w4: address("a4"),
-  other: address("b1"),
   unclaimed: address("a5"),
   unpaid: address("a6"),
+  unpaidOut: address("a7"),
+  other: address("b1"),
+  otherNew: address("b2"),
+  third: address("c1"),
 } as const;
+
+type Fixture = Readonly<{
+  account: string;
+  persona: string;
+  wallet: keyof typeof WALLETS;
+  state: "sent" | "credited";
+  claimed: boolean;
+  paidOut: boolean;
+}>;
+
+const FIXTURES: readonly Fixture[] = [
+  { account: "winner", persona: "p1", wallet: "w1", state: "sent", claimed: true, paidOut: true },
+  { account: "winner", persona: "p2", wallet: "w2", state: "sent", claimed: true, paidOut: true },
+  { account: "winner", persona: "p3", wallet: "w3", state: "sent", claimed: true, paidOut: true },
+  { account: "winner", persona: "p4", wallet: "w4", state: "sent", claimed: true, paidOut: true },
+  {
+    account: "winner",
+    persona: "p5",
+    wallet: "unclaimed",
+    state: "sent",
+    claimed: false,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p6",
+    wallet: "unpaid",
+    state: "credited",
+    claimed: true,
+    paidOut: false,
+  },
+  {
+    account: "winner",
+    persona: "p7",
+    wallet: "unpaidOut",
+    state: "sent",
+    claimed: true,
+    paidOut: false,
+  },
+  { account: "other", persona: "q1", wallet: "other", state: "sent", claimed: true, paidOut: true },
+  { account: "third", persona: "r1", wallet: "third", state: "sent", claimed: true, paidOut: true },
+];
 
 async function seedPrerequisites(admin: Client) {
   await admin.query("SET session_replication_role = replica");
   try {
-    await admin.query("INSERT INTO users (user_id) VALUES ('winner'), ('other')");
-    const rows: Array<[string, string, keyof typeof WALLETS | null, string, boolean]> = [
-      ["winner", "p1", "w1", "sent", true],
-      ["winner", "p2", "w2", "sent", true],
-      ["winner", "p3", "w3", "sent", true],
-      ["winner", "p4", "w4", "sent", true],
-      ["winner", "p5", "unclaimed", "sent", false],
-      ["winner", "p6", "unpaid", "credited", true],
-      ["winner", "p7", null, "sent", true],
-      ["other", "q1", "other", "sent", true],
-    ];
-    for (const [index, [account, persona, wallet, state, claimed]] of rows.entries()) {
-      const credit = `credit-${persona}`;
+    await admin.query("INSERT INTO users (user_id) VALUES ('winner'), ('other'), ('third')");
+    for (const [index, row] of FIXTURES.entries()) {
+      const credit = `credit-${row.persona}`;
+      const assignment = `assignment-${row.persona}`;
       await admin.query("INSERT INTO personas (persona_id, account_id) VALUES ($1,$2)", [
-        persona,
-        account,
+        row.persona,
+        row.account,
       ]);
-      if (wallet !== null) {
-        await admin.query(
-          `INSERT INTO persona_wallet_assignments (
-             assignment_id, persona_id, account_id, chain_account_kind, hd_wallet_index,
-             address, status, reservation_idempotency_key, assigned_at, created_at, updated_at
-           ) VALUES ($1,$2,$3,'evm',$5,$4,'active',$1,now(),now(),now())`,
-          [`assignment-${persona}`, persona, account, WALLETS[wallet], index],
-        );
-      }
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (
+           assignment_id, persona_id, account_id, chain_account_kind, hd_wallet_index,
+           address, status, reservation_idempotency_key, assigned_at, created_at, updated_at
+         ) VALUES ($1,$2,$3,'evm',$5,$4,'active',$1,now(),now(),now())`,
+        [assignment, row.persona, row.account, WALLETS[row.wallet], index],
+      );
       await admin.query(
         `INSERT INTO reward_ledger_credits (
            credit_id, account_id, payout_persona_id, chain_id, token_address, amount_atomic,
@@ -101,15 +134,65 @@ async function seedPrerequisites(admin: Client) {
          ) VALUES ($1,$2,$3,$4,$5,1000000,'megapot_allocation',$1,$6,
                    CASE WHEN $6='sent' THEN 1000000 ELSE 0 END,
                    CASE WHEN $6='sent' THEN clock_timestamp() END)`,
-        [credit, account, persona, CHAIN_ID, USDC, state],
+        [credit, row.account, row.persona, CHAIN_ID, USDC, row.state],
       );
-      if (claimed) {
+      if (row.claimed) {
         await admin.query(
           `INSERT INTO megapot_participant_claims (
              credit_id, account_id, pool_leg_id, drawing_id, status, subject_key_id,
              evidence_receipt_id, accepted_at
            ) VALUES ($1,$2,'leg-1',1,'accepted',$3,'receipt',clock_timestamp())`,
-          [credit, account, `subject-${persona}`],
+          [credit, row.account, `subject-${row.persona}`],
+        );
+      }
+      if (row.paidOut) {
+        // The confirmed USDC payout that fixes the gas destination.
+        const effectId = `payout-${row.persona}`;
+        const transactionHash = blockHash(BigInt(10_000 + index));
+        await admin.query(
+          `INSERT INTO reward_chain_effects (
+             effect_id, effect_kind, state, version, chain_id, signer_address, target_address,
+             settled_amount_atomic, nonce, calldata, calldata_hash, signed_transaction,
+             signed_transaction_hash, transaction_hash, receipt_status, receipt_block_number,
+             receipt_block_hash, receipt_hash, confirmations, prepared_at, broadcast_at,
+             confirmed_at, created_at, updated_at
+           ) VALUES ($1,'reward_payout','confirmed',5,$2,$3,$4,1000000,$5,'0x00',$6,'0x01',
+                     $7,$7,'success',10,$8,$6,3,now(),now(),now(),now(),now())`,
+          [
+            effectId,
+            CHAIN_ID,
+            CUSTODY,
+            USDC,
+            index,
+            "ab".repeat(32),
+            transactionHash,
+            blockHash(10n),
+          ],
+        );
+        await admin.query(
+          `INSERT INTO reward_payout_effects (
+             payout_effect_id, attestation_id, credit_id, account_id, payout_persona_id,
+             destination_address, amount_atomic, wallet_assignment_id,
+             solvency_observation_id, custody_balance_before_atomic
+           ) VALUES ($1,'attestation-1',$2,$3,$4,$5,1000000,$6,'observation',1000000)`,
+          [effectId, credit, row.account, row.persona, WALLETS[row.wallet], assignment],
+        );
+        await admin.query(
+          `INSERT INTO reward_erc20_transfer_receipt_evidence (
+             effect_id, transfer_purpose, attestation_id, token_address, sender_address,
+             recipient_address, amount_atomic, transaction_hash, transfer_log_index,
+             custody_balance_after_atomic, block_number, block_hash, receipt_hash,
+             confirmations, confirmed_at
+           ) VALUES ($1,'reward_payout','attestation-1',$2,$3,$4,1000000,$5,0,0,10,$6,$7,3,now())`,
+          [
+            effectId,
+            USDC,
+            CUSTODY,
+            WALLETS[row.wallet],
+            transactionHash,
+            blockHash(10n),
+            "ab".repeat(32),
+          ],
         );
       }
     }
@@ -132,7 +215,7 @@ async function seedPrerequisites(admin: Client) {
 function fakeChain() {
   const balances = new Map<string, bigint>([[GAS_SIGNER, 10n ** 18n]]);
   const receipts = new Map<string, MegapotTransactionReceipt>();
-  const sent: string[] = [];
+  const sent: Hex[] = [];
   let head = 100n;
   const rpc: RewardGasTopupRpc = {
     readFeeQuote: async () => ({
@@ -211,6 +294,12 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
       gasLimitMultiplierBps: 12_000,
       nativeGasReserveFloorWei: 1_000n,
     });
+  const offlineSigner: MegapotV2TransactionSigner = {
+    address: GAS_SIGNER,
+    sign: async () => {
+      throw new Error("signer offline");
+    },
+  };
   const budget = async () =>
     (
       await admin.query(
@@ -220,11 +309,22 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
   const topupRow = async (topupId: string) =>
     (
       await admin.query(
-        `SELECT status, amount_wei::text, effect_id, release_reason
+        `SELECT status, amount_wei::text, recipient_address, effect_id, release_reason
            FROM reward_gas_topups WHERE topup_id=$1`,
         [topupId],
       )
     ).rows[0];
+  const insertAttestation = (id: string, custody: string) =>
+    admin.query(
+      `INSERT INTO megapot_deployment_attestations (
+         attestation_id, environment, chain_id, jackpot_address, usdc_address,
+         ticket_nft_address, custody_address, source_tag, jackpot_code_hash,
+         usdc_code_hash, ticket_nft_code_hash, attestation_block_number,
+         attestation_block_hash, abi_version, status, verified_at
+       ) VALUES ($1,'staging',$2,$3,$4,$3,$5,$6,$6,$6,$6,1,$6,'megapot_v2','retired',
+                 clock_timestamp())`,
+      [id, CHAIN_ID, address("0e"), USDC, custody, blockHash(2n)],
+    );
 
   beforeAll(async () => {
     if (!connectionString) return;
@@ -249,7 +349,8 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     await admin.end();
   });
 
-  test("the gas wallet is registered once and can never be the custody signer", async () => {
+  test("custody and gas wallets stay separate in both registration orders", async () => {
+    // Custody first: that address can never become a gas wallet.
     await expect(
       admin.query(
         "INSERT INTO reward_gas_topup_wallets (chain_id, signer_address, status) VALUES ($1,$2,'active')",
@@ -265,6 +366,16 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
       "INSERT INTO reward_gas_topup_wallets (chain_id, signer_address, status) VALUES ($1,$2,'active')",
       [CHAIN_ID, GAS_SIGNER],
     );
+    // Gas wallet first: no attestation may name it as custody, new or amended.
+    await expect(insertAttestation("attestation-gas", GAS_SIGNER)).rejects.toThrow(
+      "cannot be a reward gas top-up wallet",
+    );
+    await expect(
+      admin.query(
+        "UPDATE megapot_deployment_attestations SET custody_address=$1 WHERE attestation_id='attestation-1'",
+        [GAS_SIGNER],
+      ),
+    ).rejects.toThrow("cannot be a reward gas top-up wallet");
     await expect(
       admin.query(
         "INSERT INTO reward_gas_topup_wallets (chain_id, signer_address, status) VALUES ($1,$2,'active')",
@@ -273,17 +384,13 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     ).rejects.toThrow();
   });
 
-  test("refuses foreign, unclaimed, unpaid and walletless credits", async () => {
+  test("refuses foreign, unclaimed, unpaid and never-paid-out credits", async () => {
     expect(await failure("winner", "q1", "k-foreign")).toMatchObject({ reason: "not-found" });
-    expect(await failure("winner", "p5", "k-unclaimed")).toMatchObject({
-      reason: "credit-not-eligible",
-    });
-    expect(await failure("winner", "p6", "k-unpaid")).toMatchObject({
-      reason: "credit-not-eligible",
-    });
-    expect(await failure("winner", "p7", "k-walletless")).toMatchObject({
-      reason: "recipient-pending",
-    });
+    for (const persona of ["p5", "p6", "p7"]) {
+      expect(await failure("winner", persona, `k-${persona}`)).toMatchObject({
+        reason: "credit-not-eligible",
+      });
+    }
     expect((await admin.query("SELECT count(*)::int AS n FROM reward_gas_topups")).rows).toEqual([
       { n: 0 },
     ]);
@@ -302,21 +409,33 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     ]);
   });
 
-  test("reserves the capped shortfall once and replays it idempotently", async () => {
+  test("reserves the capped shortfall once per credit and replays it idempotently", async () => {
     const first = await request("winner", "p1", "k-1");
     expect(first).toMatchObject({ status: "pending", amountWei: 30_000n });
     topups.w1 = first.topupId as string;
     expect(await request("winner", "p1", "k-1")).toEqual(first);
     expect(await failure("winner", "p2", "k-1")).toMatchObject({ reason: "idempotency-conflict" });
-    // A second key while the wallet's top-up is open returns the open one.
+    // A second key for the same credit returns its open top-up.
     expect(await request("winner", "p1", "k-1b")).toEqual(first);
+    // The database also refuses a second unreleased top-up for the credit.
+    await expect(
+      admin.query(
+        `INSERT INTO reward_gas_topups (
+           topup_id, account_id, persona_id, credit_id, wallet_assignment_id,
+           recipient_address, chain_id, balance_before_wei, target_balance_wei,
+           amount_wei, budget_day, idempotency_key, status
+         ) SELECT 'direct-duplicate', account_id, persona_id, credit_id, wallet_assignment_id,
+                  recipient_address, chain_id, 0, 50000, 1, budget_day, 'k-direct', 'requested'
+             FROM reward_gas_topups WHERE topup_id=$1`,
+        [topups.w1],
+      ),
+    ).rejects.toThrow("reward_gas_topup_credit_open_uidx");
     expect(await budget()).toEqual([
       { ceiling_wei: "80000", reserved_wei: "30000", confirmed_wei: "0" },
     ]);
   });
 
   test("enforces the per-account daily count and the platform daily budget", async () => {
-    walletBalances.set(WALLETS.w2, 0n);
     const second = await request("winner", "p2", "k-2");
     expect(second).toMatchObject({ status: "pending", amountWei: 30_000n });
     topups.w2 = second.topupId as string;
@@ -337,18 +456,9 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
   test("sends requested -> nonce_reserved -> prepared -> broadcast -> confirmed with evidence", async () => {
     const topupId = topups.w1 as string;
     const effectId = deriveRewardGasTopupEffectId(topupId);
-    const failingSigner: MegapotV2TransactionSigner = {
-      address: GAS_SIGNER,
-      sign: async () => {
-        throw new Error("signer offline");
-      },
-    };
     expect(
-      await Effect.runPromise(Effect.flip(coordinator(failingSigner).send(topupId))),
-    ).toMatchObject({
-      _tag: "RewardGasTopupCoordinatorFailed",
-      phase: "prepare",
-    });
+      await Effect.runPromise(Effect.flip(coordinator(offlineSigner).send(topupId))),
+    ).toMatchObject({ _tag: "RewardGasTopupCoordinatorFailed", phase: "prepare" });
     expect(await topupRow(topupId)).toMatchObject({ status: "requested", effect_id: effectId });
     expect(
       (
@@ -368,8 +478,7 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
       },
     ]);
 
-    const submitted = await Effect.runPromise(coordinator().send(topupId));
-    expect(submitted.kind).toBe("submitted");
+    expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("submitted");
     expect(await topupRow(topupId)).toMatchObject({ status: "broadcast" });
     expect(chain.sent).toHaveLength(1);
     const hash = keccak256(chain.sent[0] as Hex);
@@ -388,7 +497,7 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     expect(
       (
         await admin.query(
-          "SELECT event_type, target_version FROM reward_chain_effect_transitions WHERE effect_id=$1 ORDER BY target_version",
+          "SELECT event_type FROM reward_chain_effect_transitions WHERE effect_id=$1 ORDER BY target_version",
           [effectId],
         )
       ).rows.map((row) => row.event_type),
@@ -415,12 +524,13 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     expect(await budget()).toEqual([
       { ceiling_wei: "80000", reserved_wei: "30000", confirmed_wei: "30000" },
     ]);
-    // Replaying a confirmed top-up is a no-op.
+    // Replaying a confirmed top-up is a no-op, and the credit is now capped.
     expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("confirmed");
     expect(chain.sent).toHaveLength(1);
+    expect(await request("winner", "p1", "k-1c")).toMatchObject({ status: "limit_reached" });
   });
 
-  test("a reverted receipt is terminal and returns the reserved budget", async () => {
+  test("a reverted receipt is terminal, returns the budget and frees the credit", async () => {
     const topupId = topups.w2 as string;
     expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("submitted");
     const hash = keccak256(chain.sent[1] as Hex);
@@ -431,22 +541,120 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
       status: "released",
       release_reason: "receipt_reverted",
     });
-    expect(
-      (
-        await admin.query("SELECT state FROM reward_chain_effects WHERE effect_id=$1", [
-          deriveRewardGasTopupEffectId(topupId),
-        ])
-      ).rows,
-    ).toEqual([{ state: "reverted" }]);
     expect(await budget()).toEqual([
       { ceiling_wei: "80000", reserved_wei: "0", confirmed_wei: "30000" },
     ]);
-    // Released top-ups no longer count, so the winner may request again today.
-    walletBalances.set(WALLETS.w3, 45_000n);
-    expect(await request("winner", "p3", "k-3b")).toMatchObject({
-      status: "pending",
-      amountWei: 5_000n,
+    // A released top-up blocks neither the credit nor the daily count.
+    walletBalances.set(WALLETS.w2, 45_000n);
+    const again = await request("winner", "p2", "k-2b");
+    expect(again).toMatchObject({ status: "pending", amountWei: 5_000n });
+    topups.w2again = again.topupId as string;
+  });
+
+  test("a terminal chain failure releases the top-up and its budget in one transaction", async () => {
+    const topupId = topups.w2again as string;
+    const effectId = deriveRewardGasTopupEffectId(topupId);
+    await Effect.runPromise(Effect.flip(coordinator(offlineSigner).send(topupId)));
+    expect(await budget()).toEqual([
+      { ceiling_wei: "80000", reserved_wei: "5000", confirmed_wei: "30000" },
+    ]);
+    await admin.query("BEGIN");
+    await admin.query(
+      `INSERT INTO reward_chain_effect_transitions (effect_id, target_version, event_type, event)
+       VALUES ($1,3,'operator_terminal','{}'::jsonb)`,
+      [effectId],
+    );
+    await admin.query(
+      `UPDATE reward_chain_effects
+          SET state='terminal_failed', version=3, failure_class='operator',
+              failure_reason='nonce abandoned', updated_at=clock_timestamp()
+        WHERE effect_id=$1`,
+      [effectId],
+    );
+    await admin.query("COMMIT");
+    expect(await topupRow(topupId)).toMatchObject({
+      status: "released",
+      release_reason: "effect_terminal_failed",
     });
+    expect(await budget()).toEqual([
+      { ceiling_wei: "80000", reserved_wei: "0", confirmed_wei: "30000" },
+    ]);
+    expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("released");
+  });
+
+  test("a partial deposit before sending shrinks the top-up and returns the difference", async () => {
+    const reserved = await request("winner", "p3", "k-3b");
+    expect(reserved).toMatchObject({ status: "pending", amountWei: 5_000n });
+    const topupId = reserved.topupId as string;
+    // The reservation used 45000 wei; the wallet now holds 47000.
+    chain.balances.set(WALLETS.w3, 47_000n);
+    expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("submitted");
+    expect(await topupRow(topupId)).toMatchObject({ status: "broadcast", amount_wei: "3000" });
+    expect(
+      (
+        await admin.query("SELECT value_wei::text FROM reward_chain_effects WHERE effect_id=$1", [
+          deriveRewardGasTopupEffectId(topupId),
+        ])
+      ).rows,
+    ).toEqual([{ value_wei: "3000" }]);
+    expect(parseTransaction(chain.sent[chain.sent.length - 1] as Hex).value).toBe(3_000n);
+    expect(await budget()).toEqual([
+      { ceiling_wei: "80000", reserved_wei: "3000", confirmed_wei: "30000" },
+    ]);
+    // Funded in full before sending: released, nothing sent, budget returned.
+    const funded = await request("third", "r1", "k-r1");
+    chain.balances.set(WALLETS.third, 60_000n);
+    const sentBefore = chain.sent.length;
+    expect(await Effect.runPromise(coordinator().send(funded.topupId as string))).toMatchObject({
+      kind: "released",
+      reason: "recipient_funded",
+    });
+    expect(chain.sent).toHaveLength(sentBefore);
+    expect(await budget()).toEqual([
+      { ceiling_wei: "80000", reserved_wei: "3000", confirmed_wei: "30000" },
+    ]);
+  });
+
+  test("gas goes to the confirmed payout wallet even after a wallet change", async () => {
+    await admin.query("SET session_replication_role = replica");
+    try {
+      await admin.query(
+        `UPDATE persona_wallet_assignments SET status='tombstoned', tombstoned_at=now()
+          WHERE assignment_id='assignment-q1'`,
+      );
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (
+           assignment_id, persona_id, account_id, chain_account_kind, hd_wallet_index,
+           address, status, reservation_idempotency_key, assigned_at, created_at, updated_at
+         ) VALUES ('assignment-q1-new','q1','other','evm',99,$1,'active','assignment-q1-new',
+                   now(),now(),now())`,
+        [WALLETS.otherNew],
+      );
+    } finally {
+      await admin.query("SET session_replication_role = origin");
+    }
+    const requested = await request("other", "q1", "k-q1");
+    expect(requested).toMatchObject({ status: "pending", amountWei: 30_000n });
+    const topupId = requested.topupId as string;
+    expect(await topupRow(topupId)).toMatchObject({ recipient_address: WALLETS.other });
+    expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("submitted");
+    expect(parseTransaction(chain.sent[chain.sent.length - 1] as Hex).to?.toLowerCase()).toBe(
+      WALLETS.other,
+    );
+    // A top-up can never be written against the new wallet.
+    await expect(
+      admin.query(
+        `INSERT INTO reward_gas_topups (
+           topup_id, account_id, persona_id, credit_id, wallet_assignment_id,
+           recipient_address, chain_id, balance_before_wei, target_balance_wei,
+           amount_wei, budget_day, idempotency_key, status
+         ) SELECT 'direct-new-wallet', account_id, persona_id, 'credit-p4',
+                  'assignment-q1-new', $1, chain_id, 0, 50000, 1, budget_day,
+                  'k-direct-new', 'requested'
+             FROM reward_gas_topups WHERE topup_id=$2`,
+        [WALLETS.otherNew, topupId],
+      ),
+    ).rejects.toThrow("must target the confirmed payout wallet");
   });
 
   test("the guard rejects a custody-signed or mismatched gas top-up effect", async () => {
@@ -462,42 +670,42 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
         `INSERT INTO reward_chain_effects (
            effect_id, effect_kind, state, chain_id, signer_address, target_address, value_wei
          ) VALUES ('custody-topup','gas_topup','planned',$1,$2,$3,5000)`,
-        [CHAIN_ID, CUSTODY, WALLETS.w3],
+        [CHAIN_ID, CUSTODY, WALLETS.w4],
       ),
     ).rejects.toThrow("must be signed by the active gas wallet");
 
-    const open = (
-      await admin.query(
-        "SELECT topup_id FROM reward_gas_topups WHERE status='requested' AND recipient_address=$1",
-        [WALLETS.w3],
-      )
-    ).rows[0] as { topup_id: string };
+    walletBalances.set(WALLETS.third, 45_000n);
+    const open = await request("third", "r1", "k-r1b");
+    expect(open).toMatchObject({ status: "pending", amountWei: 5_000n });
     const bind = (effectId: string) =>
       admin.query("UPDATE reward_gas_topups SET effect_id=$2 WHERE topup_id=$1", [
-        open.topup_id,
+        open.topupId,
         effectId,
       ]);
     await admin.query(
       `INSERT INTO reward_chain_effects (
          effect_id, effect_kind, state, chain_id, signer_address, target_address, value_wei
        ) VALUES ('wrong-amount','gas_topup','planned',$1,$2,$3,4999),
-                ('wrong-target','gas_topup','planned',$1,$2,$4,5000)`,
-      [CHAIN_ID, GAS_SIGNER, WALLETS.w3, WALLETS.w4],
+                ('wrong-target','gas_topup','planned',$1,$2,$4,5000),
+                ('retired-signer','gas_topup','planned',$1,$2,$3,5000)`,
+      [CHAIN_ID, GAS_SIGNER, WALLETS.third, WALLETS.w4],
     );
     await expect(bind("wrong-amount")).rejects.toThrow("does not match the top-up");
     await expect(bind("wrong-target")).rejects.toThrow("does not match the top-up");
-    // Retiring the gas wallet also blocks binding a later effect.
-    await admin.query(
-      `INSERT INTO reward_chain_effects (
-         effect_id, effect_kind, state, chain_id, signer_address, target_address, value_wei
-       ) VALUES ('retired-signer','gas_topup','planned',$1,$2,$3,5000)`,
-      [CHAIN_ID, GAS_SIGNER, WALLETS.w3],
-    );
+    // The amount may not grow, and may only shrink before sending.
+    await expect(
+      admin.query("UPDATE reward_gas_topups SET amount_wei=6000 WHERE topup_id=$1", [open.topupId]),
+    ).rejects.toThrow("may only shrink");
+    // Retiring the gas wallet blocks binding, and a retired signer still can
+    // never become custody.
     await admin.query(
       "UPDATE reward_gas_topup_wallets SET status='retired', retired_at=clock_timestamp() WHERE signer_address=$1",
       [GAS_SIGNER],
     );
     await expect(bind("retired-signer")).rejects.toThrow("does not match the top-up");
+    await expect(insertAttestation("attestation-retired-gas", GAS_SIGNER)).rejects.toThrow(
+      "cannot be a reward gas top-up wallet",
+    );
     await expect(
       admin.query("DELETE FROM reward_native_transfer_receipt_evidence"),
     ).rejects.toThrow("append-only");

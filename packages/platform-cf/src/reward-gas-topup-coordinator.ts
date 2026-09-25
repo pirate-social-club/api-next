@@ -373,8 +373,14 @@ export function makeRewardGasTopupCoordinator(input: {
     const effectId = deriveRewardGasTopupEffectId(topupId);
     const existing = yield* input.store.findProgress(effectId);
     if (existing !== null) return yield* resume(existing);
-    const candidate = yield* input.store.loadCandidate(topupId);
+    const loaded = yield* input.store.loadCandidate(topupId);
+    const { payoutRecipientConfirmed, ...candidate } = loaded;
     yield* attest(candidate);
+    // Guard: the recipient must still be the credit's confirmed payout wallet.
+    if (!payoutRecipientConfirmed) {
+      yield* input.store.releaseUnsent({ topupId, reason: "recipient_changed" });
+      return { kind: "released", topupId, reason: "recipient_changed" } as const;
+    }
     const feeQuote = yield* rpcEffect("preflight", "preflight_unavailable", () =>
       input.rpc.readFeeQuote(),
     );
@@ -398,20 +404,21 @@ export function makeRewardGasTopupCoordinator(input: {
     if (block.blockHash.toLowerCase() !== feeQuote.observedBlockHash.toLowerCase()) {
       return yield* failed("preflight_unavailable", "preflight");
     }
-    // The winner may have been funded since the request; send nothing then.
-    if (recipientBalance >= candidate.targetBalanceWei) {
+    // Never overshoot the target: send at most the current shortfall, and
+    // nothing when the winner was funded since the request.
+    const shortfall = candidate.targetBalanceWei - recipientBalance;
+    if (shortfall <= 0n) {
       yield* input.store.releaseUnsent({ topupId, reason: "recipient_funded" });
       return { kind: "released", topupId, reason: "recipient_funded" } as const;
     }
+    const amountWei = shortfall < candidate.amountWei ? shortfall : candidate.amountWei;
     const gas = gasFor(gasEstimate);
-    if (
-      walletBalance <
-      candidate.amountWei + gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei
-    ) {
+    if (walletBalance < amountWei + gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
     const reservation = yield* input.store.reserveNonce({
       candidate,
+      amountWei,
       effectId,
       observedPendingNonce: pendingNonce,
       observedBlockNumber: feeQuote.observedBlockNumber,

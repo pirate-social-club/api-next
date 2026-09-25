@@ -206,6 +206,6 @@
     "0203_megapot_claim_time_verification.sql": "a37ce5b7c6fa2b2ecfd0515d5e0356fcac7fcbb56352d31102a62ffb0faeaf5e",
     "0204_hns_lifecycle_observation_scheduling.sql": "11a3c84d3d457c6f0c0b6cc244f01e96400894ec1bd324b085ef34183ff43ac5",
     "0205_video_safety_gate_unresolved.sql": "5259b2b068d7ba5c2f9d1fbbacd59704845fce76a4d7fe07190fefeef5a38503",
-    "0206_megapot_winner_gas_topup.sql": "6522d5fb0d5cb36566fbc3fce7c0e72bff7f6a779ee78668d6d1abcac1845de2"
+    "0206_megapot_winner_gas_topup.sql": "e3e3f1059b83dfbb0b20b22eddf54b21bbd78dd06d34aeb337dfbfc715fa38ea"
   }
 }

@@ -9,6 +9,7 @@ import {
   type MegapotRewardsRuntime,
   megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
+  resolveGasTopupRuntime,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
@@ -326,6 +327,74 @@ describe("Megapot rewards scheduled cycle", () => {
     expect(result.gasTopups).toBe(1);
     expect(result.failures).toContain("RewardGasTopupCoordinatorFailed");
     expect(calls.lastIndexOf("gas-topup:topup-fail")).toBeGreaterThan(calls.lastIndexOf("payout"));
+  });
+
+  test("records a gas top-up listing failure and still reports liveness", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          gasTopups: {
+            listOpen: () => Effect.fail({ _tag: "RewardGasTopupStorageFailed" as const }),
+            send: () => Effect.succeed({}),
+          },
+        },
+      }),
+    );
+    expect(result.gasTopups).toBe(0);
+    expect(result.failures).toContain("RewardGasTopupStorageFailed");
+    expect(result.agedPending).toEqual([]);
+    expect(calls).toContain("load-aged-pending");
+  });
+
+  test("a gas wallet lookup failure never aborts the job and is recorded by the cycle", async () => {
+    const makeRuntime = () => ({
+      listOpen: () => Effect.succeed([] as readonly string[]),
+      send: () => Effect.succeed({}),
+    });
+    const failedLookup = await Effect.runPromise(
+      resolveGasTopupRuntime({
+        loadActiveSigner: () => Effect.fail({ _tag: "RewardGasTopupStorageFailed" as const }),
+        configuredSigner: "0xgas",
+        makeRuntime,
+      }),
+    );
+    expect(failedLookup.signerMismatch).toBe(false);
+    const { runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({ work, runtime: { ...runtime, gasTopups: failedLookup.runtime } }),
+    );
+    expect(result.failures).toContain("RewardGasTopupStorageFailed");
+    expect(result.paid).toBe(1);
+
+    expect(
+      await Effect.runPromise(
+        resolveGasTopupRuntime({
+          loadActiveSigner: () => Effect.succeed(null),
+          configuredSigner: "0xgas",
+          makeRuntime,
+        }),
+      ),
+    ).toEqual({ runtime: null, signerMismatch: false });
+    expect(
+      await Effect.runPromise(
+        resolveGasTopupRuntime({
+          loadActiveSigner: () => Effect.succeed("0xother"),
+          configuredSigner: "0xgas",
+          makeRuntime,
+        }),
+      ),
+    ).toEqual({ runtime: null, signerMismatch: true });
+    const matched = await Effect.runPromise(
+      resolveGasTopupRuntime({
+        loadActiveSigner: () => Effect.succeed("0xgas"),
+        configuredSigner: "0xgas",
+        makeRuntime,
+      }),
+    );
+    expect(matched.runtime).not.toBeNull();
   });
 
   test("does not count a pre-broadcast terminal closure as a purchase", async () => {

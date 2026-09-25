@@ -43,6 +43,7 @@ import {
   type MegapotRewardsRuntime,
   megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
+  resolveGasTopupRuntime,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
@@ -268,27 +269,32 @@ export function makeMegapotRewardsJob(
     });
     const gasTopupStore = makeControlPlaneRewardGasTopupSendStore(controlPlane);
     let gasTopups: MegapotRewardsRuntime["gasTopups"] = null;
-    if (options.gasTopupPrivateKey !== null) {
+    const gasTopupPrivateKey = options.gasTopupPrivateKey;
+    if (gasTopupPrivateKey !== null) {
       // The gas signer must be the registered active gas wallet, never custody.
-      const activeSigner = yield* gasTopupStore.loadActiveSigner(deployment.chainId);
-      const configuredSigner = deriveBaseSepoliaMegapotAddress(options.gasTopupPrivateKey);
-      if (activeSigner !== null && activeSigner === configuredSigner) {
-        const gasTopup = makeRewardGasTopupCoordinator({
-          store: gasTopupStore,
-          rpc,
-          signer: makeBaseSepoliaMegapotV2PrivateKeySigner({
-            privateKey: options.gasTopupPrivateKey,
-            expectedAddress: activeSigner,
-          }),
-          requiredConfirmations: options.requiredConfirmations,
-          gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-          nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
-        });
-        gasTopups = {
-          listOpen: (limit) => gasTopupStore.listOpen(limit),
-          send: (topupId) => gasTopup.send(topupId),
-        };
-      } else if (activeSigner !== null) {
+      const resolved = yield* resolveGasTopupRuntime({
+        loadActiveSigner: () => gasTopupStore.loadActiveSigner(deployment.chainId),
+        configuredSigner: deriveBaseSepoliaMegapotAddress(gasTopupPrivateKey),
+        makeRuntime: (activeSigner) => {
+          const gasTopup = makeRewardGasTopupCoordinator({
+            store: gasTopupStore,
+            rpc,
+            signer: makeBaseSepoliaMegapotV2PrivateKeySigner({
+              privateKey: gasTopupPrivateKey,
+              expectedAddress: activeSigner,
+            }),
+            requiredConfirmations: options.requiredConfirmations,
+            gasLimitMultiplierBps: options.gasLimitMultiplierBps,
+            nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
+          });
+          return {
+            listOpen: (limit) => gasTopupStore.listOpen(limit),
+            send: (topupId) => gasTopup.send(topupId),
+          };
+        },
+      });
+      gasTopups = resolved.runtime;
+      if (resolved.signerMismatch) {
         yield* collector.emit({
           key: "megapot-rewards:gas-topup-signer-mismatch",
           severity: "high",

@@ -65,6 +65,25 @@ CREATE TRIGGER reward_gas_topup_wallets_guard
   BEFORE INSERT OR UPDATE OR DELETE ON reward_gas_topup_wallets
   FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup_wallet();
 
+-- The same separation in the other order: a custody address may never be a
+-- registered gas wallet signer, active or retired. Named to fire before the
+-- attestation change guard so its refusal is the one reported.
+CREATE FUNCTION guard_megapot_custody_not_gas_wallet() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM reward_gas_topup_wallets wallet
+     WHERE wallet.signer_address = lower(NEW.custody_address)
+  ) THEN
+    RAISE EXCEPTION 'a Megapot custody address cannot be a reward gas top-up wallet';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER megapot_attestation_custody_not_gas_wallet
+  BEFORE INSERT OR UPDATE OF custody_address ON megapot_deployment_attestations
+  FOR EACH ROW EXECUTE FUNCTION guard_megapot_custody_not_gas_wallet();
+
 -- A gas_topup chain effect may only be signed by the chain's active gas
 -- wallet, never by custody or any other signer.
 CREATE FUNCTION guard_reward_gas_topup_effect_signer() RETURNS trigger
@@ -143,6 +162,9 @@ CREATE TABLE reward_gas_topups (
   ),
   CONSTRAINT reward_gas_topup_time_order CHECK (updated_at >= created_at)
 );
+-- Gas to move one payout: at most one unreleased top-up per credit, ever.
+CREATE UNIQUE INDEX reward_gas_topup_credit_open_uidx
+  ON reward_gas_topups (credit_id) WHERE status <> 'released';
 CREATE INDEX reward_gas_topup_account_day_idx
   ON reward_gas_topups (account_id, budget_day);
 CREATE INDEX reward_gas_topup_work_idx
@@ -163,18 +185,44 @@ BEGIN
     IF NEW.status <> 'requested' OR NEW.effect_id IS NOT NULL THEN
       RAISE EXCEPTION 'a reward gas top-up must begin requested without an effect';
     END IF;
+    -- The recipient is the wallet that received the credit's confirmed USDC payout.
+    IF NOT EXISTS (
+      SELECT 1
+        FROM reward_payout_effects payout
+        JOIN reward_chain_effects payout_effect
+          ON payout_effect.effect_id = payout.payout_effect_id
+         AND payout_effect.state = 'confirmed'
+        JOIN reward_erc20_transfer_receipt_evidence evidence
+          ON evidence.effect_id = payout.payout_effect_id
+         AND evidence.transfer_purpose = 'reward_payout'
+       WHERE payout.credit_id = NEW.credit_id
+         AND payout.account_id = NEW.account_id
+         AND payout.payout_persona_id = NEW.persona_id
+         AND payout.destination_address = NEW.recipient_address
+         AND payout.wallet_assignment_id = NEW.wallet_assignment_id
+         AND evidence.recipient_address = NEW.recipient_address
+    ) THEN
+      RAISE EXCEPTION 'a reward gas top-up must target the confirmed payout wallet';
+    END IF;
     RETURN NEW;
   END IF;
   IF ROW(
     NEW.topup_id, NEW.account_id, NEW.persona_id, NEW.credit_id, NEW.wallet_assignment_id,
     NEW.recipient_address, NEW.chain_id, NEW.balance_before_wei, NEW.target_balance_wei,
-    NEW.amount_wei, NEW.budget_day, NEW.idempotency_key, NEW.created_at
+    NEW.budget_day, NEW.idempotency_key, NEW.created_at
   ) IS DISTINCT FROM ROW(
     OLD.topup_id, OLD.account_id, OLD.persona_id, OLD.credit_id, OLD.wallet_assignment_id,
     OLD.recipient_address, OLD.chain_id, OLD.balance_before_wei, OLD.target_balance_wei,
-    OLD.amount_wei, OLD.budget_day, OLD.idempotency_key, OLD.created_at
+    OLD.budget_day, OLD.idempotency_key, OLD.created_at
   ) THEN
     RAISE EXCEPTION 'reward gas top-up identity is immutable';
+  END IF;
+  -- The amount may only shrink, and only before a chain effect exists.
+  IF NEW.amount_wei <> OLD.amount_wei AND (
+    NEW.amount_wei > OLD.amount_wei OR OLD.status <> 'requested' OR NEW.status <> 'requested'
+    OR OLD.effect_id IS NOT NULL OR NEW.effect_id IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'a reward gas top-up amount may only shrink before it is sent';
   END IF;
   IF OLD.effect_id IS NOT NULL AND NEW.effect_id IS DISTINCT FROM OLD.effect_id THEN
     RAISE EXCEPTION 'a reward gas top-up effect binding is immutable';
@@ -220,6 +268,41 @@ $$;
 CREATE TRIGGER reward_gas_topups_guard
   BEFORE INSERT OR UPDATE OR DELETE ON reward_gas_topups
   FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup();
+
+-- A gas_topup effect that fails terminally releases its top-up and returns
+-- the reserved budget in the same transaction.
+CREATE FUNCTION release_reward_gas_topup_on_terminal_effect() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  topup reward_gas_topups%ROWTYPE;
+BEGIN
+  SELECT * INTO topup FROM reward_gas_topups
+   WHERE effect_id = NEW.effect_id AND status IN ('requested', 'broadcast')
+   FOR UPDATE;
+  IF topup.topup_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  UPDATE reward_gas_topups
+     SET status = 'released', release_reason = 'effect_' || NEW.state,
+         released_at = clock_timestamp(), updated_at = clock_timestamp()
+   WHERE topup_id = topup.topup_id;
+  UPDATE reward_gas_topup_daily_budgets
+     SET reserved_wei = reserved_wei - topup.amount_wei, updated_at = clock_timestamp()
+   WHERE chain_id = topup.chain_id AND budget_day = topup.budget_day
+     AND reserved_wei >= topup.amount_wei;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward gas top-up budget reservation is missing';
+  END IF;
+  RETURN NULL;
+END
+$$;
+CREATE TRIGGER reward_chain_effects_gas_topup_terminal_release
+  AFTER UPDATE OF state ON reward_chain_effects
+  FOR EACH ROW
+  WHEN (NEW.effect_kind = 'gas_topup'
+    AND NEW.state IN ('terminal_failed', 'reclaimable_failed')
+    AND OLD.state IS DISTINCT FROM NEW.state)
+  EXECUTE FUNCTION release_reward_gas_topup_on_terminal_effect();
 
 -- Confirmed native value-transfer evidence. The receipt carries no value, so
 -- the amount is the signed transaction's value, bound by its hash.
