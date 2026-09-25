@@ -206,6 +206,9 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     allowedNames: [
       ...OPERATOR_SECRET_NAMES,
       "MEGAPOT_REFERRER_PRIVATE_KEY",
+      // Optional staging gas-wallet custody for the operator-run rollout guard.
+      // This name is never synchronized from Infisical to a Worker automatically.
+      "GAS_TOPUP_KEY",
       ...STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_SPACES_VERIFIER_OPERATOR_SECRET_NAMES,

@@ -29,6 +29,30 @@ const emptySnapshot = (environment: InfisicalSnapshot["environment"]): Infisical
 });
 
 describe("Infisical secret drift audit", () => {
+  test("admits the optional gas signer only in staging operator custody", () => {
+    const name = "GAS_TOPUP_KEY";
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+        const snapshot = { ...base, secrets: { ...base.secrets, [path]: [name] } };
+        const violations = auditInfisicalSnapshots([snapshot]).violations.filter(
+          (violation) => violation.name === name,
+        );
+        expect(violations).toEqual(
+          environment === "staging" && path === "/services/api-next/operator"
+            ? []
+            : [{ environment, path, kind: "unexpected-secret", name }],
+        );
+      }
+    }
+    const policy = INFISICAL_POLICIES.find(
+      ({ environment, path }) =>
+        environment === "staging" && path === "/services/api-next/operator",
+    );
+    expect(policy?.allowedNames).toContain(name);
+    expect(policy?.requiredNames).not.toContain(name);
+  });
+
   test("extracts names and folder paths without exposing secret values", () => {
     expect(
       parseInfisicalSecretNames({

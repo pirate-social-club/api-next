@@ -266,6 +266,17 @@ configuration must be reintroduced deliberately.
   CONTROL_PLANE_POSTGRES_RUNTIME_URL
 ```
 
+For the staging Megapot gas top-up rollout, `/services/api-next/operator` may
+also hold the optional `GAS_TOPUP_KEY`. It is the private key of a new gas
+wallet, separate from Megapot custody. The operator-only rollout guard reads
+it to check the public address during wallet registration and sends it on
+standard input to a versioned Cloudflare secret upload for the staging jobs
+Worker as `MEGAPOT_GAS_TOPUP_PRIVATE_KEY`. Infisical does not synchronize this
+operator value to any Worker automatically. The key is absent until a separate
+operator ceremony creates it; this inventory rule authorizes no key creation,
+wallet funding, Worker upload, or rewards activation. Development, production,
+and the shared staging runtime path do not admit `GAS_TOPUP_KEY`.
+
 ### Disabled HNS community API activation boundary — 2026-08-26
 
 The HTTP Worker now declares one future confidential binding name,
