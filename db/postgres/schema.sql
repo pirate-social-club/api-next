@@ -39143,6 +39143,8 @@ CREATE INDEX dance_reference_processing_attempts_lease_idx ON dance_reference_pr
 
 CREATE UNIQUE INDEX dance_replay_fingerprint_platform_unique ON dance_replay_fingerprint_claims USING btree (fingerprint_policy_version, fingerprint_key_version, match_scope, whole_sequence_fingerprint) WHERE (match_scope = 'platform_wide'::text);
 
+CREATE INDEX dance_sessions_created_at ON dance_sessions USING btree (created_at);
+
 CREATE UNIQUE INDEX dance_sessions_one_nonterminal_per_revision ON dance_sessions USING btree (account_id, choreography_id, choreography_revision) WHERE (state = ANY (ARRAY['created'::text, 'consented'::text, 'awaiting_upload'::text, 'uploaded'::text, 'grading_pending'::text]));
 
 CREATE INDEX dance_song_segments_song_idx ON dance_song_segments USING btree (community_id, song_post_id, audio_revision, created_at, segment_id);
@@ -39234,6 +39236,8 @@ CREATE INDEX karaoke_recordings_pending_recovery_idx ON karaoke_recordings USING
 CREATE INDEX karaoke_sessions_account_created_idx ON karaoke_sessions USING btree (account_id, created_at DESC, session_id);
 
 CREATE INDEX karaoke_sessions_active_expiry_recovery_idx ON karaoke_sessions USING btree (expires_at, session_id) WHERE (status = 'active'::text);
+
+CREATE INDEX karaoke_sessions_created_at ON karaoke_sessions USING btree (created_at);
 
 CREATE INDEX karaoke_sessions_live_account_idx ON karaoke_sessions USING btree (account_id, expires_at) WHERE (status = 'active'::text);
 
@@ -39452,6 +39456,10 @@ CREATE INDEX study_lesson_item_state_queue_idx ON study_lesson_item_state_v2 USI
 CREATE INDEX study_review_items_due_selection_idx ON study_review_items USING btree (account_id, post_id, exercise_kind, lifecycle_status, due_at, created_at);
 
 CREATE INDEX study_sessions_account_created_idx ON study_sessions USING btree (account_id, created_at DESC, session_id);
+
+CREATE INDEX study_sessions_created_at ON study_sessions USING btree (created_at);
+
+CREATE INDEX study_sessions_v2_created_at ON study_sessions_v2 USING btree (created_at);
 
 CREATE INDEX study_spoken_answer_commands_live_account_idx ON study_spoken_answer_commands USING btree (account_id, lease_expires_at) WHERE (state = 'reserved'::text);
 
