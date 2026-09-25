@@ -10,6 +10,8 @@ import {
   type PublicSongAssetBonusProjection,
   type PublicSongMegapotPoolProjection,
   type RewardCredit,
+  type RewardCreditClaim,
+  type RewardCreditClaimOutcome,
   type RewardCreditState,
   RewardProjectionRejected,
   RewardProjectionStorageFailed,
@@ -362,6 +364,81 @@ function standingFromRow(row: Row): MegapotPoolStanding {
   };
 }
 
+const claimStatuses = new Set(["unclaimed", "accepted", "subject_conflict"]);
+const payoutStatuses = new Set([
+  "pending",
+  "recipient_pending",
+  "submitted",
+  "confirmed",
+  "failed_retrying",
+]);
+const claimOutcomes = new Set<RewardCreditClaimOutcome>([
+  "accepted",
+  "subject_conflict",
+  "verification_missing",
+  "verification_stale",
+  "verification_failed",
+  "not_claimable",
+]);
+
+// Spec 015 §5.2a: claim and payout status derive from existing rows. The
+// wallet lateral mirrors the payout candidate's recipient resolution.
+const CREDIT_SELECT = `
+  SELECT credit.credit_id, credit.payout_persona_id, credit.chain_id,
+         credit.token_address, asset.decimals AS token_decimals,
+         credit.amount_atomic, credit.reserved_atomic, credit.paid_atomic,
+         credit.source_kind, credit.state, credit.created_at,
+         credit.updated_at, credit.settled_at,
+         CASE WHEN credit.source_kind <> 'megapot_allocation' THEN NULL
+              ELSE COALESCE(claim.status, 'unclaimed') END AS claim_status,
+         CASE WHEN credit.source_kind <> 'megapot_allocation'
+                OR claim.status IS DISTINCT FROM 'accepted' THEN NULL
+              WHEN credit.state = 'sent' THEN 'confirmed'
+              WHEN credit.state = 'payout_pending' THEN 'submitted'
+              WHEN credit.state = 'payout_reserved' THEN 'pending'
+              WHEN credit.state = 'reconciliation_required' THEN 'failed_retrying'
+              WHEN wallet.assignment_id IS NULL THEN 'recipient_pending'
+              WHEN EXISTS (
+                SELECT 1 FROM reward_payout_effects payout
+                  JOIN reward_chain_effects effect ON effect.effect_id = payout.payout_effect_id
+                 WHERE payout.credit_id = credit.credit_id
+                   AND effect.state IN ('reverted','replaced','reclaimable_failed','terminal_failed')
+              ) THEN 'failed_retrying'
+              ELSE 'pending' END AS payout_status
+    FROM reward_ledger_credits credit
+    JOIN reward_asset_whitelist asset
+      ON asset.chain_id=credit.chain_id
+     AND asset.token_address=credit.token_address
+    LEFT JOIN megapot_participant_claims claim ON claim.credit_id = credit.credit_id
+    LEFT JOIN LATERAL (
+      SELECT assignment_id
+        FROM persona_wallet_assignments
+       WHERE account_id=credit.account_id
+         AND persona_id=credit.payout_persona_id
+         AND chain_account_kind='evm' AND status='active'
+       ORDER BY assigned_at, assignment_id LIMIT 1
+    ) wallet ON true`;
+
+function creditClaimFromRow(row: Row): RewardCreditClaim | null {
+  const status = nullableText(row, "claim_status");
+  const payoutStatus = nullableText(row, "payout_status");
+  if (status === null) {
+    if (payoutStatus !== null) throw new Error("invalid reward credit claim row");
+    return null;
+  }
+  if (
+    !claimStatuses.has(status) ||
+    (payoutStatus !== null && !payoutStatuses.has(payoutStatus)) ||
+    (status === "accepted") !== (payoutStatus !== null)
+  ) {
+    throw new Error("invalid reward credit claim row");
+  }
+  return {
+    status: status as RewardCreditClaim["status"],
+    payoutStatus: payoutStatus as RewardCreditClaim["payoutStatus"],
+  };
+}
+
 function rewardCreditFromRow(row: Row): RewardCredit {
   const state = text(row, "state") as RewardCreditState;
   const sourceKind = text(row, "source_kind");
@@ -385,6 +462,7 @@ function rewardCreditFromRow(row: Row): RewardCredit {
     createdAt: iso(row, "created_at"),
     updatedAt: iso(row, "updated_at"),
     settledAt: nullableIso(row, "settled_at"),
+    claim: creditClaimFromRow(row),
   };
 }
 
@@ -688,15 +766,7 @@ export function makeControlPlaneRewardProjectionRepository() {
           }
           const result = yield* db.execute<Row>({
             label: "reward-projection.credits.read",
-            text: `SELECT credit.credit_id, credit.payout_persona_id, credit.chain_id,
-                          credit.token_address, asset.decimals AS token_decimals,
-                          credit.amount_atomic, credit.reserved_atomic, credit.paid_atomic,
-                          credit.source_kind, credit.state, credit.created_at,
-                          credit.updated_at, credit.settled_at
-                     FROM reward_ledger_credits credit
-                     JOIN reward_asset_whitelist asset
-                       ON asset.chain_id=credit.chain_id
-                      AND asset.token_address=credit.token_address
+            text: `${CREDIT_SELECT}
                     WHERE credit.account_id=$1
                       AND ($2::timestamptz IS NULL OR
                         (credit.created_at,credit.credit_id) < ($2::timestamptz,$3::text))
@@ -716,6 +786,38 @@ export function makeControlPlaneRewardProjectionRepository() {
           };
         }),
       ),
+
+    claimCredit: (input: Parameters<RewardProjectionStore["claimCredit"]>[0]) =>
+      mapped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const claimed = yield* db.execute<Row>({
+            label: "reward-projection.credit-claim.write",
+            text: "SELECT outcome FROM accept_megapot_participant_claim_v1($1,$2)",
+            values: [input.creditId, input.accountId],
+            readonly: false,
+          });
+          if (claimed.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
+          const outcome = nullableText(claimed.rows[0] as Row, "outcome");
+          if (outcome === "not_found") return yield* rejected("not-found");
+          if (outcome === null || !claimOutcomes.has(outcome as RewardCreditClaimOutcome)) {
+            return yield* Effect.fail(storage("invalid-row"));
+          }
+          const read = yield* db.execute<Row>({
+            label: "reward-projection.credit.read",
+            text: `${CREDIT_SELECT}
+                    WHERE credit.account_id=$1 AND credit.credit_id=$2`,
+            values: [input.accountId, input.creditId],
+            readonly: true,
+          });
+          if (read.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
+          const credit = yield* Effect.try({
+            try: () => rewardCreditFromRow(read.rows[0] as Row),
+            catch: () => storage("invalid-row"),
+          });
+          return { outcome: outcome as RewardCreditClaimOutcome, credit };
+        }),
+      ),
   };
 }
 
@@ -730,5 +832,6 @@ export function makeControlPlaneRewardProjectionStore(
     listPublicSongAssetBonuses: (input) => provide(repository.listPublicSongAssetBonuses(input)),
     findStanding: (input) => provide(repository.findStanding(input)),
     listCredits: (input) => provide(repository.listCredits(input)),
+    claimCredit: (input) => provide(repository.claimCredit(input)),
   };
 }
