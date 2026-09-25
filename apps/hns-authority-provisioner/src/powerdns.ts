@@ -68,6 +68,11 @@ async function withExchangeDeadline<T>(exchange: (signal: AbortSignal) => Promis
     return await Promise.race([exchange(controller.signal), deadline]);
   } finally {
     clearTimeout(timer);
+    // Clearing the timer removed the only other abort. An exchange that
+    // failed before reading its body (an error status, or a body over the
+    // limit) would otherwise leave that response holding a pooled socket.
+    // After a completed read this does nothing.
+    controller.abort();
   }
 }
 

@@ -27,6 +27,15 @@ import {
  * Guarded re-seed of the synthetic cutover readiness probe for a new staging
  * provisioner release.
  *
+ * Operator preconditions:
+ * - Stop the previous provisioner release before re-seeding, and keep it
+ *   stopped until the new release has started. The queued probe job belongs
+ *   to no attempt, so a previous release that restarts in between takes it,
+ *   records its own attempt as ready, and the new release then fails with
+ *   attempt_mismatch.
+ * - A failed attempt id is burned. Reconciling a failed attempt_mismatch
+ *   admits only a fresh manifest attempt_id, never the failed one.
+ *
  * Past the schema cutover a release serves only after its own attempt
  * completes the probe, and a completed probe never satisfies a different
  * attempt. The first-seed command admits only the never-seeded state, so a

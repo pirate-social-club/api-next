@@ -320,6 +320,26 @@ describe("PowerDNS managed HNS root rrsets", () => {
     expect(signal?.aborted).toBe(true);
   }, 10_000);
 
+  test("an exchange that fails before reading its body releases it at once", async () => {
+    let signal: AbortSignal | undefined;
+    const teardown = makePowerDnsRootTeardown(
+      {
+        api_url: "http://powerdns.test:8081",
+        api_key: "secret-not-logged",
+        server_id: "localhost",
+      },
+      async (_url, init) => {
+        signal = init?.signal ?? undefined;
+        // A body over the read limit is refused before it is consumed.
+        return new Response(new Uint8Array(1_048_577), { status: 200 });
+      },
+    );
+    const started = Date.now();
+    await expect(teardown({ root_label: "newroot" })).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(signal?.aborted).toBe(true);
+  });
+
   test("a zone still present after the delete is an ambiguous teardown, not a completed one", async () => {
     // Quota is released on a completed teardown, so a 2xx that did not
     // actually remove the zone must not be reported as success: the
