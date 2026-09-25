@@ -6,6 +6,7 @@ import {
   type NamespaceOwnershipProviderFailure,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderMisconfigured,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnboundRejected,
   NamespaceOwnershipProviderUnsupportedProtocol,
@@ -74,6 +75,11 @@ export type RouteAttachmentCompletionReservation = Readonly<{
   readonly fence_token: number;
   readonly evidence_ref: string;
   readonly lease_expires_at: string;
+  /**
+   * Whether this attempt already counted toward the budget before this lease.
+   * A counted attempt is never refunded by a not-attempted release.
+   */
+  readonly counted_before: boolean;
 }>;
 
 export type RouteAttachmentCompletionReservationOutcome =
@@ -232,10 +238,15 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
     }
     const provider = yield* services.registry.resolve(stored.session.route.family);
     const importWindow = stored.import_publication;
-    if (importWindow !== null && (!importWindow.window_open || importWindow.valid_until === null)) {
+    if (
+      importWindow !== null &&
+      (!importWindow.window_open ||
+        importWindow.valid_until === null ||
+        Date.parse(importWindow.valid_until) <= Date.now())
+    ) {
       return yield* new RouteAttachmentCompletionRejected({
         reason: "publication_window_closed",
-        window_reason: importWindow.reason,
+        window_reason: importWindow.window_open ? "deadline_passed" : importWindow.reason,
       });
     }
     if (
@@ -244,11 +255,20 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
     ) {
       return yield* new RouteAttachmentCompletionRejected({ reason: "provider_unavailable" });
     }
-    // An exposed import is polled only under hns-txt-import-v1. When the
-    // pinned provider entry does not advertise it, no attempt is reserved, so
-    // the three-attempt budget is untouched while a verifier catches up.
+    // An exposed import is polled under hns-txt-import-v1 when the pinned
+    // provider entry advertises it. Without it, a challenge still inside its
+    // own hour keeps the unchanged hns-txt-v1 poll; past that hour no attempt
+    // is reserved, so the three-attempt budget is untouched while a verifier
+    // catches up.
     const completeImport = provider.completeRouteAttachmentImport;
-    if (importWindow !== null && completeImport === undefined) {
+    const useImport = importWindow !== null && completeImport !== undefined;
+    if (
+      importWindow !== null &&
+      !useImport &&
+      (provider.completeRouteAttachment === undefined ||
+        Date.parse(stored.session.expires_at) <= Date.now())
+    ) {
+      yield* Effect.logWarning("hns-txt-import-v1 is not advertised; import check deferred");
       return response(
         stored,
         "unavailable",
@@ -323,7 +343,7 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
       NamespaceOwnershipProviderCompleteResult,
       NamespaceOwnershipProviderFailure | RouteAttachmentCompletionRejected
     > =
-      importWindow !== null && completeImport !== undefined
+      useImport && importWindow !== null && completeImport !== undefined
         ? completeImport(
             {
               session: stored.session,
@@ -346,10 +366,11 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
       Effect.matchEffect({
         onSuccess: (value) => Effect.succeed({ kind: "observed" as const, value }),
         onFailure: (error) =>
-          error instanceof NamespaceOwnershipProviderUnsupportedProtocol
-            ? // The verifier could not answer this protocol, so nothing was
-              // observed. The reservation is released as not attempted and
-              // does not count toward MAX_ATTEMPTS.
+          error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+          error instanceof NamespaceOwnershipProviderPublicationClosed
+            ? // Nothing about the owner's proof was judged: the verifier could
+              // not answer the protocol, or found the window closed. The
+              // reservation is released as not attempted.
               services.store
                 .release({
                   request: input,
@@ -357,7 +378,13 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
                   reservation,
                   not_attempted: true,
                 })
-                .pipe(Effect.as({ kind: "unsupported" as const }))
+                .pipe(
+                  Effect.as(
+                    error instanceof NamespaceOwnershipProviderPublicationClosed
+                      ? { kind: "window_closed" as const }
+                      : { kind: "unsupported" as const },
+                  ),
+                )
             : services.store
                 .release({
                   request: input,
@@ -381,7 +408,14 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
                 ),
       }),
     );
+    if (attempted.kind === "window_closed") {
+      return yield* new RouteAttachmentCompletionRejected({
+        reason: "publication_window_closed",
+        window_reason: "verifier_denied",
+      });
+    }
     if (attempted.kind === "unsupported") {
+      yield* Effect.logWarning("verifier did not answer hns-txt-import-v1; import check deferred");
       return response(
         stored,
         "unavailable",

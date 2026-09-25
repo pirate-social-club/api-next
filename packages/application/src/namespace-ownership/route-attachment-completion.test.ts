@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import {
   type NamespaceOwnershipProviderAdapter,
   type NamespaceOwnershipProviderCompleteResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnsupportedProtocol,
@@ -62,6 +63,7 @@ const reservation = {
   fence_token: 1,
   evidence_ref: "evidence-1",
   lease_expires_at: "2026-09-04T10:00:16.000Z",
+  counted_before: false,
 };
 
 function provider(
@@ -244,7 +246,7 @@ describe("hns-txt-import-v1 completion for an exposed import", () => {
     challenge_value_sha256: "8".repeat(64),
     window_open: true,
     reason: "open",
-    valid_until: "2026-09-18T10:00:00.000Z",
+    valid_until: "2099-09-18T10:00:00.000Z",
   };
   // The hns-txt-v1 session is past its own one-hour clock.
   const exposed = {
@@ -351,6 +353,35 @@ describe("hns-txt-import-v1 completion for an exposed import", () => {
     expect(releases).toEqual([true]);
   });
 
+  test("a window the verifier finds closed is released as not attempted and refused", async () => {
+    const releases: unknown[] = [];
+    await expect(
+      Effect.runPromise(
+        completeRouteAttachmentOwnership(
+          input,
+          await importServices(
+            () =>
+              Effect.fail(
+                new NamespaceOwnershipProviderPublicationClosed({
+                  provider_id: "hns.owner.v1",
+                  operation: "complete",
+                }),
+              ),
+            store({
+              load: () => Effect.succeed(exposed),
+              release: (value) =>
+                Effect.sync(() => releases.push(value.not_attempted)).pipe(Effect.as("released")),
+            }),
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      reason: "publication_window_closed",
+      window_reason: "verifier_denied",
+    });
+    expect(releases).toEqual([true]);
+  });
+
   test("the import method receives the database window, not the session clock", async () => {
     let binding: unknown;
     const result = await Effect.runPromise(
@@ -372,7 +403,7 @@ describe("hns-txt-import-v1 completion for an exposed import", () => {
       root_label: "dankmemes",
       publish_plan_sha256: "7".repeat(64),
       challenge_value_sha256: "8".repeat(64),
-      valid_until: "2026-09-18T10:00:00.000Z",
+      valid_until: "2099-09-18T10:00:00.000Z",
     });
   });
 });

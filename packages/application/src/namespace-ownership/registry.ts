@@ -13,6 +13,7 @@ import {
   type NamespaceOwnershipProviderOperation,
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderStartContext,
   NamespaceOwnershipProviderStartInput,
@@ -91,7 +92,8 @@ function safeFailure(
       error instanceof NamespaceOwnershipProviderObservationRejected ||
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
       error instanceof NamespaceOwnershipProviderMisconfigured ||
-      error instanceof NamespaceOwnershipProviderUnsupportedProtocol) &&
+      error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+      error instanceof NamespaceOwnershipProviderPublicationClosed) &&
     error.provider_id === provider_id &&
     error.operation === operation
   ) {
@@ -303,10 +305,17 @@ function guardRouteAttachmentImportComplete(
       !inputSupported(manifest, input.value.session) ||
       !manifest.protocol_versions.includes(input.value.session.protocol_version) ||
       input.value.binding.root_label !== input.value.session.route.root_label ||
-      Date.parse(input.value.binding.valid_until) <= now() ||
       !manifest.submission_channels.includes(input.value.submission.channel)
     ) {
       return Effect.fail(unboundRejected(manifest.provider_id, "complete"));
+    }
+    if (Date.parse(input.value.binding.valid_until) <= now()) {
+      return Effect.fail(
+        new NamespaceOwnershipProviderPublicationClosed({
+          provider_id: manifest.provider_id,
+          operation: "complete",
+        }),
+      );
     }
     return Effect.suspend(() => complete(input.value, context.value)).pipe(
       Effect.timeout(manifest.operation_deadlines.complete_ms),

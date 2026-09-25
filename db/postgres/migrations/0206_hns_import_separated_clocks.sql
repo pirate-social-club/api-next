@@ -39,17 +39,25 @@ CREATE FUNCTION hns_root_import_plan_exposed_v1(input_session_id text) RETURNS b
   )
 $$;
 
--- The pre-exposure clock. Once a community import has exposed its plan, no
--- session expiry passes for it: the lifecycle and its retention rules govern.
-CREATE FUNCTION hns_root_import_pre_exposure_clock_passed_v1(
+-- Whether a session's governing clock has released it. Before plan exposure
+-- that is the session's own bound. Once a community import has exposed its
+-- plan, no clock releases it: only a terminal lifecycle decision does, and the
+-- retention rules then govern its provider resources.
+CREATE FUNCTION hns_root_import_session_clock_passed_v1(
   input_session_id text,
   input_expires_at timestamp with time zone,
   input_now timestamp with time zone
 ) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
-  SELECT NOT hns_root_import_plan_exposed_v1(input_session_id)
-     AND input_expires_at <= input_now
+  SELECT CASE
+    WHEN hns_root_import_plan_exposed_v1(input_session_id) THEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.root_import_session_id = input_session_id
+         AND lifecycle.phase = 'failed'
+    )
+    ELSE input_expires_at <= input_now
+  END
 $$;
 
 -- Immutable authority for polling an exposed plan under hns-txt-import-v1. It
@@ -112,6 +120,9 @@ BEGIN
   THEN
     RETURN NEW;
   END IF;
+  -- A community plan exposed without consistent sources is a defect, not a
+  -- state to leave behind: refusing here aborts the exposing commit, so the
+  -- provisioner reports it instead of a plan sitting without authority.
   SELECT * INTO ownership FROM community_route_attachment_namespace_sessions
    WHERE namespace_session_id = session.namespace_session_id
      AND actor_id = session.actor_id
@@ -120,13 +131,13 @@ BEGIN
   IF NOT FOUND
     OR session.challenge_txt_value <> 'pirate-verification=' || ownership.upstream_session_ref
   THEN
-    RETURN NEW;
+    RAISE EXCEPTION 'HNS root-import plan exposure has no matching ownership challenge';
   END IF;
   SELECT job.publish_plan_sha256 INTO provision_plan_sha256
     FROM hns_authority_provision_jobs AS job
    WHERE job.provision_job_id = session.provision_job_id;
   IF provision_plan_sha256 IS DISTINCT FROM session.publish_plan_sha256 THEN
-    RETURN NEW;
+    RAISE EXCEPTION 'HNS root-import plan exposure does not match its provision job';
   END IF;
   INSERT INTO hns_root_import_publication_authorizations (
     root_import_session_id, authority_generation, actor_id, community_id, root_label,
@@ -516,6 +527,65 @@ BEGIN
 END;
 $$;
 
+-- Holds an exposed community import for operator recovery, with authority
+-- retained and no provider action: a recovery finding naming the reason, then
+-- the lifecycle transition, through the existing writers. It is the path for
+-- pre-repair plans (this migration) and for an exhausted ownership check.
+-- Outcomes: held, already_held, not_holdable.
+CREATE FUNCTION hold_hns_root_import_for_recovery_v1(
+  input_session_id text,
+  input_reason text,
+  input_evidence_ref text
+) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+#variable_conflict use_column
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding record;
+  decision record;
+BEGIN
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND OR lifecycle.plan_exposed_at IS NULL
+    OR lifecycle.phase IN ('failed', 'activated', 'preparing')
+  THEN
+    RETURN 'not_holdable';
+  END IF;
+  SELECT * INTO finding FROM record_hns_root_import_recovery_finding_v1(
+    input_session_id, lifecycle.generation, input_evidence_ref,
+    'insufficient_evidence', input_reason, NULL, NULL, NULL, NULL,
+    lifecycle.plan_encoded_resource_sha256, NULL, NULL, NULL, NULL
+  );
+  IF finding.outcome NOT IN ('recorded', 'replayed') THEN
+    RAISE EXCEPTION 'HNS recovery finding was refused: %', finding.outcome;
+  END IF;
+  IF lifecycle.phase = 'recovery_required' THEN
+    RETURN 'already_held';
+  END IF;
+  SELECT * INTO decision FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id, lifecycle.revision,
+    'recovery_hold:' || input_evidence_ref, 'recovery_hold', 'transition',
+    input_reason || '_authority_retained', 'recovery_required',
+    jsonb_strip_nulls(jsonb_build_object(
+      'pending_reason', input_reason,
+      'next_check_at', lifecycle.next_check_at,
+      'observation_count', lifecycle.observation_count,
+      'consecutive_operational_failures', lifecycle.consecutive_operational_failures,
+      'last_useful_error', lifecycle.last_useful_error,
+      'last_useful_error_at', lifecycle.last_useful_error_at,
+      'terminal_decided_at', lifecycle.terminal_decided_at
+    )),
+    '[]'::jsonb
+  );
+  IF decision.outcome NOT IN ('transition', 'replay') THEN
+    RAISE EXCEPTION 'HNS recovery hold was refused: %', decision.outcome;
+  END IF;
+  RETURN 'held';
+END;
+$$;
+
 -- An ownership check that never reached a verifier able to answer it is
 -- recorded as not attempted and does not count toward the three-attempt
 -- completion budget.
@@ -693,7 +763,7 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'provisioning'
-     AND hns_root_import_pre_exposure_clock_passed_v1(
+     AND hns_root_import_session_clock_passed_v1(
            stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
@@ -708,7 +778,7 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'observing'
-     AND hns_root_import_pre_exposure_clock_passed_v1(
+     AND hns_root_import_session_clock_passed_v1(
            stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
@@ -720,7 +790,7 @@ BEGIN
          updated_at = database_now
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
-     AND hns_root_import_pre_exposure_clock_passed_v1(
+     AND hns_root_import_session_clock_passed_v1(
            stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND (
        stale_session.status IN ('awaiting_owner_update', 'ready')
@@ -991,7 +1061,7 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'provisioning'
-     AND hns_root_import_pre_exposure_clock_passed_v1(
+     AND hns_root_import_session_clock_passed_v1(
            stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
@@ -1006,7 +1076,7 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'observing'
-     AND hns_root_import_pre_exposure_clock_passed_v1(
+     AND hns_root_import_session_clock_passed_v1(
            stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
@@ -1018,7 +1088,7 @@ BEGIN
          updated_at = database_now
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
-     AND hns_root_import_pre_exposure_clock_passed_v1(
+     AND hns_root_import_session_clock_passed_v1(
            stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND (
        stale_session.status IN ('awaiting_owner_update', 'ready')
@@ -1303,7 +1373,7 @@ BEGIN
   IF admitted_kind = 'observation' THEN
     RETURN retained_session.status='observing'
       AND retained_session.observation_job_id=input_job_id
-      AND NOT hns_root_import_pre_exposure_clock_passed_v1(
+      AND NOT hns_root_import_session_clock_passed_v1(
         retained_session.root_import_session_id, retained_session.expires_at, clock_timestamp());
   END IF;
   RETURN retained_session.status='provisioning'
@@ -1320,7 +1390,7 @@ CREATE OR REPLACE FUNCTION hns_community_root_import_reservation_held_v1(input_s
     SELECT CASE
       WHEN session.status = 'activated' THEN FALSE
       WHEN teardown.state = 'completed' THEN FALSE
-      WHEN NOT hns_root_import_pre_exposure_clock_passed_v1(preparation.root_import_session_id,
+      WHEN NOT hns_root_import_session_clock_passed_v1(preparation.root_import_session_id,
         COALESCE(session.expires_at, preparation.expires_at), clock_timestamp()) THEN TRUE
       WHEN job.provision_job_id IS NULL OR job.attempt_count = 0 THEN FALSE
       ELSE TRUE
@@ -1345,7 +1415,7 @@ CREATE OR REPLACE FUNCTION hns_community_root_import_consumes_actor_budget_v1(in
       WHEN provision.state = 'completed'
         AND convert_from(provision.result_bytes, 'UTF8')::jsonb @> '{"zone_created":false}'::jsonb
       THEN FALSE
-      WHEN hns_root_import_pre_exposure_clock_passed_v1(preparation.root_import_session_id,
+      WHEN hns_root_import_session_clock_passed_v1(preparation.root_import_session_id,
         COALESCE(session.expires_at, preparation.expires_at), clock_timestamp())
         AND NOT hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)
       THEN FALSE
@@ -1367,7 +1437,7 @@ DECLARE
 BEGIN
   FOREACH signature IN ARRAY ARRAY[
     'hns_root_import_plan_exposed_v1(text)',
-    'hns_root_import_pre_exposure_clock_passed_v1(text,timestamp with time zone,timestamp with time zone)',
+    'hns_root_import_session_clock_passed_v1(text,timestamp with time zone,timestamp with time zone)',
     'reject_hns_root_import_publication_authorization_change_v1()',
     'record_hns_root_import_publication_authorization_v1()',
     'hns_root_import_publication_window_decision_v1(text)',
@@ -1377,6 +1447,7 @@ BEGIN
     'reject_hns_community_root_import_preparation_ceremony_change_v1()',
     'hns_community_root_import_current_ceremony_v1(text)',
     'renew_hns_community_root_import_challenge_v1(text,text,text,text,jsonb,text)',
+    'hold_hns_root_import_for_recovery_v1(text,text,text)',
     'guard_hns_root_import_session_insert()',
     'begin_hns_root_import_provision_v1(text,text,text,bigint,text,text,text,text,bytea,text)',
     'begin_hns_root_import_provision_v2(text,text,text,bigint,text,text,text,text,bytea,text,text,text,bytea,text)',
@@ -1397,6 +1468,7 @@ REVOKE ALL ON FUNCTION hns_root_import_publication_window_v1(TEXT, TEXT, TEXT) F
 REVOKE ALL ON FUNCTION authorize_hns_root_import_publication_poll_v1(
   TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hold_hns_root_import_for_recovery_v1(TEXT, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION renew_hns_community_root_import_challenge_v1(
   TEXT, TEXT, TEXT, TEXT, JSONB, TEXT
 ) FROM PUBLIC;
@@ -1408,7 +1480,9 @@ REVOKE ALL ON FUNCTION renew_hns_community_root_import_challenge_v1(
 DO $separated_clocks_privileges$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'api_next_app') THEN
+    EXECUTE 'GRANT EXECUTE ON FUNCTION hns_root_import_publication_window_decision_v1(text) TO api_next_app';
     EXECUTE 'GRANT EXECUTE ON FUNCTION hns_root_import_publication_window_open_v1(text) TO api_next_app';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION hold_hns_root_import_for_recovery_v1(text,text,text) TO api_next_app';
     EXECUTE 'GRANT EXECUTE ON FUNCTION hns_root_import_publication_window_v1(text,text,text) TO api_next_app';
     EXECUTE 'GRANT EXECUTE ON FUNCTION authorize_hns_root_import_publication_poll_v1(text,text,text,text,text,text,text) TO api_next_app';
     EXECUTE 'GRANT EXECUTE ON FUNCTION renew_hns_community_root_import_challenge_v1(text,text,text,text,jsonb,text) TO api_next_app';
@@ -1456,8 +1530,6 @@ DECLARE
   community_sessions bigint;
   inventoried bigint;
   held record;
-  decision record;
-  finding record;
 BEGIN
   EXECUTE format(
     'ALTER FUNCTION reject_hns_root_import_separated_clocks_inventory_change_v1() SET search_path TO %I, pg_temp',
@@ -1552,45 +1624,21 @@ BEGIN
    WHERE inventory.classification = 'authorization_backfill';
 
   -- Ambiguous or already expired pre-repair plans are held for recovery with
-  -- authority retained and no provider action, through the existing finding
-  -- and lifecycle decision writers.
+  -- authority retained and no provider action. The finding carries the
+  -- inventoried reason; a plan already held keeps its own finding.
   FOR held IN
-    SELECT lifecycle.*
+    SELECT inventory.root_import_session_id, inventory.reason
       FROM hns_root_import_separated_clocks_inventory AS inventory
-      JOIN hns_root_import_lifecycle AS lifecycle
-        ON lifecycle.root_import_session_id = inventory.root_import_session_id
      WHERE inventory.classification = 'recovery_required'
+       AND inventory.reason <> 'already_recovery_required'
      ORDER BY inventory.root_import_session_id
   LOOP
-    SELECT * INTO finding FROM record_hns_root_import_recovery_finding_v1(
-      held.root_import_session_id, held.generation,
-      'migration:0206_hns_import_separated_clocks:' || held.root_import_session_id,
-      'insufficient_evidence', 'pre_separated_clocks_challenge_expiry', NULL, NULL, NULL, NULL,
-      held.plan_encoded_resource_sha256, NULL, NULL, NULL, NULL
-    );
-    IF finding.outcome NOT IN ('recorded', 'replayed') THEN
-      RAISE EXCEPTION 'HNS separated-clocks recovery finding was refused: %', finding.outcome;
-    END IF;
-    IF held.phase <> 'recovery_required' THEN
-      SELECT * INTO decision FROM commit_hns_root_import_lifecycle_decision_v1(
-        held.root_import_session_id, held.revision,
-        'separated_clocks_migration:' || held.root_import_session_id,
-        'separated_clocks_migration', 'transition',
-        'pre_separated_clocks_challenge_expiry_authority_retained', 'recovery_required',
-        jsonb_strip_nulls(jsonb_build_object(
-          'pending_reason', 'pre_separated_clocks_challenge_expiry',
-          'next_check_at', held.next_check_at,
-          'observation_count', held.observation_count,
-          'consecutive_operational_failures', held.consecutive_operational_failures,
-          'last_useful_error', held.last_useful_error,
-          'last_useful_error_at', held.last_useful_error_at,
-          'terminal_decided_at', held.terminal_decided_at
-        )),
-        '[]'::jsonb
-      );
-      IF decision.outcome <> 'transition' THEN
-        RAISE EXCEPTION 'HNS separated-clocks recovery hold was refused: %', decision.outcome;
-      END IF;
+    IF hold_hns_root_import_for_recovery_v1(
+      held.root_import_session_id, held.reason,
+      'migration:0206_hns_import_separated_clocks:' || held.root_import_session_id
+    ) NOT IN ('held', 'already_held') THEN
+      RAISE EXCEPTION 'HNS separated-clocks recovery hold was refused for %',
+        held.root_import_session_id;
     END IF;
   END LOOP;
 END;

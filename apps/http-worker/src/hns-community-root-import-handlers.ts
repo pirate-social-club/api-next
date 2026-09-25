@@ -62,7 +62,8 @@ function wireFailure(error: unknown): Error {
     });
   if (tagged.reason === "ownership_check_exhausted")
     return new Conflict({
-      message: "The HNS ownership check was refused three times and cannot continue on its own.",
+      message:
+        "The HNS ownership check was refused three times. The import is held for operator recovery; once it is retired, a new import can start.",
       details: {
         reason: "ownership_check_attempts_exhausted",
         next_action: "operator_recovery",

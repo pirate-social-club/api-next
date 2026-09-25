@@ -129,12 +129,16 @@ export function makeHnsCommunityPublicationQueue(
           FROM due WHERE j.root_import_session_id=due.root_import_session_id RETURNING j.*
         ) SELECT j.actor_id,j.community_id,j.root_import_session_id,j.idempotency_key,
           j.expected_revision::integer,j.fence_token::integer AS fence,
+          -- An import that moved past acknowledgement is completed by the
+          -- continuation, not failed as a closed window.
           ((CASE WHEN hns_root_import_plan_exposed_v1(s.root_import_session_id)
-                 THEN hns_root_import_publication_window_open_v1(s.root_import_session_id)
+                 THEN s.status<>'awaiting_owner_update'
+                   OR hns_root_import_publication_window_open_v1(s.root_import_session_id)
                  ELSE s.expires_at>clock_timestamp() END)
             AND c.status='active' AND u.status='active'
             AND has_community_route_authority(j.community_id,j.actor_id)) AS authorized,
-          (hns_root_import_plan_exposed_v1(s.root_import_session_id)
+          (s.status='awaiting_owner_update'
+            AND hns_root_import_plan_exposed_v1(s.root_import_session_id)
             AND NOT hns_root_import_publication_window_open_v1(s.root_import_session_id))
             AS window_closed
           FROM leased j JOIN hns_root_import_sessions s USING(root_import_session_id)

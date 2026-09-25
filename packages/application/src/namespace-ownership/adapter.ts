@@ -434,9 +434,22 @@ export class NamespaceOwnershipProviderUnsupportedProtocol extends Data.TaggedEr
   readonly operation: "complete";
 }> {}
 
+/**
+ * The import's publication window was closed when the verifier checked it, or
+ * by the time the answer arrived. Nothing about the owner's proof is judged,
+ * so the caller must not count the attempt.
+ */
+export class NamespaceOwnershipProviderPublicationClosed extends Data.TaggedError(
+  "NamespaceOwnershipProviderPublicationClosed",
+)<{
+  readonly provider_id: string;
+  readonly operation: "complete";
+}> {}
+
 export type NamespaceOwnershipProviderFailure =
   | NamespaceOwnershipProviderUnavailable
   | NamespaceOwnershipProviderUnsupportedProtocol
+  | NamespaceOwnershipProviderPublicationClosed
   | NamespaceOwnershipProviderRejected
   | NamespaceOwnershipProviderUnboundRejected
   | NamespaceOwnershipProviderObservationRejected

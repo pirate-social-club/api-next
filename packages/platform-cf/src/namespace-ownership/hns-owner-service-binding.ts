@@ -6,6 +6,7 @@ import {
   HNS_OWNER_PROVIDER_ID,
   type HnsRootImportNameProofVerifierPort,
   NamespaceOwnershipProviderInvalidResponse,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnsupportedProtocol,
@@ -175,20 +176,23 @@ export async function discardHnsOwnerServiceBindingResponse(response: Response):
   }
 }
 
+async function errorCode(response: Response): Promise<unknown> {
+  try {
+    return ((await response.clone().json()) as { readonly error?: unknown }).error;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A verifier build that predates hns-txt-import-v1 has no import path and
- * answers 404; a build that has the protocol disabled answers a typed 501.
- * Either way nothing was observed, which is not a rejection of the owner.
+ * answers 404 not_found; a build that has the protocol disabled answers a
+ * typed 501. Either way nothing was observed, which is not a rejection of the
+ * owner. Any other 404 stays a rejection, so a misrouted binding is visible.
  */
 async function unsupportedImportProtocol(response: Response): Promise<boolean> {
-  if (response.status === 404) return true;
-  if (response.status !== 501) return false;
-  try {
-    const body = (await response.clone().json()) as { readonly error?: unknown };
-    return body.error === "unsupported_protocol";
-  } catch {
-    return false;
-  }
+  if (response.status === 404) return (await errorCode(response)) === "not_found";
+  return response.status === 501 && (await errorCode(response)) === "unsupported_protocol";
 }
 
 async function mappedResponse(
@@ -201,6 +205,19 @@ async function mappedResponse(
   if (importPoll && (await unsupportedImportProtocol(response))) {
     await discardHnsOwnerServiceBindingResponse(response);
     throw new NamespaceOwnershipProviderUnsupportedProtocol({
+      provider_id: HNS_OWNER_PROVIDER_ID,
+      operation: "complete",
+    });
+  }
+  // The verifier read the import's window from the database and found it
+  // closed; nothing about the owner's proof was judged.
+  if (
+    importPoll &&
+    response.status === 409 &&
+    (await errorCode(response)) === "publication_not_authorized"
+  ) {
+    await discardHnsOwnerServiceBindingResponse(response);
+    throw new NamespaceOwnershipProviderPublicationClosed({
       provider_id: HNS_OWNER_PROVIDER_ID,
       operation: "complete",
     });
@@ -270,7 +287,8 @@ function request(
       error instanceof NamespaceOwnershipProviderUnavailable ||
       error instanceof NamespaceOwnershipProviderRejected ||
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
-      error instanceof NamespaceOwnershipProviderUnsupportedProtocol
+      error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+      error instanceof NamespaceOwnershipProviderPublicationClosed
         ? error
         : unavailable(operation),
   });

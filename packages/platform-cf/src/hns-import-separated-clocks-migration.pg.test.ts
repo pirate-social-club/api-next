@@ -417,7 +417,7 @@ suite("HNS separated-clocks migration (0206)", () => {
             "pre_separated_clocks_challenge_expiry",
           ],
           "clocks-already-held": ["recovery_required", "publication_deadline_reached"],
-          "clocks-inconsistent": ["recovery_required", "pre_separated_clocks_challenge_expiry"],
+          "clocks-inconsistent": ["recovery_required", "sources_inconsistent"],
           "clocks-lifecycle-failed": ["failed", null],
           "clocks-creation-intent": ["checking_publication", null],
         });
@@ -435,12 +435,9 @@ suite("HNS separated-clocks migration (0206)", () => {
                FROM hns_root_import_recovery_findings ORDER BY root_import_session_id`,
           )
         ).rows;
+        // Each finding carries its inventoried reason; a plan already held
+        // keeps its own finding and gets no second one.
         expect(findings).toEqual([
-          {
-            root_import_session_id: "clocks-already-held",
-            classification: "insufficient_evidence",
-            reason: "pre_separated_clocks_challenge_expiry",
-          },
           {
             root_import_session_id: "clocks-challenge-expired",
             classification: "insufficient_evidence",
@@ -449,7 +446,7 @@ suite("HNS separated-clocks migration (0206)", () => {
           {
             root_import_session_id: "clocks-inconsistent",
             classification: "insufficient_evidence",
-            reason: "pre_separated_clocks_challenge_expiry",
+            reason: "sources_inconsistent",
           },
         ]);
         const history = (
@@ -461,13 +458,13 @@ suite("HNS separated-clocks migration (0206)", () => {
         expect(history).toEqual([
           {
             root_import_session_id: "clocks-challenge-expired",
-            event_name: "separated_clocks_migration",
+            event_name: "recovery_hold",
             prior_phase: "checking_publication",
             new_phase: "recovery_required",
           },
           {
             root_import_session_id: "clocks-inconsistent",
-            event_name: "separated_clocks_migration",
+            event_name: "recovery_hold",
             prior_phase: "awaiting_publication",
             new_phase: "recovery_required",
           },

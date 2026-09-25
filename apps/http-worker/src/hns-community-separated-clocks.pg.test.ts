@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { continueHnsCommunityPublication } from "@pirate/application/namespace-ownership";
 import { Cause, Effect, Option } from "effect";
 import type { Client } from "pg";
+import { makeHnsCommunityPublicationQueue } from "../../../packages/platform-cf/src/hns-community-publication-queue.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
+import { makeControlPlaneRouteAttachmentCompletionStore } from "../../../packages/platform-cf/src/route-attachment-completion-repository.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import {
   activate,
@@ -374,6 +376,21 @@ pgTest(
         failure_reason: "ownership_check_attempts_exhausted",
         retry_after_seconds: null,
       });
+      // The next action is real: the import is held for operator recovery,
+      // with a finding naming why and authority retained.
+      const held = await base.admin.query(
+        `SELECT lifecycle.phase, lifecycle.pending_reason, finding.reason AS finding
+           FROM hns_root_import_lifecycle AS lifecycle
+           JOIN hns_root_import_recovery_findings AS finding
+             ON finding.root_import_session_id = lifecycle.root_import_session_id`,
+      );
+      expect(held.rows).toEqual([
+        {
+          phase: "recovery_required",
+          pending_reason: "ownership_check_attempts_exhausted",
+          finding: "ownership_check_attempts_exhausted",
+        },
+      ]);
     } finally {
       await base.cleanup();
     }
@@ -489,8 +506,109 @@ pgTest(
           "UPDATE hns_root_import_publication_authorizations SET valid_until = clock_timestamp()",
         ),
       ).rejects.toThrow("immutable");
+      // The snapshot alone closes it too, however late the live deadline is.
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `UPDATE hns_root_import_publication_authorizations
+            SET authorized_at = clock_timestamp() - interval '2 days',
+                valid_until = clock_timestamp() - interval '1 second'`,
+      );
+      await admin.query("COMMIT");
+      expect(await authorize()).toEqual([]);
     } finally {
       await expired.cleanup();
+    }
+  },
+  BUDGET_MS,
+);
+
+/** Every grant roles.sql.example gives the runtime role for these paths. */
+const RUNTIME_FUNCTION_GRANTS = [
+  "commit_hns_root_import_lifecycle_decision_v1(text,bigint,text,text,text,text,text,jsonb,jsonb,bigint,bigint,bigint)",
+  "renew_hns_community_root_import_challenge_v1(text,text,text,text,jsonb,text)",
+  "hns_root_import_publication_window_decision_v1(text)",
+  "hns_root_import_publication_window_open_v1(text)",
+  "hns_root_import_publication_window_v1(text,text,text)",
+  "authorize_hns_root_import_publication_poll_v1(text,text,text,text,text,text,text)",
+  "hold_hns_root_import_for_recovery_v1(text,text,text)",
+] as const;
+
+pgTest(
+  "acknowledgement, claim and completion run as the runtime role with only its documented grants",
+  async () => {
+    if (url === undefined) throw new Error("Postgres required");
+    const base = await prepareAcknowledgedImport({ connectionString: url, acknowledge: false });
+    const role = `hns_clocks_runtime_${Date.now()}`;
+    const { admin } = base;
+    const schema = String((await admin.query("SELECT current_schema() AS s")).rows[0]?.s);
+    try {
+      await admin.query(`CREATE ROLE ${role} NOLOGIN`);
+      await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO ${role}`);
+      await admin.query(
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "${schema}" TO ${role}`,
+      );
+      await admin.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "${schema}" TO ${role}`);
+      await admin.query(
+        `REVOKE INSERT, UPDATE, DELETE ON hns_root_import_publication_authorizations,
+           hns_community_root_import_preparation_ceremonies,
+           hns_root_import_separated_clocks_inventory FROM ${role}`,
+      );
+      for (const signature of RUNTIME_FUNCTION_GRANTS) {
+        await admin.query(`GRANT EXECUTE ON FUNCTION "${schema}".${signature} TO ${role}`);
+      }
+      const restricted = makeDirectPostgresControlPlaneLayer(
+        `${url}${url.includes("?") ? "&" : "?"}options=${encodeURIComponent(
+          `-c search_path=${schema},pg_temp -c role=${role}`,
+        )}`,
+      );
+      const queue = makeHnsCommunityPublicationQueue(restricted);
+      const acknowledged = await Effect.runPromise(
+        queue.enqueue({
+          actor_id: base.actor,
+          community_id: base.community,
+          root_import_session_id: base.sessionId,
+          expected_revision: base.revision,
+          idempotency_key: "restricted-acknowledgement",
+        }),
+      );
+      expect(acknowledged).toEqual({ kind: "queued" });
+      const claim = await Effect.runPromise(queue.claim());
+      expect(claim).toMatchObject({ authorized: true });
+      const ownership = (
+        await admin.query<Record<string, string>>(
+          "SELECT * FROM community_route_attachment_namespace_sessions",
+        )
+      ).rows[0];
+      if (ownership === undefined) throw new Error("ownership session missing");
+      const store = makeControlPlaneRouteAttachmentCompletionStore(restricted);
+      const request = {
+        actor_id: base.actor,
+        community_id: base.community,
+        attachment_intent_id: String(ownership.attachment_intent_id),
+        ceremony_intent_id: String(ownership.ceremony_intent_id),
+        session_id: String(ownership.namespace_session_id),
+        expected_revision: Number(ownership.expected_revision),
+        idempotency_key: "restricted-check",
+        channel: "poll_result" as const,
+      };
+      const loaded = await Effect.runPromise(store.load(request));
+      expect(loaded?.import_publication).toMatchObject({ window_open: true, reason: "open" });
+      const reserved = await Effect.runPromise(
+        store.reserve({
+          request,
+          completion_request_sha256: "a".repeat(64),
+          completion_attempt_id: "restricted-attempt",
+          evidence_ref: "restricted-evidence",
+          lease_ms: 16_000,
+          max_attempts: 3,
+        }),
+      );
+      expect(reserved.kind).toBe("acquired");
+    } finally {
+      await admin.query(`DROP OWNED BY ${role}`).catch(() => undefined);
+      await admin.query(`DROP ROLE IF EXISTS ${role}`).catch(() => undefined);
+      await base.cleanup();
     }
   },
   BUDGET_MS,

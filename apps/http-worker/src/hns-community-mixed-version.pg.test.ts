@@ -142,10 +142,11 @@ pgTest(
       // The new verifier answers while the owner has not yet published.
       await poll(base, 2);
       expect(await attempts(base.admin)).toEqual([{ state: "released", attempt_number: 1 }]);
-      // Rolled back to the previous build: every import poll is unsupported.
+      // Rolled back to the previous build: every import poll is unsupported,
+      // and the attempt that was already counted is never refunded.
       verifiers.select("previous");
       await poll(base, 5);
-      expect(await attempts(base.admin)).toEqual([{ state: "not_attempted", attempt_number: 1 }]);
+      expect(await attempts(base.admin)).toEqual([{ state: "released", attempt_number: 1 }]);
       await expectRetryable(base);
       // Rolled forward after the owner published: the one check completes.
       verifiers.select("current");
@@ -191,8 +192,21 @@ pgTest(
   BUDGET_MS,
 );
 
+/** Moves the ownership challenge's own clock back past its hour. */
+async function ageChallenge(admin: Client) {
+  await admin.query("BEGIN");
+  await admin.query("SET LOCAL session_replication_role = replica");
+  await admin.query(
+    `UPDATE community_route_attachment_namespace_sessions
+        SET started_at = started_at - interval '3 hours',
+            expires_at = expires_at - interval '3 hours',
+            created_at = created_at - interval '3 hours'`,
+  );
+  await admin.query("COMMIT");
+}
+
 pgTest(
-  "new HTTP whose provider entry lacks the capability reserves nothing and calls no verifier",
+  "new HTTP without the capability keeps hns-txt-v1 inside the challenge's hour",
   async () => {
     if (url === undefined) throw new Error("Postgres required");
     const verifiers = switchable();
@@ -203,11 +217,84 @@ pgTest(
       importProtocol: { http: false, verifier: true },
     });
     try {
+      await poll(base, 2);
+      const polls = verifiers.answers.filter((answer) => answer.path.includes("poll"));
+      expect(polls.map((answer) => answer.path)).toEqual(
+        Array(2).fill("/internal/hns-owner/v1/poll"),
+      );
+      expect(await attempts(base.admin)).toEqual([{ state: "released", attempt_number: 1 }]);
+      await expectRetryable(base);
+    } finally {
+      await base.cleanup();
+    }
+  },
+  BUDGET_MS,
+);
+
+pgTest(
+  "new HTTP without the capability defers past the hour, reserving nothing and calling no verifier",
+  async () => {
+    if (url === undefined) throw new Error("Postgres required");
+    const verifiers = switchable();
+    verifiers.select("current");
+    const base = await prepareAcknowledgedImport({
+      connectionString: url,
+      verifier: verifiers.verifier,
+      importProtocol: { http: false, verifier: true },
+      beforeAcknowledge: async (admin) => ageChallenge(admin),
+    });
+    try {
       const before = verifiers.answers.length;
       await poll(base, 5);
       expect(verifiers.answers.length).toBe(before);
       expect(await attempts(base.admin)).toEqual([]);
       await expectRetryable(base);
+    } finally {
+      await base.cleanup();
+    }
+  },
+  BUDGET_MS,
+);
+
+pgTest(
+  "many idempotency keys against an unsupported verifier keep one uncounted row and three real checks",
+  async () => {
+    if (url === undefined) throw new Error("Postgres required");
+    const verifiers = switchable();
+    const base = await prepareAcknowledgedImport({
+      connectionString: url,
+      verifier: verifiers.verifier,
+      acknowledge: false,
+    });
+    try {
+      const ownership = (
+        await base.admin.query<Record<string, string>>(
+          "SELECT * FROM community_route_attachment_namespace_sessions",
+        )
+      ).rows[0];
+      if (ownership === undefined) throw new Error("ownership session missing");
+      const complete = (key: string) =>
+        Effect.runPromiseExit(
+          base.services.completion.complete({
+            actor_id: base.actor,
+            community_id: base.community,
+            attachment_intent_id: String(ownership.attachment_intent_id),
+            ceremony_intent_id: String(ownership.ceremony_intent_id),
+            session_id: String(ownership.namespace_session_id),
+            expected_revision: Number(ownership.expected_revision),
+            idempotency_key: key,
+            channel: "poll_result",
+          }),
+        );
+      for (let index = 0; index < 6; index++) await complete(`unsupported-${index}`);
+      expect(await attempts(base.admin)).toEqual([{ state: "not_attempted", attempt_number: 1 }]);
+      // The verifier learns the protocol while the owner has not published:
+      // every new key is a real, counted check, and the budget holds at three.
+      verifiers.select("current");
+      for (let index = 0; index < 5; index++) await complete(`supported-${index}`);
+      const rows = await attempts(base.admin);
+      expect(rows.filter((row) => row.state !== "not_attempted")).toHaveLength(3);
+      expect(rows).toHaveLength(3);
     } finally {
       await base.cleanup();
     }

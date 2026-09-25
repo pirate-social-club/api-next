@@ -14,6 +14,7 @@ export {
   NamespaceOwnershipProviderObservationRejected,
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderStartContext,
   NamespaceOwnershipProviderStartInput,

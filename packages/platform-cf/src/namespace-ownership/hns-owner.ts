@@ -21,6 +21,7 @@ import {
   NamespaceOwnershipProviderObservationRejected,
   type NamespaceOwnershipProviderPlanInput,
   type NamespaceOwnershipProviderPlanResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   type NamespaceOwnershipProviderStartContext,
   type NamespaceOwnershipProviderStartInput,
@@ -85,7 +86,8 @@ export type HnsOwnerTransportFailure =
   | NamespaceOwnershipProviderUnboundRejected
   | NamespaceOwnershipProviderObservationRejected
   | NamespaceOwnershipProviderInvalidResponse
-  | NamespaceOwnershipProviderUnsupportedProtocol;
+  | NamespaceOwnershipProviderUnsupportedProtocol
+  | NamespaceOwnershipProviderPublicationClosed;
 
 export type HnsOwnerAdapterOptions = Readonly<{
   readonly transport: HnsOwnerTransport;
@@ -129,6 +131,13 @@ function invalid(operation: "plan" | "start" | "complete") {
 
 function observationRejected() {
   return new NamespaceOwnershipProviderObservationRejected({
+    provider_id: HNS_OWNER_PROVIDER_ID,
+    operation: "complete",
+  });
+}
+
+function publicationClosed() {
+  return new NamespaceOwnershipProviderPublicationClosed({
     provider_id: HNS_OWNER_PROVIDER_ID,
     operation: "complete",
   });
@@ -623,11 +632,12 @@ export function makeHnsOwnerAdapter(
               Object.keys(input.submission.payload).length !== 0 ||
               !sessionMatchesConfiguration(input.session, provider_configuration, environments) ||
               input.binding.protocol_version !== HNS_TXT_IMPORT_PROTOCOL_VERSION ||
-              input.binding.root_label !== input.session.route.root_label ||
-              Date.parse(input.binding.valid_until) <= now()
+              input.binding.root_label !== input.session.route.root_label
             ) {
               return Effect.fail(unboundRejected("complete"));
             }
+            if (Date.parse(input.binding.valid_until) <= now())
+              return Effect.fail(publicationClosed());
             const request: HnsImportPublicationPollRequestV1 = {
               operation_kind: "route_attachment_import",
               protocol_version: HNS_TXT_IMPORT_PROTOCOL_VERSION,
@@ -647,7 +657,8 @@ export function makeHnsOwnerAdapter(
                 error instanceof NamespaceOwnershipProviderUnboundRejected ||
                 error instanceof NamespaceOwnershipProviderObservationRejected ||
                 error instanceof NamespaceOwnershipProviderInvalidResponse ||
-                error instanceof NamespaceOwnershipProviderUnsupportedProtocol
+                error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+                error instanceof NamespaceOwnershipProviderPublicationClosed
                   ? error
                   : invalid("complete"),
               ),
@@ -668,15 +679,17 @@ export function makeHnsOwnerAdapter(
                       result.publish_plan_sha256 !== input.binding.publish_plan_sha256 ||
                       result.challenge_value_sha256 !== input.binding.challenge_value_sha256 ||
                       result.challenge_value_sha256 !== expectedChallenge ||
-                      result.upstream_session_ref !== input.session.upstream_session_ref ||
-                      Date.parse(result.valid_until) <= now()
+                      result.upstream_session_ref !== input.session.upstream_session_ref
                     ) {
                       throw observationRejected();
                     }
+                    // The window closed while the answer was in flight.
+                    if (Date.parse(result.valid_until) <= now()) throw publicationClosed();
                     return decoded.observation_bytes;
                   },
                   catch: (error) =>
-                    error instanceof NamespaceOwnershipProviderObservationRejected
+                    error instanceof NamespaceOwnershipProviderObservationRejected ||
+                    error instanceof NamespaceOwnershipProviderPublicationClosed
                       ? error
                       : invalid("complete"),
                 }),

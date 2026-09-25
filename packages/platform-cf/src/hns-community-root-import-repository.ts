@@ -128,7 +128,7 @@ const currentCeremonyJoin = `CROSS JOIN LATERAL hns_community_root_import_curren
 // the wallet broadcast or that an on-chain resource was observed.
 const sessionReadColumns = `session.*,
   CASE WHEN session.status NOT IN ('activated','failed','expired')
-         AND (hns_root_import_pre_exposure_clock_passed_v1(
+         AND (hns_root_import_session_clock_passed_v1(
                 session.root_import_session_id, session.expires_at, clock_timestamp())
               OR ownership.status='expired')
        THEN 'expired'
@@ -743,7 +743,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                                    WHERE held.root_label=$1
                                      AND held.status IN ('provisioning','awaiting_owner_update','observing','ready','activated')
                                      AND (held.status='activated'
-                                          OR NOT hns_root_import_pre_exposure_clock_passed_v1(
+                                          OR NOT hns_root_import_session_clock_passed_v1(
                                             held.root_import_session_id, held.expires_at,
                                             clock_timestamp())))
                        OR EXISTS (
@@ -778,7 +778,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                         AND attachment.status IN ('verification_required','commit_ready')
                         AND session.status<>'activated'
                         AND (session.status IN ('failed','expired')
-                             OR hns_root_import_pre_exposure_clock_passed_v1(
+                             OR hns_root_import_session_clock_passed_v1(
                                session.root_import_session_id, session.expires_at,
                                clock_timestamp()))
                         AND NOT hns_community_root_import_reservation_held_v1(session.root_import_session_id)`,
@@ -1059,8 +1059,14 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             if (oneRow(challengeLive)?.live !== true) return { kind: "challenge_expired" } as const;
             // Before plan exposure the session is bounded by its preparation,
-            // not by the one-hour challenge (0206, separated clocks).
-            const sessionExpiresAt = instant(preparation.expires_at);
+            // not by the one-hour challenge (0206, separated clocks). A
+            // retained name-signature preparation still needs its live
+            // challenge to begin provisioning, so it keeps the challenge bound
+            // rather than holding the root for days after the challenge dies.
+            const sessionExpiresAt =
+              preparation.admission_kind === "name_signature"
+                ? input.ownership.expires_at
+                : instant(preparation.expires_at);
             if (sessionExpiresAt === null)
               return yield* Effect.fail(invariantFailure("load-preparation.undecodable_row"));
             const inserted = yield* transaction.execute<Row>({
