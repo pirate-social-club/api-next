@@ -16,8 +16,10 @@ import { type VideoStageFact, validateVideoStageFact } from "./stage-facts.ts";
 import {
   runVideoAnalysisWorkflow,
   VIDEO_WORKFLOW_CAPABILITY_MS,
+  VIDEO_WORKFLOW_MAX_OBSERVATIONS,
   type VideoWorkflowServices,
   type VideoWorkflowStep,
+  videoWorkflowPollMs,
 } from "./workflow.ts";
 
 function fixture() {
@@ -492,4 +494,14 @@ test("confirmed invalid poster during reconciliation resolves the attempt before
   expect(f.record().state.reconciliationRequired).toBe(false);
   expect(f.record().state.status).toBe("processing_failed");
   expect(f.calls.starts).toBe(1);
+});
+
+test("provider polls are fast for the first minute and keep the 30-minute window and count", () => {
+  const delays = Array.from({ length: VIDEO_WORKFLOW_MAX_OBSERVATIONS }, (_, index) =>
+    videoWorkflowPollMs(index),
+  );
+  expect(VIDEO_WORKFLOW_MAX_OBSERVATIONS).toBe(60);
+  expect(delays.slice(0, 12).every((delay) => delay === 5_000)).toBe(true);
+  expect(delays.slice(0, 12).reduce((sum, delay) => sum + delay, 0)).toBe(60_000);
+  expect(delays.reduce((sum, delay) => sum + delay, 0)).toBe(VIDEO_WORKFLOW_CAPABILITY_MS);
 });
