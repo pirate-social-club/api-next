@@ -64,7 +64,7 @@ suite("Postgres 17 reward-claim Very intent", () => {
         makeControlPlaneCommunityJoinIntentResolver(layer, "test"),
         rewardResolver,
       ]);
-      const resolve = (actor: string, intent: string, provider = VERY_WEB_PROVIDER_ID) =>
+      const resolve = (actor: string, intent: string, provider: string = VERY_WEB_PROVIDER_ID) =>
         Effect.runPromise(
           chain.resolve({ actor_id: actor, intent_id: intent, provider_id: provider }),
         );
