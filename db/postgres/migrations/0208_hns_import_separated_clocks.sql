@@ -616,7 +616,7 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Retirement ends the import; it never resumes a phase (0206).
+  -- Retirement ends the import; it never resumes a phase (0208).
   IF recovery_grant.action = 'retire' AND input_target_phase <> 'failed' THEN
     RETURN QUERY SELECT 'retire_target_invalid'::TEXT, lifecycle.revision, lifecycle.generation;
     RETURN;
@@ -802,7 +802,7 @@ BEGIN
       OR attachment_ownership.route_root_label <> NEW.root_label
       OR attachment_ownership.status <> 'pending'
       -- A session is only ever created from a live challenge. An expired one
-      -- is renewed at the next ceremony generation first (0206).
+      -- is renewed at the next ceremony generation first (0208).
       OR attachment_ownership.expires_at <= clock_timestamp() THEN
       RAISE EXCEPTION 'HNS root-import session does not match attachment ownership authority';
     END IF;
@@ -812,7 +812,7 @@ BEGIN
     IF FOUND THEN
       -- The session takes the preparation's expiry as its pre-exposure bound.
       -- The challenge expiry is still accepted so a release that predates
-      -- 0206 keeps starting sessions during a rollout.
+      -- 0208 keeps starting sessions during a rollout.
       IF attachment_preparation.attachment_intent_id <> NEW.attachment_intent_id
         OR attachment_ownership.ceremony_intent_id IS DISTINCT FROM (
           SELECT current_ceremony.ceremony_intent_id
@@ -1375,7 +1375,7 @@ BEGIN
   IF session.status <> 'awaiting_owner_update'
     OR session.revision <> input_expected_revision
     -- Before plan exposure the session's own bound applies. After exposure
-    -- the lifecycle publication window governs (0206, separated clocks).
+    -- the lifecycle publication window governs (0208, separated clocks).
     OR (CASE WHEN hns_root_import_plan_exposed_v1(session.root_import_session_id)
          THEN NOT hns_root_import_publication_window_open_v1(session.root_import_session_id)
          ELSE session.expires_at <= database_now END)
@@ -1787,7 +1787,7 @@ BEGIN
   LOOP
     IF hold_hns_root_import_for_recovery_v1(
       held.root_import_session_id, held.reason,
-      'migration:0206_hns_import_separated_clocks:' || held.root_import_session_id
+      'migration:0208_hns_import_separated_clocks:' || held.root_import_session_id
     ) NOT IN ('held', 'already_held') THEN
       RAISE EXCEPTION 'HNS separated-clocks recovery hold was refused for %',
         held.root_import_session_id;

@@ -11,7 +11,7 @@ const suite = connectionString ? describe : describe.skip;
 
 /** Applying every migration into a fresh schema is well past bun's default. */
 const SCHEMA_BUDGET_MS = 240_000;
-const SEPARATED_CLOCKS = "0206_hns_import_separated_clocks.sql";
+const SEPARATED_CLOCKS = "0208_hns_import_separated_clocks.sql";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const shaA = "a".repeat(64);
@@ -275,7 +275,7 @@ async function seed(admin: Client, shape: Shape): Promise<void> {
   );
 }
 
-suite("HNS separated-clocks migration (0206)", () => {
+suite("HNS separated-clocks migration (0208)", () => {
   test(
     "inventories every community session and applies each class's rule",
     async () => {
@@ -289,7 +289,7 @@ suite("HNS separated-clocks migration (0206)", () => {
         const separated = migrations.find((migration) =>
           migration.version.startsWith(SEPARATED_CLOCKS.slice(0, 4)),
         );
-        if (separated === undefined) throw new Error("migration 0206 was not found");
+        if (separated === undefined) throw new Error("migration 0208 was not found");
         for (const migration of migrations) {
           if (migration.version < separated.version) await admin.query(migration.sql);
         }

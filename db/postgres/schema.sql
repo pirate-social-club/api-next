@@ -845,6 +845,12 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Retirement ends the import; it never resumes a phase (0208).
+  IF recovery_grant.action = 'retire' AND input_target_phase <> 'failed' THEN
+    RETURN QUERY SELECT 'retire_target_invalid'::TEXT, lifecycle.revision, lifecycle.generation;
+    RETURN;
+  END IF;
+
   IF recovery_grant.action = 'adopt' THEN
     IF finding.covenant_resource_sha256 IS NULL THEN
       RETURN QUERY SELECT 'adoption_evidence_missing'::TEXT, lifecycle.revision,
@@ -1061,6 +1067,38 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION authorize_hns_root_import_publication_poll_v1(input_actor_id text, input_community_id text, input_root_label text, input_namespace_session_id text, input_upstream_session_ref text, input_challenge_value_sha256 text, input_publish_plan_sha256 text) RETURNS TABLE(root_import_session_id text, root_label text, valid_until timestamp with time zone)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT session.root_import_session_id, session.root_label, decision.valid_until
+    FROM hns_root_import_sessions AS session
+    JOIN hns_root_import_lifecycle AS lifecycle
+      ON lifecycle.root_import_session_id = session.root_import_session_id
+    JOIN hns_root_import_publication_authorizations AS authorization_row
+      ON authorization_row.root_import_session_id = session.root_import_session_id
+     AND authorization_row.authority_generation = lifecycle.generation
+    JOIN community_route_attachment_namespace_sessions AS ownership
+      ON ownership.namespace_session_id = session.namespace_session_id
+     AND ownership.actor_id = session.actor_id
+     AND ownership.community_id = session.community_id
+     AND ownership.attachment_intent_id = session.attachment_intent_id
+    CROSS JOIN LATERAL hns_root_import_publication_window_decision_v1(
+      session.root_import_session_id
+    ) AS decision
+   WHERE session.actor_id = input_actor_id
+     AND session.community_id = input_community_id
+     AND session.root_label = input_root_label
+     AND session.namespace_session_id = input_namespace_session_id
+     AND session.origin_kind = 'community_attachment'
+     AND ownership.status = 'pending'
+     AND ownership.upstream_session_ref = input_upstream_session_ref
+     AND authorization_row.upstream_session_ref = input_upstream_session_ref
+     AND authorization_row.challenge_value_sha256 = input_challenge_value_sha256
+     AND authorization_row.publish_plan_sha256 = input_publish_plan_sha256
+     AND decision.window_open
+$$;
+
 CREATE FUNCTION authorize_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_action text, input_ttl_seconds integer, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, recovery_authorization_id bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -1195,7 +1233,11 @@ BEGIN
   END IF;
   IF session.status <> 'awaiting_owner_update'
     OR session.revision <> input_expected_revision
-    OR session.expires_at <= database_now
+    -- Before plan exposure the session's own bound applies. After exposure
+    -- the lifecycle publication window governs (0208, separated clocks).
+    OR (CASE WHEN hns_root_import_plan_exposed_v1(session.root_import_session_id)
+         THEN NOT hns_root_import_publication_window_open_v1(session.root_import_session_id)
+         ELSE session.expires_at <= database_now END)
     OR (
       session.ownership_result_sha256 IS NOT NULL
       AND session.ownership_result_sha256 <> input_ownership_result_sha256
@@ -1360,7 +1402,8 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'provisioning'
-     AND stale_session.expires_at <= database_now
+     AND hns_root_import_session_clock_passed_v1(
+           stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
        stale_job.state = 'queued'
@@ -1374,7 +1417,8 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'observing'
-     AND stale_session.expires_at <= database_now
+     AND hns_root_import_session_clock_passed_v1(
+           stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
        stale_job.state = 'queued'
@@ -1385,7 +1429,8 @@ BEGIN
          updated_at = database_now
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
-     AND stale_session.expires_at <= database_now
+     AND hns_root_import_session_clock_passed_v1(
+           stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND (
        stale_session.status IN ('awaiting_owner_update', 'ready')
        OR (
@@ -1656,7 +1701,8 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'provisioning'
-     AND stale_session.expires_at <= database_now
+     AND hns_root_import_session_clock_passed_v1(
+           stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
        stale_job.state = 'queued'
@@ -1670,7 +1716,8 @@ BEGIN
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
      AND stale_session.status = 'observing'
-     AND stale_session.expires_at <= database_now
+     AND hns_root_import_session_clock_passed_v1(
+           stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND stale_job.root_import_session_id = stale_session.root_import_session_id
      AND (
        stale_job.state = 'queued'
@@ -1681,7 +1728,8 @@ BEGIN
          updated_at = database_now
    WHERE stale_session.root_label = session.root_label
      AND stale_session.root_import_session_id <> session.root_import_session_id
-     AND stale_session.expires_at <= database_now
+     AND hns_root_import_session_clock_passed_v1(
+           stale_session.root_import_session_id, stale_session.expires_at, database_now)
      AND (
        stale_session.status IN ('awaiting_owner_update', 'ready')
        OR (
@@ -8714,6 +8762,7 @@ CREATE FUNCTION guard_hns_root_import_session_insert() RETURNS trigger
 DECLARE
   creation_ownership namespace_ownership_sessions%ROWTYPE;
   attachment_ownership community_route_attachment_namespace_sessions%ROWTYPE;
+  attachment_preparation hns_community_root_import_preparations%ROWTYPE;
 BEGIN
   IF NEW.origin_kind = 'creation_intent' THEN
     SELECT * INTO creation_ownership
@@ -8746,7 +8795,32 @@ BEGIN
       OR attachment_ownership.expected_revision <> NEW.ownership_expected_revision
       OR attachment_ownership.route_root_label <> NEW.root_label
       OR attachment_ownership.status <> 'pending'
-      OR attachment_ownership.expires_at <> NEW.expires_at THEN
+      -- A session is only ever created from a live challenge. An expired one
+      -- is renewed at the next ceremony generation first (0208).
+      OR attachment_ownership.expires_at <= clock_timestamp() THEN
+      RAISE EXCEPTION 'HNS root-import session does not match attachment ownership authority';
+    END IF;
+    SELECT * INTO attachment_preparation
+      FROM hns_community_root_import_preparations
+     WHERE root_import_session_id = NEW.root_import_session_id;
+    IF FOUND THEN
+      -- The session takes the preparation's expiry as its pre-exposure bound.
+      -- The challenge expiry is still accepted so a release that predates
+      -- 0208 keeps starting sessions during a rollout.
+      IF attachment_preparation.attachment_intent_id <> NEW.attachment_intent_id
+        OR attachment_ownership.ceremony_intent_id IS DISTINCT FROM (
+          SELECT current_ceremony.ceremony_intent_id
+            FROM hns_community_root_import_current_ceremony_v1(NEW.attachment_intent_id)
+              AS current_ceremony
+        )
+        OR (
+          NEW.expires_at <> attachment_preparation.expires_at
+          AND NEW.expires_at <> attachment_ownership.expires_at
+        )
+      THEN
+        RAISE EXCEPTION 'HNS root-import session does not match its preparation';
+      END IF;
+    ELSIF attachment_ownership.expires_at <> NEW.expires_at THEN
       RAISE EXCEPTION 'HNS root-import session does not match attachment ownership authority';
     END IF;
   ELSE
@@ -12840,7 +12914,8 @@ CREATE FUNCTION hns_community_root_import_consumes_actor_budget_v1(input_session
       WHEN provision.state = 'completed'
         AND convert_from(provision.result_bytes, 'UTF8')::jsonb @> '{"zone_created":false}'::jsonb
       THEN FALSE
-      WHEN COALESCE(session.expires_at, preparation.expires_at) <= clock_timestamp()
+      WHEN hns_root_import_session_clock_passed_v1(preparation.root_import_session_id,
+        COALESCE(session.expires_at, preparation.expires_at), clock_timestamp())
         AND NOT hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)
       THEN FALSE
       ELSE TRUE
@@ -12854,6 +12929,24 @@ CREATE FUNCTION hns_community_root_import_consumes_actor_budget_v1(input_session
   ), FALSE)
 $$;
 
+CREATE FUNCTION hns_community_root_import_current_ceremony_v1(input_attachment_intent_id text) RETURNS TABLE(ceremony_intent_id text, generation bigint)
+    LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT current_ceremony.ceremony_intent_id, current_ceremony.generation
+    FROM (
+      SELECT ceremony.ceremony_intent_id, ceremony.generation
+        FROM hns_community_root_import_preparation_ceremonies AS ceremony
+       WHERE ceremony.attachment_intent_id = input_attachment_intent_id
+      UNION ALL
+      SELECT preparation.ceremony_intent_id, 1::bigint
+        FROM hns_community_root_import_preparations AS preparation
+       WHERE preparation.attachment_intent_id = input_attachment_intent_id
+    ) AS current_ceremony
+   ORDER BY current_ceremony.generation DESC
+   LIMIT 1
+$$;
+
 CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id text) RETURNS boolean
     LANGUAGE sql
     SET search_path FROM CURRENT
@@ -12862,7 +12955,8 @@ CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id t
     SELECT CASE
       WHEN session.status = 'activated' THEN FALSE
       WHEN teardown.state = 'completed' THEN FALSE
-      WHEN COALESCE(session.expires_at, preparation.expires_at) > clock_timestamp() THEN TRUE
+      WHEN NOT hns_root_import_session_clock_passed_v1(preparation.root_import_session_id,
+        COALESCE(session.expires_at, preparation.expires_at), clock_timestamp()) THEN TRUE
       WHEN job.provision_job_id IS NULL OR job.attempt_count = 0 THEN FALSE
       ELSE TRUE
     END
@@ -12976,6 +13070,183 @@ CREATE FUNCTION hns_root_import_lifecycle_transition_allowed_v1(input_from text,
     input_from = 'recovery_required' AND input_to IN
       ('checking_publication', 'waiting_safe_commitment', 'checking_authority', 'ready', 'failed')
   );
+$$;
+
+CREATE FUNCTION hns_root_import_plan_exposed_v1(input_session_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM hns_root_import_sessions AS session
+      JOIN hns_root_import_lifecycle AS lifecycle
+        ON lifecycle.root_import_session_id = session.root_import_session_id
+     WHERE session.root_import_session_id = input_session_id
+       AND session.origin_kind = 'community_attachment'
+       AND lifecycle.plan_exposed_at IS NOT NULL
+  )
+$$;
+
+CREATE FUNCTION hns_root_import_publication_window_decision_v1(input_session_id text) RETURNS TABLE(exposed boolean, window_open boolean, reason text, valid_until timestamp with time zone)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+#variable_conflict use_column
+DECLARE
+  session hns_root_import_sessions%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  authorization_row hns_root_import_publication_authorizations%ROWTYPE;
+  bound timestamp with time zone;
+BEGIN
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = input_session_id;
+  IF NOT FOUND OR session.origin_kind <> 'community_attachment' THEN
+    RETURN QUERY SELECT false, false, 'not_exposed'::text, NULL::timestamptz;
+    RETURN;
+  END IF;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id;
+  IF NOT FOUND OR lifecycle.plan_exposed_at IS NULL THEN
+    RETURN QUERY SELECT false, false, 'not_exposed'::text, NULL::timestamptz;
+    RETURN;
+  END IF;
+  -- The phase answers first: a held or finished import says so, whether or
+  -- not an authorization exists for it.
+  IF lifecycle.phase = 'recovery_required' THEN
+    RETURN QUERY SELECT true, false, 'recovery_required'::text, lifecycle.publication_deadline_at;
+    RETURN;
+  END IF;
+  IF lifecycle.phase NOT IN (
+    'awaiting_publication', 'checking_publication', 'waiting_safe_commitment',
+    'checking_authority', 'ready'
+  ) THEN
+    RETURN QUERY SELECT true, false, 'phase_closed'::text, lifecycle.publication_deadline_at;
+    RETURN;
+  END IF;
+  SELECT * INTO authorization_row FROM hns_root_import_publication_authorizations
+   WHERE root_import_session_id = input_session_id
+     AND authority_generation = lifecycle.generation;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT true, false, 'authorization_missing'::text, NULL::timestamptz;
+    RETURN;
+  END IF;
+  bound := LEAST(authorization_row.valid_until, lifecycle.publication_deadline_at);
+  IF session.status <> 'awaiting_owner_update' THEN
+    RETURN QUERY SELECT true, false, 'session_state'::text, bound;
+    RETURN;
+  END IF;
+  IF authorization_row.actor_id <> session.actor_id
+    OR authorization_row.community_id <> session.community_id
+    OR authorization_row.root_label <> session.root_label
+    OR authorization_row.namespace_session_id <> session.namespace_session_id
+    OR authorization_row.publish_plan_sha256 IS DISTINCT FROM session.publish_plan_sha256
+    OR authorization_row.challenge_value_sha256
+       <> encode(sha256(convert_to(session.challenge_txt_value, 'UTF8')), 'hex')
+    OR bound IS NULL
+  THEN
+    RETURN QUERY SELECT true, false, 'authorization_mismatch'::text, bound;
+    RETURN;
+  END IF;
+  IF clock_timestamp() >= bound THEN
+    RETURN QUERY SELECT true, false, 'deadline_passed'::text, bound;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT true, true, 'open'::text, bound;
+END;
+$$;
+
+CREATE FUNCTION hns_root_import_publication_window_open_v1(input_session_id text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT COALESCE(
+    (SELECT decision.window_open
+       FROM hns_root_import_publication_window_decision_v1(input_session_id) AS decision),
+    false
+  )
+$$;
+
+CREATE FUNCTION hns_root_import_publication_window_v1(input_actor_id text, input_community_id text, input_namespace_session_id text) RETURNS TABLE(root_import_session_id text, root_label text, publish_plan_sha256 text, challenge_value_sha256 text, window_open boolean, reason text, valid_until timestamp with time zone)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT session.root_import_session_id, session.root_label, session.publish_plan_sha256,
+         encode(sha256(convert_to(session.challenge_txt_value, 'UTF8')), 'hex'),
+         decision.window_open, decision.reason, decision.valid_until
+    FROM hns_root_import_sessions AS session
+    CROSS JOIN LATERAL hns_root_import_publication_window_decision_v1(
+      session.root_import_session_id
+    ) AS decision
+   WHERE session.actor_id = input_actor_id
+     AND session.community_id = input_community_id
+     AND session.namespace_session_id = input_namespace_session_id
+     AND session.origin_kind = 'community_attachment'
+     AND decision.exposed
+$$;
+
+CREATE FUNCTION hns_root_import_session_clock_passed_v1(input_session_id text, input_expires_at timestamp with time zone, input_now timestamp with time zone) RETURNS boolean
+    LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT CASE
+    WHEN hns_root_import_plan_exposed_v1(input_session_id) THEN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.root_import_session_id = input_session_id
+         AND lifecycle.phase = 'failed'
+    )
+    ELSE input_expires_at <= input_now
+  END
+$$;
+
+CREATE FUNCTION hold_hns_root_import_for_recovery_v1(input_session_id text, input_reason text, input_evidence_ref text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+#variable_conflict use_column
+DECLARE
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  finding record;
+  decision record;
+BEGIN
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle
+   WHERE root_import_session_id = input_session_id
+   FOR UPDATE;
+  IF NOT FOUND OR lifecycle.plan_exposed_at IS NULL
+    OR lifecycle.phase IN ('failed', 'activated', 'preparing')
+  THEN
+    RETURN 'not_holdable';
+  END IF;
+  SELECT * INTO finding FROM record_hns_root_import_recovery_finding_v1(
+    input_session_id, lifecycle.generation, input_evidence_ref,
+    'insufficient_evidence', input_reason, 'retire', NULL, NULL, NULL,
+    lifecycle.plan_encoded_resource_sha256, NULL, NULL, NULL, NULL
+  );
+  IF finding.outcome NOT IN ('recorded', 'replayed') THEN
+    RAISE EXCEPTION 'HNS recovery finding was refused: %', finding.outcome;
+  END IF;
+  IF lifecycle.phase = 'recovery_required' THEN
+    RETURN 'already_held';
+  END IF;
+  SELECT * INTO decision FROM commit_hns_root_import_lifecycle_decision_v1(
+    input_session_id, lifecycle.revision,
+    'recovery_hold:' || input_evidence_ref, 'recovery_hold', 'transition',
+    input_reason || '_authority_retained', 'recovery_required',
+    jsonb_strip_nulls(jsonb_build_object(
+      'pending_reason', input_reason,
+      'next_check_at', lifecycle.next_check_at,
+      'observation_count', lifecycle.observation_count,
+      'consecutive_operational_failures', lifecycle.consecutive_operational_failures,
+      'last_useful_error', lifecycle.last_useful_error,
+      'last_useful_error_at', lifecycle.last_useful_error_at,
+      'terminal_decided_at', lifecycle.terminal_decided_at
+    )),
+    '[]'::jsonb
+  );
+  IF decision.outcome NOT IN ('transition', 'replay') THEN
+    RAISE EXCEPTION 'HNS recovery hold was refused: %', decision.outcome;
+  END IF;
+  RETURN 'held';
+END;
 $$;
 
 CREATE FUNCTION identity_credentials_enforce_lifecycle() RETURNS trigger
@@ -13804,12 +14075,19 @@ BEGIN
       AND (retained_session.status IN ('failed','expired') OR (
         retained_session.status IN ('awaiting_owner_update','observing','ready')
         AND retained_session.expires_at<=clock_timestamp()
+        -- Mirrors the teardown claim (0155, 0169): a lifecycle-owned session
+        -- is retired under the retention rules, never by a clock.
+        AND NOT EXISTS (
+          SELECT 1 FROM hns_root_import_lifecycle AS lifecycle_owner
+           WHERE lifecycle_owner.root_import_session_id = retained_session.root_import_session_id
+        )
       ));
   END IF;
   IF admitted_kind = 'observation' THEN
     RETURN retained_session.status='observing'
       AND retained_session.observation_job_id=input_job_id
-      AND retained_session.expires_at>clock_timestamp();
+      AND NOT hns_root_import_session_clock_passed_v1(
+        retained_session.root_import_session_id, retained_session.expires_at, clock_timestamp());
   END IF;
   RETURN retained_session.status='provisioning'
     AND retained_session.expires_at>clock_timestamp();
@@ -15822,6 +16100,63 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION record_hns_root_import_publication_authorization_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  session hns_root_import_sessions%ROWTYPE;
+  ownership community_route_attachment_namespace_sessions%ROWTYPE;
+  provision_plan_sha256 text;
+BEGIN
+  IF OLD.plan_exposed_at IS NOT NULL
+    OR NEW.plan_exposed_at IS NULL
+    OR NEW.publication_deadline_at IS NULL
+    OR NEW.publication_deadline_at <= clock_timestamp()
+  THEN
+    RETURN NEW;
+  END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id = NEW.root_import_session_id;
+  IF NOT FOUND
+    OR session.origin_kind <> 'community_attachment'
+    OR session.publish_plan_sha256 IS NULL
+  THEN
+    RETURN NEW;
+  END IF;
+  -- A community plan exposed without consistent sources is a defect, not a
+  -- state to leave behind: refusing here aborts the exposing commit, so the
+  -- provisioner reports it instead of a plan sitting without authority.
+  SELECT * INTO ownership FROM community_route_attachment_namespace_sessions
+   WHERE namespace_session_id = session.namespace_session_id
+     AND actor_id = session.actor_id
+     AND community_id = session.community_id
+     AND attachment_intent_id = session.attachment_intent_id;
+  IF NOT FOUND
+    OR session.challenge_txt_value <> 'pirate-verification=' || ownership.upstream_session_ref
+  THEN
+    RAISE EXCEPTION 'HNS root-import plan exposure has no matching ownership challenge';
+  END IF;
+  SELECT job.publish_plan_sha256 INTO provision_plan_sha256
+    FROM hns_authority_provision_jobs AS job
+   WHERE job.provision_job_id = session.provision_job_id;
+  IF provision_plan_sha256 IS DISTINCT FROM session.publish_plan_sha256 THEN
+    RAISE EXCEPTION 'HNS root-import plan exposure does not match its provision job';
+  END IF;
+  INSERT INTO hns_root_import_publication_authorizations (
+    root_import_session_id, authority_generation, actor_id, community_id, root_label,
+    namespace_session_id, upstream_session_ref, challenge_value_sha256,
+    publish_plan_sha256, valid_until, source
+  ) VALUES (
+    session.root_import_session_id, NEW.generation, session.actor_id, session.community_id,
+    session.root_label, session.namespace_session_id, ownership.upstream_session_ref,
+    encode(sha256(convert_to(session.challenge_txt_value, 'UTF8')), 'hex'),
+    session.publish_plan_sha256, NEW.publication_deadline_at, 'plan_exposure'
+  ) ON CONFLICT DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION record_hns_root_import_recovery_finding_v1(input_session_id text, input_expected_generation bigint, input_evidence_ref text, input_classification text, input_reason text, input_supported_action text, input_inclusion_txid text, input_inclusion_block_height bigint, input_covenant_resource_sha256 text, input_plan_encoded_sha256 text, input_current_resource_sha256 text, input_safe_resource_sha256 text, input_zone_present boolean, input_signing_keys_present boolean) RETURNS TABLE(outcome text, recovery_finding_id bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -16067,6 +16402,15 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_hns_community_root_import_preparation_ceremony_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS community root-import preparation ceremonies are append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_hns_community_root_import_preparation_change() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -16130,6 +16474,24 @@ CREATE FUNCTION reject_hns_retention_review_change_v1() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION 'HNS retention reviews are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_hns_root_import_publication_authorization_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS root-import publication authorizations are immutable';
+END;
+$$;
+
+CREATE FUNCTION reject_hns_root_import_separated_clocks_inventory_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS separated-clocks inventory is append-only';
 END;
 $$;
 
@@ -16262,6 +16624,155 @@ BEGIN
   RETURN NULL;
 END
 $$;
+
+CREATE FUNCTION renew_hns_community_root_import_challenge_v1(input_actor_id text, input_community_id text, input_attachment_intent_id text, input_new_ceremony_intent_id text, input_reservation_request jsonb, input_reservation_request_hash text) RETURNS TABLE(outcome text, ceremony_intent_id text, generation bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+#variable_conflict use_column
+DECLARE
+  preparation hns_community_root_import_preparations%ROWTYPE;
+  intent community_route_attachment_intents%ROWTYPE;
+  requirement community_route_attachment_requirement_states%ROWTYPE;
+  current_ceremony_id text;
+  current_generation bigint;
+  ownership community_route_attachment_namespace_sessions%ROWTYPE;
+  prior_attempt community_route_attachment_ceremony_attempts%ROWTYPE;
+  database_now timestamp with time zone := clock_timestamp();
+BEGIN
+  SELECT * INTO preparation FROM hns_community_root_import_preparations
+   WHERE attachment_intent_id = input_attachment_intent_id
+     AND actor_id = input_actor_id
+     AND community_id = input_community_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'not_renewable'::text, NULL::text, NULL::bigint;
+    RETURN;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM hns_root_import_sessions AS session
+     WHERE session.root_import_session_id = preparation.root_import_session_id
+  ) THEN
+    RETURN QUERY SELECT 'session_exists'::text, NULL::text, NULL::bigint;
+    RETURN;
+  END IF;
+  SELECT * INTO intent FROM community_route_attachment_intents
+   WHERE attachment_intent_id = input_attachment_intent_id
+     AND actor_id = input_actor_id
+   FOR UPDATE;
+  IF NOT FOUND
+    OR preparation.expires_at <= database_now
+    OR intent.expires_at <= database_now
+    OR intent.status <> 'verification_required'
+  THEN
+    RETURN QUERY SELECT 'preparation_expired'::text, NULL::text, NULL::bigint;
+    RETURN;
+  END IF;
+  SELECT current_ceremony.ceremony_intent_id, current_ceremony.generation
+    INTO current_ceremony_id, current_generation
+    FROM hns_community_root_import_current_ceremony_v1(input_attachment_intent_id)
+      AS current_ceremony;
+  SELECT * INTO requirement FROM community_route_attachment_requirement_states
+   WHERE attachment_intent_id = input_attachment_intent_id
+     AND requirement_kind = 'namespace_ownership'
+   FOR UPDATE;
+  IF NOT FOUND
+    OR requirement.status <> 'pending'
+    OR requirement.generation <> current_generation
+    OR requirement.current_ceremony_intent_id IS DISTINCT FROM current_ceremony_id
+  THEN
+    RETURN QUERY SELECT 'not_renewable'::text, NULL::text, NULL::bigint;
+    RETURN;
+  END IF;
+  SELECT * INTO ownership FROM community_route_attachment_namespace_sessions
+   WHERE actor_id = input_actor_id
+     AND ceremony_intent_id = current_ceremony_id
+   FOR UPDATE;
+  IF NOT FOUND OR (ownership.status = 'pending' AND ownership.expires_at > database_now) THEN
+    RETURN QUERY SELECT 'current'::text, current_ceremony_id, current_generation;
+    RETURN;
+  END IF;
+  IF ownership.status <> 'pending'
+    OR EXISTS (
+      SELECT 1 FROM community_route_attachment_completion_observations AS observation
+       WHERE observation.namespace_session_id = ownership.namespace_session_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
+       WHERE attempt.namespace_session_id = ownership.namespace_session_id
+         AND attempt.state = 'leased'
+         AND attempt.lease_expires_at > database_now
+    )
+  THEN
+    RETURN QUERY SELECT 'not_renewable'::text, NULL::text, NULL::bigint;
+    RETURN;
+  END IF;
+  IF input_new_ceremony_intent_id IS NULL
+    OR NOT is_hns_host_persistence_identity(input_new_ceremony_intent_id, 256)
+    OR input_reservation_request_hash IS NULL
+    OR input_reservation_request_hash !~ '^[0-9a-f]{64}$'
+    OR jsonb_typeof(input_reservation_request) IS DISTINCT FROM 'object'
+    OR input_reservation_request->>'version'
+       IS DISTINCT FROM 'pirate-community-route-attachment-ceremony-reservation-v1'
+    OR input_reservation_request->>'actor_id' IS DISTINCT FROM input_actor_id
+    OR input_reservation_request->>'community_id' IS DISTINCT FROM input_community_id
+    OR input_reservation_request->>'attachment_intent_id'
+       IS DISTINCT FROM input_attachment_intent_id
+    OR input_reservation_request->>'ceremony_intent_id'
+       IS DISTINCT FROM input_new_ceremony_intent_id
+    OR (input_reservation_request->>'generation')::bigint IS DISTINCT FROM current_generation + 1
+    OR input_reservation_request->>'requirement_hash' IS DISTINCT FROM requirement.requirement_hash
+    OR input_reservation_request->>'provider_id' IS DISTINCT FROM requirement.provider_id
+    OR input_reservation_request->>'provider_binding_hash'
+       IS DISTINCT FROM requirement.provider_binding_hash
+  THEN
+    RAISE EXCEPTION 'invalid HNS root-import challenge renewal input';
+  END IF;
+  SELECT * INTO prior_attempt FROM community_route_attachment_ceremony_attempts
+   WHERE community_route_attachment_ceremony_attempts.ceremony_intent_id = current_ceremony_id;
+
+  -- pending(n) -> expired(n) -> pending(n + 1), with the attempt between,
+  -- is the only path guard_community_route_attachment_requirement_state and
+  -- validate_community_route_attachment_attempt_insert allow.
+  UPDATE community_route_attachment_requirement_states
+     SET status = 'expired', updated_at = database_now
+   WHERE attachment_intent_id = input_attachment_intent_id
+     AND requirement_kind = 'namespace_ownership'
+     AND status = 'pending'
+     AND current_ceremony_intent_id = current_ceremony_id;
+  INSERT INTO community_route_attachment_ceremony_attempts (
+    ceremony_intent_id, attachment_intent_id, actor_id, requirement_kind, generation,
+    requirement_hash, provider_id, provider_binding_hash, provider_configuration_kind,
+    provider_configuration_ref, provider_configuration_version, family, root_label,
+    root_label_display, path_segment, reservation_request_hash, reservation_request,
+    expires_at
+  ) VALUES (
+    input_new_ceremony_intent_id, input_attachment_intent_id, input_actor_id,
+    'namespace_ownership', current_generation + 1, requirement.requirement_hash,
+    requirement.provider_id, requirement.provider_binding_hash,
+    requirement.provider_configuration_kind, requirement.provider_configuration_ref,
+    requirement.provider_configuration_version, requirement.family, requirement.root_label,
+    requirement.root_label_display, requirement.path_segment,
+    input_reservation_request_hash, input_reservation_request, intent.expires_at
+  );
+  UPDATE community_route_attachment_requirement_states
+     SET status = 'pending', generation = current_generation + 1,
+         current_ceremony_intent_id = input_new_ceremony_intent_id,
+         updated_at = database_now
+   WHERE attachment_intent_id = input_attachment_intent_id
+     AND requirement_kind = 'namespace_ownership'
+     AND status = 'expired'
+     AND generation = current_generation;
+  INSERT INTO hns_community_root_import_preparation_ceremonies (
+    attachment_intent_id, generation, ceremony_intent_id, superseded_ceremony_intent_id,
+    superseded_namespace_session_id
+  ) VALUES (
+    input_attachment_intent_id, current_generation + 1, input_new_ceremony_intent_id,
+    current_ceremony_id, ownership.namespace_session_id
+  );
+  RETURN QUERY SELECT 'renewed'::text, input_new_ceremony_intent_id, current_generation + 1;
+END;
+$_$;
 
 CREATE FUNCTION require_active_author_persona() RETURNS trigger
     LANGUAGE plpgsql
@@ -25345,8 +25856,8 @@ CREATE TABLE community_route_attachment_completion_attempts (
     CONSTRAINT community_route_attachment_completion_atte_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
     CONSTRAINT community_route_attachment_completion_attempt_fence_token_check CHECK ((fence_token > 0)),
     CONSTRAINT community_route_attachment_completion_attempt_result_hash_check CHECK (((result_hash IS NULL) OR (result_hash ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT community_route_attachment_completion_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text]))),
-    CONSTRAINT community_route_attachment_completion_shape CHECK ((is_hns_host_persistence_identity(completion_attempt_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 256) AND is_hns_host_persistence_identity(evidence_ref, 256) AND (updated_at >= created_at) AND (((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (terminal_status IS NULL) AND (result_hash IS NULL) AND (terminal_at IS NULL)) OR ((state = 'consumed'::text) AND (terminal_status IS NOT NULL) AND (result_hash IS NOT NULL) AND (terminal_at IS NOT NULL)))))
+    CONSTRAINT community_route_attachment_completion_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text, 'not_attempted'::text]))),
+    CONSTRAINT community_route_attachment_completion_shape CHECK ((is_hns_host_persistence_identity(completion_attempt_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 256) AND is_hns_host_persistence_identity(evidence_ref, 256) AND (updated_at >= created_at) AND (((state = ANY (ARRAY['leased'::text, 'released'::text, 'not_attempted'::text])) AND (terminal_status IS NULL) AND (result_hash IS NULL) AND (terminal_at IS NULL)) OR ((state = 'consumed'::text) AND (terminal_status IS NOT NULL) AND (result_hash IS NOT NULL) AND (terminal_at IS NOT NULL)))))
 );
 
 CREATE TABLE community_route_attachment_completion_observations (
@@ -28132,6 +28643,16 @@ CREATE TABLE hns_community_publication_jobs (
     CONSTRAINT hns_community_publication_jobs_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'leased'::text, 'completed'::text, 'failed'::text])))
 );
 
+CREATE TABLE hns_community_root_import_preparation_ceremonies (
+    attachment_intent_id text NOT NULL,
+    generation bigint NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    superseded_ceremony_intent_id text NOT NULL,
+    superseded_namespace_session_id text,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_community_root_import_preparation_ceremoni_generation_check CHECK ((generation > 1))
+);
+
 CREATE TABLE hns_community_root_import_preparations (
     attachment_intent_id text NOT NULL,
     actor_id text NOT NULL,
@@ -28669,6 +29190,26 @@ CREATE TABLE hns_root_import_observation_jobs (
     CONSTRAINT hns_root_import_observation_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
 );
 
+CREATE TABLE hns_root_import_publication_authorizations (
+    root_import_session_id text NOT NULL,
+    authority_generation bigint NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    root_label text NOT NULL,
+    namespace_session_id text NOT NULL,
+    upstream_session_ref text NOT NULL,
+    challenge_value_sha256 text NOT NULL,
+    publish_plan_sha256 text NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    authorized_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    source text NOT NULL,
+    CONSTRAINT hns_root_import_publication_author_challenge_value_sha256_check CHECK ((challenge_value_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_root_import_publication_authoriz_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_root_import_publication_authoriza_publish_plan_sha256_check CHECK ((publish_plan_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_root_import_publication_authorization_window CHECK ((valid_until > authorized_at)),
+    CONSTRAINT hns_root_import_publication_authorizations_source_check CHECK ((source = ANY (ARRAY['plan_exposure'::text, 'migration_backfill'::text])))
+);
+
 CREATE TABLE hns_root_import_recovery_authorizations (
     recovery_authorization_id bigint NOT NULL,
     recovery_finding_id bigint NOT NULL,
@@ -28680,7 +29221,7 @@ CREATE TABLE hns_root_import_recovery_authorizations (
     consumed_at timestamp with time zone,
     CONSTRAINT hns_recovery_authorization_window CHECK ((expires_at > authorized_at)),
     CONSTRAINT hns_root_import_recovery_authorizati_authority_generation_check CHECK ((authority_generation > 0)),
-    CONSTRAINT hns_root_import_recovery_authorizations_action_check CHECK ((action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text])))
+    CONSTRAINT hns_root_import_recovery_authorizations_action_check CHECK ((action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text, 'retire'::text])))
 );
 
 ALTER TABLE hns_root_import_recovery_authorizations ALTER COLUMN recovery_authorization_id ADD GENERATED ALWAYS AS IDENTITY (
@@ -28709,7 +29250,7 @@ CREATE TABLE hns_root_import_recovery_findings (
     zone_present boolean,
     signing_keys_present boolean,
     recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT hns_recovery_finding_action_shape CHECK (((supported_action IS NULL) OR (classification = ANY (ARRAY['matching_authority_available'::text, 'recoverable_authority_missing'::text])))),
+    CONSTRAINT hns_recovery_finding_action_shape CHECK (((supported_action IS NULL) OR (supported_action = 'retire'::text) OR (classification = ANY (ARRAY['matching_authority_available'::text, 'recoverable_authority_missing'::text])))),
     CONSTRAINT hns_recovery_finding_inclusion_shape CHECK ((num_nulls(inclusion_txid, inclusion_block_height, covenant_resource_sha256) = ANY (ARRAY[0, 3]))),
     CONSTRAINT hns_root_import_recovery_finding_covenant_resource_sha256_check CHECK (((covenant_resource_sha256 IS NULL) OR (covenant_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT hns_root_import_recovery_findings_authority_generation_check CHECK ((authority_generation > 0)),
@@ -28721,7 +29262,7 @@ CREATE TABLE hns_root_import_recovery_findings (
     CONSTRAINT hns_root_import_recovery_findings_plan_encoded_sha256_check CHECK (((plan_encoded_sha256 IS NULL) OR (plan_encoded_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT hns_root_import_recovery_findings_reason_check CHECK (((btrim(reason) = reason) AND ((octet_length(reason) >= 1) AND (octet_length(reason) <= 128)))),
     CONSTRAINT hns_root_import_recovery_findings_safe_resource_sha256_check CHECK (((safe_resource_sha256 IS NULL) OR (safe_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT hns_root_import_recovery_findings_supported_action_check CHECK ((supported_action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text])))
+    CONSTRAINT hns_root_import_recovery_findings_supported_action_check CHECK ((supported_action = ANY (ARRAY['resume'::text, 'adopt'::text, 'restore_authority'::text, 'retire'::text])))
 );
 
 ALTER TABLE hns_root_import_recovery_findings ALTER COLUMN recovery_finding_id ADD GENERATED ALWAYS AS IDENTITY (
@@ -28761,6 +29302,20 @@ ALTER TABLE hns_root_import_retention_reviews ALTER COLUMN retention_review_id A
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+CREATE TABLE hns_root_import_separated_clocks_inventory (
+    root_import_session_id text NOT NULL,
+    session_status text NOT NULL,
+    lifecycle_phase text,
+    lifecycle_generation bigint,
+    plan_exposed boolean NOT NULL,
+    session_expires_at timestamp with time zone NOT NULL,
+    publication_deadline_at timestamp with time zone,
+    classification text NOT NULL,
+    reason text NOT NULL,
+    inventoried_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_root_import_separated_clocks_inventory_classification_check CHECK ((classification = ANY (ARRAY['terminal'::text, 'activated'::text, 'not_exposed'::text, 'authorization_backfill'::text, 'recovery_required'::text])))
 );
 
 CREATE TABLE hns_root_import_sessions (
@@ -34316,6 +34871,12 @@ ALTER TABLE ONLY hns_community_root_import_preparations
 ALTER TABLE ONLY hns_community_root_import_preparations
     ADD CONSTRAINT hns_community_root_import_preparatio_root_import_session_id_key UNIQUE (root_import_session_id);
 
+ALTER TABLE ONLY hns_community_root_import_preparation_ceremonies
+    ADD CONSTRAINT hns_community_root_import_preparation_ce_ceremony_intent_id_key UNIQUE (ceremony_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparation_ceremonies
+    ADD CONSTRAINT hns_community_root_import_preparation_ceremonies_pkey PRIMARY KEY (attachment_intent_id, generation);
+
 ALTER TABLE ONLY hns_community_root_import_preparations
     ADD CONSTRAINT hns_community_root_import_preparations_ceremony_intent_id_key UNIQUE (ceremony_intent_id);
 
@@ -34457,6 +35018,9 @@ ALTER TABLE ONLY hns_root_import_observation_jobs
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_root_import_session_id_key UNIQUE (root_import_session_id);
 
+ALTER TABLE ONLY hns_root_import_publication_authorizations
+    ADD CONSTRAINT hns_root_import_publication_authorizations_pkey PRIMARY KEY (root_import_session_id, authority_generation);
+
 ALTER TABLE ONLY hns_root_import_recovery_authorizations
     ADD CONSTRAINT hns_root_import_recovery_authorizations_pkey PRIMARY KEY (recovery_authorization_id);
 
@@ -34465,6 +35029,9 @@ ALTER TABLE ONLY hns_root_import_recovery_findings
 
 ALTER TABLE ONLY hns_root_import_retention_reviews
     ADD CONSTRAINT hns_root_import_retention_reviews_pkey PRIMARY KEY (retention_review_id);
+
+ALTER TABLE ONLY hns_root_import_separated_clocks_inventory
+    ADD CONSTRAINT hns_root_import_separated_clocks_inventory_pkey PRIMARY KEY (root_import_session_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_actor_id_creation_intent_id_root_i_key UNIQUE (actor_id, creation_intent_id, root_import_session_id);
@@ -36768,6 +37335,8 @@ CREATE TRIGGER hns_community_app_host_current_change_guard BEFORE DELETE OR UPDA
 
 CREATE TRIGGER hns_community_app_host_operations_append_only BEFORE DELETE OR UPDATE ON hns_community_app_host_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
 
+CREATE TRIGGER hns_community_root_import_preparation_ceremonies_change_guard BEFORE DELETE OR UPDATE ON hns_community_root_import_preparation_ceremonies FOR EACH ROW EXECUTE FUNCTION reject_hns_community_root_import_preparation_ceremony_change_v1();
+
 CREATE TRIGGER hns_community_root_import_preparations_admission_guard BEFORE INSERT ON hns_community_root_import_preparations FOR EACH ROW EXECUTE FUNCTION guard_hns_community_root_import_admission_v1();
 
 CREATE TRIGGER hns_community_root_import_preparations_change_guard BEFORE DELETE OR UPDATE ON hns_community_root_import_preparations FOR EACH ROW EXECUTE FUNCTION reject_hns_community_root_import_preparation_change();
@@ -36812,17 +37381,23 @@ CREATE TRIGGER hns_root_import_lifecycle_anchor_guard BEFORE UPDATE ON hns_root_
 
 CREATE TRIGGER hns_root_import_lifecycle_jobs_generation_fill BEFORE INSERT ON hns_root_import_lifecycle_jobs FOR EACH ROW EXECUTE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1();
 
+CREATE TRIGGER hns_root_import_lifecycle_publication_authorization AFTER UPDATE OF plan_exposed_at ON hns_root_import_lifecycle FOR EACH ROW WHEN (((old.plan_exposed_at IS NULL) AND (new.plan_exposed_at IS NOT NULL))) EXECUTE FUNCTION record_hns_root_import_publication_authorization_v1();
+
 CREATE TRIGGER hns_root_import_lifecycle_readiness_acceptance BEFORE UPDATE ON hns_root_import_lifecycle FOR EACH ROW EXECUTE FUNCTION hns_root_import_lifecycle_readiness_acceptance_v1();
 
 CREATE TRIGGER hns_root_import_name_proof_observations_retain BEFORE DELETE OR UPDATE ON hns_root_import_name_proof_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_observation_jobs_retain BEFORE DELETE ON hns_root_import_observation_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
+CREATE TRIGGER hns_root_import_publication_authorizations_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_publication_authorizations FOR EACH ROW EXECUTE FUNCTION reject_hns_root_import_publication_authorization_change_v1();
+
 CREATE TRIGGER hns_root_import_recovery_authorizations_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_recovery_authorizations FOR EACH ROW EXECUTE FUNCTION reject_hns_recovery_record_change_v1();
 
 CREATE TRIGGER hns_root_import_recovery_findings_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_recovery_findings FOR EACH ROW EXECUTE FUNCTION reject_hns_recovery_record_change_v1();
 
 CREATE TRIGGER hns_root_import_retention_reviews_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_retention_reviews FOR EACH ROW EXECUTE FUNCTION reject_hns_retention_review_change_v1();
+
+CREATE TRIGGER hns_root_import_separated_clocks_inventory_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_separated_clocks_inventory FOR EACH ROW EXECUTE FUNCTION reject_hns_root_import_separated_clocks_inventory_change_v1();
 
 CREATE TRIGGER hns_root_import_sessions_change_guard BEFORE DELETE OR UPDATE ON hns_root_import_sessions FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_session_change();
 
@@ -38588,8 +39163,14 @@ ALTER TABLE ONLY hns_community_publication_jobs
 ALTER TABLE ONLY hns_community_publication_jobs
     ADD CONSTRAINT hns_community_publication_jobs_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
+ALTER TABLE ONLY hns_community_root_import_preparation_ceremonies
+    ADD CONSTRAINT hns_community_root_import_pre_superseded_ceremony_intent_i_fkey FOREIGN KEY (superseded_ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
 ALTER TABLE ONLY hns_community_root_import_preparations
     ADD CONSTRAINT hns_community_root_import_preparation_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparation_ceremonies
+    ADD CONSTRAINT hns_community_root_import_preparation_c_ceremony_intent_id_fkey FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
 
 ALTER TABLE ONLY hns_community_root_import_preparations
     ADD CONSTRAINT hns_community_root_import_preparations_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
@@ -38675,8 +39256,14 @@ ALTER TABLE ONLY hns_root_import_name_proof_observations
 ALTER TABLE ONLY hns_root_import_observation_jobs
     ADD CONSTRAINT hns_root_import_observation_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
+ALTER TABLE ONLY hns_root_import_publication_authorizations
+    ADD CONSTRAINT hns_root_import_publication_authori_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
+
 ALTER TABLE ONLY hns_root_import_recovery_authorizations
     ADD CONSTRAINT hns_root_import_recovery_authorization_recovery_finding_id_fkey FOREIGN KEY (recovery_finding_id) REFERENCES hns_root_import_recovery_findings(recovery_finding_id);
+
+ALTER TABLE ONLY hns_root_import_separated_clocks_inventory
+    ADD CONSTRAINT hns_root_import_separated_clocks_in_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_activated_community_fk FOREIGN KEY (activated_community_id) REFERENCES communities(community_id);

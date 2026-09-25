@@ -1059,7 +1059,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             if (oneRow(challengeLive)?.live !== true) return { kind: "challenge_expired" } as const;
             // Before plan exposure the session is bounded by its preparation,
-            // not by the one-hour challenge (0206, separated clocks). A
+            // not by the one-hour challenge (0208, separated clocks). A
             // retained name-signature preparation still needs its live
             // challenge to begin provisioning, so it keeps the challenge bound
             // rather than holding the root for days after the challenge dies.

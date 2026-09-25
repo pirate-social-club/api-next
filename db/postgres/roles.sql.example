@@ -75,7 +75,7 @@ GRANT EXECUTE ON FUNCTION claim_hns_root_import_lifecycle_job_v1(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION finalize_hns_root_import_lifecycle_job_v1(
   BIGINT, TEXT, BIGINT, TEXT, TEXT
 ) TO api_next_app;
--- HNS import separated clocks (0206). The HTTP Worker renews an expired
+-- HNS import separated clocks (0208). The HTTP Worker renews an expired
 -- challenge and reads the publication window; the owner verifier authorizes an
 -- hns-txt-import-v1 poll. Both Workers use one Hyperdrive and so one role, so
 -- these grants do not separate them.
