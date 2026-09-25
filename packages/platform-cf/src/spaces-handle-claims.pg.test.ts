@@ -16,6 +16,7 @@ import {
   handleSpacesQuoteV3Hash,
   handleSpacesReservationV3Hash,
 } from "@pirate/domain";
+import { bech32m } from "@scure/base";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -59,7 +60,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 21;
+const testCount = 22;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -69,7 +70,6 @@ const activationId = "sale_namespace_activation_spaces_01";
 const offeringId = "offering_spaces_free_01";
 const policyHash = "f834457fe6eef0f6c4762d043d976c3662baa87281e3c13864e79c969cd06482";
 const sourceHash = "19a2a7128e859a7e7c4e93020d4543636e49d9b0035cf8455c4806b72781cd75";
-const BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
 async function withSchema(use: (admin: Client, connection: string) => Promise<void>) {
   if (!connectionString) throw new Error("Missing test database");
@@ -316,12 +316,22 @@ let taprootSequence = 0;
 /** A confirmed Spec 014 §12 Taproot recipient on the regtest network. */
 async function addTaproot(
   admin: Client,
-  input: Readonly<{ accountId: string; personaId: string; assignmentId: string }>,
+  input: Readonly<{
+    accountId: string;
+    personaId: string;
+    assignmentId: string;
+    scriptOverride?: string;
+  }>,
 ) {
   taprootSequence += 1;
   const n = taprootSequence;
-  const address = `bcrt1p${"q".repeat(56)}${BECH32[Math.floor(n / 32) % 32]}${BECH32[n % 32]}`;
-  const script = `5120${n.toString(16).padStart(64, "0")}`;
+  const outputKeyHex = n.toString(16).padStart(64, "0");
+  const address = bech32m.encode(
+    "bcrt",
+    [1, ...bech32m.toWords(Buffer.from(outputKeyHex, "hex"))],
+    90,
+  );
+  const script = `5120${outputKeyHex}`;
   await admin.query(
     `INSERT INTO persona_wallet_assignments (
        assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,status,
@@ -334,7 +344,7 @@ async function addTaproot(
         SET status='active',privy_wallet_id='privy-' || assignment_id,address=$2,
             output_script_hex=$3,assigned_at=clock_timestamp(),updated_at=clock_timestamp()
       WHERE assignment_id=$1`,
-    [input.assignmentId, address, script],
+    [input.assignmentId, address, input.scriptOverride ?? script],
   );
   return { assignmentId: input.assignmentId, script };
 }
@@ -635,6 +645,27 @@ suite("Spaces quote, reservation, and atomic claim", () => {
     });
     completed++;
   }, 60_000);
+
+  test("refuses a stored Taproot address and script that disagree", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection);
+      const store = salesStore(connection);
+      const buyer = await seedBuyer(admin, "mismatched-taproot", { taproot: false });
+      await addTaproot(admin, {
+        ...buyer,
+        assignmentId: "taproot-mismatched",
+        scriptOverride: `5120${"f".repeat(64)}`,
+      });
+      await confirmLink(store, buyer, "mismatched-taproot");
+
+      const before = await snapshot(admin);
+      await expect(
+        Effect.runPromise(store.createQuote(quoteInput(buyer, "mismatchedfan", "mismatched"))),
+      ).rejects.toThrow();
+      expect(await snapshot(admin)).toEqual(before);
+    });
+    completed++;
+  });
 
   test("quotes, reserves, and claims atomically as issuance_pending with nothing public", async () => {
     await withSchema(async (admin, connection) => {
