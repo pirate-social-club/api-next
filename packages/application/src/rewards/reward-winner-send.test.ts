@@ -50,6 +50,7 @@ const observation = (
   overrides: Partial<RewardWinnerSendObservation> = {},
 ): RewardWinnerSendObservation => ({
   headBlockNumber: 102n,
+  finalizedBlockNumber: 102n,
   latestNonce: 5n,
   confirmedNonce: 5n,
   receipts: [],
@@ -151,6 +152,45 @@ describe("winner send status rules", () => {
         { receipts: [receipt(), receipt({ transactionHash: hash("f2") })] },
       ),
     ).toEqual({ status: "pending" });
+    expect(
+      compute(
+        { transactionHashes: [hash("f1"), hash("f2")] },
+        {
+          latestNonce: 6n,
+          confirmedNonce: 6n,
+          reorganizedHashes: [hash("f1")],
+          receipts: [receipt({ transactionHash: hash("f2") })],
+        },
+      ),
+    ).toMatchObject({ outcome: "confirmed", transactionHash: hash("f2") });
+  });
+
+  test("no terminal outcome is recorded before the receipt or nonce is finalized", () => {
+    const hashes = { transactionHashes: [hash("f1")] };
+    const unfinalized = {
+      headBlockNumber: 120n,
+      finalizedBlockNumber: 99n,
+      latestNonce: 6n,
+      confirmedNonce: 5n,
+    };
+    expect(compute(hashes, { ...unfinalized, receipts: [receipt()] })).toEqual({
+      status: "pending",
+    });
+    expect(
+      compute(hashes, {
+        ...unfinalized,
+        receipts: [receipt({ status: "reverted", transfers: [] })],
+      }),
+    ).toEqual({ status: "pending" });
+    expect(compute({}, unfinalized)).toEqual({ status: "pending" });
+    expect(
+      compute(hashes, {
+        ...unfinalized,
+        finalizedBlockNumber: 100n,
+        confirmedNonce: 6n,
+        receipts: [receipt()],
+      }),
+    ).toMatchObject({ outcome: "confirmed" });
   });
 });
 
@@ -319,12 +359,13 @@ function fixture(options: { existing?: RewardWinnerSendRecord; pendingNonce?: bi
         calls.push(`outcome:${input.outcome}`);
         return "recorded" as const;
       }),
-    recoverConfirmed: () => Effect.die("unexpected"),
+    recoverOutcome: () => Effect.die("unexpected"),
   };
   const chain: RewardWinnerSendChain = {
     readPendingNonce: () => Effect.succeed(options.pendingNonce ?? 5n),
     readTransaction: () => Effect.succeed(null),
     readHead: () => Effect.succeed(102n),
+    readFinalizedHead: () => Effect.succeed(102n),
     readTransactionCount: () => Effect.succeed(5n),
     readReceipt: () => Effect.succeed(null),
   };

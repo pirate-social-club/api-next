@@ -11982,13 +11982,14 @@ BEGIN
     RAISE EXCEPTION 'a confirmed or cancelled reward winner send is terminal';
   END IF;
   IF OLD.status = 'settled_unverified' THEN
-    -- Only late-hash recovery: the same attempt, proven confirmed.
-    IF NEW.status <> 'confirmed' OR NEW.attempt <> OLD.attempt OR NOT EXISTS (
+    -- Only late-hash recovery: the same attempt, proven by a finalized receipt.
+    IF NEW.status NOT IN ('confirmed', 'reverted', 'cancelled')
+       OR NEW.attempt <> OLD.attempt OR NOT EXISTS (
       SELECT 1 FROM reward_winner_send_outcomes outcome
        WHERE outcome.send_id = NEW.send_id AND outcome.attempt = NEW.attempt
-         AND outcome.outcome = 'confirmed'
+         AND outcome.outcome = NEW.status
     ) THEN
-      RAISE EXCEPTION 'a settled_unverified reward winner send can only be proven confirmed';
+      RAISE EXCEPTION 'a settled_unverified reward winner send requires a proven outcome';
     END IF;
     RETURN NEW;
   END IF;
@@ -12089,7 +12090,8 @@ BEGIN
     SELECT 1 FROM reward_winner_sends send
      WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
        AND (send.status IN ('retryable', 'pending')
-         OR (send.status = 'settled_unverified' AND NEW.outcome = 'confirmed'))
+         OR (send.status = 'settled_unverified'
+           AND NEW.outcome IN ('confirmed', 'reverted', 'cancelled')))
   ) THEN
     RAISE EXCEPTION 'a reward winner send outcome must settle its open current attempt';
   END IF;
@@ -12113,8 +12115,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM reward_winner_sends send
      WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
-       AND (send.status IN ('retryable', 'pending')
-         OR (send.status = 'settled_unverified' AND NEW.kind = 'transfer'))
+       AND send.status IN ('retryable', 'pending', 'settled_unverified')
   ) THEN
     RAISE EXCEPTION 'a reward winner send transaction must belong to its open current attempt';
   END IF;
@@ -24102,7 +24103,7 @@ BEGIN
        AND send.status = 'settled_unverified'
        AND NEW.created_at > outcome.created_at
   ) THEN
-    RAISE EXCEPTION 'a hash accepted after settled_unverified must prove the send confirmed';
+    RAISE EXCEPTION 'a hash accepted after settled_unverified must prove a final outcome';
   END IF;
   RETURN NULL;
 END

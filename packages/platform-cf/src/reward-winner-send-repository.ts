@@ -615,7 +615,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           );
         }),
       ),
-    recoverConfirmed: (input: Parameters<RewardWinnerSendStore["recoverConfirmed"]>[0]) =>
+    recoverOutcome: (input: Parameters<RewardWinnerSendStore["recoverOutcome"]>[0]) =>
       mapped(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
@@ -637,7 +637,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
                 if (
                   row.send_id !== input.sendId ||
                   Number(row.attempt) !== input.attempt ||
-                  row.kind !== "transfer"
+                  row.kind !== input.kind
                 ) {
                   return yield* rejected("transaction-mismatch");
                 }
@@ -646,18 +646,18 @@ export function makeControlPlaneRewardWinnerSendRepository() {
                   label: "reward-winner-send.late-transaction.create",
                   text: `INSERT INTO reward_winner_send_transactions (
                            transaction_hash, send_id, attempt, kind
-                         ) VALUES ($1,$2,$3,'transfer')`,
-                  values: [input.transactionHash, input.sendId, input.attempt],
+                         ) VALUES ($1,$2,$3,$4)`,
+                  values: [input.transactionHash, input.sendId, input.attempt, input.kind],
                   readonly: false,
                 });
               }
-              yield* insertOutcomeIn(transaction, { ...input, outcome: "confirmed" });
+              yield* insertOutcomeIn(transaction, input);
               const recovered = yield* transaction.execute({
-                label: "reward-winner-send.late-confirmation.record",
+                label: "reward-winner-send.late-outcome.record",
                 text: `UPDATE reward_winner_sends
-                          SET status='confirmed', updated_at=clock_timestamp()
+                          SET status=$3, updated_at=clock_timestamp()
                         WHERE send_id=$1 AND attempt=$2 AND status='settled_unverified'`,
-                values: [input.sendId, input.attempt],
+                values: [input.sendId, input.attempt, input.outcome],
                 readonly: false,
               });
               if (recovered.rowCount !== 1) return yield* rejected("send-conflict");
@@ -685,6 +685,6 @@ export const makeControlPlaneRewardWinnerSendStore = (
     attachTransaction: (input) => provide(repository.attachTransaction(input)),
     recordStatus: (input) => provide(repository.recordStatus(input)),
     recordOutcome: (input) => provide(repository.recordOutcome(input)),
-    recoverConfirmed: (input) => provide(repository.recoverConfirmed(input)),
+    recoverOutcome: (input) => provide(repository.recoverOutcome(input)),
   };
 };

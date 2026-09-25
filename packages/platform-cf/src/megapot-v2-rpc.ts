@@ -172,6 +172,12 @@ export interface MegapotV2RpcClient {
     readonly blockHash: string;
     readonly blockTimestamp?: bigint;
   }>;
+  /** Finalized L2 block; a cancelled or reverted send may release a nonce only after this. */
+  readonly readFinalizedHead?: () => Promise<{
+    readonly blockNumber: bigint;
+    readonly blockHash: string;
+    readonly blockTimestamp?: bigint;
+  }>;
   readonly readBlock: (blockNumber: bigint) => Promise<{
     readonly blockNumber: bigint;
     readonly blockHash: string;
@@ -286,7 +292,9 @@ function blockIdentity(value: unknown): {
 }
 
 export type MegapotV2FullRpcClient = MegapotV2RpcClient &
-  Required<Pick<MegapotV2RpcClient, "readTransaction" | "readTransactionCount">>;
+  Required<
+    Pick<MegapotV2RpcClient, "readTransaction" | "readTransactionCount" | "readFinalizedHead">
+  >;
 
 function transactionFromRpc(value: unknown, requestedHash: string): MegapotV2Transaction {
   const transaction = object(value);
@@ -430,6 +438,8 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   };
 
   const readHead = async () => blockIdentity(await rpc("eth_getBlockByNumber", ["latest", false]));
+  const readFinalizedHead = async () =>
+    blockIdentity(await rpc("eth_getBlockByNumber", ["finalized", false]));
 
   const performDeploymentAttestation = async () => {
     const [
@@ -637,6 +647,7 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       };
     },
     readHead,
+    readFinalizedHead,
     readBlock: async (blockNumber) => {
       if (blockNumber < 0n) throw new MegapotV2RpcFailed("invalid-config");
       const identity = blockIdentity(

@@ -15,7 +15,9 @@ export type RewardWinnerSendRpc = Pick<
   MegapotV2RpcClient,
   "readPendingNonce" | "readReceipt" | "readHead" | "readBlock"
 > &
-  Required<Pick<MegapotV2RpcClient, "readTransaction" | "readTransactionCount">>;
+  Required<
+    Pick<MegapotV2RpcClient, "readTransaction" | "readTransactionCount" | "readFinalizedHead">
+  >;
 
 const unavailable = () => new RewardWinnerSendChainUnavailable({ reason: "rpc-unavailable" });
 
@@ -84,6 +86,7 @@ export function makeRewardWinnerSendChain(rpc: RewardWinnerSendRpc): RewardWinne
     readPendingNonce: (address) => call(() => rpc.readPendingNonce(address)),
     readTransaction: (transactionHash) => call(() => rpc.readTransaction(transactionHash)),
     readHead: () => call(async () => (await rpc.readHead()).blockNumber),
+    readFinalizedHead: () => call(async () => (await rpc.readFinalizedHead()).blockNumber),
     readTransactionCount: (address, blockNumber) =>
       call(() => rpc.readTransactionCount(address, blockNumber)),
     readReceipt,

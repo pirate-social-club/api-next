@@ -1,7 +1,7 @@
 /**
  * A winner's onward send of claimed, paid USDC: one durable record per credit,
  * a server-fixed sender nonce per attempt, and a status derived only from
- * chain reads at depth. Prerequisite rows (users, personas, wallets, the paid
+ * chain reads at finality and depth. Prerequisite rows (users, personas, wallets, the paid
  * and claimed credits and their confirmed payout records) are seeded with
  * triggers disabled; every send, attempt, transaction and outcome row is
  * written through the production repository, chain adapter and guards.
@@ -57,6 +57,12 @@ const WALLETS = {
   raceSettle: address("ac"),
   cancelWins: address("ad"),
   transferWins: address("ae"),
+  finality: address("af"),
+  lateCancel: address("b2"),
+  lateRevert: address("b3"),
+  raceCancel: address("b4"),
+  delayedCancelReceipt: address("b5"),
+  delayedTransferReceipt: address("b6"),
 } as const;
 const RECIPIENT = address("d1");
 const RECIPIENT_2 = address("d2");
@@ -155,6 +161,54 @@ const FIXTURES: readonly Fixture[] = [
     account: "winner",
     persona: "p14",
     wallet: "transferWins",
+    state: "sent",
+    claimed: true,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p15",
+    wallet: "finality",
+    state: "sent",
+    claimed: true,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p16",
+    wallet: "lateCancel",
+    state: "sent",
+    claimed: true,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p17",
+    wallet: "lateRevert",
+    state: "sent",
+    claimed: true,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p18",
+    wallet: "raceCancel",
+    state: "sent",
+    claimed: true,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p19",
+    wallet: "delayedCancelReceipt",
+    state: "sent",
+    claimed: true,
+    paidOut: true,
+  },
+  {
+    account: "winner",
+    persona: "p20",
+    wallet: "delayedTransferReceipt",
     state: "sent",
     claimed: true,
     paidOut: true,
@@ -280,6 +334,7 @@ async function seedPrerequisites(admin: Client) {
  */
 function fakeChain() {
   let head = 100n;
+  let finalized: bigint | null = null;
   const pending = new Map<string, bigint>();
   const consumed = new Map<string, bigint[]>();
   const transactions = new Map<string, MegapotV2Transaction>();
@@ -306,6 +361,10 @@ function fakeChain() {
     readTransaction: async (transactionHash) => transactions.get(transactionHash) ?? null,
     readReceipt: async (transactionHash) => receipts.get(transactionHash) ?? null,
     readHead: async () => ({ blockNumber: head, blockHash: blockHash(head) }),
+    readFinalizedHead: async () => ({
+      blockNumber: finalized ?? head,
+      blockHash: blockHash(finalized ?? head),
+    }),
     readBlock: async (blockNumber) => ({
       blockNumber,
       blockHash: replacedBlocks.get(blockNumber) ?? blockHash(blockNumber),
@@ -313,6 +372,9 @@ function fakeChain() {
   };
   return {
     rpc,
+    setFinalizedHead: (blockNumber: bigint | null) => {
+      finalized = blockNumber;
+    },
     setPendingNonce: (account: string, nonce: bigint) => pending.set(account, nonce),
     clearPendingNonce: (account: string) => pending.delete(account),
     setNonceDelay: (milliseconds: number) => {
@@ -381,6 +443,9 @@ function fakeChain() {
       else replacedBlocks.set(blockNumber, replacement);
     },
     receipt: (transactionHash: string) => receipts.get(transactionHash),
+    hideReceipt: (transactionHash: string) => receipts.delete(transactionHash),
+    restoreReceipt: (transactionHash: string, value: MegapotTransactionReceipt) =>
+      receipts.set(transactionHash, value),
   };
 }
 
@@ -918,7 +983,115 @@ suite("Postgres 17 Megapot winner send record", () => {
          VALUES ($1,$2,1,'transfer')`,
         [hash("eb"), settled.sendId],
       ),
-    ).rejects.toThrow("must prove the send confirmed");
+    ).rejects.toThrow("must prove a final outcome");
+  });
+
+  test("a recent revert cannot open another nonce until its block is finalized", async () => {
+    const opened = await send("p15", "k-15");
+    signed(opened, hash("15"));
+    await attach(opened.sendId, hash("15"));
+    chain.setFinalizedHead((await chain.rpc.readHead()).blockNumber);
+    chain.mine(hash("15"), "reverted");
+    chain.advance(2n);
+    expect(await get(opened.sendId)).toMatchObject({ status: "pending" });
+    expect(await refused("p15", "k-15-more", RECIPIENT_2)).toMatchObject({
+      reason: "send-conflict",
+    });
+    chain.setFinalizedHead((await chain.rpc.readHead()).blockNumber);
+    expect(await get(opened.sendId)).toMatchObject({ status: "reverted" });
+    const retry = await send("p15", "k-15-more", RECIPIENT_2);
+    expect(retry).toMatchObject({ attempt: 2, nonce: opened.nonce + 1n });
+    chain.setFinalizedHead(null);
+  });
+
+  test("a late verified cancellation resolves an unverified nonce and releases the credit", async () => {
+    const opened = await send("p16", "k-16");
+    selfCancel(opened, hash("16"));
+    chain.mine(hash("16"), "success");
+    chain.drop(hash("16"));
+    expect(await cancelRefused(opened.sendId, hash("16"))).toMatchObject({
+      reason: "transaction-not-found",
+    });
+    chain.advance(2n);
+    expect(await get(opened.sendId)).toMatchObject({ status: "settled_unverified" });
+    selfCancel(opened, hash("16"));
+    expect(await cancel(opened.sendId, hash("16"))).toMatchObject({
+      status: "cancelled",
+      cancellationHashes: [hash("16")],
+    });
+    expect(await send("p16", "k-16-again")).toMatchObject({
+      status: "retryable",
+      nonce: opened.nonce + 1n,
+    });
+  });
+
+  test("a late verified reverted transfer resolves an unverified nonce", async () => {
+    const opened = await send("p17", "k-17");
+    signed(opened, hash("17"));
+    chain.mine(hash("17"), "reverted");
+    chain.drop(hash("17"));
+    chain.advance(2n);
+    expect(await get(opened.sendId)).toMatchObject({ status: "settled_unverified" });
+    signed(opened, hash("17"));
+    expect(await attach(opened.sendId, hash("17"))).toMatchObject({
+      status: "reverted",
+      transactionHashes: [hash("17")],
+    });
+    expect(await send("p17", "k-17-again", RECIPIENT_2)).toMatchObject({
+      attempt: 2,
+      nonce: opened.nonce + 1n,
+    });
+  });
+
+  test("a cancellation attached after a racing status write resolves under the row lock", async () => {
+    const opened = await send("p18", "k-18");
+    selfCancel(opened, hash("18"));
+    chain.mine(hash("18"), "success");
+    chain.advance(2n);
+    const settleFirst = serviceWith({
+      attachTransaction: (input) =>
+        service.get({ accountId: input.accountId, sendId: input.sendId }).pipe(
+          Effect.orDie,
+          Effect.andThen(() => store.attachTransaction(input)),
+        ),
+    });
+    expect(
+      await Effect.runPromise(
+        settleFirst.cancel({
+          accountId: "winner",
+          sendId: opened.sendId,
+          transactionHash: hash("18"),
+        }),
+      ),
+    ).toMatchObject({ status: "cancelled" });
+  });
+
+  test("an accepted cancel hash can resolve after its receipt appears late", async () => {
+    const opened = await send("p19", "k-19");
+    selfCancel(opened, hash("19"));
+    await cancel(opened.sendId, hash("19"));
+    chain.mine(hash("19"), "success");
+    const mined = chain.receipt(hash("19"));
+    if (mined === undefined) throw new Error("missing mined receipt");
+    chain.hideReceipt(hash("19"));
+    chain.advance(2n);
+    expect(await get(opened.sendId)).toMatchObject({ status: "settled_unverified" });
+    chain.restoreReceipt(hash("19"), mined);
+    expect(await cancel(opened.sendId, hash("19"))).toMatchObject({ status: "cancelled" });
+  });
+
+  test("an accepted reverted transfer hash can resolve after its receipt appears late", async () => {
+    const opened = await send("p20", "k-20");
+    signed(opened, hash("20"));
+    await attach(opened.sendId, hash("20"));
+    chain.mine(hash("20"), "reverted");
+    const mined = chain.receipt(hash("20"));
+    if (mined === undefined) throw new Error("missing mined receipt");
+    chain.hideReceipt(hash("20"));
+    chain.advance(2n);
+    expect(await get(opened.sendId)).toMatchObject({ status: "settled_unverified" });
+    chain.restoreReceipt(hash("20"), mined);
+    expect(await attach(opened.sendId, hash("20"))).toMatchObject({ status: "reverted" });
   });
 
   test("a status write racing an attach converges on confirmed in both orders", async () => {

@@ -209,6 +209,6 @@
     "0206_megapot_winner_gas_topup.sql": "e3e3f1059b83dfbb0b20b22eddf54b21bbd78dd06d34aeb337dfbfc715fa38ea",
     "0207_video_safety_sampled_frame_allow.sql": "7f403b29bfd470ed34cb1004841019cf82884abbdae22b1093cc87e7618fa31f",
     "0208_hns_import_separated_clocks.sql": "00d1be15197222329ac9e65f6fca3bcfc24ebf80652555ee33f1b2cc20b56247",
-    "0209_megapot_winner_send_record.sql": "7f23e52f550e563d56db919b2bff4d9c66ca8b38fed79697baf542686ada9ead"
+    "0209_megapot_winner_send_record.sql": "52d9649eebdbc30956b31bca23f5ad0ea064e150c84a20b1680ecdb0aa256b65"
   }
 }

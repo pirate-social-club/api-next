@@ -8,8 +8,8 @@ import { Data, Effect } from "effect";
  * send at a time, so two credits paid to one wallet never share a nonce. An
  * open send that will not be signed is cancelled by a verified zero-value
  * self-transaction with the reserved nonce, never by deletion or expiry.
- * Every status is derived from chain reads at the required confirmation
- * depth, never from elapsed time.
+ * Every final status is derived from a canonical receipt or nonce in a
+ * finalized block at the required confirmation depth, never from elapsed time.
  */
 
 export const REWARD_WINNER_SEND_CHAIN_ID = 84_532;
@@ -206,13 +206,15 @@ export interface RewardWinnerSendStore {
     }> &
       RewardWinnerSendOutcome,
   ) => Effect.Effect<"recorded" | "stale" | "unchanged", RewardWinnerSendFailure>;
-  /**
-   * Late-hash recovery: accepts a verified hash for a settled_unverified
-   * attempt and moves it to confirmed in one transaction. send-conflict when
-   * the attempt is not settled_unverified.
-   */
-  readonly recoverConfirmed: (
-    input: Readonly<{ accountId: string; sendId: string; attempt: number }> &
+  /** A verified late hash resolves a settled_unverified attempt under its row lock. */
+  readonly recoverOutcome: (
+    input: Readonly<{
+      accountId: string;
+      sendId: string;
+      attempt: number;
+      kind: RewardWinnerSendTransactionKind;
+      outcome: "confirmed" | "reverted" | "cancelled";
+    }> &
       RewardWinnerSendReceiptEvidence,
   ) => Effect.Effect<RewardWinnerSendRecord, RewardWinnerSendFailure>;
 }
@@ -260,6 +262,7 @@ export interface RewardWinnerSendChain {
     transactionHash: string,
   ) => Effect.Effect<RewardWinnerSendChainTransaction | null, RewardWinnerSendChainUnavailable>;
   readonly readHead: () => Effect.Effect<bigint, RewardWinnerSendChainUnavailable>;
+  readonly readFinalizedHead: () => Effect.Effect<bigint, RewardWinnerSendChainUnavailable>;
   /** The account's mined transaction count as of blockNumber. */
   readonly readTransactionCount: (
     address: string,
@@ -272,9 +275,10 @@ export interface RewardWinnerSendChain {
 
 export type RewardWinnerSendObservation = Readonly<{
   headBlockNumber: bigint;
+  finalizedBlockNumber: bigint;
   /** Sender's mined transaction count at the head. */
   latestNonce: bigint;
-  /** Sender's mined transaction count at the confirmation depth. */
+  /** Sender's mined transaction count at the lesser of depth and finality. */
   confirmedNonce: bigint;
   /** Canonical receipts of accepted hashes. */
   receipts: readonly RewardWinnerSendReceipt[];
@@ -335,13 +339,13 @@ export function matchesRewardWinnerSendCancellation(
  * The status rules. Only one transaction per sender nonce can be mined, so at
  * most one accepted hash, transfer or cancellation, can hold a receipt.
  *
- * - cancelled: an accepted cancellation's receipt is at depth and carries no
+ * - cancelled: an accepted cancellation's receipt is finalized, at depth, and carries no
  *   Transfer of the token from the sender (a reverted cancellation moved
  *   nothing either). One carrying such a Transfer is settled_unverified.
- * - confirmed: an accepted hash's receipt succeeded at depth with exactly one
+ * - confirmed: an accepted hash's receipt succeeded in a finalized block at depth with exactly one
  *   Transfer log of the token from sender to recipient for exactly amount.
- * - reverted: an accepted hash's receipt reverted at depth.
- * - settled_unverified: the nonce was consumed at depth but no accepted hash
+ * - reverted: an accepted hash's receipt reverted in a finalized block at depth.
+ * - settled_unverified: the nonce was consumed in a finalized block at depth but no accepted hash
  *   has a receipt, or the successful receipt lacks the exact Transfer log.
  * - pending: something for the nonce is mined but not yet at depth, a receipt
  *   is off the canonical chain, or the node still knows an accepted hash.
@@ -369,15 +373,17 @@ export function computeRewardWinnerSendStatus(input: {
     observedConfirmedNonce: observation.confirmedNonce,
     confirmations: required,
   };
-  // A receipt off the canonical chain, or two receipts for one nonce (which
-  // one chain cannot hold), is a node inconsistency: wait, never settle.
-  if (observation.reorganizedHashes.some((hash) => accepted.has(hash)) || mined.length > 1) {
+  // Two canonical receipts for one nonce are a node inconsistency. A stale
+  // receipt for a replaced hash does not outweigh a finalized canonical one.
+  if (mined.length > 1) {
     return { status: "pending" };
   }
   const receipt = mined[0];
   if (receipt !== undefined) {
     const depth = observation.headBlockNumber - receipt.blockNumber + 1n;
-    if (depth < BigInt(required)) return { status: "pending" };
+    if (depth < BigInt(required) || receipt.blockNumber > observation.finalizedBlockNumber) {
+      return { status: "pending" };
+    }
     const evidence = {
       transactionHash: receipt.transactionHash,
       blockNumber: receipt.blockNumber,
@@ -403,6 +409,9 @@ export function computeRewardWinnerSendStatus(input: {
     return transfers.length === 1
       ? { outcome: "confirmed", ...evidence }
       : { outcome: "settled_unverified", ...observed };
+  }
+  if (observation.reorganizedHashes.some((hash) => accepted.has(hash))) {
+    return { status: "pending" };
   }
   if (observation.confirmedNonce > record.nonce) {
     return { outcome: "settled_unverified", ...observed };
@@ -470,14 +479,18 @@ export function makeRewardWinnerSendService(input: {
     senderAddress: string,
     transactionHashes: readonly string[],
   ) {
-    const headBlockNumber = yield* chain.readHead();
+    const [headBlockNumber, finalizedBlockNumber] = yield* Effect.all([
+      chain.readHead(),
+      chain.readFinalizedHead(),
+    ]);
     const depthBlock = headBlockNumber - BigInt(input.requiredConfirmations) + 1n;
+    const settlementBlock = depthBlock < finalizedBlockNumber ? depthBlock : finalizedBlockNumber;
     const [latestNonce, confirmedNonce, reads] = yield* Effect.all(
       [
         chain.readTransactionCount(senderAddress, headBlockNumber),
-        depthBlock < 0n
+        settlementBlock < 0n
           ? Effect.succeed(0n)
-          : chain.readTransactionCount(senderAddress, depthBlock),
+          : chain.readTransactionCount(senderAddress, settlementBlock),
         Effect.forEach(
           transactionHashes,
           (hash) =>
@@ -491,6 +504,7 @@ export function makeRewardWinnerSendService(input: {
     );
     return {
       headBlockNumber,
+      finalizedBlockNumber,
       latestNonce,
       confirmedNonce,
       receipts: reads.flatMap(([receipt]) => (receipt?.canonical ? [receipt] : [])),
@@ -651,27 +665,39 @@ export function makeRewardWinnerSendService(input: {
   });
 
   /**
-   * A settled_unverified attempt becomes confirmed only when a late hash
-   * verifies and its canonical receipt at depth shows the exact transfer.
-   * Nothing else about the attempt changes, so no send is ever re-enabled.
+   * A settled_unverified attempt can be resolved by a verified late hash.
+   * Reverted transfers and cancellations can safely release the credit only
+   * after the receipt is finalized; a successful transfer stays terminal.
    */
   const recover = Effect.fn("RewardWinnerSend.recover")(function* (
     record: RewardWinnerSendRecord,
     transactionHash: string,
+    kind: RewardWinnerSendTransactionKind,
   ) {
-    const probe = { ...record, transactionHashes: [transactionHash], cancellationHashes: [] };
+    const probe = {
+      ...record,
+      transactionHashes: kind === "transfer" ? [transactionHash] : [],
+      cancellationHashes: kind === "cancel" ? [transactionHash] : [],
+    };
     const computed = computeRewardWinnerSendStatus({
       record: probe,
       requiredConfirmations: input.requiredConfirmations,
-      observation: yield* observe(record.senderAddress, probe.transactionHashes),
+      observation: yield* observe(record.senderAddress, [transactionHash]),
     });
-    if (!("outcome" in computed) || computed.outcome !== "confirmed") {
+    if (
+      !("outcome" in computed) ||
+      computed.outcome === "settled_unverified" ||
+      (kind === "cancel" && computed.outcome !== "cancelled") ||
+      (kind === "transfer" && computed.outcome === "cancelled")
+    ) {
       return yield* rejected("send-conflict");
     }
-    return yield* store.recoverConfirmed({
+    return yield* store.recoverOutcome({
       accountId: record.accountId,
       sendId: record.sendId,
       attempt: record.attempt,
+      kind,
+      outcome: computed.outcome,
       transactionHash: computed.transactionHash,
       blockNumber: computed.blockNumber,
       blockHash: computed.blockHash,
@@ -689,7 +715,11 @@ export function makeRewardWinnerSendService(input: {
     const transactionHash = attach.transactionHash.toLowerCase();
     if (!/^0x[0-9a-f]{64}$/u.test(transactionHash)) return yield* rejected("transaction-mismatch");
     const record = yield* load(attach);
-    if (record.transactionHashes.includes(transactionHash)) return yield* refresh(record);
+    if (record.transactionHashes.includes(transactionHash)) {
+      return record.status === "settled_unverified"
+        ? yield* recover(record, transactionHash, "transfer")
+        : yield* refresh(record);
+    }
     if (record.cancellationHashes.includes(transactionHash)) {
       return yield* rejected("transaction-mismatch");
     }
@@ -709,7 +739,9 @@ export function makeRewardWinnerSendService(input: {
     ) {
       return yield* rejected("transaction-mismatch");
     }
-    if (record.status === "settled_unverified") return yield* recover(record, transactionHash);
+    if (record.status === "settled_unverified") {
+      return yield* recover(record, transactionHash, "transfer");
+    }
     const attached = yield* store
       .attachTransaction({
         accountId: attach.accountId,
@@ -729,7 +761,7 @@ export function makeRewardWinnerSendService(input: {
                 if (current.status !== "settled_unverified" || current.attempt !== record.attempt) {
                   return yield* error;
                 }
-                return yield* recover(current, transactionHash);
+                return yield* recover(current, transactionHash, "transfer");
               }),
         ),
       );
@@ -744,12 +776,20 @@ export function makeRewardWinnerSendService(input: {
     const transactionHash = attach.transactionHash.toLowerCase();
     if (!/^0x[0-9a-f]{64}$/u.test(transactionHash)) return yield* rejected("transaction-mismatch");
     const record = yield* load(attach);
-    if (record.cancellationHashes.includes(transactionHash)) return yield* refresh(record);
+    if (record.cancellationHashes.includes(transactionHash)) {
+      return record.status === "settled_unverified"
+        ? yield* recover(record, transactionHash, "cancel")
+        : yield* refresh(record);
+    }
     if (record.transactionHashes.includes(transactionHash)) {
       return yield* rejected("transaction-mismatch");
     }
-    // Only an open send can be cancelled; nothing settled moves backwards.
-    if (record.status !== "retryable" && record.status !== "pending") {
+    // A late cancellation may prove that a settled_unverified send moved no USDC.
+    if (
+      record.status !== "retryable" &&
+      record.status !== "pending" &&
+      record.status !== "settled_unverified"
+    ) {
       return yield* rejected("send-conflict");
     }
     const transaction = yield* chain.readTransaction(transactionHash);
@@ -760,13 +800,30 @@ export function makeRewardWinnerSendService(input: {
     ) {
       return yield* rejected("transaction-mismatch");
     }
-    const attached = yield* store.attachTransaction({
-      accountId: attach.accountId,
-      sendId: record.sendId,
-      attempt: record.attempt,
-      transactionHash,
-      kind: "cancel",
-    });
+    if (record.status === "settled_unverified") {
+      return yield* recover(record, transactionHash, "cancel");
+    }
+    const attached = yield* store
+      .attachTransaction({
+        accountId: attach.accountId,
+        sendId: record.sendId,
+        attempt: record.attempt,
+        transactionHash,
+        kind: "cancel",
+      })
+      .pipe(
+        Effect.catchTag("RewardWinnerSendRejected", (error) =>
+          error.reason !== "send-conflict"
+            ? Effect.fail(error)
+            : Effect.gen(function* () {
+                const current = yield* load(attach);
+                if (current.status !== "settled_unverified" || current.attempt !== record.attempt) {
+                  return yield* error;
+                }
+                return yield* recover(current, transactionHash, "cancel");
+              }),
+        ),
+      );
     return yield* refresh(attached);
   });
 

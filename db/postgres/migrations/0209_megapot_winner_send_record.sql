@@ -14,7 +14,7 @@
 --
 -- An open send that will not be signed is cancelled on chain, never deleted
 -- or expired: the winner signs a zero-value, empty-calldata self-transaction
--- with the reserved nonce, and once that receipt is at depth the record is
+-- with the reserved nonce, and once that receipt is finalized the record is
 -- cancelled. Only one transaction can use the nonce, so the transfer and the
 -- cancellation cannot both land. A cancelled record releases the wallet and
 -- its credit, which may then start a new record with a fresh nonce: one
@@ -87,11 +87,11 @@ CREATE TABLE reward_winner_send_transactions (
 CREATE INDEX reward_winner_send_transactions_attempt_idx
   ON reward_winner_send_transactions (send_id, attempt, created_at);
 
--- The final chain outcome of an attempt, observed at the required depth.
--- settled_unverified: the attempt's nonce was consumed at depth but no
--- accepted hash has a receipt, so the send can never be retried. A later
--- verified hash whose receipt proves the exact transfer adds a confirmed row
--- for the same attempt (late-hash recovery); nothing else follows it.
+-- The final chain outcome of an attempt, observed in a finalized block at the
+-- required depth. settled_unverified: the attempt's nonce was consumed there
+-- but no accepted hash has a receipt, so the send cannot be retried. A later
+-- verified hash whose finalized receipt proves the transfer, its revert, or
+-- cancellation adds the corresponding outcome for the same attempt.
 CREATE TABLE reward_winner_send_outcomes (
   send_id TEXT NOT NULL,
   attempt INTEGER NOT NULL,
@@ -178,13 +178,14 @@ BEGIN
     RAISE EXCEPTION 'a confirmed or cancelled reward winner send is terminal';
   END IF;
   IF OLD.status = 'settled_unverified' THEN
-    -- Only late-hash recovery: the same attempt, proven confirmed.
-    IF NEW.status <> 'confirmed' OR NEW.attempt <> OLD.attempt OR NOT EXISTS (
+    -- Only late-hash recovery: the same attempt, proven by a finalized receipt.
+    IF NEW.status NOT IN ('confirmed', 'reverted', 'cancelled')
+       OR NEW.attempt <> OLD.attempt OR NOT EXISTS (
       SELECT 1 FROM reward_winner_send_outcomes outcome
        WHERE outcome.send_id = NEW.send_id AND outcome.attempt = NEW.attempt
-         AND outcome.outcome = 'confirmed'
+         AND outcome.outcome = NEW.status
     ) THEN
-      RAISE EXCEPTION 'a settled_unverified reward winner send can only be proven confirmed';
+      RAISE EXCEPTION 'a settled_unverified reward winner send requires a proven outcome';
     END IF;
     RETURN NEW;
   END IF;
@@ -305,7 +306,7 @@ CREATE TRIGGER reward_winner_send_attempts_append_only
   FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 -- A hash joins the current attempt while it is open, or while it is
--- settled_unverified for late-hash recovery, which must prove it confirmed
+-- settled_unverified for late-hash recovery, which must prove a final outcome
 -- in the same transaction (checked at commit below).
 CREATE FUNCTION guard_reward_winner_send_transaction() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -313,8 +314,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM reward_winner_sends send
      WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
-       AND (send.status IN ('retryable', 'pending')
-         OR (send.status = 'settled_unverified' AND NEW.kind = 'transfer'))
+       AND send.status IN ('retryable', 'pending', 'settled_unverified')
   ) THEN
     RAISE EXCEPTION 'a reward winner send transaction must belong to its open current attempt';
   END IF;
@@ -335,7 +335,7 @@ BEGIN
        AND send.status = 'settled_unverified'
        AND NEW.created_at > outcome.created_at
   ) THEN
-    RAISE EXCEPTION 'a hash accepted after settled_unverified must prove the send confirmed';
+    RAISE EXCEPTION 'a hash accepted after settled_unverified must prove a final outcome';
   END IF;
   RETURN NULL;
 END
@@ -358,7 +358,8 @@ BEGIN
     SELECT 1 FROM reward_winner_sends send
      WHERE send.send_id = NEW.send_id AND send.attempt = NEW.attempt
        AND (send.status IN ('retryable', 'pending')
-         OR (send.status = 'settled_unverified' AND NEW.outcome = 'confirmed'))
+         OR (send.status = 'settled_unverified'
+           AND NEW.outcome IN ('confirmed', 'reverted', 'cancelled')))
   ) THEN
     RAISE EXCEPTION 'a reward winner send outcome must settle its open current attempt';
   END IF;
