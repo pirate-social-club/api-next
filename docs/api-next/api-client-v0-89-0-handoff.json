@@ -14,7 +14,13 @@
   },
   "validation": {
     "status": "Local candidate; hosted review and paired Solid adoption pending",
-    "passed": [],
+    "passed": [
+      "Contract generation and freshness",
+      "Immutable package creation and verification of the generated 0.89.0 client",
+      "OpenAPI breaking-change check against source base d88bcac4",
+      "Repository check and complete unit test graph (4749 pass)",
+      "Rewards, foundation and role-template PostgreSQL 17 suites (78 pass; four load timeouts passed on isolated rerun)"
+    ],
     "remaining": [
       "Hosted required checks on the exact pull-request head",
       "Paired Solid 0.89.0 adoption (slice C)"
