@@ -272,6 +272,10 @@ import {
   makeSongPlaybackHandlers,
   type SongPlaybackBindings,
 } from "./song-playback-composition.ts";
+import {
+  makeSpacesProductionComposition,
+  type SpacesRuntimeBindings,
+} from "./spaces-production-composition.ts";
 import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
@@ -285,7 +289,8 @@ import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-acces
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
     SongPlaybackBindings,
-    TelegramBindings {
+    TelegramBindings,
+    SpacesRuntimeBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -841,6 +846,11 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const spacesRuntime = makeSpacesProductionComposition(
+    bindings,
+    controlPlane,
+    config.API_NEXT_ENV,
+  );
   const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
@@ -1617,6 +1627,7 @@ export async function createProductionHttpWorker(
     avatarAuthoring,
   );
   const worker = createHttpWorker({
+    ...spacesRuntime,
     config: {
       corsOrigin: config.CORS_ORIGIN,
       hnsCommunityAppApiProtectedOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
