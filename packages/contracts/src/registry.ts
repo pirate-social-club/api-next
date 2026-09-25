@@ -90,6 +90,7 @@ import {
 import {
   AddAssetBonusLeg,
   AddMegapotPoolLeg,
+  ClaimRewardCredit,
   GetAssetBonusFunding,
   GetMegapotPoolFunding,
   GetMegapotPoolStanding,
@@ -204,6 +205,7 @@ export const registry = {
   GetMegapotPoolStanding,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
+  ClaimRewardCredit,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,

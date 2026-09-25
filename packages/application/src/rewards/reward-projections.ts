@@ -152,6 +152,30 @@ export type MegapotPoolStanding = Readonly<{
   beneficiaryCount: number;
 }>;
 
+/** Spec 015 §5.2a: participant credits are paid only after an accepted claim. */
+export type RewardCreditClaimStatus = "unclaimed" | "accepted" | "subject_conflict";
+
+export type RewardCreditPayoutStatus =
+  | "pending"
+  | "recipient_pending"
+  | "submitted"
+  | "confirmed"
+  | "failed_retrying";
+
+export type RewardCreditClaim = Readonly<{
+  status: RewardCreditClaimStatus;
+  /** Present only once the claim is accepted. */
+  payoutStatus: RewardCreditPayoutStatus | null;
+}>;
+
+export type RewardCreditClaimOutcome =
+  | "accepted"
+  | "subject_conflict"
+  | "verification_missing"
+  | "verification_stale"
+  | "verification_failed"
+  | "not_claimable";
+
 export type RewardCredit = Readonly<{
   creditId: string;
   payoutPersonaId: string;
@@ -166,6 +190,8 @@ export type RewardCredit = Readonly<{
   createdAt: string;
   updatedAt: string;
   settledAt: string | null;
+  /** Null for credits that need no claim (asset bonus, external fallback). */
+  claim: RewardCreditClaim | null;
 }>;
 
 export interface RewardProjectionStore {
@@ -188,6 +214,17 @@ export interface RewardProjectionStore {
     readonly limit: number;
   }) => Effect.Effect<
     Readonly<{ items: readonly RewardCredit[]; nextCursor: string | null }>,
+    RewardProjectionFailure
+  >;
+  /**
+   * Claims one of the account's participant credits. The account must come
+   * from the authenticated session; the database routine trusts it.
+   */
+  readonly claimCredit: (input: {
+    readonly accountId: string;
+    readonly creditId: string;
+  }) => Effect.Effect<
+    Readonly<{ outcome: RewardCreditClaimOutcome; credit: RewardCredit }>,
     RewardProjectionFailure
   >;
 }

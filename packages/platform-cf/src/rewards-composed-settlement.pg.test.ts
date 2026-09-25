@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { keccak256, sha256 } from "viem";
 import { onePalmRehearsalInput } from "../../../scripts/megapot-golden-multi.fixture.ts";
 import {
   goldenContentSql,
@@ -45,8 +46,10 @@ import { makeControlPlaneMegapotCommitmentStore } from "./megapot-commitment-rep
 import { makeMegapotCutoffCoordinator } from "./megapot-cutoff-coordinator.ts";
 import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
+import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
+import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { completeComposedWinningChain } from "./rewards-composed-chain.pg-fixture.ts";
 import {
   bytes32,
@@ -613,6 +616,13 @@ suite("Composed current-policy Megapot settlement", () => {
           )
         ).rows;
       expect(await guards()).toHaveLength(3);
+      const projections = makeControlPlaneRewardProjectionStore(layer);
+      const creditView = async (account: string) => {
+        const listed = await Effect.runPromise(
+          projections.listCredits({ accountId: account, cursor: null, limit: 25 }),
+        );
+        return listed.items.find((item) => item.creditId === credit(account));
+      };
       // The study winner's Very subject is recovered onto the unverified
       // account. Its claim finds the subject already consumed in this pool and
       // drawing, so the credit is held as subject_conflict, never paid.
@@ -679,6 +689,10 @@ suite("Composed current-policy Megapot settlement", () => {
         { subject: "karaoke", previous: "karaoke", epoch: 2 },
       );
       expect(await claimFor(credit("winner-expired"), "winner-expired")).toEqual(conflict);
+      expect((await creditView("winner-expired"))?.claim).toEqual({
+        status: "subject_conflict",
+        payoutStatus: null,
+      });
       expect((await claimFor(credit("winner-failed"), "winner-failed")).outcome).toBe(
         "verification_failed",
       );
@@ -791,6 +805,104 @@ suite("Composed current-policy Megapot settlement", () => {
         }
       }
       expect(await outstanding()).toBe(owedBefore);
+      // Claim and payout status through the credit projection. The accepted
+      // unverified winner's payout is submitted with an uncertain outcome and
+      // later confirmed, against the same claim and with no further guard
+      // consumption. recipient_pending is not reachable here: activity needs
+      // an active persona, activation needs a confirmed wallet, and a public
+      // persona cannot drop its last wallet.
+      expect((await creditView("winner-failed"))?.claim).toEqual({
+        status: "unclaimed",
+        payoutStatus: null,
+      });
+      expect((await creditView("winner-study"))?.claim).toEqual({
+        status: "accepted",
+        payoutStatus: "confirmed",
+      });
+      const guardsBeforePayout = await guards();
+      expect(
+        await Effect.runPromise(
+          projections.claimCredit({
+            accountId: "winner-unverified",
+            creditId: credit("winner-unverified"),
+          }),
+        ),
+      ).toMatchObject({
+        outcome: "accepted",
+        credit: { claim: { status: "accepted", payoutStatus: "pending" } },
+      });
+      await expect(
+        Effect.runPromise(
+          projections.claimCredit({
+            accountId: "winner-study",
+            creditId: credit("winner-unverified"),
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      const retryCandidate = await Effect.runPromise(
+        payout.loadCandidate(credit("winner-unverified")),
+      );
+      expect(retryCandidate.destinationAddress).toBe(
+        await addressFor(`winner-unverified:${persona("unverified")}`),
+      );
+      const retryEffectId = "composed-payout-claim-retry";
+      const retryReservation = await Effect.runPromise(
+        payout.reserveNonce({
+          candidate: retryCandidate,
+          effectId: retryEffectId,
+          observedPendingNonce: 6n,
+          observedBlockNumber: 1100n,
+          observedBlockHash: bytes32("7"),
+          observedAt: new Date(freezeAt + 60000).toISOString(),
+        }),
+      );
+      const retryCalldata = encodeMegapotUsdcTransfer(
+        retryCandidate.destinationAddress,
+        retryCandidate.amountAtomic,
+      );
+      const retrySigned = "0x0f0f" as const;
+      const retryHash = keccak256(retrySigned);
+      await Effect.runPromise(
+        payout.prepare({
+          reservation: retryReservation,
+          calldata: retryCalldata,
+          calldataHash: sha256(retryCalldata).slice(2),
+          signedTransaction: retrySigned,
+          signedTransactionHash: retryHash,
+          preparedAt: new Date(freezeAt + 61000).toISOString(),
+        }),
+      );
+      expect((await creditView("winner-unverified"))?.claim?.payoutStatus).toBe("pending");
+      await Effect.runPromise(
+        payout.recordSubmission({
+          effectId: retryEffectId,
+          transactionHash: retryHash,
+          submittedAt: new Date(freezeAt + 62000).toISOString(),
+          outcome: "uncertain",
+          failureReason: "rpc timeout",
+        }),
+      );
+      expect((await creditView("winner-unverified"))?.claim?.payoutStatus).toBe("failed_retrying");
+      await Effect.runPromise(
+        payout.confirm({
+          effectId: retryEffectId,
+          transactionHash: retryHash,
+          transferLogIndex: 40,
+          amountAtomic: retryCandidate.amountAtomic,
+          custodyBalanceAfterAtomic: chain.custodyBalance - retryCandidate.amountAtomic,
+          blockNumber: 1101n,
+          blockHash: bytes32("8"),
+          receiptHash: "9".repeat(64),
+          confirmations: 3,
+          confirmedAt: new Date(freezeAt + 63000).toISOString(),
+        }),
+      );
+      expect((await creditView("winner-unverified"))?.claim).toEqual({
+        status: "accepted",
+        payoutStatus: "confirmed",
+      });
+      expect(await guards()).toEqual(guardsBeforePayout);
+
       // Same subject, second song's pool in the same provider drawing. The production
       // chain fixture drives one pool, so the second pool's leg, allocation
       // batch, allocation and credit are copied from the first with triggers
@@ -913,6 +1025,7 @@ suite("Composed current-policy Megapot settlement", () => {
         outcome: "not_claimable",
         claim_status: null,
       });
+      expect((await creditView("winner-failed"))?.claim).toBeNull();
       expect((await guards()).length).toBe(guardCount);
       // Remaining 90,000 atoms are sponsor funds, not an unexplained delta.
       // Offer expiry/refund and live receipt decoding are separate coverage.

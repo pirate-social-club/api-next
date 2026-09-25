@@ -363,6 +363,15 @@ export const MegapotPoolStandingV1 = Schema.Struct({
 });
 export type MegapotPoolStandingV1 = Schema.Schema.Type<typeof MegapotPoolStandingV1>;
 
+/** Spec 015 §5.2a. Null on credits that need no claim. */
+export const RewardCreditClaimV1 = Schema.Struct({
+  status: Schema.Literals(["unclaimed", "accepted", "subject_conflict"]),
+  payout_status: Schema.NullOr(
+    Schema.Literals(["pending", "recipient_pending", "submitted", "confirmed", "failed_retrying"]),
+  ),
+});
+export type RewardCreditClaimV1 = Schema.Schema.Type<typeof RewardCreditClaimV1>;
+
 export const RewardCreditV1 = Schema.Struct({
   object: Schema.Literal("reward_credit"),
   credit_id: Identifier,
@@ -379,6 +388,7 @@ export const RewardCreditV1 = Schema.Struct({
   created_at: CanonicalInstant,
   updated_at: CanonicalInstant,
   settled_at: Schema.NullOr(CanonicalInstant),
+  claim: Schema.NullOr(RewardCreditClaimV1),
 });
 export type RewardCreditV1 = Schema.Schema.Type<typeof RewardCreditV1>;
 
@@ -568,6 +578,32 @@ export const ListMyRewardCredits = endpoint({
     object: Schema.Literal("reward_credit_list"),
     items: Schema.Array(RewardCreditV1),
     next_cursor: Schema.NullOr(Identifier),
+  }),
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
+});
+
+/**
+ * Spec 015 §5.2a participant claim. Requires current server-verified Very
+ * evidence for the signed-in account. Idempotent: repeating it returns the
+ * existing claim and its payout status. Evidence refusals leave the credit
+ * claimable later; subject_conflict holds it until a different unused
+ * subject or an operator decision.
+ */
+export const ClaimRewardCredit = endpoint({
+  method: "POST",
+  path: "/rewards/credits/:creditId/claim",
+  auth: Auth.user(),
+  request: { path: Schema.Struct({ creditId: Identifier }) },
+  response: Schema.Struct({
+    outcome: Schema.Literals([
+      "accepted",
+      "subject_conflict",
+      "verification_missing",
+      "verification_stale",
+      "verification_failed",
+      "not_claimable",
+    ]),
+    credit: RewardCreditV1,
   }),
   errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
 });
