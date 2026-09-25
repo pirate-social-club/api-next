@@ -263,6 +263,10 @@ async function fixture(
     calls,
     reads,
     evidence: () => saved,
+    /** Seeds the retained aggregate fact, as if persisted by an earlier run. */
+    retain: (fact: VideoSafetyFact) => {
+      retained = fact;
+    },
     failFrameCompletion: () => {
       failFrameCompletion = true;
     },
@@ -569,8 +573,23 @@ test.each(["minors", "caption", "adult-review", "bad-digest", "disabled"] as con
     const fact = await f.moderate(f.input);
     expect(fact.mediaSafety).not.toBe("allow");
     expect(fact.minorSafetyEvidenceRef).toBeNull();
-    expect(fact.gateKind).toBeUndefined();
+    // The gate evaluated it, so it names itself, but it carries no allow evidence.
+    expect(fact.gateKind).toBe("sampled_frame_openai_v1");
     expect(fact.sampledFrameEvidenceRef).toBeUndefined();
     if (mode === "minors") expect(fact.mediaSafety).toBe("blocked");
   },
 );
+
+test("turning the gate off revokes a retained gate allow on replay", async () => {
+  const on = await fixture("clean", true);
+  const allowed = await on.moderate(on.input);
+  expect(allowed.mediaSafety).toBe("allow");
+  const off = await fixture("clean", false);
+  off.retain(allowed);
+  const replayed = await off.moderate(off.input);
+  expect(replayed.mediaSafety).toBe("review_required");
+  expect(replayed.gateKind).toBeUndefined();
+  expect(replayed.sampledFrameEvidenceRef).toBeUndefined();
+  expect(replayed.evidenceRef).toBe(allowed.evidenceRef);
+  expect(off.calls).toHaveLength(0);
+});

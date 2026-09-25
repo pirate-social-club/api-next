@@ -547,12 +547,10 @@ export async function runVideoAnalysisWorkflow(
             captionSha256: await canonicalVideoCaptionSha256(record.state.caption),
             evidenceRef: safety.evidenceRef,
             minorSafetyEvidenceRef: safety.minorSafetyEvidenceRef,
-            ...(safety.gateKind === undefined || safety.sampledFrameEvidenceRef === undefined
+            ...(safety.gateKind === undefined ? {} : { gateKind: safety.gateKind }),
+            ...(safety.sampledFrameEvidenceRef === undefined
               ? {}
-              : {
-                  gateKind: safety.gateKind,
-                  sampledFrameEvidenceRef: safety.sampledFrameEvidenceRef,
-                }),
+              : { sampledFrameEvidenceRef: safety.sampledFrameEvidenceRef }),
           },
           mediaSafety: safety.mediaSafety,
           captionSafety: safety.captionSafety,

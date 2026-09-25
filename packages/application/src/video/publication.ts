@@ -1329,6 +1329,23 @@ export async function acceptTrustedVideoAnalysis(
       throw new VideoWorkflowTerminalError("analysis_rejected");
     }
   })();
+  // Spec 024 / Spec 013 v1 amendment: under the sampled-frame gate there is no
+  // moderator queue. A video the gate could not allow (a failed, unavailable or
+  // uncertain check, or a review signal) fails privately instead of waiting for
+  // approval; the author sees that it could not be posted. Blocks stay blocks.
+  if (
+    decision.outcome.kind === "review" &&
+    input.analysis.safetyRequest.gateKind === "sampled_frame_openai_v1"
+  ) {
+    return projectVideoSubmission(
+      await services.store.recordProcessingFailure({
+        submission: record.state,
+        observedEventSequence: record.eventSequence,
+        failureCode: "transform_failed",
+        evidenceRef: `video-safety-gate-unresolved:${input.analysis.safetyRequest.evidenceRef}`,
+      }),
+    );
+  }
   let committed = await services.store.commitAnalysisDecision({
     submission: record.state,
     analysis: input.analysis,

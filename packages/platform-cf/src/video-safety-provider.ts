@@ -219,7 +219,16 @@ export function makeVideoSafetyProvider(
       ),
     );
     const retained = await options.evidence.load(input, inputDigest);
-    if (retained !== null) return retained;
+    if (retained !== null) {
+      // Turning the gate off revokes a retained gate allow: the replayed fact
+      // falls back to review and loses the gate evidence. The stored evidence
+      // itself is unchanged.
+      if (retained.gateKind !== undefined && options.sampledFrameGate !== true) {
+        const { gateKind: _gate, sampledFrameEvidenceRef: _evidence, ...rest } = retained;
+        return rest.mediaSafety === "allow" ? { ...rest, mediaSafety: "review_required" } : rest;
+      }
+      return retained;
+    }
     let policy: TextModerationPolicySnapshotV2 | null = null;
     let unavailable = false;
     try {
@@ -451,11 +460,13 @@ export function makeVideoSafetyProvider(
       requestId,
       evidenceRef: `evidence_${evidenceDigest}`,
       minorSafetyEvidenceRef: null,
+      // The gate kind records that the v1 gate evaluated this video, allowed or
+      // not; only an allow carries the gate's evidence reference.
+      ...(options.sampledFrameGate === true
+        ? { gateKind: "sampled_frame_openai_v1" as const }
+        : {}),
       ...(sampledFrameAllow
-        ? {
-            gateKind: "sampled_frame_openai_v1" as const,
-            sampledFrameEvidenceRef: `sampled_frame_openai_v1_${evidenceDigest}`,
-          }
+        ? { sampledFrameEvidenceRef: `sampled_frame_openai_v1_${evidenceDigest}` }
         : {}),
       mediaSafety,
       captionSafety,
