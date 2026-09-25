@@ -389,7 +389,11 @@ const CREDIT_SELECT = `
          credit.amount_atomic, credit.reserved_atomic, credit.paid_atomic,
          credit.source_kind, credit.state, credit.created_at,
          credit.updated_at, credit.settled_at,
+         -- A participant credit already paid or reserved without a claim (before
+         -- migration 0203) needs no claim and is reported like one that never did.
          CASE WHEN credit.source_kind <> 'megapot_allocation' THEN NULL
+              WHEN claim.status IS NULL AND (credit.state <> 'credited'
+                OR credit.paid_atomic <> 0 OR credit.reserved_atomic <> 0) THEN NULL
               ELSE COALESCE(claim.status, 'unclaimed') END AS claim_status,
          CASE WHEN credit.source_kind <> 'megapot_allocation'
                 OR claim.status IS DISTINCT FROM 'accepted' THEN NULL

@@ -616,6 +616,13 @@ suite("Composed current-policy Megapot settlement", () => {
           )
         ).rows;
       expect(await guards()).toHaveLength(3);
+      const projections = makeControlPlaneRewardProjectionStore(layer);
+      const creditView = async (account: string) => {
+        const listed = await Effect.runPromise(
+          projections.listCredits({ accountId: account, cursor: null, limit: 25 }),
+        );
+        return listed.items.find((item) => item.creditId === credit(account));
+      };
       // The study winner's Very subject is recovered onto the unverified
       // account. Its claim finds the subject already consumed in this pool and
       // drawing, so the credit is held as subject_conflict, never paid.
@@ -682,6 +689,10 @@ suite("Composed current-policy Megapot settlement", () => {
         { subject: "karaoke", previous: "karaoke", epoch: 2 },
       );
       expect(await claimFor(credit("winner-expired"), "winner-expired")).toEqual(conflict);
+      expect((await creditView("winner-expired"))?.claim).toEqual({
+        status: "subject_conflict",
+        payoutStatus: null,
+      });
       expect((await claimFor(credit("winner-failed"), "winner-failed")).outcome).toBe(
         "verification_failed",
       );
@@ -800,13 +811,6 @@ suite("Composed current-policy Megapot settlement", () => {
       // consumption. recipient_pending is not reachable here: activity needs
       // an active persona, activation needs a confirmed wallet, and a public
       // persona cannot drop its last wallet.
-      const projections = makeControlPlaneRewardProjectionStore(layer);
-      const creditView = async (account: string) => {
-        const listed = await Effect.runPromise(
-          projections.listCredits({ accountId: account, cursor: null, limit: 25 }),
-        );
-        return listed.items.find((item) => item.creditId === credit(account));
-      };
       expect((await creditView("winner-failed"))?.claim).toEqual({
         status: "unclaimed",
         payoutStatus: null,
@@ -1021,6 +1025,7 @@ suite("Composed current-policy Megapot settlement", () => {
         outcome: "not_claimable",
         claim_status: null,
       });
+      expect((await creditView("winner-failed"))?.claim).toBeNull();
       expect((await guards()).length).toBe(guardCount);
       // Remaining 90,000 atoms are sponsor funds, not an unexplained delta.
       // Offer expiry/refund and live receipt decoding are separate coverage.
