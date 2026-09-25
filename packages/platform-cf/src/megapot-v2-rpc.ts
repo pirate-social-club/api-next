@@ -108,6 +108,18 @@ export type MegapotV2FeeQuote = Readonly<{
   observedBlockHash: string;
 }>;
 
+/** A transaction as eth_getTransactionByHash returns it; unmined ones have no block. */
+export type MegapotV2Transaction = Readonly<{
+  transactionHash: string;
+  chainId: number | null;
+  from: string;
+  to: string | null;
+  nonce: bigint;
+  valueWei: bigint;
+  input: Hex;
+  blockNumber: bigint | null;
+}>;
+
 export interface MegapotV2RpcClient {
   /** Present on the production adapter; test doubles may omit it. */
   readonly deployment?: MegapotV2DeploymentAttestation;
@@ -142,6 +154,10 @@ export interface MegapotV2RpcClient {
   readonly readUsdcAllowance: (owner: string, spender: string) => Promise<bigint>;
   readonly readTicketOwner: (ticketId: bigint, blockNumber?: bigint) => Promise<string>;
   readonly readPendingNonce: (account: string) => Promise<bigint>;
+  /** Mined transaction count at blockNumber, or at the latest block. Test doubles may omit it. */
+  readonly readTransactionCount?: (account: string, blockNumber?: bigint) => Promise<bigint>;
+  /** Any sender's transaction by hash, mined or not. Test doubles may omit it. */
+  readonly readTransaction?: (transactionHash: string) => Promise<MegapotV2Transaction | null>;
   readonly estimateGas: (input: {
     readonly from: string;
     readonly to: string;
@@ -269,7 +285,38 @@ function blockIdentity(value: unknown): {
   };
 }
 
-export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): MegapotV2RpcClient {
+export type MegapotV2FullRpcClient = MegapotV2RpcClient &
+  Required<Pick<MegapotV2RpcClient, "readTransaction" | "readTransactionCount">>;
+
+function transactionFromRpc(value: unknown, requestedHash: string): MegapotV2Transaction {
+  const transaction = object(value);
+  const transactionHash = canonicalHash(transaction.hash);
+  if (transactionHash !== requestedHash) throw new MegapotV2RpcFailed("invalid-response");
+  let chainId: number | null = null;
+  if (transaction.chainId !== undefined && transaction.chainId !== null) {
+    const parsed = quantity(transaction.chainId);
+    if (parsed > BigInt(Number.MAX_SAFE_INTEGER)) throw new MegapotV2RpcFailed("invalid-response");
+    chainId = Number(parsed);
+  }
+  return {
+    transactionHash,
+    chainId,
+    from: canonicalAddress(transaction.from),
+    to:
+      transaction.to === null || transaction.to === undefined
+        ? null
+        : canonicalAddress(transaction.to),
+    nonce: quantity(transaction.nonce),
+    valueWei: quantity(transaction.value),
+    input: hexData(transaction.input),
+    blockNumber:
+      transaction.blockNumber === null || transaction.blockNumber === undefined
+        ? null
+        : quantity(transaction.blockNumber),
+  };
+}
+
+export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): MegapotV2FullRpcClient {
   if (options.rpcUrl.trim().length === 0) throw new MegapotV2RpcFailed("invalid-config");
   const attestation = validateMegapotV2DeploymentAttestation(options.attestation);
   const timeoutMs = positiveBound(options.timeoutMs, MEGAPOT_V2_RPC_TIMEOUT_MS);
@@ -504,6 +551,18 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       ),
     readPendingNonce: async (account) =>
       quantity(await rpc("eth_getTransactionCount", [canonicalAddress(account), "pending"])),
+    readTransactionCount: async (account, blockNumber) =>
+      quantity(
+        await rpc("eth_getTransactionCount", [
+          canonicalAddress(account),
+          blockNumber === undefined ? "latest" : quantityHex(blockNumber),
+        ]),
+      ),
+    readTransaction: async (transactionHash) => {
+      const requestedHash = canonicalHash(transactionHash);
+      const result = await rpc("eth_getTransactionByHash", [requestedHash]);
+      return result === null ? null : transactionFromRpc(result, requestedHash);
+    },
     estimateGas: async (input) =>
       quantity(
         await rpc("eth_estimateGas", [

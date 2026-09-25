@@ -10,6 +10,8 @@ import {
 } from "@pirate/application/namespace-ownership";
 import {
   makeRewardGasTopupRequester,
+  makeRewardWinnerSendService,
+  REWARD_WINNER_SEND_CHAIN_ID,
   RewardGasTopupBalanceUnavailable,
 } from "@pirate/application/rewards/song-reward-offers";
 import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
@@ -173,6 +175,8 @@ import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
+import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
+import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
 import {
   makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
@@ -1461,6 +1465,17 @@ export async function createProductionHttpWorker(
                   limits: gasTopupLimits,
                   ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
                 });
+          // Winner sends read any sender's nonce and transactions on the
+          // attested chain, which must be the chain the record is fixed to.
+          const winnerSends =
+            candidate.chainId === REWARD_WINNER_SEND_CHAIN_ID
+              ? makeRewardWinnerSendService({
+                  store: makeControlPlaneRewardWinnerSendStore(controlPlane),
+                  chain: makeRewardWinnerSendChain(rpc),
+                  requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+                  ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+                })
+              : null;
           return makeSongRewardOfferHandlers({
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
@@ -1475,6 +1490,7 @@ export async function createProductionHttpWorker(
             fundingStore: rewardFundingStore,
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
             gasTopups,
+            winnerSends,
             funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
             requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
             externalFallbackPolicy: null,

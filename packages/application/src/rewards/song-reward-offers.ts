@@ -21,10 +21,20 @@ export type {
   RewardCredit,
   RewardCreditClaim,
   RewardCreditClaimOutcome,
+  RewardCreditSend,
   RewardProjectionFailure,
   RewardProjectionStore,
 } from "./reward-projections.ts";
 export { RewardProjectionRejected } from "./reward-projections.ts";
+export {
+  makeRewardWinnerSendService,
+  REWARD_WINNER_SEND_CHAIN_ID,
+  RewardWinnerSendChainUnavailable,
+  type RewardWinnerSendRecord,
+  RewardWinnerSendRejected,
+  type RewardWinnerSendService,
+  RewardWinnerSendStorageFailed,
+} from "./reward-winner-send.ts";
 
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";

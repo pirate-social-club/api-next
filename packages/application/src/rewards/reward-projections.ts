@@ -1,5 +1,6 @@
 import type { RewardQualificationPoliciesV1 } from "@pirate/contracts";
 import { Data, type Effect } from "effect";
+import type { RewardWinnerSendStatus } from "./reward-winner-send.ts";
 
 export class RewardProjectionStorageFailed extends Data.TaggedError(
   "RewardProjectionStorageFailed",
@@ -168,6 +169,12 @@ export type RewardCreditClaim = Readonly<{
   payoutStatus: RewardCreditPayoutStatus | null;
 }>;
 
+/** The credit's onward winner send, as last persisted. */
+export type RewardCreditSend = Readonly<{
+  sendId: string;
+  status: RewardWinnerSendStatus;
+}>;
+
 export type RewardCreditClaimOutcome =
   | "accepted"
   | "subject_conflict"
@@ -192,6 +199,8 @@ export type RewardCredit = Readonly<{
   settledAt: string | null;
   /** Null for credits that need no claim (asset bonus, external fallback). */
   claim: RewardCreditClaim | null;
+  /** Null until the winner records an onward send (participant credits only). */
+  send: RewardCreditSend | null;
 }>;
 
 export interface RewardProjectionStore {
