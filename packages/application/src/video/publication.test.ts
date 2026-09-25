@@ -245,7 +245,7 @@ describe("video publication application", () => {
     };
     record = gateRecord;
     expect(projectVideoSubmission(gateRecord)).toMatchObject({
-      reason_code: "safety_gate_unresolved",
+      reason_code: "publication_failed",
       retryable: false,
     });
     await expect(retryVideoSubmission(input, services)).rejects.toMatchObject({

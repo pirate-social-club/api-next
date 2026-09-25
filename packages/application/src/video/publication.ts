@@ -650,9 +650,14 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
       return {
         ...common,
         status: "processing_failed",
+        // `safety_gate_unresolved` stays exact in storage; the v1 wire contract
+        // is append-only, so it is published as the existing, non-retryable
+        // `publication_failed` (the post did fail to publish).
         reason_code: state.reconciliationRequired
           ? "provider_submission_unconfirmed"
-          : state.failureCode,
+          : state.failureCode === "safety_gate_unresolved"
+            ? "publication_failed"
+            : state.failureCode,
         retry_count: state.retryCount as 0 | 1 | 2 | 3,
         retryable:
           !state.reconciliationRequired &&
