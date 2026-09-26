@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.30;
+
+import {ControlledMegapot, ControlledMegapotTicket, IControlledWinUsdc} from "../src/ControlledMegapot.sol";
+import {ControlledUsdc} from "../src/ControlledUsdc.sol";
+
+interface Vm {
+    struct Log {
+        bytes32[] topics;
+        bytes data;
+        address emitter;
+    }
+
+    function prank(address sender) external;
+    function chainId(uint256 chainId) external;
+    function warp(uint256 timestamp) external;
+    function recordLogs() external;
+    function getRecordedLogs() external returns (Log[] memory);
+}
+
+contract ControlledMegapotTest {
+    Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    address private constant CUSTODY = address(0xBEEF);
+    address private constant REFERRER = address(0xCAFE);
+    uint256 private constant PRICE = 10_000;
+    uint256 private constant PRIZE = 1_000_000;
+
+    ControlledUsdc private token;
+    ControlledMegapot private jackpot;
+    ControlledMegapotTicket private nft;
+
+    function setUp() public {
+        vm.chainId(84_532);
+        token = new ControlledUsdc(2 * PRIZE + PRICE);
+        jackpot = new ControlledMegapot(address(token), address(this), PRICE);
+        nft = jackpot.jackpotNFT();
+        token.transfer(address(jackpot), PRIZE);
+        token.transfer(CUSTODY, PRICE);
+        jackpot.armDrawing(block.timestamp + 3_600, PRIZE);
+        vm.prank(CUSTODY);
+        token.approve(address(jackpot), PRICE);
+    }
+
+    function _buy() private returns (uint256) {
+        ControlledMegapot.TicketNumbers[] memory numbers = new ControlledMegapot.TicketNumbers[](1);
+        numbers[0].normals = new uint8[](5);
+        for (uint8 i; i < 5; ++i) numbers[0].normals[i] = i + 1;
+        numbers[0].bonusball = 1;
+        address[] memory referrers = new address[](1);
+        referrers[0] = REFERRER;
+        uint256[] memory split = new uint256[](1);
+        split[0] = 1e18;
+        vm.prank(CUSTODY);
+        return jackpot.buyTickets(numbers, CUSTODY, referrers, split, bytes32(uint256(7)))[0];
+    }
+
+    function _hasTopic(Vm.Log[] memory logs, address emitter, bytes32 topic) private pure returns (bool) {
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == emitter && logs[i].topics.length > 0 && logs[i].topics[0] == topic) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function testRealPurchaseAndWinningEventShapes() public {
+        vm.recordLogs();
+        uint256 ticketId = _buy();
+        Vm.Log[] memory purchase = vm.getRecordedLogs();
+        require(ticketId == 1 && nft.ownerOf(ticketId) == CUSTODY, "ticket not custodied");
+        require(_hasTopic(purchase, address(jackpot), keccak256(
+            "TicketPurchased(address,uint256,bytes32,uint256,uint8[],uint8,bytes32)"
+        )), "purchase event absent");
+        require(_hasTopic(purchase, address(jackpot), keccak256(
+            "TicketOrderProcessed(address,address,uint256,uint256,uint256,uint256)"
+        )), "order event absent");
+        require(_hasTopic(purchase, address(nft), keccak256("Transfer(address,address,uint256)")),
+            "mint event absent");
+
+        vm.warp(block.timestamp + 3_601);
+        jackpot.settleDrawing();
+        require(jackpot.currentDrawingId() == 2, "drawing did not advance");
+        ControlledMegapot.DrawingState memory state = jackpot.getDrawingState(1);
+        require(state.winningTicket == ticketId && state.jackpotLock, "win not settled");
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = ticketId;
+        require(jackpot.getTicketTierIds(ids)[0] == 1, "wrong tier");
+        require(jackpot.getDrawingTierPayouts(1)[1] == PRIZE, "wrong prize");
+
+        uint256 beforeBalance = token.balanceOf(CUSTODY);
+        vm.recordLogs();
+        vm.prank(CUSTODY);
+        jackpot.claimWinnings(ids);
+        Vm.Log[] memory claim = vm.getRecordedLogs();
+        require(token.balanceOf(CUSTODY) == beforeBalance + PRIZE, "custody not paid");
+        require(jackpot.reservedPayout() == 0, "payout remains reserved");
+        require(_hasTopic(claim, address(jackpot), keccak256(
+            "TicketWinningsClaimed(address,uint256,uint256,uint256,bool,uint256)"
+        )), "claim event absent");
+        require(_hasTopic(claim, address(jackpot), keccak256("ReferralFeeCollected(address,uint256)")),
+            "referral event absent");
+        require(_hasTopic(claim, address(nft), keccak256("Transfer(address,address,uint256)")),
+            "burn event absent");
+        require(_hasTopic(claim, address(token), keccak256("Transfer(address,address,uint256)")),
+            "USDC transfer absent");
+
+        vm.prank(CUSTODY);
+        (bool duplicate,) = address(jackpot).call(abi.encodeCall(ControlledMegapot.claimWinnings, (ids)));
+        require(!duplicate, "duplicate payout accepted");
+    }
+
+    function testOnlyOneTicketAndNoMidDrawingRearm() public {
+        _buy();
+        (bool repeat,) = address(jackpot).call(abi.encodeCall(
+            ControlledMegapot.armDrawing, (block.timestamp + 7_200, PRIZE)
+        ));
+        require(!repeat, "mid-drawing rearm accepted");
+        ControlledMegapot.TicketNumbers[] memory numbers = new ControlledMegapot.TicketNumbers[](1);
+        numbers[0].normals = new uint8[](5);
+        address[] memory referrers = new address[](1);
+        referrers[0] = REFERRER;
+        uint256[] memory split = new uint256[](1);
+        split[0] = 1e18;
+        vm.prank(CUSTODY);
+        (bool second,) = address(jackpot).call(abi.encodeCall(
+            ControlledMegapot.buyTickets, (numbers, CUSTODY, referrers, split, bytes32(0))
+        ));
+        require(!second, "second ticket accepted");
+    }
+
+    function testUnfundedDrawCannotOpen() public {
+        ControlledMegapot unfunded = new ControlledMegapot(address(token), address(this), PRICE);
+        (bool accepted,) = address(unfunded).call(abi.encodeCall(
+            ControlledMegapot.armDrawing, (block.timestamp + 3_600, PRIZE)
+        ));
+        require(!accepted, "unfunded draw accepted");
+    }
+
+    function testFixedSupplyAndOutstandingPayoutReservation() public {
+        require(token.totalSupply() == 2 * PRIZE + PRICE, "supply changed");
+        uint256 ticketId = _buy();
+        vm.warp(block.timestamp + 3_601);
+        jackpot.settleDrawing();
+        token.transfer(address(jackpot), PRIZE);
+        jackpot.armDrawing(block.timestamp + 3_600, PRIZE);
+        require(jackpot.reservedPayout() == 2 * PRIZE, "old win not reserved");
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = ticketId;
+        vm.prank(CUSTODY);
+        jackpot.claimWinnings(ids);
+        require(jackpot.reservedPayout() == PRIZE, "new prize not reserved");
+        vm.warp(jackpot.getDrawingState(2).drawingTime + 1);
+        jackpot.settleDrawing();
+        require(jackpot.reservedPayout() == 0, "empty draw remains reserved");
+    }
+
+    function testSupplyCap() public {
+        (bool accepted,) = address(new ControlledUsdc(1)).call(abi.encodeWithSignature("mint(address,uint256)", CUSTODY, 1));
+        require(!accepted, "unexpected mint method");
+        try new ControlledUsdc(10_000_001) {
+            revert("oversized supply accepted");
+        } catch {}
+    }
+}
