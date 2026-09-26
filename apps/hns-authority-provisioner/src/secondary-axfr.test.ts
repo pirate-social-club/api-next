@@ -173,7 +173,7 @@ describe("PowerDNS secondary AXFR authorization", () => {
   test("an already retained permission is read without another PUT", async () => {
     const methods: string[] = [];
     const authorize = makePowerDnsSecondaryAxfrAuthorizer(
-      config,
+      { ...config, axfr_tsig_key_name: "fixture-transfer" },
       async (url, init) => {
         methods.push(init?.method ?? "GET");
         return new URL(String(url)).pathname.endsWith(metadataPath)
@@ -184,6 +184,25 @@ describe("PowerDNS secondary AXFR authorization", () => {
     );
     await authorize({ root_label: root, challenge_txt_value: challenge });
     expect(methods).toEqual(["GET", "GET"]);
+  });
+
+  test("writes the canonical dotted key when configured without a trailing dot", async () => {
+    let retained: string[] = [];
+    const authorize = makePowerDnsSecondaryAxfrAuthorizer(
+      { ...config, axfr_tsig_key_name: "fixture-transfer" },
+      async (url, init) => {
+        if (!new URL(String(url)).pathname.endsWith(metadataPath))
+          return Response.json(transferredZone());
+        if (init?.method === "PUT") {
+          retained = (JSON.parse(String(init.body)) as { metadata: string[] }).metadata;
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ kind: "TSIG-ALLOW-AXFR", metadata: retained });
+      },
+      async () => undefined,
+    );
+    await authorize({ root_label: root, challenge_txt_value: challenge });
+    expect(retained).toEqual(["fixture-transfer."]);
   });
 
   test("an ambiguous committed metadata write is reconciled on the next fenced retry", async () => {

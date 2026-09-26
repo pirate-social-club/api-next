@@ -43,6 +43,7 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
   fetcher: PowerDnsFetch = fetch,
   wait: (milliseconds: number) => Promise<void> = (milliseconds) => Bun.sleep(milliseconds),
 ): (input: { readonly root_label: string; readonly challenge_txt_value: string }) => Promise<void> {
+  const axfrKeyName = canonicalName(config.axfr_tsig_key_name);
   if (
     !validEndpoint(config.api_url) ||
     config.api_key.length === 0 ||
@@ -51,7 +52,8 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
     config.expected_account.trim() !== config.expected_account ||
     config.expected_account.length === 0 ||
     config.expected_account.length > 40 ||
-    !/^[A-Za-z0-9._-]{1,256}$/u.test(config.axfr_tsig_key_name)
+    !/^[A-Za-z0-9._-]{1,256}$/u.test(config.axfr_tsig_key_name) ||
+    axfrKeyName.length > 256
   ) {
     throw new Error("PowerDNS secondary AXFR configuration is invalid");
   }
@@ -166,13 +168,13 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
     const before = await request("GET", metadataPath);
     if (!before.response.ok) throw new Error("PowerDNS secondary AXFR metadata inspection failed");
     const retained = metadata(before.json);
-    if (retained.includes(config.axfr_tsig_key_name)) return;
+    if (retained.some((key) => canonicalName(key) === axfrKeyName)) return;
     if (retained.length === 16)
       throw new Error("PowerDNS secondary AXFR metadata capacity is exhausted");
     const rechecked = await request("GET", zonePath);
     if (!rechecked.response.ok || !transferred(rechecked.json))
       throw new Error("PowerDNS secondary changed before AXFR authorization");
-    const expected = [...retained, config.axfr_tsig_key_name];
+    const expected = [...retained, axfrKeyName];
     const updated = await request("PUT", metadataPath, {
       kind: "TSIG-ALLOW-AXFR",
       metadata: expected,
