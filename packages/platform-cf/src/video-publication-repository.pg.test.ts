@@ -9,7 +9,6 @@ import {
 import { getVideoPlaybackAccess } from "../../application/src/video/playback-access.ts";
 import {
   acceptTrustedVideoAnalysis,
-  createVideoSubmission,
   projectVideoSubmission,
   renewVideoUploadParts,
   reserveVideoUpload,
@@ -1048,38 +1047,80 @@ suite("video publication PostgreSQL", () => {
         },
       };
       const author = { kind: "user" as const, userId: actor };
-      const reserved = await reserveVideoUpload(
-        {
-          communityId: community,
-          actor: author,
-          body: {
-            track: "video",
-            slot: "primary_video",
-            intent: "original_audio",
-            persona_id: persona,
-            idempotency_key: "reserve-renew",
-            expected_content_type: "video/mp4",
-            expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      // New original-audio videos are refused before any row or upload exists.
+      await expect(
+        reserveVideoUpload(
+          {
+            communityId: community,
+            actor: author,
+            body: {
+              track: "video",
+              slot: "primary_video",
+              intent: "original_audio",
+              persona_id: persona,
+              idempotency_key: "reserve-renew-refused",
+              expected_content_type: "video/mp4",
+              expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+            },
           },
-        },
-        services,
+          services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "song_reference_required" } });
+      const refused = await admin.query(
+        "SELECT count(*)::int AS n FROM media_upload_reservations WHERE actor_user_id=$1 AND media_kind='video'",
+        [actor],
       );
-      expect(reserved.upload.expires_at).toBe(deadline);
-      expect(reserved.upload.parts[0]?.expires_at).toBe(partDeadline);
-      const id = reserved.reservation_id;
-      await createVideoSubmission(
-        {
+      expect(refused.rows[0]?.n).toBe(0);
+      // An original-audio submission started before the rule keeps renewing.
+      const id = `media-reservation-${crypto.randomUUID()}`;
+      await store.createReservation({
+        record: {
+          reservationId: id,
           communityId: community,
-          actor: author,
-          body: {
-            version: "video-start-input-v1",
-            persona_id: persona,
-            video_reservation_id: id,
-            idempotency_key: "start-renew",
-          },
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "e".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+          expectedSha256: null,
+          ingestPolicyRevision: 1,
+          uploadId: "renew-upload",
+          partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+          partCount: 2,
+          expiresAt: deadline,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: now,
         },
-        services,
-      );
+        idempotencyKey: "reserve-renew",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/original/${partNumber}`,
+          expiresAt: partDeadline,
+        })),
+      });
+      await store.createSubmission({
+        state: createOriginalVideoSubmission({
+          submissionId: `media-submission-${crypto.randomUUID()}`,
+          operationId: `media-operation-${crypto.randomUUID()}`,
+          communityId: community,
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          reservationId: id,
+          caption: null,
+          authorDeclaredRating: "general",
+        }),
+        idempotencyKey: "start-renew",
+        requestHash: "f".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: id },
+        responseBytes,
+        responseSha256,
+      });
       await admin.query(
         "UPDATE media_video_upload_parts SET expires_at=clock_timestamp()-interval '1 second' WHERE reservation_id=$1 AND part_number=2",
         [id],
