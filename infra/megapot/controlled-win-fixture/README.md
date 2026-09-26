@@ -108,3 +108,14 @@ The live isolated stack, provider returns, Base Sepolia deployment and funding
 are still pending. Bootstrap must attest the deployed jackpot, ticket NFT and
 USDC code hashes and their linked addresses. A local RPC proof is a
 compatibility check, not the final owner claim or wallet receipt.
+
+The live deployment script is dry-run by default. It checks the Base Sepolia
+chain, canonical test USDC bytecode, the isolated operator key and nonce, the
+predicted contract address, and the gas quote. It refuses an estimate over
+2,000,000 gas or a maximum fee over 0.0001 ETH. Execution additionally needs
+`--execute`, the exact predicted address in
+`E2E_APPROVED_DEPLOYMENT_ADDRESS`, and at least 0.0015 ETH in the operator
+wallet. It waits for three confirmations and writes a public deployment record
+at `/tmp/megapot-e2e-config-20260926/deployment.json`; copy that record to
+the dated evidence package after execution. The operator key and RPC URL are
+injected from the staging Infisical service and operator paths, never printed.

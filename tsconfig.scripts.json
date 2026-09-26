@@ -6,6 +6,7 @@
     "infra/megapot/controlled-win-fixture/plan-workers.test.ts",
     "infra/megapot/controlled-win-fixture/mirror-runtime-grants.ts",
     "infra/megapot/controlled-win-fixture/prepare-worker-secrets.ts",
+    "infra/megapot/controlled-win-fixture/deploy-base-sepolia.ts",
     "scripts/hns-staging-gateway-fixture.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",
