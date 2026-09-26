@@ -282,6 +282,11 @@
         "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
         "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
+        // Spaces native claims run on staging only. The runtime fails closed
+        // unless both flags are exactly "true" here; production and development
+        // declare neither.
+        "SPACES_RUNTIME_ENABLED": "true",
+        "SPACES_TAPROOT_RECIPIENT_ENABLED": "true",
         "SONG_PLAYBACK_ENABLED": "true",
         "SONG_PLAYBACK_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-staging",
@@ -397,7 +402,10 @@
           "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
           "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
           "VIDEO_STREAM_SIGNING_JWK_BASE64",
-          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64"
+          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+          "SPACES_VERIFIER_ACCESS_CLIENT_ID",
+          "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
+          "SPACES_VERIFIER_BEARER_TOKEN"
         ]
       }
     },
