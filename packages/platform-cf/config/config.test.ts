@@ -415,8 +415,10 @@ describe("config system (000 §9)", () => {
       >;
     };
 
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+    // Staging serves the community app API; the handle host API stays off.
+    expect(config.env?.staging?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
     for (const environment of [config, config.env?.staging]) {
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
       expect(environment?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
       expect(environment?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
       expect(environment?.durable_objects?.bindings).toContainEqual({
@@ -522,7 +524,6 @@ describe("config system (000 §9)", () => {
     const environments = [config, staging];
     for (const environment of environments) {
       expect(environment?.vars?.VERY_OAUTH_ENABLED).toBe("false");
-      expect(environment?.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment?.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
       expect(environment?.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
       expect(environment?.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
@@ -548,6 +549,16 @@ describe("config system (000 §9)", () => {
     expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
     expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe("hns-owner-production");
     expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
+    // Development keeps ownership off. Staging is pinned to the staging owner
+    // verifier's regtest configuration and advertises hns-txt-import-v1;
+    // production enables the import capability only by a separate reviewed change.
+    expect(config.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+    expect(config.vars?.HNS_OWNERSHIP_CAPABILITIES).toBeUndefined();
+    expect(staging?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
+    expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe("hns-owner-staging-regtest");
+    expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
+    expect(staging?.vars?.HNS_OWNERSHIP_CAPABILITIES).toBe("hns-txt-import-v1");
+    expect(production?.vars?.HNS_OWNERSHIP_CAPABILITIES).toBeUndefined();
   });
 
   test("pins the production HTTP origin to its dedicated Hyperdrive and custom domain", async () => {
