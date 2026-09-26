@@ -134,6 +134,32 @@ const originalBody = {
   expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
 };
 
+/** An original-audio reservation as issued before every video had to use a song. */
+function originalReservation(state: VideoReservationRecord["state"]): VideoReservationRecord {
+  return {
+    reservationId: "media-reservation-video",
+    intent: "original_audio",
+    communityId: "community_video",
+    actorAccountId: actor.userId,
+    authorPersonaId: persona.persona_id,
+    requestHash: "a".repeat(64),
+    expectedContentType: "video/mp4",
+    expectedSizeBytes: 10,
+    expectedSha256: null,
+    ingestPolicyRevision: 1,
+    uploadId: "upload-one",
+    partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+    partCount: 1,
+    expiresAt: "2026-09-04T01:00:00.000Z",
+    state,
+    submissionId: state === "issued" ? null : "media-submission-video",
+    operationId: state === "issued" ? null : "media-operation-video",
+    manifest: null,
+    responseBytes: new Uint8Array([1]),
+    updatedAt: "2026-09-04T00:00:00.000Z",
+  };
+}
+
 describe("video publication application", () => {
   test("rejects claiming a reservation through another owned persona", async () => {
     const reservation: VideoReservationRecord = {
@@ -181,59 +207,59 @@ describe("video publication application", () => {
     } satisfies Partial<Conflict>);
   });
 
-  test.each([
-    ["missing", undefined, null],
-    ["empty", "", null],
-    ["whitespace", "  \n ", null],
-    ["present", "A caption", "A caption"],
-  ] as const)("a %s caption is stored as %p", async (_label, caption, stored) => {
-    const reservation: VideoReservationRecord = {
-      reservationId: "media-reservation-video",
-      intent: "original_audio",
-      communityId: "community_video",
-      actorAccountId: actor.userId,
-      authorPersonaId: persona.persona_id,
-      requestHash: "a".repeat(64),
-      expectedContentType: "video/mp4",
-      expectedSizeBytes: 10,
-      expectedSha256: null,
-      ingestPolicyRevision: 1,
-      uploadId: "upload-one",
-      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
-      partCount: 1,
-      expiresAt: "2026-09-04T01:00:00.000Z",
-      state: "issued",
-      submissionId: null,
-      operationId: null,
-      manifest: null,
-      responseBytes: new Uint8Array([1]),
-      updatedAt: "2026-09-04T00:00:00.000Z",
-    };
-    let createdCaption: string | null | undefined;
+  test("refuses to start a new submission from an unused original-audio reservation", async () => {
+    // Issued before every video had to reference a song; starting it would
+    // create a new original-audio video, so it is refused and simply expires.
+    let creates = 0;
     const services = servicesWith({
       store: storeWith({
-        getReservationForAccount: async () => reservation,
-        createSubmission: async ({ state }) => {
-          createdCaption = state.caption;
+        getReservationForAccount: async () => originalReservation("issued"),
+        createSubmission: async () => {
+          creates += 1;
           return { kind: "none" };
         },
       }),
     });
-    await createVideoSubmission(
-      {
-        communityId: reservation.communityId,
-        actor,
-        body: {
-          version: "video-start-input-v1",
-          persona_id: persona.persona_id,
-          video_reservation_id: reservation.reservationId,
-          idempotency_key: `claim-${_label}`,
-          ...(caption === undefined ? {} : { caption }),
+    await expect(
+      createVideoSubmission(
+        {
+          communityId: "community_video",
+          actor,
+          body: {
+            version: "video-start-input-v1",
+            persona_id: persona.persona_id,
+            video_reservation_id: "media-reservation-video",
+            idempotency_key: "claim-original",
+          },
         },
-      },
-      services,
-    );
-    expect(createdCaption).toBe(stored);
+        services,
+      ),
+    ).rejects.toMatchObject({
+      _tag: "BadRequest",
+      details: { reason_code: "song_reference_required", track: "video" },
+    } satisfies Partial<BadRequest>);
+    expect(creates).toBe(0);
+  });
+
+  test("an original-audio reservation already started keeps its claimed-reservation answer", async () => {
+    const services = servicesWith({
+      store: storeWith({ getReservationForAccount: async () => originalReservation("claimed") }),
+    });
+    await expect(
+      createVideoSubmission(
+        {
+          communityId: "community_video",
+          actor,
+          body: {
+            version: "video-start-input-v1",
+            persona_id: persona.persona_id,
+            video_reservation_id: "media-reservation-video",
+            idempotency_key: "claim-original-again",
+          },
+        },
+        services,
+      ),
+    ).rejects.toMatchObject({ _tag: "Conflict" });
   });
 
   test("reconciliation projects unconfirmed and refuses retry; membership recovery uses publication-only retry", async () => {
@@ -557,45 +583,82 @@ describe("video publication application", () => {
     expect(creates).toBe(0);
   });
 
-  test("issues a fixed-count multipart reservation and preserves its response snapshot", async () => {
-    let stored: VideoReservationRecord | null = null;
+  test("refuses a new original-audio reservation before any upload exists", async () => {
+    let creates = 0;
+    let stored = 0;
     const services = servicesWith({
       store: storeWith({
         replayReservation: async () => ({ kind: "none" }),
-        createReservation: async (input) => {
-          stored = input.record;
+        createReservation: async () => {
+          stored += 1;
           return { kind: "none" };
         },
       }),
       multipart: multipartWith({
-        create: async ({ partCount, partSizeBytes }) => ({
-          uploadId: "upload-one",
-          partCount,
-          partSizeBytes,
-          expiresAt: "2026-09-04T01:01:00.000Z",
-          parts: Array.from({ length: partCount }, (_, index) => ({
-            partNumber: index + 1,
-            url: `https://upload.invalid/part/${index + 1}`,
-            expiresAt: "2026-09-04T01:01:00.000Z",
-          })),
+        create: async () => {
+          creates += 1;
+          return await unused();
+        },
+      }),
+    });
+    await expect(
+      reserveVideoUpload({ communityId: "community_video", actor, body: originalBody }, services),
+    ).rejects.toMatchObject({
+      _tag: "BadRequest",
+      message: "A new video must use a song",
+      details: { reason_code: "song_reference_required", track: "video" },
+    } satisfies Partial<BadRequest>);
+    expect(creates).toBe(0);
+    expect(stored).toBe(0);
+  });
+
+  test("a retry of an original-audio reservation issued before the rule returns its snapshot", async () => {
+    const issued = {
+      reservation_id: "media-reservation-video",
+      track: "video",
+      slot: "primary_video",
+      intent: "original_audio",
+      status: "awaiting_upload",
+      author_persona_id: persona.persona_id,
+      ingest_policy_revision: 1,
+      upload: {
+        method: "MULTIPART",
+        upload_id: "upload-one",
+        part_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+        part_count: 2,
+        expires_at: "2026-09-04T01:06:21.000Z",
+        parts: [1, 2].map((part_number) => ({
+          part_number,
+          url: `https://upload.invalid/part/${part_number}`,
+          expires_at: "2026-09-04T01:01:00.000Z",
+        })),
+      },
+    };
+    let creates = 0;
+    const services = servicesWith({
+      store: storeWith({
+        replayReservation: async () => ({
+          kind: "replay",
+          bytes: new TextEncoder().encode(JSON.stringify(issued)),
+          entityId: issued.reservation_id,
         }),
+      }),
+      multipart: multipartWith({
+        create: async () => {
+          creates += 1;
+          return await unused();
+        },
       }),
     });
     const result = await reserveVideoUpload(
       { communityId: "community_video", actor, body: originalBody },
       services,
     );
-    expect(result.upload.expires_at).toBe("2026-09-04T01:06:21.000Z");
-    expect(result.upload.parts[0]?.expires_at).toBe("2026-09-04T01:01:00.000Z");
-    expect(result.upload.part_count).toBe(2);
-    expect(result.upload.part_size_bytes).toBe(VIDEO_MULTIPART_PART_SIZE_BYTES);
-    expect(result.author_persona_id).toBe(persona.persona_id);
-    expect(stored).toMatchObject({
-      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
-      uploadId: "upload-one",
-      partCount: 2,
-      state: "issued",
+    expect(result).toMatchObject({
+      reservation_id: issued.reservation_id,
+      intent: "original_audio",
     });
+    expect(creates).toBe(0);
   });
 
   test("same reservation key with another intent remains an idempotency conflict", async () => {

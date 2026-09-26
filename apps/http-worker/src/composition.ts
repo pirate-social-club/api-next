@@ -420,9 +420,9 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
-   * Song-backed video (Spec 013 §5A). Off unless exactly "true". The request path
-   * after reservation is not composed yet, so enabling this alone lets a client
-   * preflight and reserve but not start a submission.
+   * Song-backed video (Spec 013 §5A). Off unless exactly "true". Every new video
+   * must reference a song, so with this off no new video can be reserved; the
+   * submissions and posts that already exist keep working.
    */
   readonly VIDEO_SONG_REFERENCE_ENABLED?: string;
   readonly AVATAR_AUTHORING_ENABLED?: string;

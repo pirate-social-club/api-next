@@ -742,6 +742,18 @@ function capabilityUnavailable(capability: "song_reference" | "original_sound_re
   });
 }
 
+/**
+ * Every new video references a song (owner ruling 2026-09-24). Existing
+ * original-audio submissions and posts keep working; only a new reservation,
+ * or a new submission started from one issued before this rule, is refused.
+ */
+function songReferenceRequired(): BadRequest {
+  return new BadRequest({
+    message: "A new video must use a song",
+    details: { reason_code: "song_reference_required", track: "video" },
+  });
+}
+
 /** One render plan per song-reference submission, named by it. */
 export const songVideoPlanId = (submissionId: string): string => `song-video-plan:${submissionId}`;
 
@@ -784,7 +796,9 @@ export async function reserveVideoUpload(
       requestHash,
     }),
   );
+  // A retry of a reservation issued before the rule still gets its answer.
   if (prior !== null) return prior;
+  if (body.intent === "original_audio") throw songReferenceRequired();
   let songPlan: FrozenSongReservationPlan | undefined;
   if (body.intent === "song_reference") {
     if (services.songInterval === undefined) throw capabilityUnavailable("song_reference");
@@ -1051,6 +1065,9 @@ export async function createVideoSubmission(
   if (reservation.communityId !== input.communityId || reservation.state !== "issued") {
     throw new Conflict({ message: "Video reservation cannot be claimed" });
   }
+  // An unused original-audio reservation issued before the rule starts no new
+  // submission; it expires. Submissions already started are not affected.
+  if (songPlan === null) throw songReferenceRequired();
   const requestHash = await mediaRequestHash({ community_id: input.communityId }, body);
   const submissionId = `media-submission-${uuid(services)}`;
   const common = {

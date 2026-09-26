@@ -425,6 +425,7 @@ function videoServices(input: {
   reservation?: VideoReservationRecord;
   frozen?: FrozenSongReservationPlan;
   submissions?: Parameters<VideoPublicationStore["createSubmission"]>[0][];
+  multipart?: VideoPublicationServices["multipart"];
 }): VideoPublicationServices {
   const unused = async (): Promise<never> => {
     throw new Error("unused video publication method");
@@ -449,7 +450,7 @@ function videoServices(input: {
   });
   return {
     store,
-    multipart: {
+    multipart: input.multipart ?? {
       create: async () => ({
         uploadId: "upload_song_video",
         partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
@@ -547,6 +548,111 @@ describe("song-reference reservation through the request path", () => {
       ),
     ).rejects.toBeInstanceOf(RetryableConflict);
     expect(created).toHaveLength(0);
+  });
+
+  test("issues a fixed-count multipart reservation for a song video and preserves its snapshot", async () => {
+    const created: Parameters<VideoPublicationStore["createReservation"]>[0][] = [];
+    const base = videoServices({ songInterval: intervalServices(songStore().store), created });
+    const response = await reserveVideoUpload(
+      { communityId: "community_video", actor, body: songBody },
+      {
+        ...base,
+        multipart: {
+          ...base.multipart,
+          create: async ({ partCount, partSizeBytes }) => ({
+            uploadId: "upload-one",
+            partCount,
+            partSizeBytes,
+            expiresAt: "2026-09-10T13:00:00.000Z",
+            parts: Array.from({ length: partCount }, (_, index) => ({
+              partNumber: index + 1,
+              url: `https://upload.invalid/part/${index + 1}`,
+              expiresAt: "2026-09-10T13:00:00.000Z",
+            })),
+          }),
+        },
+      },
+    );
+    // The reservation's own deadline comes from its declared size, apart from
+    // each part URL's expiry.
+    expect(response.upload.expires_at).toBe("2026-09-10T13:05:21.000Z");
+    expect(response.upload.part_count).toBe(2);
+    expect(response.upload.part_size_bytes).toBe(VIDEO_MULTIPART_PART_SIZE_BYTES);
+    expect(response.upload.parts[0]?.expires_at).toBe("2026-09-10T13:00:00.000Z");
+    expect(response.author_persona_id).toBe("persona_video");
+    expect(created[0]?.record).toMatchObject({
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      uploadId: "upload-one",
+      partCount: 2,
+      state: "issued",
+    });
+  });
+
+  test.each([
+    ["missing", undefined, null],
+    ["empty", "", null],
+    ["whitespace", "  \n ", null],
+    ["present", "A caption", "A caption"],
+  ] as const)("a %s caption on a song video is stored as %p", async (label, caption, stored) => {
+    const reservation: VideoReservationRecord = {
+      reservationId: "media-reservation-song",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen: FrozenSongReservationPlan = {
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 12 * SECOND,
+      clipDurationSamples: 9 * SECOND,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+    await createVideoSubmission(
+      {
+        communityId: "community_video",
+        actor,
+        body: {
+          persona_id: persona.persona_id,
+          version: "video-start-input-v1",
+          video_reservation_id: reservation.reservationId,
+          idempotency_key: `create-song-video-${label}`,
+          ...(caption === undefined ? {} : { caption }),
+        },
+      },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen,
+        submissions,
+      }),
+    );
+    expect(submissions[0]?.state.caption).toBe(stored);
   });
 
   test("a song-reference reservation starts only the song-reference path, with its frozen plan", async () => {
