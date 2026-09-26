@@ -11,7 +11,7 @@ describe("Spaces root authority observer", () => {
   test("treats verifier 409 as pending without deriving a changed root", async () => {
     const mockFetch = (async (_input: unknown, init?: RequestInit) => {
       expect(init?.method).toBe("POST");
-      expect(init?.redirect).toBe("error");
+      expect(init?.redirect).toBe("manual");
       expect(init?.headers).toEqual({
         "content-type": "application/json",
         "CF-Access-Client-Id": "test-id",
@@ -32,5 +32,19 @@ describe("Spaces root authority observer", () => {
       (async () => new Response("a".repeat(65_537), { status: 200 })) as unknown as typeof fetch,
     );
     await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow("bound");
+  });
+
+  test("does not follow an Access login redirect", async () => {
+    const observer = makeSpacesRootAuthorityObserver(credentials, (async (
+      _input: unknown,
+      init?: RequestInit,
+    ) => {
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://login.example.test" },
+      });
+    }) as typeof fetch);
+    await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow("unavailable");
   });
 });
