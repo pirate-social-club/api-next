@@ -35975,6 +35975,7 @@ CREATE TABLE study_spoken_answer_commands (
     result_snapshot jsonb,
     reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     completed_at timestamp with time zone,
+    result_kind text DEFAULT 'graded'::text NOT NULL,
     CONSTRAINT study_spoken_answer_commands_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
     CONSTRAINT study_spoken_answer_commands_audio_byte_size_check CHECK (((audio_byte_size >= 1) AND (audio_byte_size <= 524288))),
     CONSTRAINT study_spoken_answer_commands_audio_content_type_check CHECK ((audio_content_type = ANY (ARRAY['audio/webm'::text, 'audio/ogg'::text, 'audio/mp4'::text, 'audio/wav'::text]))),
@@ -35984,8 +35985,10 @@ CREATE TABLE study_spoken_answer_commands (
     CONSTRAINT study_spoken_answer_commands_check1 CHECK ((((state = 'reserved'::text) AND (provider_failure_kind IS NULL) AND (result_snapshot IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (provider_failure_kind IS NULL) AND (result_snapshot IS NOT NULL) AND (completed_at IS NOT NULL)) OR ((state = 'retryable_failed'::text) AND (provider_failure_kind IS NOT NULL) AND (result_snapshot IS NULL) AND (completed_at IS NOT NULL)))),
     CONSTRAINT study_spoken_answer_commands_command_id_check CHECK (((char_length(command_id) >= 1) AND (char_length(command_id) <= 256))),
     CONSTRAINT study_spoken_answer_commands_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_spoken_answer_commands_result_kind_check CHECK ((result_kind = ANY (ARRAY['graded'::text, 'rerecord'::text]))),
     CONSTRAINT study_spoken_answer_commands_result_snapshot_check CHECK (((result_snapshot IS NULL) OR ((jsonb_typeof(result_snapshot) = 'object'::text) AND (octet_length((result_snapshot)::text) <= 131072)))),
-    CONSTRAINT study_spoken_answer_commands_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'completed'::text, 'retryable_failed'::text])))
+    CONSTRAINT study_spoken_answer_commands_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'completed'::text, 'retryable_failed'::text]))),
+    CONSTRAINT study_spoken_rerecord_completed_check CHECK (((result_kind = 'graded'::text) OR (state = 'completed'::text)))
 );
 
 CREATE TABLE study_translation_generation_items (
@@ -38980,9 +38983,6 @@ ALTER TABLE ONLY study_spoken_answer_commands
 ALTER TABLE ONLY study_spoken_answer_commands
     ADD CONSTRAINT study_spoken_answer_commands_session_id_idempotency_key_key UNIQUE (session_id, idempotency_key);
 
-ALTER TABLE ONLY study_spoken_answer_commands
-    ADD CONSTRAINT study_spoken_answer_commands_session_id_session_item_id_att_key UNIQUE (session_id, session_item_id, attempt_number);
-
 ALTER TABLE ONLY study_translation_generation_runs
     ADD CONSTRAINT study_translation_generation__community_id_post_id_lyrics_r_key UNIQUE (community_id, post_id, lyrics_revision, language_profile_revision, target_language, learner_band, generator_policy_revision, prompt_revision, quality_policy_revision, attempt_number);
 
@@ -39590,6 +39590,10 @@ CREATE INDEX study_sessions_created_at ON study_sessions USING btree (created_at
 CREATE INDEX study_sessions_v2_created_at ON study_sessions_v2 USING btree (created_at);
 
 CREATE INDEX study_spoken_answer_commands_live_account_idx ON study_spoken_answer_commands USING btree (account_id, lease_expires_at) WHERE (state = 'reserved'::text);
+
+CREATE UNIQUE INDEX study_spoken_graded_command_slot_unique ON study_spoken_answer_commands USING btree (session_id, session_item_id, attempt_number) WHERE (result_kind = 'graded'::text);
+
+CREATE UNIQUE INDEX study_spoken_rerecord_receipt_unique ON study_spoken_answer_commands USING btree (session_id, session_item_id, attempt_number) WHERE (result_kind = 'rerecord'::text);
 
 CREATE INDEX study_translation_generation_runs_dispatch_idx ON study_translation_generation_runs USING btree (status, created_at, generation_run_id) WHERE (status = ANY (ARRAY['pending'::text, 'leased'::text]));
 

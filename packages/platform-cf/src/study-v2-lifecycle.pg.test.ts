@@ -5,6 +5,7 @@ import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-t
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -273,6 +274,7 @@ suite("Study v2 spoken lifecycle", () => {
         }
         const result = await run(
           study.completeSpokenAnswer({
+            ...defaultStudySpokenEvidence,
             accountId: "study-account",
             acceptedAt: `2026-09-12T12:0${commandCounterNow}:00.000Z`,
             archive: {

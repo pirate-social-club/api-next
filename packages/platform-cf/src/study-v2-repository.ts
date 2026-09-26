@@ -11,6 +11,7 @@ import {
   StudyAvailabilityV2,
   StudySessionItemV2,
   StudySessionV2,
+  StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";
 import {
   gradeExactChoiceV2,
@@ -702,7 +703,12 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const selected = yield* db.execute<Row>({
           label: "study-v2.spoken.context",
           text: `SELECT i.item_snapshot, e.private_grader, profile.dominant_language,
-                        profile.mixed, profile.confidence
+                        profile.mixed, profile.confidence,
+                        profile.community_id AS profile_community_id,
+                        profile.post_id AS profile_post_id,
+                        profile.lyrics_revision AS profile_lyrics_revision,
+                        profile.language_profile_revision AS profile_revision,
+                        profile.study_unit_id AS profile_study_unit_id
                    FROM study_session_items_v2 i
                    JOIN study_sessions_v2 s ON s.session_id=i.session_id AND s.account_id=i.account_id
                    JOIN study_exercise_versions e ON e.exercise_version_id=i.exercise_version_id
@@ -754,13 +760,40 @@ export const makeControlPlaneStudyV2Repository = () => ({
         ) {
           return yield* rejected("submission-kind-mismatch");
         }
+        const dominantLanguage =
+          row.mixed === false && row.confidence !== null && number(row, "confidence") >= 0.8
+            ? nullableText(row, "dominant_language")
+            : null;
+        if (
+          dominantLanguage !== null &&
+          (text(row, "profile_community_id") !== input.communityId ||
+            text(row, "profile_post_id") !== item.line.post_id ||
+            integer(row, "profile_lyrics_revision") !== item.line.lyrics_revision ||
+            integer(row, "profile_revision") !== item.language_profile_revision ||
+            text(row, "profile_study_unit_id") !== item.line.study_unit_id)
+        ) {
+          return yield* Effect.fail(failed("invalid-row"));
+        }
+        const languageProvenance = decode(
+          StudySpokenLanguageProvenanceV2,
+          dominantLanguage === null
+            ? { kind: "no_authoritative_evidence" }
+            : {
+                kind: "unit_profile",
+                community_id: text(row, "profile_community_id"),
+                post_id: text(row, "profile_post_id"),
+                lyrics_revision: integer(row, "profile_lyrics_revision"),
+                language_profile_revision: integer(row, "profile_revision"),
+                study_unit_id: text(row, "profile_study_unit_id"),
+                confidence: number(row, "confidence"),
+                dominant_language: dominantLanguage,
+              },
+        );
         return {
           item,
           referenceText: grader.reference_text,
-          dominantLanguage:
-            row.mixed === false && row.confidence !== null && number(row, "confidence") >= 0.8
-              ? nullableText(row, "dominant_language")
-              : null,
+          dominantLanguage,
+          languageProvenance,
         };
       }),
     ),
@@ -782,8 +815,11 @@ export const makeControlPlaneStudyV2Repository = () => ({
                             lease_expires_at > clock_timestamp() AS lease_live
                        FROM study_spoken_answer_commands
                       WHERE session_id=$1 AND account_id=$5 AND (
-                        idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
-                      ) FOR UPDATE`,
+                        idempotency_key=$2 OR (
+                          session_item_id=$3 AND attempt_number=$4 AND result_kind='graded'
+                        )
+                      ) ORDER BY CASE WHEN idempotency_key=$2 THEN 0 ELSE 1 END
+                        LIMIT 1 FOR UPDATE`,
               values: [
                 input.sessionId,
                 input.idempotencyKey,
@@ -935,8 +971,11 @@ export const makeControlPlaneStudyV2Repository = () => ({
                             lease_expires_at > clock_timestamp() AS lease_live
                        FROM study_spoken_answer_commands
                       WHERE session_id=$1 AND (
-                        idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
-                      ) FOR UPDATE`,
+                        idempotency_key=$2 OR (
+                          session_item_id=$3 AND attempt_number=$4 AND result_kind='graded'
+                        )
+                      ) ORDER BY CASE WHEN idempotency_key=$2 THEN 0 ELSE 1 END
+                        LIMIT 1 FOR UPDATE`,
               values: [
                 input.sessionId,
                 input.idempotencyKey,
@@ -947,7 +986,6 @@ export const makeControlPlaneStudyV2Repository = () => ({
             });
             if (existing.rows.length !== 1) return yield* rejected("idempotency-conflict");
             const row = existing.rows[0] as Row;
-            const commandId = text(row, "command_id");
             const state = text(row, "state");
             if (state === "completed") {
               if (!spokenPayloadMatches(row, input)) {
@@ -1119,6 +1157,86 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 heard,
               })),
             };
+            const priorReceipt =
+              input.rerecordEnabled &&
+              !input.grade.correct &&
+              input.rerecordAssessment.candidateReason !== null
+                ? yield* transaction.execute<Row>({
+                    label: "study-v2.spoken.prior-rerecord",
+                    text: `SELECT command_id FROM study_spoken_answer_commands
+                            WHERE session_id=$1 AND session_item_id=$2
+                              AND attempt_number=$3 AND result_kind='rerecord'
+                            FOR UPDATE`,
+                    values: [input.sessionId, input.sessionItemId, input.attemptNumber],
+                    readonly: false,
+                  })
+                : null;
+            const rerecord =
+              priorReceipt !== null &&
+              priorReceipt.rows.length === 0 &&
+              input.rerecordAssessment.candidateReason !== null;
+            const assessment = input.rerecordAssessment;
+            const spoken = {
+              language_provenance: input.languageProvenance,
+              rerecord_decision: {
+                policy_revision: assessment.policyRevision,
+                enabled: input.rerecordEnabled,
+                kind: rerecord ? ("ungraded_rerecord" as const) : ("graded" as const),
+                reason: rerecord ? assessment.candidateReason : null,
+                voice_overlap: {
+                  revision: assessment.voiceOverlap.revision,
+                  matched_tokens: assessment.voiceOverlap.matchedTokens,
+                  reference_tokens: assessment.voiceOverlap.referenceTokens,
+                  below_one_third: assessment.voiceOverlap.belowOneThird,
+                },
+                strong_remainder: {
+                  revision: assessment.strongRemainder.revision,
+                  matched_tokens: assessment.strongRemainder.matchedTokens,
+                  reference_tokens: assessment.strongRemainder.referenceTokens,
+                  strong: assessment.strongRemainder.strong,
+                },
+                language_mismatch: {
+                  revision: assessment.languageMismatch.revision,
+                  expected_language: assessment.languageMismatch.expectedLanguage,
+                  detected_language: assessment.languageMismatch.detectedLanguage,
+                  detected_confidence: assessment.languageMismatch.detectedConfidence,
+                  clear: assessment.languageMismatch.clear,
+                },
+              },
+            };
+            if (rerecord) {
+              const session = yield* readSession(transaction, input);
+              if (session === null) return yield* rejected("not-found");
+              const result = decode(StudyAnswerResultV2, {
+                object: "study_answer_result_v2",
+                session_item_id: input.sessionItemId,
+                attempt_number: input.attemptNumber,
+                exercise_type: "say_it_back",
+                outcome: "ungraded_rerecord",
+                first_pass: input.attemptNumber === 1,
+                attempt_state: "retryable",
+                feedback,
+                spoken,
+                session,
+              });
+              yield* transaction.execute({
+                label: "study-v2.spoken.command-rerecord",
+                text: `UPDATE study_spoken_answer_commands
+                          SET state='completed', result_kind='rerecord',
+                              result_snapshot=$3::jsonb, completed_at=$4::timestamptz
+                        WHERE command_id=$1 AND account_id=$2 AND state='reserved'
+                          AND lease_token=$5`,
+                values: [
+                  input.commandId,
+                  input.accountId,
+                  JSON.stringify(result),
+                  input.acceptedAt,
+                  input.leaseToken,
+                ],
+                readonly: false,
+              });
+              return result;
+            }
             yield* transaction.execute({
               label: "study-v2.spoken.attempt",
               text: `INSERT INTO study_attempts_v2 (
@@ -1383,6 +1501,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
               first_pass: input.attemptNumber === 1,
               attempt_state: "spent",
               feedback,
+              spoken,
               session,
             });
             yield* transaction.execute({
