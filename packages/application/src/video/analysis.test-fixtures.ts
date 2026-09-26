@@ -258,6 +258,7 @@ export function services(input: {
     throw new Error("unused video analysis store method");
   };
   const store: VideoPublicationStore = {
+    replaySubmissionStart: unused,
     replayReservation: unused,
     createReservation: unused,
     getReservationForAuthor: unused,

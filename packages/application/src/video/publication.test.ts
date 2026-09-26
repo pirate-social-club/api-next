@@ -51,6 +51,8 @@ const unused = async (): Promise<never> => {
 
 function storeWith(overrides: Partial<VideoPublicationStore> = {}): VideoPublicationStore {
   return {
+    // No earlier start under this key unless a test says otherwise.
+    replaySubmissionStart: async () => ({ kind: "none" }),
     replayReservation: unused,
     createReservation: unused,
     getReservationForAuthor: unused,

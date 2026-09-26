@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type { VideoStageFact } from "@pirate/application/video/stage-facts";
 import { Effect } from "effect";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
@@ -9,11 +10,13 @@ import {
 import { getVideoPlaybackAccess } from "../../application/src/video/playback-access.ts";
 import {
   acceptTrustedVideoAnalysis,
+  createVideoSubmission,
   projectVideoSubmission,
   renewVideoUploadParts,
   reserveVideoUpload,
   VIDEO_MULTIPART_PART_SIZE_BYTES,
   type VideoPublicationServices,
+  type VideoPublicationStore,
 } from "../../application/src/video/publication.ts";
 import { dispatchVideoPublicationWakeups } from "../../application/src/video/publication-wakeup.ts";
 import { consumeVideoStreamIngest } from "../../application/src/video/stream-ingest.ts";
@@ -33,6 +36,7 @@ import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneSongVideoIntervalStore } from "./song-video-interval-repository.ts";
 import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import { makeVideoPlaybackAuthority } from "./video-playback-authority.ts";
@@ -90,6 +94,156 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
       return use(admin, connection);
     },
   });
+}
+
+const sha256Hex = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * A measured, published song and an issued song-reference reservation for
+ * it, with application services over the real stores. Every upload and seal
+ * effect throws, so any second upload effect fails the test.
+ */
+async function songStartFixture(admin: Client, connection: string, label: string) {
+  await seedSongOwner(admin);
+  const song = {
+    songPostId: `post-start-replay-${label}`,
+    communityId: community,
+    audioAssetRef: `media://song/start-replay-${label}`,
+    canonicalAudioSha256: "a".repeat(64),
+    durationSamples: 30 * 48_000,
+    title: "Start replay fixture",
+    contentRating: "general" as const,
+    derivativeVideo: "allowed" as const,
+    licensePreset: "commercial-remix" as const,
+    commercialRemixShareBps: 1_000,
+  };
+  await seedPublishedSongFixture(admin, song);
+  const policy = await admin.query<{ policy_hash: string }>(
+    "SELECT policy_hash FROM song_owner_policy_revisions WHERE post_id=$1 AND policy_revision=1",
+    [song.songPostId],
+  );
+  const layer = makeDirectPostgresControlPlaneLayer(connection);
+  const store = makeControlPlaneVideoPublicationStore(layer);
+  const reservationId = `media-reservation-${crypto.randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  const reservationResponse = new TextEncoder().encode(`{"reservation_id":"${reservationId}"}`);
+  await store.createReservation({
+    record: {
+      reservationId,
+      communityId: community,
+      intent: "song_reference",
+      actorAccountId: actor,
+      authorPersonaId: persona,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: 1_024,
+      expectedSha256: videoSha256,
+      ingestPolicyRevision: 1,
+      uploadId: `multipart-${reservationId}`,
+      partSizeBytes: 10 * 1024 * 1024,
+      partCount: 1,
+      expiresAt,
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: reservationResponse,
+      updatedAt: new Date().toISOString(),
+    },
+    idempotencyKey: `reserve-start-replay-${label}`,
+    responseSha256: sha256Hex(reservationResponse),
+    parts: [{ partNumber: 1, url: "https://upload.invalid/part-one", expiresAt }],
+    songPlan: {
+      songPostId: song.songPostId,
+      audioRevision: 1,
+      canonicalAudioSha256: song.canonicalAudioSha256,
+      songDurationSamples: song.durationSamples,
+      songAssetId: song.audioAssetRef,
+      clipStartSamples: 0,
+      clipDurationSamples: 10 * 48_000,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 1,
+      ownerPolicyHash: policy.rows[0]?.policy_hash ?? "0".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: new Date().toISOString(),
+    },
+  });
+  const effect = async (): Promise<never> => {
+    throw new Error("a start must not cause an upload or seal effect");
+  };
+  const services = (overrides: Partial<VideoPublicationStore> = {}): VideoPublicationServices => ({
+    store: { ...store, ...overrides },
+    personaServices: {
+      personaStore: makeControlPlanePersonaStore(layer),
+      runEffect: (program, signal) =>
+        Effect.runPromise(program, signal === undefined ? undefined : { signal }),
+    },
+    songInterval: {
+      store: makeControlPlaneSongVideoIntervalStore(layer),
+      contentStore: makeControlPlaneContentStore(layer),
+    },
+    nowIso: () => new Date().toISOString(),
+    randomUuid: () => crypto.randomUUID(),
+    sealer: { inspect: effect, seal: effect },
+    multipart: { create: effect, renew: effect, completeOrInspect: effect, abort: effect },
+  });
+  const body = {
+    persona_id: persona,
+    version: "video-start-input-v1",
+    video_reservation_id: reservationId,
+    idempotency_key: `start-replay-${label}`,
+  };
+  const start = (withServices: VideoPublicationServices, startBody: unknown = body) =>
+    createVideoSubmission(
+      { communityId: community, actor: { kind: "user", userId: actor }, body: startBody },
+      withServices,
+    );
+  const submissions = async () =>
+    (
+      await admin.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM media_post_submissions WHERE actor_user_id=$1 AND media_kind='video'",
+        [actor],
+      )
+    ).rows[0]?.n ?? -1;
+  const reservationState = async () =>
+    (
+      await admin.query<{ state: string }>(
+        "SELECT state FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      )
+    ).rows[0]?.state;
+  return { services, body, start, submissions, reservationState };
+}
+
+/** Holds the render-plan table so a start pauses inside its transaction,
+ * after its submission row is written and before the reservation is claimed. */
+async function pauseStartsInsideTheirTransaction(connection: string) {
+  const holder = new Client({ connectionString: connection });
+  await holder.connect();
+  await holder.query("BEGIN");
+  await holder.query("LOCK TABLE media_song_video_render_plans IN SHARE MODE");
+  return {
+    /** The statements now waiting on the held table, read from a fresh
+     * statistics snapshot (a transaction otherwise keeps its first one). */
+    waiting: async (): Promise<string[]> => {
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        await holder.query("SELECT pg_stat_clear_snapshot()");
+        const blocked = await holder.query<{ q: string }>(
+          `SELECT regexp_replace(query,'\\s+',' ','g') AS q FROM pg_stat_activity
+            WHERE wait_event_type='Lock' AND pid<>pg_backend_pid()`,
+        );
+        if (blocked.rows.length > 0) return blocked.rows.map((row) => row.q);
+        await Bun.sleep(10);
+      }
+      throw new Error("the start never reached the paused boundary");
+    },
+    release: async () => {
+      await holder.query("ROLLBACK");
+      await holder.end();
+    },
+  };
 }
 
 suite("video publication PostgreSQL", () => {
@@ -2426,4 +2580,143 @@ suite("video publication wakeup delivery", () => {
       });
     });
   }
+  test("a lost start answer replays after the claim, after expiry, and never for another body", async () => {
+    await fixture(async (admin, connection) => {
+      const { services, body, start, submissions } = await songStartFixture(
+        admin,
+        connection,
+        "seq",
+      );
+      const first = await start(services());
+      expect(await submissions()).toBe(1);
+      // The response was lost; the reservation is claimed now.
+      expect(await start(services())).toEqual(first);
+      // Long after the reservation's deadline, the same start still gets its answer.
+      const later: VideoPublicationServices = {
+        ...services(),
+        nowIso: () => new Date(Date.now() + 86_400_000).toISOString(),
+      };
+      expect(await start(later)).toEqual(first);
+      // The same key with another body, or from another persona, is a conflict.
+      await expect(start(services(), { ...body, caption: "changed" })).rejects.toMatchObject({
+        _tag: "IdempotencyConflict",
+      });
+      expect(await submissions()).toBe(1);
+    });
+  });
+
+  test("a concurrent retry that sees the claimed reservation gets the winner's saved answer", async () => {
+    await fixture(async (admin, connection) => {
+      const { services, start, submissions, reservationState } = await songStartFixture(
+        admin,
+        connection,
+        "claimed-race",
+      );
+      const pause = await pauseStartsInsideTheirTransaction(connection);
+      const winner = start(services());
+      const paused = await pause.waiting();
+      expect(paused.join(" ")).toContain("INSERT INTO media_song_video_render_plans");
+      // Paused inside its transaction, the winner's submission and claim are
+      // both invisible: neither can be seen without the other.
+      expect(await reservationState()).toBe("issued");
+      expect(await submissions()).toBe(0);
+      let replayReads = 0;
+      let loserCreates = 0;
+      let firstReadDone!: () => void;
+      const firstRead = new Promise<void>((resolve) => {
+        firstReadDone = resolve;
+      });
+      let winnerCommitted!: () => void;
+      const committed = new Promise<void>((resolve) => {
+        winnerCommitted = resolve;
+      });
+      const base = services();
+      const loser = start(
+        services({
+          replaySubmissionStart: async (input) => {
+            replayReads += 1;
+            const outcome = await base.store.replaySubmissionStart(input);
+            if (replayReads === 1) firstReadDone();
+            return outcome;
+          },
+          // The loser reads the reservation only after the winner committed.
+          getReservationForAccount: async (input) => {
+            await committed;
+            return base.store.getReservationForAccount(input);
+          },
+          createSubmission: async (input) => {
+            loserCreates += 1;
+            return base.store.createSubmission(input);
+          },
+        }),
+      );
+      // The loser must be parked at the boundary, not finished early.
+      await Promise.race([
+        firstRead,
+        loser.then(
+          () => Promise.reject(new Error("the loser finished before its first replay read")),
+          (error) => Promise.reject(error),
+        ),
+      ]).catch(async (error) => {
+        await pause.release();
+        throw error;
+      });
+      await pause.release();
+      const won = await winner;
+      winnerCommitted();
+      expect(await loser).toEqual(won);
+      expect(replayReads).toBe(2);
+      expect(loserCreates).toBe(0);
+      expect(await submissions()).toBe(1);
+      expect(await reservationState()).toBe("claimed");
+    });
+  });
+
+  test("a concurrent retry that sees the issued reservation waits and replays the winner's answer", async () => {
+    await fixture(async (admin, connection) => {
+      const { services, start, submissions, reservationState } = await songStartFixture(
+        admin,
+        connection,
+        "issued-race",
+      );
+      const pause = await pauseStartsInsideTheirTransaction(connection);
+      const winner = start(services());
+      expect((await pause.waiting()).join(" ")).toContain(
+        "INSERT INTO media_song_video_render_plans",
+      );
+      const base = services();
+      let loserCreates = 0;
+      let loserWaiting!: () => void;
+      const atStore = new Promise<void>((resolve) => {
+        loserWaiting = resolve;
+      });
+      // The loser reads the reservation while the winner is still uncommitted,
+      // sees it issued, and goes on to the store, which serializes the key.
+      const loser = start(
+        services({
+          createSubmission: async (input) => {
+            loserCreates += 1;
+            loserWaiting();
+            return base.store.createSubmission(input);
+          },
+        }),
+      );
+      await Promise.race([
+        atStore,
+        loser.then(
+          () => Promise.reject(new Error("the loser finished before reaching the store")),
+          (error) => Promise.reject(error),
+        ),
+      ]).catch(async (error) => {
+        await pause.release();
+        throw error;
+      });
+      await pause.release();
+      const won = await winner;
+      expect(await loser).toEqual(won);
+      expect(loserCreates).toBe(1);
+      expect(await submissions()).toBe(1);
+      expect(await reservationState()).toBe("claimed");
+    });
+  });
 });

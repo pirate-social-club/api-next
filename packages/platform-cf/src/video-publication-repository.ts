@@ -724,6 +724,27 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
 
+    replaySubmissionStart: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          // The same read createSubmission makes under its lock. A submission
+          // row carries its saved answer, key and hash from the transaction
+          // that claimed the reservation, so it is visible exactly when the
+          // claim is.
+          const prior = yield* db.execute<Row>({
+            label: "video-publication.start-replay",
+            text: `SELECT submission_id,request_hash,response_snapshot_bytes
+                     FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2
+                      AND endpoint_template='/communities/:communityId/media-post-submissions'
+                      AND idempotency_key=$3`,
+            values: [input.communityId, input.actorAccountId, input.idempotencyKey],
+            readonly: true,
+          });
+          return replayFromRow(prior.rows[0], input.requestHash, "submission_id");
+        }),
+      ),
+
     getSubmissionForAccount: (input) =>
       run(
         Effect.gen(function* () {
