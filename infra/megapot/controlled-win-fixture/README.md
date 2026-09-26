@@ -139,3 +139,11 @@ exactly 1,000,000 atomic Base Sepolia USDC into the approved jackpot, with a
 0.0001 ETH gas hard cap. It verifies the Transfer log and both final balances
 after three confirmations. A second run refuses because the balances and
 one-use record no longer match.
+
+`prepare:megapot-controlled-win:activation` checks the isolated database
+attestation and absence of an open offer, the fixture's exact 1 USDC prize,
+at least 0.002 ETH for custody, and at least 0.005 ETH for the gas wallet.
+It then writes local HTTP and jobs config copies that change only
+`MEGAPOT_REWARDS_ENABLED` to true. It does not upload or deploy a Worker. Its
+2026-09-27 00:29 Tbilisi run correctly refused while custody still held zero
+ETH. The rewards-off Worker versions remain the rollback targets.

@@ -9,6 +9,7 @@
     "infra/megapot/controlled-win-fixture/deploy-base-sepolia.ts",
     "infra/megapot/controlled-win-fixture/attest-isolated.ts",
     "infra/megapot/controlled-win-fixture/fund-prize.ts",
+    "infra/megapot/controlled-win-fixture/prepare-activation.ts",
     "scripts/hns-staging-gateway-fixture.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",
