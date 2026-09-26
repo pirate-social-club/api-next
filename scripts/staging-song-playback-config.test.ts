@@ -33,7 +33,7 @@ describe("staging song playback configuration", () => {
     expect(staging.vars?.SONG_PLAYBACK_ENABLED).toBe("true");
     expect(staging.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
     expect(staging.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("pirate-media-immutable-staging");
-    expect(staging.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(staging.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
     expect(staging.secrets?.required).toEqual(
       expect.arrayContaining([
         "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
