@@ -4,7 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.96.0",
   "sourceBranch": "fix/study-spoken-language-provenance",
-  "sourceBase": "574190a301ed704f32810fbaa6155dec33549deb",
+  "sourceBase": "d8e2c7c5399d92880f09f50c9054f6695033d853",
   "validatedSourceCommit": null,
   "pullRequest": 454,
   "wireContract": "Adds optional spoken language provenance and a versioned rerecord decision to Study answer results, plus the ungraded_rerecord outcome. Historical spoken snapshots without provenance remain decodable.",
