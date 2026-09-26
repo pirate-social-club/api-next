@@ -270,7 +270,7 @@ describe("config system (000 §9)", () => {
     ).toThrow("invalid Megapot reward runtime posture");
   });
 
-  test("API staging and production keep Base Sepolia rewards disabled", async () => {
+  test("API staging enables Base Sepolia rewards while production stays disabled", async () => {
     const paths = [
       "../../../apps/http-worker/wrangler.jsonc",
       "../../../apps/jobs-worker/wrangler.jsonc",
@@ -285,7 +285,7 @@ describe("config system (000 §9)", () => {
         >;
       };
 
-      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
       expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
       expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");

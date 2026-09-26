@@ -660,12 +660,14 @@ describe("source-to-Wrangler binding contract", () => {
     }
   });
 
-  test("pins live staging jobs bindings while Spaces reconciliation remains off", () => {
+  test("pins live staging jobs bindings with Spaces reconciliation on", () => {
     const staging = declaredEnvironment(configs.jobs, "staging");
     expect(staging.vars.AVATAR_CLEANUP_ENABLED).toBe("true");
     expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
     expect(staging.vars.DATA_REGISTRATION_ENABLED).toBe("false");
-    expect(staging.vars).not.toHaveProperty("SPACES_RECONCILIATION_ENABLED");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
+    expect(staging.secrets).toContain("MEGAPOT_GAS_TOPUP_PRIVATE_KEY");
+    expect(staging.vars.SPACES_RECONCILIATION_ENABLED).toBe("true");
     expect(staging.vars.SPACES_RECONCILIATION_OVERDUE_SECONDS).toBe("259200");
     expect(staging.vars.SPACES_RECONCILIATION_MEASUREMENT_REFERENCE).toBe(
       "bitcoin-mainnet-150-block-windows-2026-09-26",
@@ -685,6 +687,41 @@ describe("source-to-Wrangler binding contract", () => {
         { binding: "AVATAR_SEALED", bucket_name: "pirate-avatar-sealed-staging" },
       ]),
     );
+  });
+
+  test("preserves active staging rewards while enabling Spaces", () => {
+    const staging = declaredEnvironment(configs.http, "staging");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
+    expect(staging.vars.MEGAPOT_GAS_TOPUP_TARGET_WEI).toBe("50000000000000");
+    expect(staging.vars.MEGAPOT_GAS_TOPUP_MAX_WEI).toBe("50000000000000");
+    expect(staging.vars.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT).toBe("3");
+    expect(staging.vars.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI).toBe("5000000000000000");
+  });
+
+  test("enables Spaces only in staging, with verifier credentials as secrets", () => {
+    const names = [
+      "SPACES_VERIFIER_ACCESS_CLIENT_ID",
+      "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
+      "SPACES_VERIFIER_BEARER_TOKEN",
+    ];
+    for (const environmentName of ENVIRONMENTS) {
+      const http = declaredEnvironment(configs.http, environmentName);
+      const jobs = declaredEnvironment(configs.jobs, environmentName);
+      const enabled = environmentName === "staging";
+      for (const [vars, flag] of [
+        [http.vars, "SPACES_RUNTIME_ENABLED"],
+        [http.vars, "SPACES_TAPROOT_RECIPIENT_ENABLED"],
+        [jobs.vars, "SPACES_RECONCILIATION_ENABLED"],
+      ] as const) {
+        if (enabled) expect(vars[flag]).toBe("true");
+        else expect(vars).not.toHaveProperty(flag);
+      }
+      for (const name of names) {
+        expect(http.vars).not.toHaveProperty(name);
+        if (enabled) expect(http.secrets).toContain(name);
+        else expect(http.secrets).not.toContain(name);
+      }
+    }
   });
 
   test("does not declare the retired ElevenLabs logging policy variable", () => {
