@@ -25,7 +25,9 @@ for (const kind of ["http", "jobs"] as const) {
       ? "https://api-megapot-e2e-staging.pirate.sc"
       : process.env[source];
     if (!value) throw new Error(`missing ${source} for ${kind}`);
-    contents[name] = value;
+    // Infisical stores this PEM with a final newline. Session crypto requires
+    // the key text without surrounding whitespace, as on the serving Worker.
+    contents[name] = name === "PIRATE_APP_JWT_PRIVATE_KEY" ? value.trimEnd() : value;
   }
   const path = resolve(secretDir, `${kind}-secrets.json`);
   const file = await open(path, "wx", 0o600);
