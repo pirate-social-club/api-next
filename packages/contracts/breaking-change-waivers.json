@@ -1,13 +1,3 @@
 {
-  "breakingChangeWaivers": [
-    {
-      "baselineSha": "d8e2c7c5399d92880f09f50c9054f6695033d853",
-      "expectedViolations": [
-        "response POST /communities/{communityId}/study/v2/sessions/{sessionId}/items/{sessionItemId}/answers: enum value added: \"ungraded_rerecord\""
-      ],
-      "kind": "clean-break",
-      "operationId": "post_communitiesCommunityIdStudyV2SessionsSessionIdItemsSessionItemIdAnswers",
-      "reason": "Spec 025 authorizes the versioned ungraded rerecord outcome for spoken Study answers; the exact response enum addition is reviewed for this baseline and Solid rendering follows in a separate lane."
-    }
-  ]
+  "breakingChangeWaivers": []
 }
