@@ -119,3 +119,11 @@ wallet. It waits for three confirmations and writes a public deployment record
 at `/tmp/megapot-e2e-config-20260926/deployment.json`; copy that record to
 the dated evidence package after execution. The operator key and RPC URL are
 injected from the staging Infisical service and operator paths, never printed.
+
+After deployment, `attest:megapot-controlled-win:isolated` checks the actual
+contract receipt, linked contract addresses, code hashes, isolated custody
+key, and copied database. It refuses an open credit, offer, leg, ticket, chain
+effect or refund. Its default mode rolls back its read-only transaction. With
+`--execute`, it retires only the copied public attestation and inserts
+`megapot-e2e-sepolia-20260926-r1` in one serializable transaction. The shared
+staging database is outside this script's branch-pinned connection.
