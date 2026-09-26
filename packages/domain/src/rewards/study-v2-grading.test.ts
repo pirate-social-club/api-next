@@ -3,11 +3,13 @@ import {
   gradeAcceptedTextV2,
   gradeEnglishTranscriptV2,
   gradeEnglishTranscriptV3,
+  gradeEnglishTranscriptV4,
   gradeExactChoiceV2,
   gradeTranscriptV2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V1,
   STUDY_TRANSCRIPT_GRADER_POLICY_V2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V3,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V4,
   studyTranscriptReviewGrade,
 } from "./study-v2-grading.ts";
 
@@ -226,5 +228,127 @@ describe("Study v3 grader revision", () => {
     expect(
       gradeTranscriptV2("hold me close", "hold me closed", "es", STUDY_TRANSCRIPT_GRADER_POLICY_V3),
     ).toMatchObject({ correct: false, matchKind: "none" });
+  });
+});
+
+describe("Study v4 grader revision", () => {
+  const negativeEquivalences = [
+    ["It isn't the same", "It is not the same"],
+    ["It is not the same", "It isn't the same"],
+    ["It isn’t the same", "It is not the same"],
+    ["Don't let it out", "Do not let it out"],
+    ["Do not let it out", "Don't let it out"],
+    ["She doesn't know", "She does not know"],
+    ["I didn't know", "I did not know"],
+    ["We couldn't stay", "We could not stay"],
+    ["You aren't mine", "You are not mine"],
+    ["He wasnt there", "He was not there"],
+    ["Dont stop", "Do not stop"],
+    ["I can't swim", "I cannot swim"],
+    ["I cant swim", "I can not swim"],
+    ["I can't swim", "I can not swim"],
+    ["I won't back down", "I will not back down"],
+    ["I wont back down", "I will not back down"],
+    ["Who's sorry now", "Who is sorry now"],
+  ] as const;
+
+  for (const [reference, transcript] of negativeEquivalences) {
+    test(`matches ${JSON.stringify(transcript)} exactly under v4`, () => {
+      expect(gradeEnglishTranscriptV4(reference, transcript)).toMatchObject({
+        correct: true,
+        matchKind: "exact",
+      });
+    });
+  }
+
+  test("rejects whole-word insertions and deletions the v3 phonetic budget absorbed", () => {
+    const line = "Who's the man that Valentino takes his hat off to?";
+    expect(
+      gradeEnglishTranscriptV4(line, "Who's the man that let Valentino take his hat off to?"),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+    expect(
+      gradeEnglishTranscriptV4(line, "Who's the man that just Valentino takes his hat off to?"),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+    expect(
+      gradeEnglishTranscriptV4(line, "Who's the man Valentino takes his hat off to?"),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
+  test("keeps real negation changes rejected in both directions", () => {
+    expect(gradeEnglishTranscriptV4("I can love you", "I cannot love you")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+    expect(gradeEnglishTranscriptV4("I cannot love you", "I can love you")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+    expect(gradeEnglishTranscriptV4("I do love you", "I do not love you")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+    expect(
+      gradeEnglishTranscriptV4(
+        "I will always hold you close through the night",
+        "I will never hold you close through the night",
+      ),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
+  test("keeps the calibrated near-match fixtures under v4", () => {
+    expect(gradeEnglishTranscriptV4("hold me close", "hold me closed")).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV4("Shoo-be-doo", "shooby doo")).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV4("love", "loved")).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV4("The cafés won't stay", "cafe will not stays").correct).toBe(
+      true,
+    );
+    expect(
+      gradeEnglishTranscriptV4(
+        "Say mum's the word, don't let it out",
+        "Say mom's the word. Don't let it out",
+      ),
+    ).toMatchObject({ correct: true, matchKind: "phonetic" });
+  });
+
+  test("retains the possessive apostrophe-s false expansion as phonetic acceptance", () => {
+    expect(
+      gradeEnglishTranscriptV4("Valentino's hat is gone", "Valentinos hat is gone"),
+    ).toMatchObject({ correct: true, matchKind: "phonetic" });
+  });
+
+  test("keeps language-agnostic behavior for a null or non-English profile", () => {
+    expect(
+      gradeTranscriptV2(
+        "It isn't the same",
+        "It is not the same",
+        null,
+        STUDY_TRANSCRIPT_GRADER_POLICY_V4,
+      ),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+    expect(
+      gradeTranscriptV2("hold me close", "hold me closed", "es", STUDY_TRANSCRIPT_GRADER_POLICY_V4),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
+  test("pins the v3 delta: v3 still rejects the negative equivalence and still accepts the insertion", () => {
+    expect(gradeEnglishTranscriptV3("It isn't me", "It is not me")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+    });
+    expect(
+      gradeEnglishTranscriptV3(
+        "Who's the man that Valentino takes his hat off to?",
+        "Who's the man that let Valentino take his hat off to?",
+      ),
+    ).toMatchObject({ correct: true, matchKind: "phonetic" });
   });
 });
