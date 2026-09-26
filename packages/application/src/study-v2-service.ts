@@ -11,6 +11,7 @@ import {
   STUDY_TRANSCRIPT_GRADER_POLICY_V1,
   STUDY_TRANSCRIPT_GRADER_POLICY_V2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V3,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V4,
   type StudyTranscriptGraderPolicyRevision,
   type StudyTranscriptGradeV2,
 } from "@pirate/domain";
@@ -202,7 +203,8 @@ const transcriptGraderPolicy = (
 ): Effect.Effect<StudyTranscriptGraderPolicyRevision, StudyV2CommandRejected> =>
   revision === STUDY_TRANSCRIPT_GRADER_POLICY_V1 ||
   revision === STUDY_TRANSCRIPT_GRADER_POLICY_V2 ||
-  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V3
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V3 ||
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V4
     ? Effect.succeed(revision as StudyTranscriptGraderPolicyRevision)
     : Effect.fail(rejected("submission-kind-mismatch"));
 

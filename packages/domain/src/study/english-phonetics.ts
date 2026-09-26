@@ -501,6 +501,9 @@ const tokenPhonemeStream = (tokens: readonly string[]): string[] => {
   return stream;
 };
 
+/** Approximate phone weight of one token, counted with the same primitive the stream comparison uses. */
+export const tokenPhoneCount = (token: string): number => tokenPhonemeStream([token]).length;
+
 export const phoneticStreamSimilarity = (
   expectedTokens: readonly string[],
   transcriptTokens: readonly string[],
