@@ -6,6 +6,12 @@
  * persist the simulated win and pay only the three credits whose claims were accepted.
  */
 import { describe, expect, test } from "bun:test";
+import {
+  completeVerification,
+  makeVerificationProviderRegistry,
+  startVerification,
+} from "@pirate/application/verification";
+import { VERY_WEB_PROVIDER_ID } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { keccak256, sha256 } from "viem";
@@ -21,6 +27,7 @@ import {
   goldenAdmissionProgress,
 } from "../../../scripts/megapot-golden-reconciliation.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeRewardClaimVeryStub } from "../../testing/src/verification/reward-claim-stub.ts";
 import {
   AUTHOR_ID,
   AUTHOR_PERSONA_ID,
@@ -48,6 +55,10 @@ import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import {
+  issueRewardClaimVerificationIntent,
+  makeControlPlaneRewardClaimIntentResolver,
+} from "./reward-claim-verification-intent.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
 import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { completeComposedWinningChain } from "./rewards-composed-chain.pg-fixture.ts";
@@ -58,12 +69,59 @@ import {
   seedMegapotAuthority,
 } from "./rewards-composed-pool.pg-fixture.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import {
+  makeControlPlaneVerificationCompletionStore,
+  makeSha256VerificationCompletionHasher,
+} from "./verification-completion-repository.ts";
+import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString ? describe : describe.skip;
+
+async function completeRewardClaimCeremony(
+  connection: string,
+  actorId: string,
+  subjectDigest = "2".repeat(64),
+) {
+  const layer = makeDirectPostgresControlPlaneLayer(connection);
+  const intentId = await Effect.runPromise(
+    Effect.provide(issueRewardClaimVerificationIntent(actorId), layer),
+  );
+  const registry = await Effect.runPromise(
+    makeVerificationProviderRegistry([makeRewardClaimVeryStub(subjectDigest)], { now: Date.now }),
+  );
+  const startServices = {
+    intents: makeControlPlaneRewardClaimIntentResolver(layer, "test"),
+    registry,
+    store: makeControlPlaneVerificationSessionStartStore(layer),
+  };
+  const request = { actor_id: actorId, intent_id: intentId, provider_id: VERY_WEB_PROVIDER_ID };
+  const start = await Effect.runPromise(startVerification(request, startServices));
+  const replay = await Effect.runPromise(startVerification(request, startServices));
+  const completionServices = {
+    registry,
+    store: makeControlPlaneVerificationCompletionStore(layer),
+    hasher: makeSha256VerificationCompletionHasher(),
+  };
+  const complete = () =>
+    Effect.runPromise(
+      completeVerification(
+        {
+          actor_id: actorId,
+          proof_session_id: start.proof_session_id,
+          idempotency_key: "claim-ceremony-completion",
+          submission: { channel: "client_result", payload: { fixture: true } },
+        },
+        completionServices,
+      ),
+    );
+  const completed = await complete();
+  const completedReplay = await complete();
+  return { intentId, start, replay, completed, completedReplay };
+}
 
 suite("Composed current-policy Megapot settlement", () => {
   test("admits Study and Karaoke once per account and pays a simulated win only to claimed credits of six frozen beneficiaries", async () => {
@@ -665,14 +723,45 @@ suite("Composed current-policy Megapot settlement", () => {
         outcome: "verification_missing",
         claim_status: "subject_conflict",
       });
+      // The reward_claim intent now runs through the production start and
+      // completion services with a stand-in Very provider. This is the same
+      // held credit that previously had no evidence and then conflicted.
+      const ceremony = await completeRewardClaimCeremony(scoped, "winner-unverified");
+      expect(ceremony.start.replayed).toBe(false);
+      expect(ceremony.replay).toMatchObject({
+        proof_session_id: ceremony.start.proof_session_id,
+        replayed: true,
+      });
+      expect(ceremony.completed).toMatchObject({ status: "completed", replayed: false });
+      expect(ceremony.completedReplay).toMatchObject({
+        proof_session_id: ceremony.start.proof_session_id,
+        status: "completed",
+        replayed: true,
+      });
+      expect(
+        (
+          await admin.query(
+            `SELECT action_kind, status FROM action_intents WHERE action_intent_id=$1`,
+            [ceremony.intentId],
+          )
+        ).rows,
+      ).toEqual([{ action_kind: "reward_claim", status: "open" }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT count(*)::int AS count FROM evidence_receipts
+          WHERE proof_session_id=$1 AND user_id='winner-unverified'`,
+            [ceremony.start.proof_session_id],
+          )
+        ).rows,
+      ).toEqual([{ count: 1 }]);
       // Evidence bound to a different, unused subject accepts the same claim
-      // record and consumes that subject's guard.
-      await seedVeryRewardEvidence(
-        admin,
-        "winner-unverified",
-        "unverified-own",
-        await digest("subject-unverified-own"),
-      );
+      // record and consumes that subject's guard exactly once.
+      expect(await claimFor(credit("winner-unverified"), "winner-unverified")).toEqual({
+        outcome: "accepted",
+        claim_status: "accepted",
+      });
+      expect(await guards()).toHaveLength(4);
       expect(await claimFor(credit("winner-unverified"), "winner-unverified")).toEqual({
         outcome: "accepted",
         claim_status: "accepted",
@@ -1001,6 +1090,29 @@ suite("Composed current-policy Megapot settlement", () => {
           )
         ).rows,
       ).toEqual([{ count: 1 }]);
+      // Repeating a join-purpose palm scan for an existing winner must bind
+      // the same Very subject, not create a second identity or claim guard.
+      const bothSubject = bothGuards[0]?.subject_key_id;
+      if (typeof bothSubject !== "string") throw new Error("missing winning Very subject");
+      const guardCountBeforeRescan = (await guards()).length;
+      const rescan = await completeRewardClaimCeremony(
+        scoped,
+        "winner-both",
+        await digest("subject-both"),
+      );
+      expect(
+        (
+          await admin.query(
+            `SELECT subject_key_id FROM evidence_receipts WHERE proof_session_id=$1`,
+            [rescan.start.proof_session_id],
+          )
+        ).rows,
+      ).toEqual([{ subject_key_id: bothSubject }]);
+      expect(await claimFor(credit("winner-both"), "winner-both")).toEqual({
+        outcome: "accepted",
+        claim_status: "accepted",
+      });
+      expect((await guards()).length).toBe(guardCountBeforeRescan);
       // A participant credit paid before migration 0203 acquires no claim and
       // consumes no guard.
       const guardCount = (await guards()).length;

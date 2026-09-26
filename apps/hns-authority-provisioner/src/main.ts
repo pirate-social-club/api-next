@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
-import type {
-  HnsRootDelegationDsV1,
-  HnsRootResourceRecordV1,
-} from "@pirate/application/namespace-ownership";
+import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-ownership";
 import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Client } from "pg";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
@@ -26,12 +23,12 @@ import { makePostgresHnsRootObservationQueue } from "./observation-queue.ts";
 import {
   makePowerDnsRootInspector,
   makePowerDnsRootProvisioner,
-  makePowerDnsRootReconciler,
   makePowerDnsRootTeardown,
   type PowerDnsRootProvisionConfig,
 } from "./powerdns.ts";
 import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
+import { makeFencedHnsRootZoneReconciler } from "./reconcile-zone.ts";
 import { runHnsRetentionReviewOnce } from "./retention-reviewer.ts";
 import {
   HNS_AUTHORITY_SERVICE_VERSION,
@@ -40,6 +37,7 @@ import {
   isBoundedVersion,
   runHnsLifecycleCutoverProbe,
 } from "./schema-compatibility.ts";
+import type { PowerDnsSecondaryAxfrConfig } from "./secondary-axfr.ts";
 import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
@@ -370,6 +368,32 @@ async function main(serve: boolean): Promise<void> {
     gateway_certificate_spki_sha256: sharedTlsa.spki_sha256,
     ttl_seconds: ttlSeconds(),
   };
+  const secondaryConfigNames = [
+    "HNS_AUTHORITY_SECONDARY_PDNS_API_URL",
+    "HNS_AUTHORITY_SECONDARY_PDNS_API_KEY",
+    "HNS_AUTHORITY_SECONDARY_PDNS_SERVER_ID",
+    "HNS_AUTHORITY_SECONDARY_MASTER_ADDRESS",
+    "HNS_AUTHORITY_SECONDARY_ACCOUNT",
+  ] as const;
+  // An older installation can keep serving unrelated jobs. Readiness fails
+  // closed until the complete secondary API configuration is installed.
+  const secondaryPowerDnsConfig: PowerDnsSecondaryAxfrConfig | null = secondaryConfigNames.some(
+    (name) => process.env[name] !== undefined,
+  )
+    ? {
+        api_url: required("HNS_AUTHORITY_SECONDARY_PDNS_API_URL"),
+        api_key: required("HNS_AUTHORITY_SECONDARY_PDNS_API_KEY"),
+        server_id: required("HNS_AUTHORITY_SECONDARY_PDNS_SERVER_ID"),
+        expected_master_address: required("HNS_AUTHORITY_SECONDARY_MASTER_ADDRESS"),
+        expected_account: required("HNS_AUTHORITY_SECONDARY_ACCOUNT"),
+        axfr_tsig_key_name: powerDnsConfig.axfr_tsig_key_name,
+      }
+    : null;
+  if (
+    secondaryPowerDnsConfig !== null &&
+    new URL(secondaryPowerDnsConfig.api_url).origin === new URL(powerDnsConfig.api_url).origin
+  )
+    throw new Error("HNS authority secondary PowerDNS endpoint must differ from the primary");
   const ensureZone = (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
@@ -385,20 +409,11 @@ async function main(serve: boolean): Promise<void> {
       )(input),
     );
   const inspectZone = makePowerDnsRootInspector(powerDnsConfig);
-  const reconcileZone = (input: {
-    readonly root_label: string;
-    readonly challenge_txt_value: string;
-    readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
-    readonly mutation_lease?: HnsZoneMutationLease;
-  }) =>
-    withHnsRootZoneMutation(connectionString, input, false, (signal) =>
-      makePowerDnsRootReconciler(powerDnsConfig, (url, init) =>
-        fetch(url, {
-          ...init,
-          signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
-        }),
-      )(input),
-    );
+  const reconcileZone = makeFencedHnsRootZoneReconciler(
+    connectionString,
+    powerDnsConfig,
+    secondaryPowerDnsConfig,
+  );
   const teardownZone = (input: {
     readonly root_label: string;
     readonly challenge_txt_value?: string;

@@ -8,7 +8,10 @@ import {
   persona,
   responseBytes,
   responseSha256,
+  seedPublishedSongFixture,
+  seedSongOwner,
   seedVideoActors,
+  videoSha256,
 } from "../../../packages/platform-cf/src/video-publication.pg-fixture.ts";
 import { makeControlPlaneVideoPublicationStore } from "../../../packages/platform-cf/src/video-publication-repository.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -72,6 +75,7 @@ async function authedPost(connection: string) {
   const worker = await createProductionHttpWorker({
     ...bindings,
     MEDIA_UPLOADS_ENABLED: "true",
+    VIDEO_SONG_REFERENCE_ENABLED: "true",
     MEDIA_INGRESS_R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
     MEDIA_INGRESS_R2_BUCKET_NAME: "pirate-media-ingress-staging",
     MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "test-access-key",
@@ -196,6 +200,105 @@ suite("new videos must use a song, whatever the client", () => {
         error: { code: "bad_request", details: { reason_code: "song_reference_required" } },
       });
       expect(await count(admin, "media_post_submissions")).toBe(0);
+    });
+  });
+
+  test("a direct song-video start replays its saved answer after the reservation is claimed", async () => {
+    await fixture(async (admin, connection) => {
+      await seedSongOwner(admin);
+      const song = {
+        songPostId: `post-start-replay-worker-${crypto.randomUUID()}`,
+        communityId: community,
+        audioAssetRef: "media://song/start-replay-worker",
+        canonicalAudioSha256: "a".repeat(64),
+        durationSamples: 30 * 48_000,
+        title: "Start replay fixture",
+        contentRating: "general" as const,
+        derivativeVideo: "allowed" as const,
+        licensePreset: "commercial-remix" as const,
+        commercialRemixShareBps: 1_000,
+      };
+      await seedPublishedSongFixture(admin, song);
+      const policy = await admin.query<{ policy_hash: string }>(
+        "SELECT policy_hash FROM song_owner_policy_revisions WHERE post_id=$1 AND policy_revision=1",
+        [song.songPostId],
+      );
+      const ownerPolicyHash = policy.rows[0]?.policy_hash;
+      if (!ownerPolicyHash) throw new Error("song fixture has no owner policy hash");
+
+      const reservationId = `media-reservation-${crypto.randomUUID()}`;
+      const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+      await makeControlPlaneVideoPublicationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      ).createReservation({
+        record: {
+          reservationId,
+          communityId: community,
+          intent: "song_reference",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "c".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 1_024,
+          expectedSha256: videoSha256,
+          ingestPolicyRevision: 1,
+          uploadId: `multipart-${reservationId}`,
+          partSizeBytes: 10 * 1_024 * 1_024,
+          partCount: 1,
+          expiresAt,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: new Date().toISOString(),
+        },
+        idempotencyKey: "reserve-start-replay-worker",
+        responseSha256,
+        parts: [{ partNumber: 1, url: "https://upload.invalid/1", expiresAt }],
+        songPlan: {
+          songPostId: song.songPostId,
+          audioRevision: 1,
+          canonicalAudioSha256: song.canonicalAudioSha256,
+          songDurationSamples: song.durationSamples,
+          songAssetId: song.audioAssetRef,
+          clipStartSamples: 0,
+          clipDurationSamples: 10 * 48_000,
+          intervalPolicyRevision: 1,
+          ownerPolicyRevision: 1,
+          ownerPolicyHash,
+          derivativeVideo: "allowed",
+          selectedFrom: { kind: "library" },
+          originVerified: false,
+          observedAt: new Date().toISOString(),
+        },
+      });
+
+      const post = await authedPost(connection);
+      const path = `/communities/${community}/media-post-submissions`;
+      const body = {
+        version: "video-start-input-v1",
+        persona_id: persona,
+        video_reservation_id: reservationId,
+        idempotency_key: "worker-start-replay",
+      };
+      const first = await post(path, body);
+      expect(first.status).toBe(201);
+      const savedAnswer = await first.json();
+      const replay = await post(path, body);
+      expect(replay.status).toBe(first.status);
+      expect(await replay.json()).toEqual(savedAnswer);
+
+      const changedBody = await post(path, { ...body, video_reservation_id: "different" });
+      expect(changedBody.status).toBe(409);
+      expect(await changedBody.json()).toMatchObject({ error: { code: "conflict" } });
+
+      expect(await count(admin, "media_post_submissions")).toBe(1);
+      const reservation = await admin.query<{ state: string; submission_id: string }>(
+        "SELECT state,submission_id FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      );
+      expect(reservation.rows).toMatchObject([{ state: "claimed" }]);
     });
   });
 });
