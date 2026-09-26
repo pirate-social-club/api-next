@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { makeSpacesRegistryService } from "@pirate/application/use-cases/handles/spaces-registry";
 import { makeDirectPostgresControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import {
   makeSpacesProductionComposition,
@@ -77,8 +78,11 @@ describe("Spaces production composition", () => {
     expect(result.spacesRegistry).toMatchObject({
       basePath: "/internal/spaces/registry/v1",
       environment: "staging",
-      pageCapacity: 1_000,
+      pageCapacity: 500,
     });
+    const registry = result.spacesRegistry;
+    if (registry === undefined) throw new Error("Spaces registry was not composed");
+    expect(() => makeSpacesRegistryService(registry)).not.toThrow();
     expect(typeof result.spacesOwnerProof?.start).toBe("function");
     expect(typeof result.spacesOperatorAssignments?.reportFunding).toBe("function");
   });

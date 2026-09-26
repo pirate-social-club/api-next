@@ -1,3 +1,4 @@
+import { SPACES_REGISTRY_MAX_PAGE_CAPACITY } from "@pirate/application/use-cases/handles/spaces-registry";
 import { ControlPlaneDb, type makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { makeSpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import { makeSpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
@@ -104,7 +105,7 @@ export function makeSpacesProductionComposition(
       basePath: "/internal/spaces/registry/v1",
       store: makeControlPlaneSpacesRegistryStore(controlPlane),
       environment,
-      pageCapacity: 1_000,
+      pageCapacity: SPACES_REGISTRY_MAX_PAGE_CAPACITY,
     },
     spacesOwnerProof: ownerProof,
     spacesOperatorAssignments: assignments,
