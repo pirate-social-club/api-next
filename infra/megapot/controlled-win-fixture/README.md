@@ -48,10 +48,59 @@ purchase and claim receipt validators. It prints transaction hashes and the
 amount paid to local custody, never the account key. It changes no staging
 resource and sends no public-chain transaction.
 
-The live isolated stack still needs its own database, HTTP and jobs Workers,
-Solid origin, provider return configuration, Base Sepolia contract deployment,
-separate funded custody and gas wallets, and a reviewed, bounded funding
-plan. Bootstrap must attest the deployed jackpot, ticket NFT and USDC code
-hashes and their linked addresses. Shared staging's public attestation must
-not be retired or rebound for this fixture. A local RPC proof is a
+The proof resets only its local Anvil endpoint before deploying. Do not point
+port 18545 at a shared or public RPC service. The test token deploys with
+2,010,000 atomic units. The local proof transfers 1,000,000 to the fixture and
+uses 10,000 for the ticket. The remaining supply stays with its random local
+deployer.
+
+## Live run shape
+
+Use a new data-bearing branch of the staging PostgreSQL database, a new
+Hyperdrive configuration for that branch, and distinct HTTP, jobs and Solid
+Workers. Copying the branch preserves the participant's Privy account, persona,
+song and previous activity data. Retire the copied public Megapot attestation
+inside that branch only, then insert a new attestation ID for the deployed
+fixture. Both isolated Workers must name the new ID and their own Hyperdrive.
+The active public attestation and both shared staging Workers stay unchanged.
+
+The isolated Solid origin needs its own same-origin `/api` proxy to the isolated
+HTTP Worker. Confirm that the existing staging Privy app accepts that exact
+origin before asking the owner to sign in. Very Web's bridge result and the
+host-only session must return to the same isolated origin. An unverified owner
+account, a broken return, or a mismatched cookie stops the run before funding.
+
+Give the fixture a new operator account, the jobs Worker a separate custody
+account, and gas top-ups a third account. Do not reuse the shared staging gas
+or custody keys. Deploy the fixed-supply test token with no more than 2,010,000
+atomic units for one run: 1,000,000 funds the jackpot, 1,000,000 can fund one
+sponsor Boost and 10,000 is unallocated margin. The contract accepts one ticket
+and fixes a 1,000,000-atomic tier-1 payout before purchases open. The operator
+cannot alter that payout while a drawing is open. The sponsor offer ends after
+the target cutoff and before a second eligible drawing. Reconcile its residual
+refund separately from the participant's prize.
+
+The release package must cap Base Sepolia ETH for deployment, custody and gas,
+and set a branch and Worker lifetime with a cleanup deadline. It must first
+show a dry-run diff for every Worker binding, secret name, route, queue, R2
+bucket and database target. The jobs copy must not consume shared staging
+queues or run unrelated scheduled jobs. Read back the copied database's
+obligations and the owner's fresh Very subject count before any fixture
+attestation or funds. The account that held the no-win share had zero active
+Very subjects and zero fresh claim evidence at a read-only check on
+2026-09-26; that is only a point-in-time result.
+
+After deployment, use the app to fund one offer. The owner performs Study and
+Karaoke; normal jobs freeze the share, buy the one ticket, sweep the tier-1
+receipt, claim from the fixture into custody, allocate and hold the credit.
+The owner then completes the actual Very claim in Solid. Require an on-chain
+USDC payout into the credit's recorded wallet, a bounded gas top-up when
+needed, and one confirmed onward send. Replay claim, gas and send requests and
+prove no second transfer. Record block hashes, receipts, database transitions,
+Worker versions, bindings and final balances without storing secrets or palm
+evidence. Close every obligation before removing the isolated stack.
+
+The live isolated stack, provider returns, Base Sepolia deployment and funding
+are still pending. Bootstrap must attest the deployed jackpot, ticket NFT and
+USDC code hashes and their linked addresses. A local RPC proof is a
 compatibility check, not the final owner claim or wallet receipt.
