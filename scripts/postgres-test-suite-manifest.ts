@@ -84,6 +84,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-root-import-lifecycle-transition.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-lifecycle-execution.pg.test.ts",
   "packages/platform-cf/src/hns-lifecycle-readiness-patch.pg.test.ts",
+  "packages/platform-cf/src/hns-readiness-zone-mutation-admission.pg.test.ts",
   "packages/platform-cf/src/hns-retention-review.pg.test.ts",
   "packages/platform-cf/src/hns-execution-ownership.pg.test.ts",
   "packages/platform-cf/src/hns-retention-reviewer.pg.test.ts",
