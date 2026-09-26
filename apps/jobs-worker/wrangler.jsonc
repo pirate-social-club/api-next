@@ -239,6 +239,8 @@
         "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",
+        "SPACES_RECONCILIATION_MEASUREMENT_REFERENCE": "bitcoin-mainnet-150-block-windows-2026-09-26",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",

@@ -666,6 +666,10 @@ describe("source-to-Wrangler binding contract", () => {
     expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
     expect(staging.vars.DATA_REGISTRATION_ENABLED).toBe("false");
     expect(staging.vars).not.toHaveProperty("SPACES_RECONCILIATION_ENABLED");
+    expect(staging.vars.SPACES_RECONCILIATION_OVERDUE_SECONDS).toBe("259200");
+    expect(staging.vars.SPACES_RECONCILIATION_MEASUREMENT_REFERENCE).toBe(
+      "bitcoin-mainnet-150-block-windows-2026-09-26",
+    );
     for (const name of [
       "SPACES_VERIFIER_ACCESS_CLIENT_ID",
       "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
