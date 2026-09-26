@@ -20,6 +20,7 @@ const ReviewKey = Schema.NonEmptyString.check(
 );
 const Text = Schema.NonEmptyString.check(Schema.isMaxLength(4_096));
 const BoundedTranscript = Schema.String.check(Schema.isMaxLength(4_096));
+const SpeechLanguageCode = Schema.String.check(Schema.isMaxLength(35));
 const PositiveInteger = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
@@ -252,22 +253,96 @@ export const StudyFeedbackV2 = Schema.Union([
 ]);
 export type StudyFeedbackV2 = Schema.Schema.Type<typeof StudyFeedbackV2>;
 
+export const StudySpokenLanguageProvenanceV2 = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("no_authoritative_evidence") }),
+  Schema.Struct({
+    kind: Schema.Literal("unit_profile"),
+    community_id: Identifier,
+    post_id: Identifier,
+    lyrics_revision: PositiveInteger,
+    language_profile_revision: PositiveInteger,
+    study_unit_id: Identifier,
+    confidence: Schema.Number.check(Schema.isBetween({ minimum: 0.8, maximum: 1 })),
+    dominant_language: SpeechLanguageCode,
+  }),
+]);
+export type StudySpokenLanguageProvenanceV2 = Schema.Schema.Type<
+  typeof StudySpokenLanguageProvenanceV2
+>;
+
+const SpokenPredicateCount = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+);
+export const StudySpokenResultMetadataV2 = Schema.Struct({
+  language_provenance: StudySpokenLanguageProvenanceV2,
+  rerecord_decision: Schema.Struct({
+    policy_revision: Schema.Literal("study_spoken_rerecord_v1"),
+    enabled: Schema.Boolean,
+    kind: Schema.Literals(["graded", "ungraded_rerecord"]),
+    reason: Schema.NullOr(
+      Schema.Literals(["language_mismatch", "low_voice_overlap", "single_insertion"]),
+    ),
+    voice_overlap: Schema.Struct({
+      revision: Schema.Literal("study_spoken_voice_overlap_v1"),
+      matched_tokens: SpokenPredicateCount,
+      reference_tokens: SpokenPredicateCount,
+      below_one_third: Schema.Boolean,
+    }),
+    strong_remainder: Schema.Struct({
+      revision: Schema.Literal("study_spoken_strong_remainder_v1"),
+      matched_tokens: SpokenPredicateCount,
+      reference_tokens: SpokenPredicateCount,
+      strong: Schema.Boolean,
+    }),
+    language_mismatch: Schema.Struct({
+      revision: Schema.Literal("study_spoken_language_mismatch_v1"),
+      expected_language: Schema.NullOr(SpeechLanguageCode),
+      detected_language: Schema.NullOr(SpeechLanguageCode),
+      detected_confidence: Schema.NullOr(
+        Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+      ),
+      clear: Schema.Boolean,
+    }),
+  }),
+});
+export type StudySpokenResultMetadataV2 = Schema.Schema.Type<typeof StudySpokenResultMetadataV2>;
+
 export const StudyAnswerResultV2 = Schema.Struct({
   object: Schema.Literal("study_answer_result_v2"),
   session_item_id: Identifier,
   attempt_number: PositiveInteger,
   exercise_type: StudyExerciseTypeV2,
-  outcome: Schema.Literals(["correct", "incorrect"]),
+  outcome: Schema.Literals(["correct", "incorrect", "ungraded_rerecord"]),
   first_pass: Schema.Boolean,
   attempt_state: Schema.Literals(["retryable", "spent"]),
   feedback: StudyFeedbackV2,
+  spoken: Schema.optional(StudySpokenResultMetadataV2),
   session: StudySessionV2,
 }).check(
   Schema.makeFilter((result) => {
     if (result.exercise_type === "say_it_back") {
-      return result.feedback.kind === "transcript_diff"
+      if (result.feedback.kind !== "transcript_diff") {
+        return "Say-it-back requires transcript feedback";
+      }
+      if (
+        result.outcome === "ungraded_rerecord" &&
+        result.spoken?.rerecord_decision.kind !== "ungraded_rerecord"
+      ) {
+        return "Ungraded rerecord requires its spoken decision";
+      }
+      if (
+        result.spoken !== undefined &&
+        (result.outcome === "ungraded_rerecord") !==
+          (result.spoken.rerecord_decision.kind === "ungraded_rerecord")
+      ) {
+        return "Spoken decision must match the answer outcome";
+      }
+      return (result.outcome === "ungraded_rerecord") === (result.attempt_state === "retryable")
         ? undefined
-        : "Say-it-back requires transcript feedback";
+        : "Rerecord keeps the Study presentation retryable";
+    }
+    if (result.spoken !== undefined || result.outcome === "ungraded_rerecord") {
+      return "Choice answers cannot have a spoken outcome";
     }
     if (result.attempt_state === "retryable") {
       return result.outcome === "incorrect" && result.feedback.kind === "none"

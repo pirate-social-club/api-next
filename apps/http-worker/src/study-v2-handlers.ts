@@ -67,6 +67,7 @@ export const makeStudyV2Handlers = (services: {
   readonly spoken?: Readonly<{
     readonly archive: StudyAudioArchive;
     readonly transcriber: StudyBatchTranscriber;
+    readonly rerecordEnabled?: boolean;
   }>;
 }): StudyV2Handlers => {
   const study = makeStudyV2Service(services.store, services.spoken);

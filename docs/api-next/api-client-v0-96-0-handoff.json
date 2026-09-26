@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.96.0",
+  "sourceBranch": "fix/study-spoken-language-provenance",
+  "sourceBase": "574190a301ed704f32810fbaa6155dec33549deb",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds optional spoken language provenance and a versioned rerecord decision to Study answer results, plus the ungraded_rerecord outcome. Historical spoken snapshots without provenance remain decodable.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.96.0.tgz",
+    "sha256": "6bd117c0d117ffee554363a810c1abece6bbe40f971f900c1086fde38b987158"
+  },
+  "validation": {
+    "status": "Local validation passed; hosted gates pending",
+    "passed": [
+      "Generated OpenAPI and browser client from the amended Study contract",
+      "Repository check and unit plus Worker test suites",
+      "Focused PostgreSQL 17 spoken receipt suite (9 passed)"
+    ],
+    "remaining": [
+      "Hosted check, postgres17 and secret-boundary gates on the API pull request",
+      "Solid rendering in its separate lane"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, or live product mutation occurred."
+  }
+}

@@ -77,7 +77,7 @@ const meaningChangingEnglishTokens = new Set([
   "without",
 ]);
 
-const isMeaningChangingToken = (token: string): boolean =>
+export const isMeaningChangingStudyToken = (token: string): boolean =>
   /\p{N}/u.test(token) || meaningChangingEnglishTokens.has(token);
 
 const expandEnglishContractions = (value: string): string =>
@@ -258,11 +258,11 @@ export const gradeTranscriptV2 = (
   // what the line says, and the phonetic budget must never absorb them.
   const meaningChanged =
     (v3 || v4) &&
-    (missing.some(({ token }) => isMeaningChangingToken(token)) ||
-      extra.some(isMeaningChangingToken) ||
+    (missing.some(({ token }) => isMeaningChangingStudyToken(token)) ||
+      extra.some(isMeaningChangingStudyToken) ||
       substituted.some(
         ({ expected: mismatch, heard }) =>
-          isMeaningChangingToken(mismatch.token) || isMeaningChangingToken(heard),
+          isMeaningChangingStudyToken(mismatch.token) || isMeaningChangingStudyToken(heard),
       ));
   const phonetic =
     !exact &&

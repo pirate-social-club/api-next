@@ -297,6 +297,7 @@ export interface HttpWorkerBindings
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
+  readonly STUDY_SPOKEN_RERECORD_ENABLED?: string;
   readonly STUDY_GENERATION_OPENROUTER_MODEL?: string;
   readonly OPENROUTER_API_KEY?: string;
   readonly STUDY_GENERATION_WORKFLOW?: CloudflareStudyGenerationWorkflowBinding<StudyGenerationWorkflowPayload>;
@@ -1336,7 +1337,14 @@ export async function createProductionHttpWorker(
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     store: makeControlPlaneStudyV2Store(controlPlane),
-    ...(studySpokenServices === undefined ? {} : { spoken: studySpokenServices }),
+    ...(studySpokenServices === undefined
+      ? {}
+      : {
+          spoken: {
+            ...studySpokenServices,
+            rerecordEnabled: bindings.STUDY_SPOKEN_RERECORD_ENABLED === "true",
+          },
+        }),
   });
   const studyGenerationHandlers = (() => {
     const apiKey = bindings.OPENROUTER_API_KEY;

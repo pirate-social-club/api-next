@@ -18,6 +18,7 @@ import {
 import type { makeControlPlaneKaraokeRepository } from "./karaoke-repository.ts";
 import type { ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import type { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 export type Runtime = ReturnType<typeof makeDirectPostgresControlPlaneLayer>;
 type StudyRepository = ReturnType<typeof makeControlPlaneStudyV2Repository>;
@@ -80,6 +81,7 @@ export const makeStudyDriver = (
       throw new Error("fixture reservation unexpectedly completed");
     }
     const command = {
+      ...defaultStudySpokenEvidence,
       accountId: input.accountId,
       acceptedAt: times.acceptedAt,
       archive: {
