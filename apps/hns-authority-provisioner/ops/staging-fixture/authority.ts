@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { makeNodeHnsDnsTcpConnector } from "@pirate/hns-dns-runtime/dns-tcp";
+import { exchangeDirectHnsDnsTsigAxfrV1 } from "@pirate/hns-dns-runtime/dns-tsig-axfr";
 import {
   makePowerDnsRootInspector,
   makePowerDnsRootProvisioner,
   makePowerDnsRootTeardown,
 } from "../../src/powerdns.ts";
 import { provisionHnsAuthorityRootV1 } from "../../src/provision-root.ts";
+import { makePowerDnsSecondaryAxfrAuthorizer } from "../../src/secondary-axfr.ts";
 import { publishFixtureResource } from "./chain.ts";
 import { validateFixtureDnssec } from "./dnssec.ts";
 import { acquireAuthorityFixtureLease } from "./lease.ts";
@@ -213,6 +216,31 @@ export async function runLocalAuthorityFixture(
       transferMetadata.metadata[0] !== "fixture-transfer"
     )
       throw new Error("Secondary did not retain the signed notification's transfer key");
+    await makePowerDnsSecondaryAxfrAuthorizer({
+      api_url: `http://${authorityAddresses[1]}:8081`,
+      api_key: fixtureKey,
+      server_id: "localhost",
+      expected_master_address: authorityAddresses[0],
+      expected_account: "isolated-staging-fixture",
+      axfr_tsig_key_name: "fixture-transfer.",
+    })({ root_label: root, challenge_txt_value: challenge });
+    await exchangeDirectHnsDnsTsigAxfrV1({
+      connector: makeNodeHnsDnsTcpConnector({ local_address: "127.0.0.1" }),
+      host: authorityAddresses[1],
+      family: 4,
+      zone_name: root,
+      credential: {
+        key_name: "fixture-transfer.",
+        algorithm: "hmac-sha256",
+        secret_bytes: Uint8Array.from(Buffer.from(transferKey, "base64")),
+      },
+      fudge_seconds: 300,
+      response_message_max_bytes: 65_535,
+      response_total_max_bytes: 1_048_576,
+      response_max_messages: 1_024,
+      timeout_ms: 3_000,
+      signal: AbortSignal.timeout(3_000),
+    });
     for (const [name, type] of [
       [root, "DNSKEY"],
       [root, "NS"],
@@ -301,6 +329,7 @@ export async function runLocalAuthorityFixture(
       dnssec_keys: true,
       dnssec_validation: true,
       signed_zone_transfer: true,
+      secondary_observer_axfr: true,
       authority_agreement: true,
       reservation_teardown: true,
       containers_removed: true,

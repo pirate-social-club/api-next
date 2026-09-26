@@ -55,7 +55,9 @@ const requestTimeoutMs = 5_000;
  * 0 in the middle of a provisioning job. This timer is referenced, so a stall
  * rejects, the job retries, and the failure is logged.
  */
-async function withExchangeDeadline<T>(exchange: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withExchangeDeadline<T>(
+  exchange: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
@@ -88,11 +90,11 @@ export async function reservationAccount(challenge: string): Promise<string> {
     .slice(0, 40);
 }
 
-function canonicalName(value: string): string {
+export function canonicalName(value: string): string {
   return value.endsWith(".") ? value : `${value}.`;
 }
 
-function escapeTxt(value: string): string {
+export function escapeTxt(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
@@ -126,7 +128,7 @@ export function buildManagedRootRrsets(input: {
   ];
 }
 
-function validEndpoint(value: string): boolean {
+export function validEndpoint(value: string): boolean {
   try {
     const url = new URL(value);
     return (
@@ -141,7 +143,7 @@ function validEndpoint(value: string): boolean {
   }
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+export async function readBoundedJson(response: Response): Promise<unknown> {
   if (response.body === null) return null;
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
