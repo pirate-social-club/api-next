@@ -6,7 +6,7 @@
   "sourceBranch": "fix/study-spoken-language-provenance",
   "sourceBase": "574190a301ed704f32810fbaa6155dec33549deb",
   "validatedSourceCommit": null,
-  "pullRequest": null,
+  "pullRequest": 454,
   "wireContract": "Adds optional spoken language provenance and a versioned rerecord decision to Study answer results, plus the ungraded_rerecord outcome. Historical spoken snapshots without provenance remain decodable.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.96.0.tgz",
@@ -20,7 +20,7 @@
       "Focused PostgreSQL 17 spoken receipt suite (9 passed)"
     ],
     "remaining": [
-      "Hosted check, postgres17 and secret-boundary gates on the API pull request",
+      "Hosted check, postgres17 and secret-boundary gates on PR #454",
       "Solid rendering in its separate lane"
     ],
     "operationalBoundary": "No package registry publication, deployment, or live product mutation occurred."
