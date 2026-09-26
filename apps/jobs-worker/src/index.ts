@@ -71,6 +71,11 @@ import {
   handleSongPipelineDlqBatch,
 } from "./song-pipeline-terminal-alerts";
 import { makeSpacesReconciliationJob } from "./spaces-reconciliation";
+import {
+  makeSpacesReconciliationComposition,
+  type SpacesReconciliationBindings,
+  type SpacesReconciliationComposition,
+} from "./spaces-reconciliation-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -126,7 +131,8 @@ export interface JobsWorkerEnv
     DanceReferenceJobsBindings,
     HnsRouteRevalidationBindings,
     MediaJobsBindings,
-    TelegramBindings {
+    TelegramBindings,
+    SpacesReconciliationBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
@@ -707,12 +713,7 @@ export function makeJobsWorkerDeclarations(
   }>,
   hnsRootHealthRenewalEnabled = false,
   avatars?: AvatarCleanupBuckets,
-  spacesReconciliation?: Readonly<{
-    store: import("@pirate/application").SpacesReconciliationStore;
-    verifier: import("@pirate/application").SpacesFinalIssuanceVerifier;
-    overdueThresholdSeconds: number;
-    measurementReference: string;
-  }>,
+  spacesReconciliation?: SpacesReconciliationComposition,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -807,6 +808,12 @@ export default {
             return { namespace: env.KARAOKE_ATTEMPT };
           })()
         : undefined;
+    const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
+    const spacesReconciliation = makeSpacesReconciliationComposition(
+      env,
+      runtime,
+      config.API_NEXT_ENV,
+    );
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -824,10 +831,10 @@ export default {
             return { ingress: env.AVATAR_INGRESS, sealed: env.AVATAR_SEALED };
           })()
         : undefined,
+      spacesReconciliation,
     );
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
-    const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);
     const dataRegistrationMaintenance = makeDataRegistrationMaintenance(env, runtime);
     const danceReferenceMaintenance = makeDanceReferenceMaintenance(env, runtime);

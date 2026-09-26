@@ -105,6 +105,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/optional-route-v2-migration.pg.test.ts",
   "packages/platform-cf/src/persona-repository.pg.test.ts",
   "packages/platform-cf/src/public-community-threads-repository.pg.test.ts",
+  "packages/platform-cf/src/media-song-stems.pg.test.ts",
   "packages/platform-cf/src/song-library-baseline.pg.test.ts",
   "packages/platform-cf/src/song-video-interval-repository.pg.test.ts",
   "packages/platform-cf/src/song-video-render-repository.pg.test.ts",

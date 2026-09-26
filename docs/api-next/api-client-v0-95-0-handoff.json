@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.95.0",
+  "sourceBranch": "feat/song-stems",
+  "sourceBase": "55583b67155e8e40254cfc71d59adef2ddf61f89",
+  "validatedSourceCommit": null,
+  "pullRequest": 417,
+  "wireContract": "Adds song stems phase one to the 0.94.0 client: the reservation slot (primary_audio, instrumental_audio, vocal_audio), AttachMediaPostSubmissionStem, and the optional stems field on song submission snapshots. Existing requests and snapshots are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.95.0.tgz",
+    "sha256": "dec591e3b7898187696ec06f293d9f2da593d1d3bb206886530ff3874c4368c2"
+  },
+  "validation": {
+    "status": "Local candidate; repository and hosted gates pending",
+    "passed": [
+      "Generated OpenAPI and browser client from the merged registered contracts"
+    ],
+    "remaining": [
+      "Repository check, unit and PostgreSQL 17 gates",
+      "Hosted checks on PR #417",
+      "Solid adoption (solid-song-stems-upload, parked)"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, or live product mutation occurred."
+  }
+}

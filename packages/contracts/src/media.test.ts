@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  AttachMediaPostSubmissionStem,
+  AttachSongStemV1,
   AuthError,
   BadRequest,
   BindMediaPostSubmissionLyrics,
@@ -154,6 +156,16 @@ describe("song media R1 derived-analysis contracts", () => {
         },
       ],
       [
+        AttachMediaPostSubmissionStem.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          idempotency_key: "stem_1",
+          expected_creation_revision: 1,
+          slot: "vocal_audio",
+          reservation_id: "res_stem_1",
+        },
+      ],
+      [
         RetryMediaPostSubmission.request?.body as Schema.Schema<unknown>,
         {
           persona_id: authorPersona.persona_id,
@@ -199,6 +211,7 @@ describe("song media R1 derived-analysis contracts", () => {
     expect(BindMediaPostSubmissionReference.path).toBe(
       "/media-post-submissions/:submissionId/reference",
     );
+    expect(AttachMediaPostSubmissionStem.path).toBe("/media-post-submissions/:submissionId/stems");
     expect(RetryMediaPostSubmission.path).toBe("/media-post-submissions/:submissionId/retry");
     expect(CancelMediaPostSubmission.path).toBe("/media-post-submissions/:submissionId/cancel");
     expect(ModerateMediaPostSubmission.path).toBe(
@@ -936,5 +949,38 @@ describe("song media R1 derived-analysis contracts", () => {
         audio_reservation_id: "res_1",
       }),
     ).toThrow();
+  });
+});
+
+describe("song stem contract", () => {
+  const decodeAttach = Schema.decodeUnknownSync(AttachSongStemV1, {
+    onExcessProperty: "error",
+  });
+  const attach = {
+    persona_id: "persona_1",
+    idempotency_key: "stem_1",
+    expected_creation_revision: 1,
+    reservation_id: "res_stem_1",
+  };
+  test("attaches only the instrumental and vocals slots", () => {
+    for (const slot of ["instrumental_audio", "vocal_audio"]) {
+      expect(() => decodeAttach({ ...attach, slot })).not.toThrow();
+    }
+    expect(() => decodeAttach({ ...attach, slot: "primary_audio" })).toThrow();
+  });
+  test("reserves song audio for any of the three slots", () => {
+    const decodeReserve = Schema.decodeUnknownSync(ReserveSongAudioV1);
+    for (const slot of ["primary_audio", "instrumental_audio", "vocal_audio"]) {
+      expect(() =>
+        decodeReserve({
+          persona_id: "persona_1",
+          idempotency_key: `reserve_${slot}`,
+          track: "song",
+          slot,
+          expected_content_type: "audio/mpeg",
+          expected_size_bytes: 4,
+        }),
+      ).not.toThrow();
+    }
   });
 });
