@@ -2,6 +2,10 @@
   "extends": "./tsconfig.json",
   "include": [
     "infra/megapot/controlled-win-fixture/prove-rpc.ts",
+    "infra/megapot/controlled-win-fixture/plan-workers.ts",
+    "infra/megapot/controlled-win-fixture/plan-workers.test.ts",
+    "infra/megapot/controlled-win-fixture/mirror-runtime-grants.ts",
+    "infra/megapot/controlled-win-fixture/prepare-worker-secrets.ts",
     "scripts/hns-staging-gateway-fixture.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",

@@ -17,6 +17,7 @@
         "tests/study-karaoke-harness/seed.ts",
         "tests/study-karaoke-harness/media.ts",
         "tests/study-karaoke-harness/keys.ts",
+        "infra/megapot/controlled-win-fixture/*.test.ts",
         "infra/**/src/index.ts",
         "tests/workerd-video/global-setup.ts"
       ],

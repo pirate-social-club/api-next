@@ -8,15 +8,19 @@ before any ticket is bought. The outcome and payout amount cannot be changed
 after arming. Each drawing accepts one ticket, and old unpaid winnings remain
 reserved when the next drawing is armed.
 
-The contract implements the Megapot V2 reads and writes used by api-next. Its
-companion test USDC has six decimals, standard ERC-20 metadata, a fixed supply
-of at most 10 atomic USDC, and no mint method. It
+The contract implements the Megapot V2 reads and writes used by api-next. It
 mints a separate ticket NFT, emits the purchase and order logs, burns the NFT
 on claim, emits a zero-value referral log, and transfers the configured USDC
 from the jackpot to the ticket owner's wallet. The constructor rejects every
 chain except Base Sepolia, chain 84532. The operator can arm a drawing, and
 anyone can settle it after its stated time. A draw with no ticket releases its
 reserved prize when settled.
+
+The companion local test token has six decimals, standard ERC-20 metadata, a
+fixed supply of at most 10 USDC, and no mint method. The live deployment uses
+the existing Base Sepolia USDC contract at
+`0x036cbd53842c5426634e7929541ec2318f3dcf7e`, whose code hash and balance
+must be read back before funding.
 
 Build and test with the pinned Foundry container and compiler profile from
 this directory:
@@ -49,7 +53,7 @@ amount paid to local custody, never the account key. It changes no staging
 resource and sends no public-chain transaction.
 
 The proof resets only its local Anvil endpoint before deploying. Do not point
-port 18545 at a shared or public RPC service. The test token deploys with
+port 18545 at a shared or public RPC service. The local token deploys with
 2,010,000 atomic units. The local proof transfers 1,000,000 to the fixture and
 uses 10,000 for the ticket. The remaining supply stays with its random local
 deployer.
@@ -72,10 +76,10 @@ account, a broken return, or a mismatched cookie stops the run before funding.
 
 Give the fixture a new operator account, the jobs Worker a separate custody
 account, and gas top-ups a third account. Do not reuse the shared staging gas
-or custody keys. Deploy the fixed-supply test token with no more than 2,010,000
-atomic units for one run: 1,000,000 funds the jackpot, 1,000,000 can fund one
-sponsor Boost and 10,000 is unallocated margin. The contract accepts one ticket
-and fixes a 1,000,000-atomic tier-1 payout before purchases open. The operator
+or custody keys. The live fixture uses the existing Base Sepolia USDC, with
+exactly 1,000,000 atomic units placed in the jackpot and at most 1,000,000
+atomic units placed in one sponsor Boost. The contract accepts one ticket and
+fixes a 1,000,000-atomic tier-1 payout before purchases open. The operator
 cannot alter that payout while a drawing is open. The sponsor offer ends after
 the target cutoff and before a second eligible drawing. Reconcile its residual
 refund separately from the participant's prize.
