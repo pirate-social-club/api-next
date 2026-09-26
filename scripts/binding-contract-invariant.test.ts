@@ -127,6 +127,7 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly r2_buckets?: readonly { readonly binding: string; readonly bucket_name: string }[];
   readonly workflows?: readonly {
     binding: string;
     name: string;
@@ -502,7 +503,12 @@ const auditRequiredBindings = (): readonly string[] => {
     const manifest = manifestFor(worker);
     for (const environmentName of ENVIRONMENTS) {
       const environment = declaredEnvironment(configs[worker], environmentName);
-      const names = new Set(declaredNames(environment));
+      const names = new Set([
+        ...declaredNames(environment),
+        ...(rawEnvironment(configs[worker], environmentName).r2_buckets ?? []).map(
+          (bucket) => bucket.binding,
+        ),
+      ]);
       const varNames = new Set(Object.keys(environment.vars));
       const secretNames = new Set(environment.secrets);
       for (const name of requiredNamesFor(worker, environment)) {
@@ -624,7 +630,9 @@ describe("source-to-Wrangler binding contract", () => {
       const suffix = environment === "development" ? "" : `-${environment}`;
       for (const worker of ["media", "jobs"] as const) {
         const block = rawEnvironment(configs[worker], environment);
-        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe("false");
+        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe(
+          environment === "staging" && worker === "jobs" ? "true" : "false",
+        );
         const bindings = block.workflows?.filter(
           (item) => item.binding === "VIDEO_ANALYSIS_WORKFLOW",
         );
@@ -640,16 +648,43 @@ describe("source-to-Wrangler binding contract", () => {
     }
   });
 
-  test("declares staging video Workflow read access in both Workers while keeping analysis disabled", () => {
+  test("declares staging video Workflow read access in both Workers", () => {
     for (const worker of ["jobs", "media"] as const) {
       const staging = declaredEnvironment(configs[worker], "staging");
-      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("false");
+      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe(worker === "jobs" ? "true" : "false");
       expect(staging.vars.VIDEO_WORKFLOW_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
       expect(staging.vars.VIDEO_WORKFLOW_NAME).toBe("pirate-video-analysis-staging");
       expect(staging.vars.VIDEO_WORKFLOW_SCRIPT_NAME).toBe("pirate-media-processor-worker-staging");
       expect(staging.secrets).toContain("VIDEO_WORKFLOW_READ_TOKEN");
       expect(staging.vars).not.toHaveProperty("VIDEO_WORKFLOW_READ_TOKEN");
     }
+  });
+
+  test("pins live staging jobs bindings while Spaces reconciliation remains off", () => {
+    const staging = declaredEnvironment(configs.jobs, "staging");
+    expect(staging.vars.AVATAR_CLEANUP_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
+    expect(staging.vars.DATA_REGISTRATION_ENABLED).toBe("false");
+    expect(staging.vars).not.toHaveProperty("SPACES_RECONCILIATION_ENABLED");
+    expect(staging.vars.SPACES_RECONCILIATION_OVERDUE_SECONDS).toBe("259200");
+    expect(staging.vars.SPACES_RECONCILIATION_MEASUREMENT_REFERENCE).toBe(
+      "bitcoin-mainnet-150-block-windows-2026-09-26",
+    );
+    for (const name of [
+      "SPACES_VERIFIER_ACCESS_CLIENT_ID",
+      "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
+      "SPACES_VERIFIER_BEARER_TOKEN",
+    ]) {
+      expect(staging.secrets).toContain(name);
+      expect(staging.vars).not.toHaveProperty(name);
+    }
+    const buckets = rawEnvironment(configs.jobs, "staging").r2_buckets;
+    expect(buckets).toEqual(
+      expect.arrayContaining([
+        { binding: "AVATAR_INGRESS", bucket_name: "pirate-avatar-ingress-staging" },
+        { binding: "AVATAR_SEALED", bucket_name: "pirate-avatar-sealed-staging" },
+      ]),
+    );
   });
 
   test("does not declare the retired ElevenLabs logging policy variable", () => {
