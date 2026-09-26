@@ -147,3 +147,12 @@ It then writes local HTTP and jobs config copies that change only
 `MEGAPOT_REWARDS_ENABLED` to true. It does not upload or deploy a Worker. Its
 2026-09-27 00:29 Tbilisi run correctly refused while custody still held zero
 ETH. The rewards-off Worker versions remain the rollback targets.
+
+`arm:megapot-controlled-win:drawing` accepts an explicit Unix drawing time.
+Its dry run verifies the funded prize, drawing ID 1, empty ticket inventory,
+no operator pending nonce, and a time 10 minutes to four hours ahead. It
+refuses a gas estimate over 300,000 gas or a maximum cost over 0.0001 ETH.
+Execution requires `--execute` and the identical time in
+`E2E_APPROVED_DRAWING_TIME_UNIX`. It waits for three confirmations and checks
+the fixed tier-1 payout before recording the drawing. A one-hour sample dry
+run estimated 216,771 gas; nothing was armed by that dry run.
