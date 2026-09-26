@@ -102,3 +102,16 @@ BEGIN
 END;
 $$;
 
+-- CREATE OR REPLACE resets function-level settings. Restore the SECURITY
+-- DEFINER search_path pin to the installing schema, exactly as 0136 and 0208 do.
+DO $readiness_zone_mutation_search_path$
+DECLARE installed_schema TEXT := current_schema();
+BEGIN
+  EXECUTE format(
+    'ALTER FUNCTION lock_hns_root_zone_mutation_v1(text,text,boolean,text,text,bigint) SET search_path TO %I, pg_temp',
+    installed_schema
+  );
+END;
+$readiness_zone_mutation_search_path$;
+
+REVOKE ALL ON FUNCTION lock_hns_root_zone_mutation_v1(TEXT,TEXT,BOOLEAN,TEXT,TEXT,BIGINT) FROM PUBLIC;

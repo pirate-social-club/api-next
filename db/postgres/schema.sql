@@ -15796,6 +15796,7 @@ $$;
 
 CREATE FUNCTION lock_hns_root_zone_mutation_v1(input_root_label text, input_challenge_txt_value text, input_teardown boolean, input_job_id text, input_executor_id text, input_lease_fence bigint) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   retained_session hns_root_import_sessions%ROWTYPE;

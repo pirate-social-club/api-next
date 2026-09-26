@@ -256,6 +256,32 @@ const leasedReadiness = {
 
 suite("HNS readiness zone-mutation admission (0219)", () => {
   test(
+    "keeps the SECURITY DEFINER search_path pin and PUBLIC revocation",
+    async () => {
+      await withSeededSchema("checking_authority", 1, async (admin) => {
+        const schema = (await admin.query<{ schema: string }>("SELECT current_schema() AS schema"))
+          .rows[0]?.schema;
+        const fn = await admin.query<{
+          secdef: boolean;
+          config: string[] | null;
+          public_execute: boolean;
+        }>(
+          `SELECT p.prosecdef AS secdef, p.proconfig AS config,
+                  has_function_privilege('public', p.oid, 'EXECUTE') AS public_execute
+             FROM pg_proc AS p
+             JOIN pg_namespace AS n ON n.oid = p.pronamespace
+            WHERE n.nspname = current_schema() AND p.proname = 'lock_hns_root_zone_mutation_v1'`,
+        );
+        expect(fn.rows).toHaveLength(1);
+        expect(fn.rows[0]?.secdef).toBe(true);
+        expect(fn.rows[0]?.config).toEqual([`search_path=${schema}, pg_temp`]);
+        expect(fn.rows[0]?.public_execute).toBe(false);
+      });
+    },
+    SCHEMA_BUDGET_MS,
+  );
+
+  test(
     "admits the exact leased readiness job while checking authority and once ready",
     async () => {
       for (const phase of ["checking_authority", "ready"]) {
