@@ -104,10 +104,13 @@ prove no second transfer. Record block hashes, receipts, database transitions,
 Worker versions, bindings and final balances without storing secrets or palm
 evidence. Close every obligation before removing the isolated stack.
 
-The live isolated stack, provider returns, Base Sepolia deployment and funding
-are still pending. Bootstrap must attest the deployed jackpot, ticket NFT and
-USDC code hashes and their linked addresses. A local RPC proof is a
-compatibility check, not the final owner claim or wallet receipt.
+The isolated HTTP, jobs and Solid Workers are deployed with rewards off. The
+isolated Privy origin accepts fixture sign-in. The fixture jackpot and ticket
+NFT are deployed on Base Sepolia, the copied database attests them, and the
+jackpot holds exactly 1 test USDC for the first drawing. The owner activity,
+Very return, jobs settlement, wallet payout and onward send remain unproved.
+A local RPC proof is a compatibility check, not the final owner claim or
+wallet receipt.
 
 The live deployment script is dry-run by default. It checks the Base Sepolia
 chain, canonical test USDC bytecode, the isolated operator key and nonce, the
@@ -127,3 +130,12 @@ effect or refund. Its default mode rolls back its read-only transaction. With
 `--execute`, it retires only the copied public attestation and inserts
 `megapot-e2e-sepolia-20260926-r1` in one serializable transaction. The shared
 staging database is outside this script's branch-pinned connection.
+
+`fund:megapot-controlled-win:prize` is dry-run by default. It consumes the
+record of exactly 1 test USDC sent from the fixture sponsor wallet to the
+operator and refuses unless the operator holds that amount, the jackpot holds
+zero, and the operator has no pending transaction. With `--execute`, it sends
+exactly 1,000,000 atomic Base Sepolia USDC into the approved jackpot, with a
+0.0001 ETH gas hard cap. It verifies the Transfer log and both final balances
+after three confirmations. A second run refuses because the balances and
+one-use record no longer match.
