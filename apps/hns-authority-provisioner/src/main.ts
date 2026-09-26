@@ -763,7 +763,9 @@ if (import.meta.main) {
       console.error("HNS authority provisioner arguments are invalid");
       process.exitCode = 1;
     } else {
-      main(serve).catch(() => {
+      // Keep the serving entrypoint alive across short-lived startup clients.
+      // An unawaited promise can let Bun exit cleanly before the executor loop.
+      await main(serve).catch(() => {
         console.error("HNS authority provisioner failed");
         process.exitCode = 1;
       });
