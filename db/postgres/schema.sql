@@ -15827,7 +15827,23 @@ BEGIN
           AND observation_job_id=input_job_id AND leased_by=input_executor_id
           AND lease_fence=input_lease_fence AND lease_expires_at>clock_timestamp()
         FOR UPDATE;
-      admitted_kind := 'observation';
+      IF FOUND THEN
+        admitted_kind := 'observation';
+      ELSE
+        -- A lifecycle readiness job reconciles the zone through its own lease.
+        -- Only the exact leased observe_readiness job of the current lifecycle
+        -- generation is admitted; any other lifecycle job kind is refused.
+        PERFORM 1 FROM hns_root_import_lifecycle_jobs AS job
+          JOIN hns_root_import_lifecycle AS lifecycle
+            ON lifecycle.root_import_session_id = job.root_import_session_id
+          WHERE job.root_import_session_id=selected_session_id AND job.state='leased'
+            AND job.job_kind='observe_readiness'
+            AND job.lifecycle_job_id::text=input_job_id AND job.leased_by=input_executor_id
+            AND job.lease_fence=input_lease_fence AND job.lease_expires_at>clock_timestamp()
+            AND job.generation=lifecycle.generation
+          FOR UPDATE OF job;
+        admitted_kind := 'readiness';
+      END IF;
     END IF;
   END IF;
   IF NOT FOUND THEN RETURN FALSE; END IF;
@@ -15845,6 +15861,16 @@ BEGIN
            WHERE lifecycle_owner.root_import_session_id = retained_session.root_import_session_id
         )
       ));
+  END IF;
+  IF admitted_kind = 'readiness' THEN
+    -- The lifecycle phase, not the retired session expiry, governs readiness
+    -- (separated clocks, 0208). Readiness is observed while checking authority
+    -- and refreshed once ready.
+    RETURN EXISTS (
+      SELECT 1 FROM hns_root_import_lifecycle AS lifecycle
+       WHERE lifecycle.root_import_session_id = retained_session.root_import_session_id
+         AND lifecycle.phase IN ('checking_authority','ready')
+    );
   END IF;
   IF admitted_kind = 'observation' THEN
     RETURN retained_session.status='observing'
