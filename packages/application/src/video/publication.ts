@@ -310,6 +310,19 @@ export interface VideoPublicationStore {
     responseBytes: Uint8Array;
     responseSha256: string;
   }) => Promise<StoredReplay>;
+  /**
+   * The saved answer to an earlier start under this key, read without a lock.
+   * It is bound to the community, the account and the idempotency key, and
+   * replayed only when the request hash matches, which covers the persona,
+   * the reservation and every other field of the start; another hash is an
+   * idempotency conflict.
+   */
+  readonly replaySubmissionStart: (input: {
+    communityId: string;
+    actorAccountId: string;
+    idempotencyKey: string;
+    requestHash: string;
+  }) => Promise<StoredReplay>;
   readonly getSubmissionForAccount: (input: {
     submissionId: string;
     actorAccountId: string;
@@ -1038,6 +1051,21 @@ export async function createVideoSubmission(
     services.personaServices,
     input.signal,
   );
+  const requestHash = await mediaRequestHash({ community_id: input.communityId }, body);
+  const replayStart = async (): Promise<VideoPostSubmissionV1 | null> =>
+    replaySubmission(
+      await services.store.replaySubmissionStart({
+        communityId: input.communityId,
+        actorAccountId: input.actor.userId,
+        idempotencyKey: body.idempotency_key,
+        requestHash,
+      }),
+    );
+  // A start whose answer was lost is replayed before its reservation is
+  // examined: once claimed or expired, the reservation would refuse the retry
+  // of a start the server accepted.
+  const prior = await replayStart();
+  if (prior !== null) return prior;
   const reservation = await services.store.getReservationForAccount({
     reservationId: body.video_reservation_id,
     actorAccountId: input.actor.userId,
@@ -1063,12 +1091,16 @@ export async function createVideoSubmission(
   // master, never the capture's own audio.
   const songPlan = await songReservationPlan(reservation, services);
   if (reservation.communityId !== input.communityId || reservation.state !== "issued") {
+    // A concurrent retry can read the reservation just after the winning start
+    // committed. The claim and its saved answer commit in one transaction, so
+    // a claimed reservation always has its answer to replay by now.
+    const concurrent = await replayStart();
+    if (concurrent !== null) return concurrent;
     throw new Conflict({ message: "Video reservation cannot be claimed" });
   }
   // An unused original-audio reservation issued before the rule starts no new
   // submission; it expires. Submissions already started are not affected.
   if (songPlan === null) throw songReferenceRequired();
-  const requestHash = await mediaRequestHash({ community_id: input.communityId }, body);
   const submissionId = `media-submission-${uuid(services)}`;
   const common = {
     submissionId,

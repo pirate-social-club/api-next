@@ -3,6 +3,7 @@ import {
   BadRequest,
   Conflict,
   EligibilityFailed,
+  IdempotencyConflict,
   NotFound,
   RetryableConflict,
   VideoUploadReservationV1,
@@ -426,6 +427,8 @@ function videoServices(input: {
   frozen?: FrozenSongReservationPlan;
   submissions?: Parameters<VideoPublicationStore["createSubmission"]>[0][];
   multipart?: VideoPublicationServices["multipart"];
+  replayStart?: VideoPublicationStore["replaySubmissionStart"];
+  reservationReads?: { count: number };
 }): VideoPublicationServices {
   const unused = async (): Promise<never> => {
     throw new Error("unused video publication method");
@@ -433,12 +436,18 @@ function videoServices(input: {
   const store = new Proxy({} as VideoPublicationStore, {
     get: (_target, key) => {
       if (key === "replayReservation") return async () => ({ kind: "none" });
+      if (key === "replaySubmissionStart")
+        return input.replayStart ?? (async () => ({ kind: "none" }));
       if (key === "createReservation")
         return async (value: Parameters<VideoPublicationStore["createReservation"]>[0]) => {
           input.created?.push(value);
           return { kind: "none" };
         };
-      if (key === "getReservationForAccount") return async () => input.reservation ?? null;
+      if (key === "getReservationForAccount")
+        return async () => {
+          if (input.reservationReads) input.reservationReads.count += 1;
+          return input.reservation ?? null;
+        };
       if (key === "getReservationSongPlan") return async () => input.frozen ?? null;
       if (key === "createSubmission")
         return async (value: Parameters<VideoPublicationStore["createSubmission"]>[0]) => {
@@ -653,6 +662,200 @@ describe("song-reference reservation through the request path", () => {
       }),
     );
     expect(submissions[0]?.state.caption).toBe(stored);
+  });
+
+  describe("a start whose answer was lost", () => {
+    const issued: VideoReservationRecord = {
+      reservationId: "media-reservation-song",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen: FrozenSongReservationPlan = {
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 12 * SECOND,
+      clipDurationSamples: 9 * SECOND,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const startBody = {
+      persona_id: persona.persona_id,
+      version: "video-start-input-v1",
+      video_reservation_id: issued.reservationId,
+      caption: "danced to a song",
+      idempotency_key: "start-lost-answer",
+    };
+    const claimed: VideoReservationRecord = {
+      ...issued,
+      state: "claimed",
+      submissionId: "media-submission-first",
+      operationId: "media-operation-first",
+    };
+
+    /** The accepted first start, and a store read that behaves as the real one. */
+    async function accepted() {
+      const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const first = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: issued,
+          frozen,
+          submissions,
+        }),
+      );
+      const saved = submissions[0];
+      if (saved === undefined) throw new Error("the first start was not saved");
+      const lookups: Parameters<VideoPublicationStore["replaySubmissionStart"]>[0][] = [];
+      const replayStart: VideoPublicationStore["replaySubmissionStart"] = async (input) => {
+        lookups.push(input);
+        if (
+          input.communityId !== "community_video" ||
+          input.actorAccountId !== actor.userId ||
+          input.idempotencyKey !== saved.idempotencyKey
+        )
+          return { kind: "none" };
+        return input.requestHash === saved.requestHash
+          ? { kind: "replay", bytes: saved.responseBytes, entityId: saved.state.submissionId }
+          : { kind: "conflict", entityId: saved.state.submissionId };
+      };
+      return { first, saved, submissions, lookups, replayStart };
+    }
+
+    test("a retry after the reservation was claimed gets the saved answer and starts nothing", async () => {
+      const { first, saved, replayStart, lookups } = await accepted();
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const reads = { count: 0 };
+      const replayed = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: claimed,
+          frozen,
+          submissions: retries,
+          replayStart,
+          reservationReads: reads,
+        }),
+      );
+      expect(replayed).toEqual(first);
+      expect(retries).toHaveLength(0);
+      expect(reads.count).toBe(0);
+      expect(lookups[0]).toEqual({
+        communityId: "community_video",
+        actorAccountId: actor.userId,
+        idempotencyKey: saved.idempotencyKey,
+        requestHash: saved.requestHash,
+      });
+    });
+
+    test("a retry after the reservation expired gets the saved answer", async () => {
+      const { first, replayStart } = await accepted();
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const replayed = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: { ...claimed, state: "expired", expiresAt: "2026-09-10T11:00:00.000Z" },
+          frozen,
+          submissions: retries,
+          replayStart,
+        }),
+      );
+      expect(replayed).toEqual(first);
+      expect(retries).toHaveLength(0);
+    });
+
+    test("the same key with another body is an idempotency conflict and starts nothing", async () => {
+      const { replayStart } = await accepted();
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      for (const changed of [
+        { ...startBody, caption: "another caption" },
+        { ...startBody, video_reservation_id: "media-reservation-other" },
+      ]) {
+        await expect(
+          createVideoSubmission(
+            { communityId: "community_video", actor, body: changed },
+            videoServices({
+              songInterval: intervalServices(songStore().store),
+              reservation: claimed,
+              frozen,
+              submissions: retries,
+              replayStart,
+            }),
+          ),
+        ).rejects.toBeInstanceOf(IdempotencyConflict);
+      }
+      expect(retries).toHaveLength(0);
+    });
+
+    test("a concurrent retry that reads the claimed reservation replays on its second read", async () => {
+      const { first, replayStart } = await accepted();
+      // The retry's first read ran before the winning start committed; by the
+      // time it reads the reservation, the claim and the answer are both there.
+      let calls = 0;
+      const racing: VideoPublicationStore["replaySubmissionStart"] = async (input) => {
+        calls += 1;
+        return calls === 1 ? { kind: "none" } : replayStart(input);
+      };
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const reads = { count: 0 };
+      const replayed = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: claimed,
+          frozen,
+          submissions: retries,
+          replayStart: racing,
+          reservationReads: reads,
+        }),
+      );
+      expect(replayed).toEqual(first);
+      expect(calls).toBe(2);
+      expect(reads.count).toBe(1);
+      expect(retries).toHaveLength(0);
+    });
+
+    test("a claimed reservation with no saved start under this key is still refused", async () => {
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      await expect(
+        createVideoSubmission(
+          { communityId: "community_video", actor, body: startBody },
+          videoServices({
+            songInterval: intervalServices(songStore().store),
+            reservation: claimed,
+            frozen,
+            submissions: retries,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "Conflict" });
+      expect(retries).toHaveLength(0);
+    });
   });
 
   test("a song-reference reservation starts only the song-reference path, with its frozen plan", async () => {
