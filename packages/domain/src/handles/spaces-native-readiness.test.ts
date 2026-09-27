@@ -95,6 +95,7 @@ describe("Spaces authority drift", () => {
   const classify = (changed: Partial<SpacesRootObservationV1> | null) =>
     classifySpacesAuthorityObservationV1({
       evidence_root_key: "key_a",
+      evidence_root_outpoint: "txid:0",
       observation: changed === null ? null : { ...observation, ...changed },
       now_epoch_ms: now,
       freshness,
@@ -125,6 +126,10 @@ describe("Spaces authority drift", () => {
     expect(classify({ root: { kind: "resolved", outpoint: "txid:1", key: "key_b" } })).toEqual({
       kind: "key_changed",
       observed_root_key: "key_b",
+    });
+    expect(classify({ root: { kind: "resolved", outpoint: "txid:1", key: "key_a" } })).toEqual({
+      kind: "outpoint_changed",
+      observed_root_outpoint: "txid:1",
     });
   });
 
@@ -158,6 +163,14 @@ describe("Spaces authority drift", () => {
       require_reauthorization: false,
     });
     expect(spacesAuthorityResponseV1({ kind: "key_changed", observed_root_key: "key_b" })).toEqual({
+      stop_commerce: true,
+      stop_irreversible_operator_steps: true,
+      suspend_activation: false,
+      require_reauthorization: true,
+    });
+    expect(
+      spacesAuthorityResponseV1({ kind: "outpoint_changed", observed_root_outpoint: "txid:1" }),
+    ).toEqual({
       stop_commerce: true,
       stop_irreversible_operator_steps: true,
       suspend_activation: false,

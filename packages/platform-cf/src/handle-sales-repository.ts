@@ -34,6 +34,7 @@ import { HandleNationalityQuotePinV1 } from "@pirate/contracts";
 import {
   assertCanonicalHnsHandleLabelV2,
   assertHandleOfferingCombinationV3,
+  assertSpacesOfferingCombinationV1,
   classifyEffectiveHandleOfferingV2,
   classifyHandleSaleActivationRevisionV1,
   handleAccountAllowlistPolicyHash,
@@ -822,14 +823,8 @@ const mutationReplay = (
     readonly: false,
   });
 
-/**
- * The seller offering mutation serves the HNS hosted-persona wire. Its SQL and
- * these literals stay HNS-only until the Spaces offering compiler path and
- * contract unions land (spec 012 §5.3.13.11-§5.3.13.12).
- */
-const OFFERING_MUTATION_FAMILY = "hns" as const;
-const OFFERING_MUTATION_GRAMMAR_ID = "hns_ascii_ldh_1_63_v1" as const;
-const OFFERING_MUTATION_FULFILLMENT = "hosted_persona_v1" as const;
+const HNS_OFFERING_GRAMMAR_ID = "hns_ascii_ldh_1_63_v1" as const;
+const SPACES_OFFERING_GRAMMAR_ID = "spaces_subspace_label_v1" as const;
 
 type OfferingMutationInput = Parameters<HandleSalesStore["createOffering"]>[0] &
   Partial<{
@@ -910,11 +905,16 @@ const mutateOffering = (
     });
     const activationRow = activationResult.rows[0];
     if (activationRow === undefined) return yield* reject("sale_namespace_inactive", true);
-    // The offering command, grammar, driver, and family literals below are the
-    // HNS wire. A Spaces offering is admitted only by its own compiler path
-    // once the public contract unions exist, so a Spaces activation is refused
-    // here before any write.
-    if (activationRow.family !== OFFERING_MUTATION_FAMILY) {
+    if (activationRow.family !== "hns" && activationRow.family !== "spaces") {
+      return yield* reject("offering_unavailable");
+    }
+    const family = activationRow.family as "hns" | "spaces";
+    const grammarId = family === "spaces" ? SPACES_OFFERING_GRAMMAR_ID : HNS_OFFERING_GRAMMAR_ID;
+    if (
+      family === "spaces" &&
+      (!("label_grammar_id" in input.terms.label_scope) ||
+        input.terms.label_scope.label_grammar_id !== SPACES_OFFERING_GRAMMAR_ID)
+    ) {
       return yield* reject("offering_unavailable");
     }
     const requestedStatus = isCreate ? "active" : input.requestedStatus;
@@ -956,10 +956,11 @@ const mutateOffering = (
       label: "handle-sales.offering.reserved-labels.read",
       text: `SELECT * FROM handle_reserved_label_revisions
               WHERE reserved_labels_id=$1 AND reserved_labels_revision=$2
-                AND family='hns' AND status='active' FOR SHARE`,
+                AND family=$3 AND status='active' FOR SHARE`,
       values: [
         input.terms.label_scope.reserved_labels_id,
         input.terms.label_scope.expected_reserved_labels_revision,
+        family,
       ],
       readonly: false,
     });
@@ -985,9 +986,14 @@ const mutateOffering = (
     const driver = yield* transaction.execute<Row>({
       label: "handle-sales.offering.driver.read",
       text: `SELECT * FROM handle_issuance_driver_revisions
-              WHERE family='hns' AND driver_id=$1 AND driver_version=$2
-                AND status='enabled' FOR SHARE`,
-      values: [input.terms.issuance_driver_id, input.terms.expected_issuance_driver_version],
+              WHERE family=$3 AND driver_id=$1 AND driver_version=$2
+                AND (($3='spaces' AND status<>'retired')
+                  OR ($3='hns' AND status='enabled')) FOR SHARE`,
+      values: [
+        input.terms.issuance_driver_id,
+        input.terms.expected_issuance_driver_version,
+        family,
+      ],
       readonly: false,
     });
     if (
@@ -1002,16 +1008,15 @@ const mutateOffering = (
     const policyRow = one(policy.rows, "qualification policy");
     const pricingRow = one(pricing.rows, "pricing");
     const driverRow = one(driver.rows, "issuance driver");
-    // The platform members-only policy is admitted only on spaces_native_v1
-    // offerings (spec 012 §5.3.13.12); HNS offerings keep §5.3.3 unchanged.
-    if (policyRow.policy_kind === "spaces_membership_v1") {
+    // The platform members-only policy is admitted only by the Spaces branch.
+    if ((family === "spaces") !== (policyRow.policy_kind === "spaces_membership_v1")) {
       return yield* reject("offering_unavailable");
     }
     const labelScope =
       input.terms.label_scope.kind === "exact_label_v2"
         ? {
             kind: "exact_label_v2" as const,
-            label_grammar_id: OFFERING_MUTATION_GRAMMAR_ID,
+            label_grammar_id: grammarId,
             handle_label: input.terms.label_scope.handle_label,
             reserved_labels_id: input.terms.label_scope.reserved_labels_id,
             reserved_labels_revision: input.terms.label_scope.expected_reserved_labels_revision,
@@ -1019,7 +1024,7 @@ const mutateOffering = (
           }
         : {
             kind: "label_rule_v2" as const,
-            label_grammar_id: OFFERING_MUTATION_GRAMMAR_ID,
+            label_grammar_id: grammarId,
             reserved_labels_id: input.terms.label_scope.reserved_labels_id,
             reserved_labels_revision: input.terms.label_scope.expected_reserved_labels_revision,
             reserved_labels_hash: text(reservedRow, "reserved_labels_hash"),
@@ -1046,6 +1051,16 @@ const mutateOffering = (
       catch: () => reject("offering_unavailable"),
     });
     const qualificationPolicy = handleQualificationPolicyRefFromRow(policyRow);
+    const membershipSource =
+      family === "spaces"
+        ? yield* transaction.execute<Row>({
+            label: "handle-sales.offering.membership-source.read",
+            text: `SELECT max(source_revision) AS source_revision
+                     FROM handle_spaces_membership_source_revisions`,
+            values: [],
+            readonly: false,
+          })
+        : null;
     const freePricing = {
       kind: "free_v1" as const,
       pricing_id: text(pricingRow, "pricing_id"),
@@ -1056,22 +1071,47 @@ const mutateOffering = (
     yield* Effect.try({
       try: () => {
         handleFreePricingRevisionHash(freePricing);
-        assertHandleOfferingCombinationV3({
-          label_scope: labelScope,
-          allocation_kind: input.terms.allocation_kind,
-          fulfillment_kind: input.terms.fulfillment_kind,
-          qualification_kind: qualificationPolicy.kind,
-          pricing_kind: freePricing.kind,
-          atomic_amount: freePricing.atomic_amount,
-        });
+        if (family === "spaces") {
+          if (qualificationPolicy.kind !== "curated_policy_v1" || membershipSource === null)
+            throw new Error("invalid membership policy");
+          assertSpacesOfferingCombinationV1({
+            label_scope: labelScope,
+            allocation_kind: input.terms.allocation_kind,
+            fulfillment_kind: input.terms.fulfillment_kind,
+            qualification_policy: qualificationPolicy,
+            membership_policy: {
+              policy_id: text(policyRow, "policy_id"),
+              policy_revision: integer(policyRow, "policy_revision"),
+              requirement_id: text(policyRow, "requirement_id"),
+              requirement_revision: integer(policyRow, "requirement_revision"),
+              source_revision: integer(policyRow, "provider_binding_version"),
+            },
+            current_membership_source_revision: integer(
+              one(membershipSource.rows, "current membership source"),
+              "source_revision",
+            ),
+            pricing_kind: freePricing.kind,
+            atomic_amount: freePricing.atomic_amount,
+          });
+        } else {
+          assertHandleOfferingCombinationV3({
+            label_scope: labelScope,
+            allocation_kind: input.terms.allocation_kind,
+            fulfillment_kind: input.terms.fulfillment_kind,
+            qualification_kind: qualificationPolicy.kind,
+            pricing_kind: freePricing.kind,
+            atomic_amount: freePricing.atomic_amount,
+          });
+        }
         if (
           text(driverRow, "fulfillment_kind") !== input.terms.fulfillment_kind ||
-          input.terms.fulfillment_kind !== OFFERING_MUTATION_FULFILLMENT
+          input.terms.fulfillment_kind !==
+            (family === "spaces" ? "spaces_native_v1" : "hosted_persona_v1")
         ) {
           throw new Error("driver mismatch");
         }
       },
-      catch: () => reject("paid_offerings_disabled"),
+      catch: () => reject(family === "spaces" ? "offering_unavailable" : "paid_offerings_disabled"),
     });
     const activeReserved = yield* transaction.execute<Row>({
       label: "handle-sales.offering.reserved-consistency.read",
@@ -1097,12 +1137,12 @@ const mutateOffering = (
     }
     const offeringId = input.offeringId;
     const revision = prior === null ? 1 : prior.offering_revision + 1;
-    const activation = activationFromRow(activationRow);
+    const activation = anyActivationFromRow(activationRow);
     const offeringHashInput = {
       offering_id: offeringId,
       offering_revision: revision,
       community_id: input.communityId,
-      family: OFFERING_MUTATION_FAMILY,
+      family,
       namespace_root: activation.canonical_root,
       sale_namespace_activation_id: activation.sale_namespace_activation_id,
       sale_namespace_activation_generation: activation.sale_namespace_activation_generation,
@@ -1143,7 +1183,7 @@ const mutateOffering = (
                issuance_driver_version,quote_ttl_seconds,reservation_ttl_seconds,status,
                actor_account_id,created_at,recorded_at
              ) VALUES (
-               $1,$2,$3,$4,'hns',$5,$6,$7,$8,$9,'hns_ascii_ldh_1_63_v1',$10,$11,$12,
+               $1,$2,$3,$4,$34,$5,$6,$7,$8,$9,$35,$10,$11,$12,
                $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,0,$26,$27,$28,$29,
                $30,$31,$32::timestamptz,$33::timestamptz
              )`,
@@ -1183,6 +1223,8 @@ const mutateOffering = (
         input.accountId,
         createdAt,
         now,
+        family,
+        grammarId,
       ],
       readonly: false,
     });
