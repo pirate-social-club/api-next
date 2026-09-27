@@ -5,11 +5,13 @@
     "@noble/curves",
     "@scure/base",
     "@selfxyz/core",
+    "@wasm-audio-decoders/flac",
     "@zkpassport/sdk",
     "cizgile",
     "effect",
     "hono",
     "jose",
+    "mp4box",
     "pg",
     "tr46",
     "viem"

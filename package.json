@@ -63,8 +63,10 @@
     "reconcile:content-ratings": "bun scripts/reconcile-content-ratings.ts"
   },
   "dependencies": {
+    "@wasm-audio-decoders/flac": "0.2.11",
     "cizgile": "0.1.1",
     "effect": "4.0.0-rc.109",
+    "mp4box": "2.4.1",
     "pg": "8.16.3"
   },
   "devDependencies": {
