@@ -413,7 +413,9 @@ export function makeSongRewardOfferService(input: {
       request.maxTicketPriceAtomic <= 0n ||
       request.fundingAmountAtomic < request.maxTicketPriceAtomic ||
       !Number.isSafeInteger(request.entryCutoffSeconds) ||
-      request.entryCutoffSeconds <= 0 ||
+      // Jobs need the 120-second chain safety margin plus scheduled cycles to
+      // commit and purchase after entries freeze. Shorter terms can never buy.
+      request.entryCutoffSeconds < 300 ||
       !Number.isSafeInteger(request.minScoreBps) ||
       request.minScoreBps < 7_000 ||
       request.minScoreBps > 10_000 ||
