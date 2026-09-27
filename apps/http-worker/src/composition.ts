@@ -201,6 +201,7 @@ import {
   makeCloudflareStudyGenerationWorkflowLauncher,
 } from "@pirate/platform-cf/study-generation-workflow-cloudflare";
 import { makeControlPlaneStudyLanguageProfileStore } from "@pirate/platform-cf/study-language-profile-repository";
+import { makeStudyProfileCoverageStore } from "@pirate/platform-cf/study-profile-coverage-repository";
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyTranslationPolicyResolver } from "@pirate/platform-cf/study-translation-repository";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
@@ -286,7 +287,9 @@ import {
 } from "./spaces-production-composition.ts";
 import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
+import { makeStudyGenerationWorkflowComposition } from "./study-generation-production-composition.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
+import { makeStudyProfileCoverageRunner } from "./study-profile-coverage.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { makeTelegramHandlers } from "./telegram-handlers.ts";
@@ -302,6 +305,7 @@ export interface HttpWorkerBindings
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
+  readonly STUDY_PROFILE_COVERAGE_ENABLED?: string;
   readonly STUDY_SPOKEN_RERECORD_ENABLED?: string;
   readonly STUDY_GENERATION_OPENROUTER_MODEL?: string;
   readonly OPENROUTER_API_KEY?: string;
@@ -1277,17 +1281,44 @@ export async function createProductionHttpWorker(
             provider_binding: communityHnsBinding,
           }),
         });
-  const continuePublicationChecks = async () => {
-    if (hnsCommunityServices === undefined) return;
-    // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
-    for (let count = 0; count < 8; count++) {
-      if (
-        !(await Effect.runPromise(
-          continueHnsCommunityPublication(hnsCommunityServices, publicationQueue),
-        ))
-      )
-        break;
+  const continueStudyProfileCoverage = (() => {
+    if (bindings.STUDY_PROFILE_COVERAGE_ENABLED !== "true") return null;
+    if (
+      !bindings.OPENROUTER_API_KEY ||
+      bindings.OPENROUTER_API_KEY !== bindings.OPENROUTER_API_KEY.trim() ||
+      !bindings.STUDY_GENERATION_OPENROUTER_MODEL ||
+      bindings.STUDY_GENERATION_OPENROUTER_MODEL !==
+        bindings.STUDY_GENERATION_OPENROUTER_MODEL.trim()
+    ) {
+      console.error("Study profile coverage provider configuration is unavailable");
+      return null;
     }
+    const profile = makeStudyGenerationWorkflowComposition({
+      CONTROL_PLANE: loadHyperdrive(bindings),
+      STUDY_GENERATION_ENABLED: "true",
+      OPENROUTER_API_KEY: bindings.OPENROUTER_API_KEY,
+      STUDY_GENERATION_OPENROUTER_MODEL: bindings.STUDY_GENERATION_OPENROUTER_MODEL,
+    });
+    return makeStudyProfileCoverageRunner({
+      nextMissing: makeStudyProfileCoverageStore(controlPlane).nextMissing,
+      generateProfile: profile.generateProfile,
+      reportFailure: ({ communityId, postId, reason }) =>
+        console.error("Study profile production failed", { communityId, postId, reason }),
+    });
+  })();
+  const continuePublicationChecks = async () => {
+    if (hnsCommunityServices !== undefined) {
+      // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
+      for (let count = 0; count < 8; count++) {
+        if (
+          !(await Effect.runPromise(
+            continueHnsCommunityPublication(hnsCommunityServices, publicationQueue),
+          ))
+        )
+          break;
+      }
+    }
+    await continueStudyProfileCoverage?.();
   };
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),

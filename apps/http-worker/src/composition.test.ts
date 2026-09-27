@@ -53,6 +53,18 @@ const inertHnsTransport: HnsOwnerTransport = {
 };
 
 describe("HTTP production composition", () => {
+  test("a missing profile provider does not block HTTP composition", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        STUDY_PROFILE_COVERAGE_ENABLED: "true",
+        OPENROUTER_API_KEY: " padded ",
+        STUDY_GENERATION_OPENROUTER_MODEL: "google/gemini-test",
+      }),
+    ).resolves.toBeDefined();
+  });
+
   test("requires both Durable Object registration limiter bindings", () => {
     expect(() =>
       makeProductionIdentityRegistrationRateLimiter({} as HttpWorkerBindings, "development"),
