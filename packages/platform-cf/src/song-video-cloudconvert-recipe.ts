@@ -21,19 +21,14 @@ export type SongVideoCloudConvertCommands = Readonly<{
  */
 export function makeSongVideoCloudConvertCommands(
   input: Readonly<{
-    clipStartSamples: number;
     clipDurationSamples: number;
   }>,
 ): SongVideoCloudConvertCommands {
-  const { clipStartSamples: start, clipDurationSamples: duration } = input;
-  const end = start + duration;
+  const { clipDurationSamples: duration } = input;
   if (
-    !Number.isSafeInteger(start) ||
-    start < 0 ||
     !Number.isSafeInteger(duration) ||
     duration < MIN_DURATION_SAMPLES ||
-    duration > MAX_DURATION_SAMPLES ||
-    !Number.isSafeInteger(end)
+    duration > MAX_DURATION_SAMPLES
   ) {
     throw new TypeError("song-video CloudConvert interval must be a bounded sample interval");
   }

@@ -8,7 +8,6 @@ describe("CloudConvert song-video PCM recipe", () => {
   test("copies the pre-cut WAV audio without decoding the canonical song", () => {
     expect(SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION).toBe("6.1.4");
     const commands = makeSongVideoCloudConvertCommands({
-      clipStartSamples: 48_000,
       clipDurationSamples: 720_000,
     });
     expect(commands).toEqual({
@@ -32,7 +31,6 @@ describe("CloudConvert song-video PCM recipe", () => {
 
   test("holds the final video frame to a partial sample boundary", () => {
     const commands = makeSongVideoCloudConvertCommands({
-      clipStartSamples: 123,
       clipDurationSamples: 5 * 48_000 + 777,
     });
     expect(commands.frameCount).toBe(151);
@@ -41,11 +39,11 @@ describe("CloudConvert song-video PCM recipe", () => {
   });
 
   test.each([
-    { clipStartSamples: -1, clipDurationSamples: 144_000 },
-    { clipStartSamples: 0.5, clipDurationSamples: 144_000 },
-    { clipStartSamples: 0, clipDurationSamples: 143_999 },
-    { clipStartSamples: 0, clipDurationSamples: 720_001 },
-    { clipStartSamples: Number.MAX_SAFE_INTEGER, clipDurationSamples: 144_000 },
+    { clipDurationSamples: -1 },
+    { clipDurationSamples: 0.5 },
+    { clipDurationSamples: 143_999 },
+    { clipDurationSamples: 720_001 },
+    { clipDurationSamples: Number.MAX_SAFE_INTEGER },
   ])("refuses an invalid interval before making a command: %p", (input) => {
     expect(() => makeSongVideoCloudConvertCommands(input)).toThrow(TypeError);
   });
