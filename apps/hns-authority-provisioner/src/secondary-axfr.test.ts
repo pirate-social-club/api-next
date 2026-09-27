@@ -7,6 +7,7 @@ import {
 const root = "e2ef867cbfad33d41a7837ff6ad";
 const challenge = "pirate-verification=owned";
 const zoneName = `${root}.`;
+const input = { root_label: root, challenge_txt_value: challenge, minimum_serial: 2026092650 };
 const metadataPath = `/zones/${zoneName}/metadata/TSIG-ALLOW-AXFR`;
 const config: PowerDnsSecondaryAxfrConfig = {
   api_url: "http://secondary.test:8081",
@@ -71,8 +72,8 @@ describe("PowerDNS secondary AXFR authorization", () => {
       },
     );
 
-    await authorize({ root_label: root, challenge_txt_value: challenge });
-    expect(waits).toEqual([250]);
+    await authorize(input);
+    expect(waits).toEqual([500]);
     expect(keys).toEqual(["existing-key.", "fixture-transfer."]);
     expect(calls).toEqual([
       `GET /api/v1/servers/localhost/zones/${zoneName}`,
@@ -82,6 +83,39 @@ describe("PowerDNS secondary AXFR authorization", () => {
       `PUT /api/v1/servers/localhost${metadataPath}`,
       `GET /api/v1/servers/localhost${metadataPath}`,
     ]);
+  });
+
+  test("waits until a signed secondary serves the primary's new serial", async () => {
+    let zoneGets = 0;
+    const waits: number[] = [];
+    const authorize = makePowerDnsSecondaryAxfrAuthorizer(
+      config,
+      async (url, init) => {
+        if (new URL(String(url)).pathname.endsWith(metadataPath)) {
+          expect(init?.method).toBe("GET");
+          return Response.json({
+            kind: "TSIG-ALLOW-AXFR",
+            metadata: [config.axfr_tsig_key_name],
+          });
+        }
+        zoneGets += 1;
+        return Response.json({
+          ...transferredZone(),
+          serial: zoneGets <= 5 ? 2026092650 : 2026092651,
+        });
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    );
+
+    await authorize({
+      root_label: root,
+      challenge_txt_value: challenge,
+      minimum_serial: 2026092651,
+    });
+    expect(zoneGets).toBe(6);
+    expect(waits).toEqual([500, 500, 500, 500, 500]);
   });
 
   test("refuses another zone, master, account, or challenge before any metadata write", async () => {
@@ -109,9 +143,7 @@ describe("PowerDNS secondary AXFR authorization", () => {
         },
         async () => undefined,
       );
-      await expect(
-        authorize({ root_label: root, challenge_txt_value: challenge }),
-      ).rejects.toThrow();
+      await expect(authorize(input)).rejects.toThrow();
       expect(calls).toEqual(["GET"]);
     }
   });
@@ -131,10 +163,9 @@ describe("PowerDNS secondary AXFR authorization", () => {
         },
         async () => undefined,
       );
-      await expect(authorize({ root_label: root, challenge_txt_value: challenge })).rejects.toThrow(
-        "transfer is incomplete",
-      );
-      expect(methods).toEqual(["GET", "GET", "GET"]);
+      await expect(authorize(input)).rejects.toThrow("transfer is incomplete");
+      expect(methods).toHaveLength(21);
+      expect(methods.every((method) => method === "GET")).toBe(true);
     }
   });
 
@@ -163,9 +194,7 @@ describe("PowerDNS secondary AXFR authorization", () => {
         },
         async () => undefined,
       );
-      await expect(
-        authorize({ root_label: root, challenge_txt_value: challenge }),
-      ).rejects.toThrow();
+      await expect(authorize(input)).rejects.toThrow();
       expect(writes).toBe(failure === "read" ? 0 : 1);
     }
   });
@@ -182,7 +211,7 @@ describe("PowerDNS secondary AXFR authorization", () => {
       },
       async () => undefined,
     );
-    await authorize({ root_label: root, challenge_txt_value: challenge });
+    await authorize(input);
     expect(methods).toEqual(["GET", "GET"]);
   });
 
@@ -201,7 +230,7 @@ describe("PowerDNS secondary AXFR authorization", () => {
       },
       async () => undefined,
     );
-    await authorize({ root_label: root, challenge_txt_value: challenge });
+    await authorize(input);
     expect(retained).toEqual(["fixture-transfer."]);
   });
 
@@ -223,10 +252,8 @@ describe("PowerDNS secondary AXFR authorization", () => {
       },
       async () => undefined,
     );
-    await expect(authorize({ root_label: root, challenge_txt_value: challenge })).rejects.toThrow(
-      "response lost",
-    );
-    await authorize({ root_label: root, challenge_txt_value: challenge });
+    await expect(authorize(input)).rejects.toThrow("response lost");
+    await authorize(input);
     expect(methods.filter((method) => method === "PUT")).toHaveLength(1);
   });
 });

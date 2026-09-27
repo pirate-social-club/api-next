@@ -223,7 +223,7 @@ export async function runLocalAuthorityFixture(
       expected_master_address: authorityAddresses[0],
       expected_account: "isolated-staging-fixture",
       axfr_tsig_key_name: "fixture-transfer.",
-    })({ root_label: root, challenge_txt_value: challenge });
+    })({ root_label: root, challenge_txt_value: challenge, minimum_serial: result.serial });
     await exchangeDirectHnsDnsTsigAxfrV1({
       connector: makeNodeHnsDnsTcpConnector({ local_address: "127.0.0.1" }),
       host: authorityAddresses[1],
