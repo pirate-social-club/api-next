@@ -4,6 +4,10 @@ import {
   HandleSalesPageRejected,
   type HandleSalesStore,
 } from "@pirate/application/use-cases/handles/sales";
+import {
+  SpacesSaleNamespaceNotReady,
+  type SpacesSaleNamespaceStore,
+} from "@pirate/application/use-cases/handles/spaces-sale-namespaces";
 import { Effect } from "effect";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
@@ -38,12 +42,13 @@ const storeWith = (overrides: Partial<HandleSalesStore>): HandleSalesStore =>
     ...overrides,
   }) as HandleSalesStore;
 
-const workerWith = (store: HandleSalesStore) => {
+const workerWith = (store: HandleSalesStore, spacesSaleNamespaces?: SpacesSaleNamespaceStore) => {
   let sequence = 0;
   return createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
     handlers: makeHandleSalesHandlers({
       store,
+      ...(spacesSaleNamespaces === undefined ? {} : { spacesSaleNamespaces }),
       ids: { next: Effect.sync(() => `http-${++sequence}`) },
       tokenVault: {
         mint: Effect.succeed(rawToken),
@@ -58,6 +63,133 @@ const workerWith = (store: HandleSalesStore) => {
 };
 
 describe("handle sales HTTP handlers", () => {
+  test("routes staging Spaces activation and revision through the Spaces store", async () => {
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174055";
+    const activation = {
+      sale_namespace_activation_id: "spaces_activation_http-1",
+      sale_namespace_activation_generation: 1,
+      sale_namespace_activation_hash: "a".repeat(64),
+      community_id: communityId,
+      family: "spaces" as const,
+      network: "mainnet" as const,
+      canonical_root: "yahoo",
+      display_root: "yahoo",
+      namespace_authority: {
+        kind: "verified_namespace_v1" as const,
+        namespace_authority_reference: "snauth_http",
+        namespace_authority_generation: 4,
+      },
+      operator: {
+        kind: "spaces_operator_assignment_v1" as const,
+        operator_assignment_id: "sassign_http",
+        operator_assignment_generation: 1,
+      },
+      operator_funding_terms: {
+        kind: "spaces_operator_funding_confirm_v1" as const,
+        confirmed: true as const,
+      },
+      status: "active" as const,
+      created_at: "2026-09-27T00:00:00.000Z",
+      activated_at: "2026-09-27T00:00:00.000Z",
+      suspended_at: null,
+      revoked_at: null,
+    };
+    const seen: Array<Record<string, unknown>> = [];
+    const spaces = {
+      createSaleNamespace: (input: Record<string, unknown>) => {
+        seen.push(input);
+        return Effect.succeed({ activation, replayed: seen.length > 1 });
+      },
+      reviseSaleNamespace: (input: Record<string, unknown>) => {
+        seen.push(input);
+        return Effect.succeed({
+          activation: { ...activation, status: "suspended" as const },
+          replayed: false,
+        });
+      },
+    } as unknown as SpacesSaleNamespaceStore;
+    const worker = workerWith(storeWith({}), spaces);
+    const command = {
+      idempotency_key: "spaces-yahoo-http-1",
+      family: "spaces",
+      namespace_authority_reference: "snauth_http",
+      expected_namespace_authority_generation: 4,
+      operator_assignment_id: "sassign_http",
+      expected_operator_assignment_generation: 1,
+      operator_funding_terms_confirmed: true,
+    };
+    const path = `/communities/${communityId}/handle-sale-namespaces`;
+    const send = (url: string, body: unknown) =>
+      worker.request(url, {
+        method: "POST",
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const created = await send(path, command);
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ activation, replayed: false });
+    const replayed = await send(path, command);
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toEqual({ activation, replayed: true });
+    const revised = await send(`${path}/${activation.sale_namespace_activation_id}/revisions`, {
+      ...command,
+      idempotency_key: "spaces-yahoo-http-2",
+      expected_sale_namespace_activation_hash: activation.sale_namespace_activation_hash,
+      requested_status: "suspended",
+    });
+    expect(revised.status).toBe(201);
+    expect(await revised.json()).toMatchObject({ activation: { status: "suspended" } });
+    expect(seen).toMatchObject([
+      {
+        accountId: "account-http",
+        communityId,
+        activationId: "spaces_activation_http-1",
+        actionId: "spaces_action_http-2",
+        operatorAssignmentId: "sassign_http",
+        operatorFundingTermsConfirmed: true,
+      },
+      { idempotencyKey: "spaces-yahoo-http-1", activationId: "spaces_activation_http-3" },
+      {
+        activationId: activation.sale_namespace_activation_id,
+        actionId: "spaces_action_http-5",
+        requestedStatus: "suspended",
+      },
+    ]);
+  });
+
+  test("refuses Spaces activation when disabled or not ready", async () => {
+    const body = {
+      idempotency_key: "spaces-yahoo-disabled",
+      family: "spaces",
+      namespace_authority_reference: "snauth_http",
+      expected_namespace_authority_generation: 4,
+      operator_assignment_id: "sassign_http",
+      expected_operator_assignment_generation: 1,
+      operator_funding_terms_confirmed: true,
+    };
+    const request = {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    };
+    const path =
+      "/communities/community_123e4567-e89b-42d3-a456-426614174055/handle-sale-namespaces";
+    const disabled = await workerWith(storeWith({})).request(path, request);
+    expect(disabled.status).toBe(409);
+    expect(await disabled.json()).toMatchObject({
+      error: { details: { reason: "service_unavailable" } },
+    });
+    const spaces = {
+      createSaleNamespace: () =>
+        Effect.fail(new SpacesSaleNamespaceNotReady({ reason: "operator_capability_unverified" })),
+    } as unknown as SpacesSaleNamespaceStore;
+    const notReady = await workerWith(storeWith({}), spaces).request(path, request);
+    expect(notReady.status).toBe(409);
+    expect(await notReady.json()).toMatchObject({
+      error: { details: { reason: "service_unavailable" } },
+    });
+  });
+
   test("keeps a pending Spaces name private to its claimant", async () => {
     const claim = {
       claim_id: "claim-spaces-http",

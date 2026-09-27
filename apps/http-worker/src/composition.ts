@@ -192,6 +192,7 @@ import { makeControlPlaneSongLibraryStore } from "@pirate/platform-cf/song-libra
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSpacesSaleNamespaceStore } from "@pirate/platform-cf/spaces-sale-namespace-repository";
 import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
 import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
 import {
@@ -1456,6 +1457,9 @@ export async function createProductionHttpWorker(
   });
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
+    ...(spacesRuntime.spacesRegistry === undefined
+      ? {}
+      : { spacesSaleNamespaces: makeControlPlaneSpacesSaleNamespaceStore(controlPlane) }),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     tokenVault: makeHandleRecipientTokenVault({
       hmacKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS),

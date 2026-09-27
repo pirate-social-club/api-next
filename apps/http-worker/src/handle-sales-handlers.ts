@@ -9,6 +9,10 @@ import {
   makeHandleSalesService,
 } from "@pirate/application/use-cases/handles/sales";
 import {
+  SpacesSaleNamespaceNotReady,
+  type SpacesSaleNamespaceStore,
+} from "@pirate/application/use-cases/handles/spaces-sale-namespaces";
+import {
   AuthError,
   BadRequest,
   DirectGrantRecipientUnavailable,
@@ -25,6 +29,7 @@ export type HandleSalesHandlerServices = Readonly<{
   store: HandleSalesStore;
   ids: IdGen["Service"];
   tokenVault: HandleRecipientTokenVault["Service"];
+  spacesSaleNamespaces?: SpacesSaleNamespaceStore;
 }>;
 
 export const accountId = (principal: Principal | null): string => {
@@ -80,15 +85,54 @@ export function makeHandleSalesHandlers(
         Effect.mapError((error) => wireFailure(error as HandleSalesFailure)),
       ),
     );
+  const runSpaces = <A, E>(effect: Effect.Effect<A, E>) =>
+    Effect.runPromise(
+      effect.pipe(
+        Effect.mapError((error) =>
+          error instanceof SpacesSaleNamespaceNotReady
+            ? new RetryableHandleRequestRejected({
+                // The closed mutation error wire uses a safe generic reason;
+                // owner management exposes the precise readiness reason.
+                message: "Spaces namespace setup is not ready",
+                details: { reason: "service_unavailable" },
+              })
+            : wireFailure(error as HandleSalesFailure),
+        ),
+      ),
+    );
 
   return {
     CreateHandleSaleNamespace: async (request) => {
       const path = request.params as { readonly communityId: string };
       if ((request.body as { readonly family?: string }).family === "spaces") {
-        throw new RetryableHandleRequestRejected({
-          message: "Spaces namespace setup is not available",
-          details: { reason: "service_unavailable" },
-        });
+        if (services.spacesSaleNamespaces === undefined)
+          throw new RetryableHandleRequestRejected({
+            message: "Spaces namespace setup is not available",
+            details: { reason: "service_unavailable" },
+          });
+        const body = request.body as {
+          readonly idempotency_key: string;
+          readonly namespace_authority_reference: string;
+          readonly expected_namespace_authority_generation: number;
+          readonly operator_assignment_id: string;
+          readonly expected_operator_assignment_generation: number;
+          readonly operator_funding_terms_confirmed: true;
+        };
+        const result = await runSpaces(
+          services.spacesSaleNamespaces.createSaleNamespace({
+            accountId: accountId(request.principal),
+            communityId: path.communityId,
+            activationId: `spaces_activation_${await Effect.runPromise(services.ids.next)}`,
+            actionId: `spaces_action_${await Effect.runPromise(services.ids.next)}`,
+            idempotencyKey: body.idempotency_key,
+            namespaceAuthorityReference: body.namespace_authority_reference,
+            expectedNamespaceAuthorityGeneration: body.expected_namespace_authority_generation,
+            operatorAssignmentId: body.operator_assignment_id,
+            expectedOperatorAssignmentGeneration: body.expected_operator_assignment_generation,
+            operatorFundingTermsConfirmed: body.operator_funding_terms_confirmed,
+          }),
+        );
+        return withEndpointResult(result, result.replayed ? 200 : 201);
       }
       const body = request.body as {
         readonly idempotency_key: string;
@@ -118,10 +162,38 @@ export function makeHandleSalesHandlers(
         readonly activationId: string;
       };
       if ((request.body as { readonly family?: string }).family === "spaces") {
-        throw new RetryableHandleRequestRejected({
-          message: "Spaces namespace setup is not available",
-          details: { reason: "service_unavailable" },
-        });
+        if (services.spacesSaleNamespaces === undefined)
+          throw new RetryableHandleRequestRejected({
+            message: "Spaces namespace setup is not available",
+            details: { reason: "service_unavailable" },
+          });
+        const body = request.body as {
+          readonly idempotency_key: string;
+          readonly expected_sale_namespace_activation_hash: string;
+          readonly requested_status: "active" | "suspended" | "revoked";
+          readonly namespace_authority_reference: string;
+          readonly expected_namespace_authority_generation: number;
+          readonly operator_assignment_id: string;
+          readonly expected_operator_assignment_generation: number;
+          readonly operator_funding_terms_confirmed: true;
+        };
+        const result = await runSpaces(
+          services.spacesSaleNamespaces.reviseSaleNamespace({
+            accountId: accountId(request.principal),
+            communityId: path.communityId,
+            activationId: path.activationId,
+            actionId: `spaces_action_${await Effect.runPromise(services.ids.next)}`,
+            idempotencyKey: body.idempotency_key,
+            expectedActivationHash: body.expected_sale_namespace_activation_hash,
+            requestedStatus: body.requested_status,
+            namespaceAuthorityReference: body.namespace_authority_reference,
+            expectedNamespaceAuthorityGeneration: body.expected_namespace_authority_generation,
+            operatorAssignmentId: body.operator_assignment_id,
+            expectedOperatorAssignmentGeneration: body.expected_operator_assignment_generation,
+            operatorFundingTermsConfirmed: body.operator_funding_terms_confirmed,
+          }),
+        );
+        return withEndpointResult(result, result.replayed ? 200 : 201);
       }
       const body = request.body as {
         readonly idempotency_key: string;
