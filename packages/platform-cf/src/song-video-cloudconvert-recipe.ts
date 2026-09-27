@@ -1,4 +1,4 @@
-/** The two pinned CloudConvert commands for the admitted PCM-in-MP4 master. */
+/** The two pinned CloudConvert commands for a pre-cut PCM WAV and video source. */
 
 export const SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION = "6.1.4";
 
@@ -16,23 +16,19 @@ export type SongVideoCloudConvertCommands = Readonly<{
 
 /**
  * Paths are fixed CloudConvert task inputs, not caller-controlled shell text.
- * The caller must still bind the imported bytes to the frozen source and song.
+ * The caller must bind the imported video and WAV bytes to the frozen source
+ * and song interval. The WAV must contain exactly the selected PCM samples.
  */
 export function makeSongVideoCloudConvertCommands(
   input: Readonly<{
-    clipStartSamples: number;
     clipDurationSamples: number;
   }>,
 ): SongVideoCloudConvertCommands {
-  const { clipStartSamples: start, clipDurationSamples: duration } = input;
-  const end = start + duration;
+  const { clipDurationSamples: duration } = input;
   if (
-    !Number.isSafeInteger(start) ||
-    start < 0 ||
     !Number.isSafeInteger(duration) ||
     duration < MIN_DURATION_SAMPLES ||
-    duration > MAX_DURATION_SAMPLES ||
-    !Number.isSafeInteger(end)
+    duration > MAX_DURATION_SAMPLES
   ) {
     throw new TypeError("song-video CloudConvert interval must be a bounded sample interval");
   }
@@ -41,11 +37,10 @@ export function makeSongVideoCloudConvertCommands(
   const lastFrameSamples = duration - (frameCount - 1) * SAMPLES_PER_VIDEO_FRAME;
   const passOne =
     "-hide_banner -nostdin -loglevel error " +
-    "-i /input/import-video/source.mp4 -i /input/import-song/song.bin " +
-    `-filter_complex '[1:a:0]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo,atrim=start_sample=${start}:end_sample=${end},asetpts=N/SR/TB[a];` +
-    `[0:v:0]fps=30,trim=end_frame=${frameCount},setpts=PTS-STARTPTS[v]' ` +
-    "-map '[v]' -map '[a]' -c:v libx264 -preset veryfast -crf 23 " +
-    "-pix_fmt yuv420p -bf 0 -c:a pcm_s16le -video_track_timescale 48000 " +
+    "-i /input/import-video/source.mp4 -i /input/import-song-excerpt/excerpt.wav " +
+    `-filter_complex '[0:v:0]fps=30,trim=end_frame=${frameCount},setpts=PTS-STARTPTS[v]' ` +
+    "-map '[v]' -map 1:a:0 -c:v libx264 -preset veryfast -crf 23 " +
+    "-pix_fmt yuv420p -bf 0 -c:a copy -video_track_timescale 48000 " +
     "-f mp4 /output/pass-one.mp4";
   const passTwo =
     "-hide_banner -nostdin -loglevel error " +
