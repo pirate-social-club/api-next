@@ -1124,44 +1124,14 @@ suite("Study v2 session start concurrency", () => {
     });
   }, 60_000);
 
-  test("a distinct key while the schedule is not due is refused without a session", async () => {
-    await withSchema("start-not-due", async ({ admin, driver }) => {
+  test("a completed Study session can be started again without waiting", async () => {
+    await withSchema("start-anytime", async ({ admin, driver }) => {
       const first = await driver.startRaw({
         idempotencyKey: "session-not-due-1",
         requestHash: hex("session-not-due-1"),
         sessionId: "study-session-not-due-1",
       });
       expect(first.session_id).toBe("study-session-not-due-1");
-      // A start creates the account's card schedule; while those items are not
-      // due, a different key cannot start another lesson and must not persist
-      // a second session. This is the server-side state behind the start
-      // conflicts the browser suite saw when a concurrent consumer had already
-      // started the account.
-      await expect(
-        driver.startRaw({
-          idempotencyKey: "session-not-due-2",
-          requestHash: hex("session-not-due-2"),
-          sessionId: "study-session-not-due-2",
-        }),
-      ).rejects.toMatchObject({ reason: "insufficient-exercises" });
-      const stored = await admin.query(
-        `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
-      );
-      expect((stored.rows[0] as { n: number }).n).toBe(1);
-    });
-  }, 60_000);
-
-  test("a distinct key creates a later session once the schedule is due again", async () => {
-    await withSchema("start-later", async ({ admin, driver }) => {
-      const first = await driver.startRaw({
-        idempotencyKey: "session-later-1",
-        requestHash: hex("session-later-1"),
-        sessionId: "study-session-later-1",
-      });
-      expect(first.session_id).toBe("study-session-later-1");
-      // A later lesson is legitimate only after the first session is terminal
-      // and the review schedule is due again; both are authoritative server
-      // state, not a client key-rotation heuristic.
       await admin.query(
         `UPDATE study_sessions_v2
             SET status='completed', completed_at=clock_timestamp(),
@@ -1171,15 +1141,15 @@ suite("Study v2 session start concurrency", () => {
         [first.session_id],
       );
       await admin.query(
-        `UPDATE study_review_items SET due_at=clock_timestamp() - interval '1 hour'
+        `UPDATE study_review_items SET due_at=clock_timestamp() + interval '7 days'
           WHERE account_id='study-account'`,
       );
       const second = await driver.startRaw({
-        idempotencyKey: "session-later-2",
-        requestHash: hex("session-later-2"),
-        sessionId: "study-session-later-2",
+        idempotencyKey: "session-not-due-2",
+        requestHash: hex("session-not-due-2"),
+        sessionId: "study-session-not-due-2",
       });
-      expect(second.session_id).toBe("study-session-later-2");
+      expect(second.session_id).toBe("study-session-not-due-2");
       const stored = await admin.query(
         `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
       );

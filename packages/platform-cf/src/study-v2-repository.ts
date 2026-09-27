@@ -276,9 +276,9 @@ const exerciseRows = (
              AND review.target_language IS NOT DISTINCT FROM latest.target_language
              AND review.learner_band IS NOT DISTINCT FROM latest.learner_band
              AND review.lifecycle_status='active'
-           WHERE review.review_item_id IS NULL OR review.due_at <= clock_timestamp()
-        ORDER BY CASE WHEN review.review_item_id IS NOT NULL THEN 0 ELSE 1 END,
-                 review.due_at NULLS LAST, latest.ordinal, latest.exercise_review_key
+        ORDER BY coalesce(review.repetitions,0),
+                 review.last_reviewed_at NULLS FIRST,
+                 latest.ordinal, latest.exercise_review_key
            LIMIT 10`,
     values: [
       input.communityId,
