@@ -53,6 +53,7 @@ export async function withHnsRootZoneMutation<A>(
       JSON.stringify({
         event: "hns_zone_mutation_stage_failed",
         stage,
+        database_signal_aborted: controller.signal.aborted,
         ...(typeof code === "string" && /^[0-9A-Z_]{5,32}$/u.test(code) ? { code } : {}),
       }),
     );

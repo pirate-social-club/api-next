@@ -431,12 +431,29 @@ async function main(serve: boolean): Promise<void> {
   }) => {
     try {
       return await withHnsRootZoneMutation(connectionString, input, false, (signal) =>
-        makePowerDnsRootProvisioner(powerDnsConfig, (url, init) =>
-          fetch(url, {
-            ...init,
-            signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
-          }),
-        )(input),
+        makePowerDnsRootProvisioner(powerDnsConfig, async (url, init) => {
+          const method = init?.method ?? "GET";
+          try {
+            return await fetch(url, {
+              ...init,
+              signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+            });
+          } catch (error) {
+            const code =
+              error !== null && typeof error === "object" && "code" in error
+                ? error.code
+                : undefined;
+            console.error(
+              JSON.stringify({
+                event: "hns_primary_powerdns_exchange_failed",
+                method,
+                database_signal_aborted: signal.aborted,
+                ...(typeof code === "string" && /^[0-9A-Z_]{5,32}$/u.test(code) ? { code } : {}),
+              }),
+            );
+            throw error;
+          }
+        })(input),
       );
     } catch (error) {
       console.error(
