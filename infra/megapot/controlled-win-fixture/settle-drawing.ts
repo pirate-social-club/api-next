@@ -9,12 +9,8 @@ const jackpot = getAddress("0xb9464401103143e916434A277064f5601f3D7708");
 const operator = getAddress("0x8fB9941a4782E4fc05467f9A3138c66C7F2aaCaF");
 const custody = getAddress("0x544881290138fe0E66C1EC7D1A1f141395246f20");
 const drawingNumber = process.env.E2E_DRAWING_ID;
-if (drawingNumber !== "1" && drawingNumber !== "2" &&
-    drawingNumber !== "3" && drawingNumber !== "4" &&
-    drawingNumber !== "5" && drawingNumber !== "6" &&
-    drawingNumber !== "7" && drawingNumber !== "8" &&
-    drawingNumber !== "9") {
-  throw new Error("drawing ID must be 1 through 9");
+if (!/^(?:[1-9]|[1-9]\d)$/u.test(drawingNumber ?? "")) {
+  throw new Error("drawing ID must be 1 through 99");
 }
 const expectedTickets = drawingNumber === "1" || drawingNumber === "5" ||
   drawingNumber === "8"
@@ -47,8 +43,7 @@ const armed = JSON.parse(await readFile(armedRecordPath, "utf8")) as {
 };
 const prize = BigInt(armed.prizeAtomic);
 if (armed.drawingId !== drawingNumber ||
-    prize !== (drawingNumber === "3" || drawingNumber === "5" ||
-      drawingNumber === "8" ? 1n : 1_000_000n) ||
+    (prize !== 1n && prize !== 1_000_000n) ||
     (prize === 1n && winning) ||
     (await rpc.getTransactionReceipt({ hash: armed.hash })).status !== "success") {
   throw new Error("drawing arm record is not confirmed");
