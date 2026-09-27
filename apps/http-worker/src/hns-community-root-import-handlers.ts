@@ -1,6 +1,8 @@
 import {
   activateHnsCommunityRootImport,
+  checkHnsTxtAttachment,
   getCurrentHnsCommunityRootImport,
+  getCurrentHnsTxtAttachment,
   getHnsCommunityRootImport,
   type HnsCommunityPublicationQueue,
   type HnsCommunityRootImportActivationServices,
@@ -8,8 +10,11 @@ import {
   type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
+  type HnsTxtAttachmentCheckServices,
+  type HnsTxtAttachmentStartServices,
   requestHnsCommunityPublicationCheck,
   startHnsCommunityRootImport,
+  startHnsTxtAttachment,
 } from "@pirate/application/namespace-ownership";
 import {
   AuthError,
@@ -248,6 +253,85 @@ export function makeHnsCommunityRootImportHandlers(
           services,
         ).pipe(
           Effect.map((result) => withEndpointResult(result, result.replayed ? 200 : 201)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+  };
+}
+
+function userPrincipal(request: Parameters<EndpointHandler>[0]) {
+  if (
+    request.principal === null ||
+    (request.principal.kind !== "user" && request.principal.kind !== "admin")
+  ) {
+    throw new AuthError({ message: "Authentication required" });
+  }
+  return request.principal;
+}
+
+export function makeHnsTxtAttachmentHandlers(
+  services: HnsTxtAttachmentStartServices & HnsTxtAttachmentCheckServices,
+): Readonly<{
+  StartHnsTxtAttachment: EndpointHandler;
+  GetCurrentHnsTxtAttachment: EndpointHandler;
+  CheckHnsTxtAttachment: EndpointHandler;
+}> {
+  return {
+    StartHnsTxtAttachment: (request) => {
+      const principal = userPrincipal(request);
+      const params = request.params as Readonly<{ communityId: string }>;
+      const body = request.body as Readonly<{ root_label: string; idempotency_key: string }>;
+      return Effect.runPromise(
+        startHnsTxtAttachment(
+          {
+            actor_id: principal.subject,
+            community_id: params.communityId,
+            root_label: body.root_label,
+            idempotency_key: body.idempotency_key,
+          },
+          services,
+        ).pipe(
+          Effect.map((result) =>
+            withEndpointResult(result, result.status === "attached" ? 200 : 202),
+          ),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    GetCurrentHnsTxtAttachment: (request) => {
+      const principal = userPrincipal(request);
+      const params = request.params as Readonly<{ communityId: string }>;
+      return Effect.runPromise(
+        getCurrentHnsTxtAttachment(
+          { actor_id: principal.subject, community_id: params.communityId },
+          services,
+        ).pipe(
+          Effect.map((result) => withEndpointResult(result, 200)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    CheckHnsTxtAttachment: (request) => {
+      const principal = userPrincipal(request);
+      const params = request.params as Readonly<{
+        communityId: string;
+        attachmentIntentId: string;
+      }>;
+      const body = request.body as Readonly<{ idempotency_key: string }>;
+      return Effect.runPromise(
+        checkHnsTxtAttachment(
+          {
+            actor_id: principal.subject,
+            community_id: params.communityId,
+            attachment_intent_id: params.attachmentIntentId,
+            idempotency_key: body.idempotency_key,
+          },
+          services,
+        ).pipe(
+          Effect.map((result) =>
+            withEndpointResult(result, result.status === "awaiting_txt" ? 202 : 200),
+          ),
           Effect.mapError(wireFailure),
         ),
       );

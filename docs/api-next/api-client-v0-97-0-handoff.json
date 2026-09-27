@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.97.0",
+  "sourceBranch": "feat/hns-txt-only-attachment",
+  "sourceBase": "3ad35eb90b99b802adcfe544489c4b4c2a514a4e",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds TXT-only HNS attachment: start, current and check endpoints under /communities/{communityId}/hns-txt-attachments. The owner publishes one TXT challenge at the bare root; once the chain shows it the community is served at /c/<root>. Existing root-import endpoints are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.97.0.tgz",
+    "sha256": "8fecaa44f7efbdec32957fe2f99f4b7b2dbd682edbc5a4e337bb80367114b546"
+  },
+  "validation": {
+    "status": "Local validation passed; hosted gates pending",
+    "passed": [
+      "Generated OpenAPI and browser client from the amended HNS contract",
+      "TXT attachment PostgreSQL 17 suite (4 passed) and affected HNS import suites",
+      "TXT attachment unit tests and verifier record-order test"
+    ],
+    "remaining": [
+      "Hosted check, postgres17 and secret-boundary gates on the pull request",
+      "Solid namespace panel in its separate lane"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, or live product mutation occurred."
+  }
+}

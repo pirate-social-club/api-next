@@ -140,6 +140,18 @@ const alias = {
     "../../packages/platform-cf/src/spaces-reconciliation-repository.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/spaces-root-authority-observer": new URL(
+    "../../packages/platform-cf/src/spaces-root-authority-observer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-root-observation-targets": new URL(
+    "../../packages/platform-cf/src/spaces-root-observation-targets.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
+    "../../packages/platform-cf/src/spaces-sale-namespace-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/media-processing-cloudflare": new URL(
     "../../packages/platform-cf/src/media-processing-cloudflare.ts",
     import.meta.url,

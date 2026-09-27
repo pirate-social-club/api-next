@@ -6,6 +6,7 @@ import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-t
 import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -640,6 +641,7 @@ suite("Activity persona preparation", () => {
         if (reservation.state === "completed") return reservation.result;
         return run(
           study.completeSpokenAnswer({
+            ...defaultStudySpokenEvidence,
             accountId: "participant",
             acceptedAt: `2026-09-01T12:0${counter}:00.000Z`,
             archive: {

@@ -279,14 +279,24 @@ function retainedManagedRrsets(value: unknown, expected: readonly PowerDnsRrset[
     if (actual.ttl !== wanted.ttl || !Array.isArray(actual.records)) {
       throw new Error("PowerDNS managed rrset does not match");
     }
+    // PowerDNS normalizes TLSA association hex to lowercase on readback.
+    // Hex letter case does not change the certificate pin; other record
+    // contents remain exact, including the ownership challenge.
+    const comparableContent = (content: unknown): unknown => {
+      if (wanted.type !== "TLSA" || typeof content !== "string") return content;
+      const tlsa = /^3 1 1 ([0-9a-fA-F]{64})$/u.exec(content);
+      return tlsa ? `3 1 1 ${tlsa[1]?.toLowerCase()}` : content;
+    };
     const contents = actual.records.map((record) =>
       record !== null && typeof record === "object" && !Array.isArray(record)
-        ? [Reflect.get(record, "content"), Reflect.get(record, "disabled")]
+        ? [comparableContent(Reflect.get(record, "content")), Reflect.get(record, "disabled")]
         : null,
     );
     if (
       JSON.stringify(contents) !==
-      JSON.stringify(wanted.records.map((record) => [record.content, record.disabled]))
+      JSON.stringify(
+        wanted.records.map((record) => [comparableContent(record.content), record.disabled]),
+      )
     ) {
       throw new Error("PowerDNS managed rrset does not match");
     }

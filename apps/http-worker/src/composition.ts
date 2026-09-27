@@ -104,6 +104,7 @@ import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/pla
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
 import { makeControlPlaneHnsRootHealthRenewalStatusStore } from "@pirate/platform-cf/hns-root-health-renewal-status";
 import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
+import { makeControlPlaneHnsTxtAttachmentStore } from "@pirate/platform-cf/hns-txt-attachment-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
   makeControlPlaneIdentityRegistrationStore,
@@ -192,6 +193,7 @@ import { makeControlPlaneSongLibraryStore } from "@pirate/platform-cf/song-libra
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSpacesSaleNamespaceStore } from "@pirate/platform-cf/spaces-sale-namespace-repository";
 import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
 import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
 import {
@@ -247,7 +249,10 @@ import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-aut
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
-import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
+import {
+  makeHnsCommunityRootImportHandlers,
+  makeHnsTxtAttachmentHandlers,
+} from "./hns-community-root-import-handlers.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
 import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
@@ -297,6 +302,7 @@ export interface HttpWorkerBindings
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
+  readonly STUDY_SPOKEN_RERECORD_ENABLED?: string;
   readonly STUDY_GENERATION_OPENROUTER_MODEL?: string;
   readonly OPENROUTER_API_KEY?: string;
   readonly STUDY_GENERATION_WORKFLOW?: CloudflareStudyGenerationWorkflowBinding<StudyGenerationWorkflowPayload>;
@@ -1258,6 +1264,19 @@ export async function createProductionHttpWorker(
     hnsCommunityServices === undefined
       ? {}
       : makeHnsCommunityRootImportHandlers({ ...hnsCommunityServices, publicationQueue });
+  // TXT-only attachment shares the ownership start and completion services
+  // but never creates a root-import session, so it provisions nothing.
+  const hnsTxtAttachmentHandlers =
+    hnsCommunityServices === undefined || communityHnsBinding === undefined
+      ? {}
+      : makeHnsTxtAttachmentHandlers({
+          ownership: hnsCommunityServices.ownership,
+          completion: hnsCommunityServices.completion,
+          store: makeControlPlaneHnsTxtAttachmentStore(controlPlane, {
+            environment: config.API_NEXT_ENV,
+            provider_binding: communityHnsBinding,
+          }),
+        });
   const continuePublicationChecks = async () => {
     if (hnsCommunityServices === undefined) return;
     // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
@@ -1336,7 +1355,14 @@ export async function createProductionHttpWorker(
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     store: makeControlPlaneStudyV2Store(controlPlane),
-    ...(studySpokenServices === undefined ? {} : { spoken: studySpokenServices }),
+    ...(studySpokenServices === undefined
+      ? {}
+      : {
+          spoken: {
+            ...studySpokenServices,
+            rerecordEnabled: bindings.STUDY_SPOKEN_RERECORD_ENABLED === "true",
+          },
+        }),
   });
   const studyGenerationHandlers = (() => {
     const apiKey = bindings.OPENROUTER_API_KEY;
@@ -1448,6 +1474,9 @@ export async function createProductionHttpWorker(
   });
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
+    ...(spacesRuntime.spacesRegistry === undefined
+      ? {}
+      : { spacesSaleNamespaces: makeControlPlaneSpacesSaleNamespaceStore(controlPlane) }),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     tokenVault: makeHandleRecipientTokenVault({
       hmacKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS),
@@ -1651,6 +1680,7 @@ export async function createProductionHttpWorker(
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
       ...hnsCommunityRootImportHandlers,
+      ...hnsTxtAttachmentHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,

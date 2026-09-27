@@ -2,6 +2,10 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
+    "../../packages/platform-cf/src/spaces-sale-namespace-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/spaces-operator-assignment-repository": new URL(
     "../../packages/platform-cf/src/spaces-operator-assignment-repository.ts",
     import.meta.url,
@@ -107,6 +111,10 @@ const alias = {
   ).pathname,
   "@pirate/application/use-cases/handles/sales": new URL(
     "../../packages/application/src/use-cases/handles/sales.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/use-cases/handles/spaces-sale-namespaces": new URL(
+    "../../packages/application/src/use-cases/handles/spaces-sale-namespaces.ts",
     import.meta.url,
   ).pathname,
   "@pirate/application/use-cases/handles/spaces-registry": new URL(

@@ -159,7 +159,7 @@ const sessionSource = (communityId: string, postId: string) =>
     const source = yield* db.execute<Row>({
       label: "karaoke.session.source",
       text: `SELECT publication.audio_revision, publication.lyrics_revision,
-                    publication.canonical_audio_sha256,
+                    publication.canonical_audio_sha256, publication.lyrics_text,
                     artifact.artifact_sha256, artifact.artifact,
                     registry.current_policy_version_id
                FROM posts AS post
@@ -207,6 +207,7 @@ const sessionSource = (communityId: string, postId: string) =>
         index: integer(line, "ordinal") - 1,
         text: text(line, "canonical_text"),
       })),
+      rawLyrics: typeof row.lyrics_text === "string" ? row.lyrics_text : null,
     });
     if (lines === null || lines.length === 0) return yield* failed("invalid-row");
     const revisionHash = createHash("sha256")

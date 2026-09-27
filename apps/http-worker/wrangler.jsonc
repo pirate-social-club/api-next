@@ -113,6 +113,7 @@
     // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "STUDY_GENERATION_ENABLED": "false",
+    "STUDY_SPOKEN_RERECORD_ENABLED": "false",
     "STUDY_GENERATION_OPENROUTER_MODEL": "",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
@@ -298,6 +299,7 @@
         "VIDEO_STREAM_SIGNING_KEY_ID": "f9429a3e99739200172de35e525f6d75",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "true",
+        "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
         // Preserve the rewards activation already serving on staging.
         "MEGAPOT_REWARDS_ENABLED": "true",
@@ -530,6 +532,7 @@
     // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
         "STUDY_GENERATION_ENABLED": "false",
+        "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",

@@ -76,6 +76,7 @@ import {
   type SpacesReconciliationBindings,
   type SpacesReconciliationComposition,
 } from "./spaces-reconciliation-composition.ts";
+import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -748,6 +749,12 @@ export function makeJobsWorkerDeclarations(
         overdueThresholdSeconds: spacesReconciliation.overdueThresholdSeconds,
         measurementReference: spacesReconciliation.measurementReference,
       }),
+      makeSpacesRootObservationJob(
+        sink,
+        spacesReconciliation.rootObservation.targets,
+        spacesReconciliation.rootObservation.observer,
+        spacesReconciliation.rootObservation.saleNamespaces,
+      ),
     );
   }
   return declarations;

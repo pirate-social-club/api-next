@@ -164,6 +164,10 @@ export {
 } from "./hns-owner-recovery-start-repository.ts";
 export { makeControlPlaneHnsRootHealthRenewalStatusStore } from "./hns-root-health-renewal-status.ts";
 export {
+  HNS_TXT_ATTACHMENT_PREPARATION_TTL_SECONDS,
+  makeControlPlaneHnsTxtAttachmentStore,
+} from "./hns-txt-attachment-repository.ts";
+export {
   type CanonicalIdentity,
   type IdentityRepository,
   IdentityRepositoryError,
