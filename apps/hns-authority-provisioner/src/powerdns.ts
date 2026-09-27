@@ -1,5 +1,7 @@
 import type {
   HnsRootDelegationDsV1,
+  HnsRootImportGlueRecordV1,
+  HnsRootImportNameserversV1,
   HnsRootResourceRecordV1,
 } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
@@ -11,6 +13,8 @@ export type PowerDnsFetch = (
 ) => Promise<Response>;
 
 export type PowerDnsRootProvisionConfig = Readonly<{
+  readonly nameservers?: HnsRootImportNameserversV1;
+  readonly glue_records?: readonly HnsRootImportGlueRecordV1[];
   readonly api_url: string;
   readonly api_key: string;
   readonly server_id: string;
@@ -114,10 +118,18 @@ export function buildManagedRootRrsets(input: {
   readonly gateway_ipv4: string;
   readonly shared_tlsa_association: string;
   readonly ttl_seconds: number;
+  readonly nameservers?: HnsRootImportNameserversV1;
+  readonly glue_records?: readonly HnsRootImportGlueRecordV1[];
 }): readonly PowerDnsRrset[] {
   const zone = canonicalName(input.root_label);
+  const inBailiwickAddresses = (input.glue_records ?? [])
+    .filter((record) => record.ns.endsWith(`.${zone}`))
+    .map((record) =>
+      rrset(record.ns, record.type === "GLUE4" ? "A" : "AAAA", input.ttl_seconds, [record.address]),
+    );
   return [
-    rrset(zone, "NS", input.ttl_seconds, HNS_AUTHORITY_NAMESERVERS),
+    rrset(zone, "NS", input.ttl_seconds, input.nameservers ?? HNS_AUTHORITY_NAMESERVERS),
+    ...inBailiwickAddresses,
     rrset(zone, "A", input.ttl_seconds, [input.gateway_ipv4]),
     rrset(`app.${zone}`, "A", input.ttl_seconds, [input.gateway_ipv4]),
     rrset(`*.${zone}`, "A", input.ttl_seconds, [input.gateway_ipv4]),
@@ -216,6 +228,9 @@ export function retainedDsRecords(values: readonly string[]): readonly HnsRootDe
 function chainUsesZoneAuthority(
   records: readonly HnsRootResourceRecordV1[],
   dsRecords: readonly HnsRootDelegationDsV1[],
+  expectedNameservers: HnsRootImportNameserversV1,
+  expectedGlue: readonly HnsRootImportGlueRecordV1[],
+  rootLabel: string,
 ): boolean {
   const nameservers = records
     .filter((record) => record.type === "NS")
@@ -233,9 +248,20 @@ function chainUsesZoneAuthority(
   const zoneDs = dsRecords
     .map((record) => ({ ...record }))
     .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  const chainGlue = records
+    .filter(
+      (record) =>
+        (record.type === "GLUE4" || record.type === "GLUE6") &&
+        expectedNameservers.includes(record.ns as string),
+    )
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  const zoneGlue = expectedGlue
+    .filter((record) => record.ns.endsWith(`.${rootLabel}.`))
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
   return (
-    canonicalJson(nameservers) === canonicalJson([...HNS_AUTHORITY_NAMESERVERS].sort()) &&
-    canonicalJson(chainDs) === canonicalJson(zoneDs)
+    canonicalJson(nameservers) === canonicalJson([...expectedNameservers].sort()) &&
+    canonicalJson(chainDs) === canonicalJson(zoneDs) &&
+    canonicalJson(chainGlue) === canonicalJson(zoneGlue)
   );
 }
 
@@ -405,7 +431,15 @@ export function makePowerDnsRootProvisioner(
           throw new Error("PowerDNS returned invalid DS data");
         }
         const parsedDs = retainedDsRecords(dsRecords);
-        if (!chainUsesZoneAuthority(input.current_records, parsedDs)) {
+        if (
+          !chainUsesZoneAuthority(
+            input.current_records,
+            parsedDs,
+            config.nameservers ?? HNS_AUTHORITY_NAMESERVERS,
+            config.glue_records ?? [],
+            input.root_label,
+          )
+        ) {
           throw new Error("PowerDNS zone belongs to another reservation");
         }
         // The parent chain already delegates to this signed zone. Preserve it

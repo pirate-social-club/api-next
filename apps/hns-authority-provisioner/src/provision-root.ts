@@ -3,6 +3,8 @@ import {
   decodeStrictHnsJsonBytes,
   type HnsChainObservationResultV1,
   type HnsRootDelegationDsV1,
+  type HnsRootImportGlueRecordV1,
+  type HnsRootImportNameserversV1,
   type HnsRootResourceRecordV1,
   validateHnsRootResourceRecordsV1,
 } from "@pirate/application/namespace-ownership";
@@ -42,6 +44,8 @@ export type HnsZoneMutationLease = Readonly<{
 }>;
 
 export type HnsAuthorityProvisionPorts = Readonly<{
+  readonly nameservers?: HnsRootImportNameserversV1;
+  readonly glue_records?: readonly HnsRootImportGlueRecordV1[];
   /** Typed current-view chain observation (anchor-bracketed, safe=false). */
   readonly observe_current_resource: (rootLabel: string) => Promise<HnsChainObservationResultV1>;
   readonly ensure_zone: (input: {
@@ -151,6 +155,10 @@ export async function provisionHnsAuthorityRootV1(
   request: HnsAuthorityProvisionRequestV1,
   ports: HnsAuthorityProvisionPorts,
 ): Promise<HnsAuthorityProvisionOutput> {
+  const nameservers = ports.nameservers ?? HNS_AUTHORITY_NAMESERVERS;
+  const glueRecords = (ports.glue_records ?? []).filter((record) =>
+    record.ns.endsWith(`.${request.root_label}.`),
+  );
   const observed = await ports.observe_current_resource(request.root_label);
   if (observed.kind === "unavailable" || observed.kind === "finding") {
     // Unavailable evidence (transport, stale node, moving chain) and a name
@@ -201,6 +209,8 @@ export async function provisionHnsAuthorityRootV1(
       current_records: currentRecords,
       challenge_txt_value: request.challenge_txt_value,
       ds_records: zone.ds_records,
+      nameservers,
+      glue_records: glueRecords,
     });
   } catch {
     throw new HnsAuthorityProvisionError("invalid_authority_result");
@@ -219,6 +229,8 @@ export async function provisionHnsAuthorityRootV1(
         current_records: currentRecords,
         challenge_txt_value: request.challenge_txt_value,
         ds_records: zone.ds_records,
+        nameservers,
+        glue_records: glueRecords,
       });
     } catch {
       throw new HnsAuthorityProvisionError("invalid_authority_result");
@@ -230,7 +242,7 @@ export async function provisionHnsAuthorityRootV1(
       version: HNS_AUTHORITY_PROVISION_RESULT_VERSION,
       root_import_session_id: request.root_import_session_id,
       root_label: request.root_label,
-      nameservers: HNS_AUTHORITY_NAMESERVERS,
+      nameservers,
       zone_created: zone.created,
       zone_dnssec: true,
       zone_serial: zone.serial,
