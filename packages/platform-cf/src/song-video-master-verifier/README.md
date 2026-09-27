@@ -1,6 +1,6 @@
 # Strict song-video master verifier
 
-This is the first, pure-verifier phase of `api-video-cloudconvert-render-integration`.
+This is the merged pure-verifier phase of `api-video-cloudconvert-render-integration`.
 It makes no provider request and has no R2 or database binding. The caller must
 provide the expected 48 kHz sample count and SHA-256 of interleaved signed
 16-bit stereo PCM for the selected source-song excerpt. Those facts must be
@@ -27,7 +27,7 @@ PCM-in-MP4 and decoded their delivered audio and video; see
 The verifier checks the top-level layout, PCM sample entry, sample-table bounds,
 chunk extents and complete media-data coverage independently.
 
-The earlier local Worker probe was for FLAC and does not qualify this PCM
-revision. The local V8 allocation comparison is recorded in
-`archive/video-master-verifier-memory-2026-09-27/`; a deployed-plan Worker CPU
-and memory receipt is still required before merging.
+The local V8 allocation comparison and PCM workerd probe are recorded in
+`archive/video-master-verifier-memory-2026-09-27/`. The deployed Worker CPU
+and memory receipt belongs to the later dispatch-and-seal staging proof in
+the actual media-processor Worker, not this library-only phase.

@@ -20,13 +20,14 @@ import {
  * Both jobs decode the canonical audio through exactly `SONG_VIDEO_DECODE_CHAIN`,
  * so the duration a plan was frozen against and the samples a master is cut
  * from are the same samples. The chain fixes the sample format as well as the
- * rate: without that, a lossless encoder stores a wider format and the decoded
- * master no longer matches the canonical interval bit for bit.
+ * rate: without that, the master stores a wider format and its audio no
+ * longer matches the canonical interval bit for bit.
  *
  * Rendering trims in sample coordinates, never maps the captured audio, pads
  * nothing, and verifies the encoded output before returning it. The master's
- * audio is FLAC because it is the codec here whose MP4 track ends on an exact
- * sample: AAC and Opus both decode to their frame padding past the interval.
+ * audio is signed 16-bit PCM, so its MP4 track ends on the exact sample and
+ * can be checked without a codec decoder. AAC and Opus both decode to their
+ * frame padding past the interval.
  */
 
 export const SONG_VIDEO_DECODE_CHAIN =
@@ -205,7 +206,7 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
     if (video.length !== 1 || audio.length !== 1 || streams.length !== 2) return null;
     const [videoStream] = video;
     const [audioStream] = audio;
-    if (videoStream?.codec_name !== "h264" || audioStream?.codec_name !== "flac") return null;
+    if (videoStream?.codec_name !== "h264" || audioStream?.codec_name !== "pcm_s16le") return null;
     const videoDurationSamples = samplesFromTimeBase(
       videoStream.duration_ts,
       videoStream.time_base,
@@ -451,7 +452,7 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
             "-bf",
             "0",
             "-c:a",
-            "flac",
+            "pcm_s16le",
             "-video_track_timescale",
             String(SAMPLE_RATE_HZ),
             "-f",
@@ -510,6 +511,8 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
             `setts=duration=if(eq(N\\,${frames - 1})\\,${lastDuration}\\,DURATION)`,
             "-video_track_timescale",
             String(SAMPLE_RATE_HZ),
+            "-movie_timescale",
+            String(SAMPLE_RATE_HZ),
             "-movflags",
             "+faststart",
             "-f",
@@ -535,7 +538,7 @@ export function makeLocalPinnedFfmpegSongVideoEngine(
         const soundtrackSha256 = await mediaSha256Bytes(
           new Uint8Array(await readFile(soundtrackPath)),
         );
-        // Lossless and on one decode chain, so the master's audio is the
+        // Uncompressed and on one decode chain, so the master's audio is the
         // canonical interval bit for bit — or it is not the selected soundtrack.
         if (soundtrackSha256 !== intervalSha256) {
           return { ok: false, reason: "soundtrack_not_canonical" } as const;
