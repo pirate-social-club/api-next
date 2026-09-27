@@ -1,6 +1,6 @@
 /** Arm a later isolated Base Sepolia drawing after the previous one settled. */
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { type Abi, createPublicClient, createWalletClient, getAddress, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
@@ -8,7 +8,10 @@ import { baseSepolia } from "viem/chains";
 const jackpot = getAddress("0xb9464401103143e916434A277064f5601f3D7708");
 const operator = getAddress("0x8fB9941a4782E4fc05467f9A3138c66C7F2aaCaF");
 const usdc = getAddress("0x036cbd53842c5426634e7929541eC2318f3dCF7e");
-const recordRoot = "/tmp/megapot-e2e-config-20260926";
+const recordRoot = process.env.E2E_GUARD_RECORD_DIR;
+if (!recordRoot || !isAbsolute(recordRoot) || recordRoot.startsWith("/tmp/")) {
+  throw new Error("E2E_GUARD_RECORD_DIR must be a durable absolute path");
+}
 const artifact = JSON.parse(await readFile(resolve(import.meta.dir,
   "out/ControlledMegapot.sol/ControlledMegapot.json"), "utf8")) as { abi: Abi };
 const erc20 = [{ type: "function", name: "balanceOf", stateMutability: "view",
@@ -30,6 +33,10 @@ if (!/^(?:[3-9]|[1-9]\d)$/u.test(drawingIdText ?? "") || !/^\d{10}$/u.test(drawi
 const drawingId = BigInt(drawingIdText as string);
 const at = BigInt(drawingUnix as string);
 const prize = BigInt(prizeText as string);
+// An empty, one-atomic placeholder may keep the observer valid for a week
+// while a held credit waits for its separate owner claim. Funded prize draws
+// retain the shorter four-hour operational bound.
+const maxLeadSeconds = prize === 1n ? 604_800n : 14_400n;
 const account = privateKeyToAccount(key as `0x${string}`);
 if (account.address !== operator) throw new Error("operator key mismatch");
 const rpc = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
@@ -66,7 +73,7 @@ if (currentId !== drawingId || typeof reserved !== "bigint" ||
     prior.globalTicketsBought !== BigInt(previous.expectedTickets) ||
     (previous.expectedTickets === 0 && prior.winningTicket !== 0n) ||
     balance < reserved + prize ||
-    at < head.timestamp + 300n || at > head.timestamp + 14_400n) {
+    at < head.timestamp + 300n || at > head.timestamp + maxLeadSeconds) {
   throw new Error("drawing, previous settlement, funding, nonce or time precondition failed");
 }
 const gasEstimate = await rpc.estimateContractGas({ address: jackpot, abi: artifact.abi,

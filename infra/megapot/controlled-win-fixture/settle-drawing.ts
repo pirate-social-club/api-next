@@ -1,6 +1,6 @@
 /** Settle an isolated Base Sepolia drawing after its scheduled time. */
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { type Abi, createPublicClient, createWalletClient, getAddress, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
@@ -19,8 +19,12 @@ if (expectedTickets !== "0" && expectedTickets !== "1") {
   throw new Error("expected ticket count must be 0 or 1");
 }
 const winning = expectedTickets === "1";
-const armedRecordPath = `/tmp/megapot-e2e-config-20260926/armed-drawing-${drawingNumber}.json`;
-const settledRecordPath = `/tmp/megapot-e2e-config-20260926/settled-drawing-${drawingNumber}.json`;
+const recordRoot = process.env.E2E_GUARD_RECORD_DIR;
+if (!recordRoot || !isAbsolute(recordRoot) || recordRoot.startsWith("/tmp/")) {
+  throw new Error("E2E_GUARD_RECORD_DIR must be a durable absolute path");
+}
+const armedRecordPath = `${recordRoot}/armed-drawing-${drawingNumber}.json`;
+const settledRecordPath = `${recordRoot}/settled-drawing-${drawingNumber}.json`;
 const artifact = JSON.parse(await readFile(resolve(import.meta.dir,
   "out/ControlledMegapot.sol/ControlledMegapot.json"), "utf8")) as { abi: Abi };
 const ticket = JSON.parse(await readFile(resolve(import.meta.dir,
