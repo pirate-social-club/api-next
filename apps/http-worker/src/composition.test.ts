@@ -53,7 +53,7 @@ const inertHnsTransport: HnsOwnerTransport = {
 };
 
 describe("HTTP production composition", () => {
-  test("a missing profile provider does not block HTTP composition", async () => {
+  test("a malformed profile provider credential does not block HTTP composition", async () => {
     const configured = await bindings();
     await expect(
       createProductionHttpWorker({

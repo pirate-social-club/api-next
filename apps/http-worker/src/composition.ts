@@ -289,7 +289,10 @@ import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import { makeStudyGenerationWorkflowComposition } from "./study-generation-production-composition.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
-import { makeStudyProfileCoverageRunner } from "./study-profile-coverage.ts";
+import {
+  makeStudyProfileCoverageRunner,
+  studyProfileCoverageDue,
+} from "./study-profile-coverage.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { makeTelegramHandlers } from "./telegram-handlers.ts";
@@ -1306,7 +1309,7 @@ export async function createProductionHttpWorker(
         console.error("Study profile production failed", { communityId, postId, reason }),
     });
   })();
-  const continuePublicationChecks = async () => {
+  const continuePublicationChecks = async (scheduledTime: number) => {
     if (hnsCommunityServices !== undefined) {
       // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
       for (let count = 0; count < 8; count++) {
@@ -1318,7 +1321,7 @@ export async function createProductionHttpWorker(
           break;
       }
     }
-    await continueStudyProfileCoverage?.();
+    if (studyProfileCoverageDue(scheduledTime)) await continueStudyProfileCoverage?.();
   };
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),

@@ -1,5 +1,8 @@
 import type { MissingStudyProfile } from "@pirate/platform-cf/study-profile-coverage-repository";
 
+export const studyProfileCoverageDue = (scheduledTime: number) =>
+  Math.floor(scheduledTime / 60_000) % 15 === 0;
+
 export const makeStudyProfileCoverageRunner =
   (services: {
     nextMissing: () => Promise<MissingStudyProfile | null>;
