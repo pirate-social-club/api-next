@@ -60,7 +60,8 @@ the reference again because a picker result can go stale. An unready or
 changed reference is refused before recording, never after an upload.
 
 The order is: implement the contract, WAV excerpt recipe, reservation and
-entry-point gates; backfill the staging catalog and prove a real MP3-derived
+entry-point gates without enabling them against an unbackfilled catalog;
+backfill the staging catalog, enable the gates, and prove a real MP3-derived
 CloudConvert master on staging with CPU and memory measurement; add and prove
 new-song PCM generation in the staging song pipeline; only then retire the
 workstation renderer. Production song release follows the pipeline proof, and
