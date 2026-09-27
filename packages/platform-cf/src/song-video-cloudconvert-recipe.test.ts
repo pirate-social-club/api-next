@@ -5,7 +5,7 @@ import {
 } from "./song-video-cloudconvert-recipe.ts";
 
 describe("CloudConvert song-video PCM recipe", () => {
-  test("pins the PCM trial recipe with an exact 48 kHz movie timescale", () => {
+  test("copies the pre-cut WAV audio without decoding the canonical song", () => {
     expect(SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION).toBe("6.1.4");
     const commands = makeSongVideoCloudConvertCommands({
       clipStartSamples: 48_000,
@@ -16,11 +16,10 @@ describe("CloudConvert song-video PCM recipe", () => {
       lastFrameSamples: 1_600,
       passOne:
         "-hide_banner -nostdin -loglevel error " +
-        "-i /input/import-video/source.mp4 -i /input/import-song/song.bin " +
-        "-filter_complex '[1:a:0]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo,atrim=start_sample=48000:end_sample=768000,asetpts=N/SR/TB[a];" +
-        "[0:v:0]fps=30,trim=end_frame=450,setpts=PTS-STARTPTS[v]' " +
-        "-map '[v]' -map '[a]' -c:v libx264 -preset veryfast -crf 23 " +
-        "-pix_fmt yuv420p -bf 0 -c:a pcm_s16le -video_track_timescale 48000 " +
+        "-i /input/import-video/source.mp4 -i /input/import-song-excerpt/excerpt.wav " +
+        "-filter_complex '[0:v:0]fps=30,trim=end_frame=450,setpts=PTS-STARTPTS[v]' " +
+        "-map '[v]' -map 1:a:0 -c:v libx264 -preset veryfast -crf 23 " +
+        "-pix_fmt yuv420p -bf 0 -c:a copy -video_track_timescale 48000 " +
         "-f mp4 /output/pass-one.mp4",
       passTwo:
         "-hide_banner -nostdin -loglevel error " +
