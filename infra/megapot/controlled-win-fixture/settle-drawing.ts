@@ -11,7 +11,11 @@ const custody = getAddress("0x544881290138fe0E66C1EC7D1A1f141395246f20");
 const prize = 1_000_000n;
 const drawingNumber = process.env.E2E_DRAWING_ID;
 if (drawingNumber !== "1" && drawingNumber !== "2") throw new Error("drawing ID must be 1 or 2");
-const winning = drawingNumber === "2";
+const expectedTickets = drawingNumber === "1" ? "0" : process.env.E2E_EXPECTED_TICKETS;
+if (expectedTickets !== "0" && expectedTickets !== "1") {
+  throw new Error("expected ticket count must be 0 or 1");
+}
+const winning = expectedTickets === "1";
 const armedRecordPath = `/tmp/megapot-e2e-config-20260926/armed-drawing-${drawingNumber}.json`;
 const settledRecordPath = `/tmp/megapot-e2e-config-20260926/settled-drawing-${drawingNumber}.json`;
 const artifact = JSON.parse(await readFile(resolve(import.meta.dir,

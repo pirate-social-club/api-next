@@ -183,7 +183,10 @@ requires an exact owner-approved Unix time in both `E2E_DRAWING_TIME_UNIX`
 and `E2E_APPROVED_DRAWING_TIME_UNIX`. No second USDC seed or Boost transfer is
 needed. The owner approved drawing 2 for 2026-09-27 06:05 UTC. Once a single
 custody-owned ticket is bought, the settle command with `E2E_DRAWING_ID=2`
-refuses before the drawing time and then checks the tier-1 winning result.
+and `E2E_EXPECTED_TICKETS=1` refuses before the drawing time and then checks
+the tier-1 winning result. If entry closes with no share or ticket,
+`E2E_EXPECTED_TICKETS=0` instead checks the empty drawing and releases its
+prize. The actual on-chain ticket count must match the selected mode.
 Each command is dry-run by default, and `--execute` sends one operator
 transaction with a 0.0001 ETH maximum fee. A fresh run needs a fresh schedule,
 funding, and exact approval; these one-use record paths prevent accidental
