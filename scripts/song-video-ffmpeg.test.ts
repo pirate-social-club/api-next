@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
+import { verifySongVideoMasterAudio } from "../packages/platform-cf/src/song-video-master-verifier/master-audio.ts";
 import { verifyRenderedOutput } from "../packages/platform-cf/src/song-video-output-verification.ts";
 import {
   makeLocalPinnedFfmpegSongVideoEngine,
@@ -209,6 +210,11 @@ suite("local song-video engine", () => {
     expect(result.soundtrackSha256).not.toBe(
       await intervalDigest(start + SECOND, start + SECOND + duration),
     );
+    // The staging renderer must produce the same admitted PCM master shape as
+    // the provider recipe, not merely one that FFprobe can decode.
+    expect(
+      await verifySongVideoMasterAudio(result.masterBytes, duration, result.soundtrackSha256),
+    ).toEqual({ pcmSha256: result.soundtrackSha256, sampleCount: duration });
     // And the master passes the repository's own output verification.
     const verification = await verifyRenderedOutput({
       store: {
