@@ -191,3 +191,16 @@ Each command is dry-run by default, and `--execute` sends one operator
 transaction with a 0.0001 ETH maximum fee. A fresh run needs a fresh schedule,
 funding, and exact approval; these one-use record paths prevent accidental
 replay of this run.
+
+The deployed fixture leaves the next drawing uninitialized after settlement.
+The normal drawing observer rejects that empty state, which also prevents the
+jobs cycle from reaching offer expiry and refunds. Keep an armed drawing
+current while obligations remain. `arm:megapot-controlled-win:next` checks the
+previous settlement receipt, current drawing ID, locked prior state, free
+jackpot balance and operator nonce before arming drawing 3 or later. It accepts
+only a one-atomic-unit placeholder or the original 1,000,000-atomic prize,
+caps the gas quote at 0.0001 ETH, and requires exact approved time and prize
+environment values on execute. A placeholder is still a real on-chain drawing;
+settle it empty and arm the next drawing before its own successor becomes the
+observer's current drawing. The fixture issue must be fixed before calling the
+setup unattended or repeatable without operator intervention.
