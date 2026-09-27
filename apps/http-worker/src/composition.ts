@@ -1282,12 +1282,17 @@ export async function createProductionHttpWorker(
           }),
         });
   const continueStudyProfileCoverage = (() => {
+    if (bindings.STUDY_PROFILE_COVERAGE_ENABLED !== "true") return null;
     if (
-      bindings.STUDY_PROFILE_COVERAGE_ENABLED !== "true" ||
       !bindings.OPENROUTER_API_KEY ||
-      !bindings.STUDY_GENERATION_OPENROUTER_MODEL
-    )
+      bindings.OPENROUTER_API_KEY !== bindings.OPENROUTER_API_KEY.trim() ||
+      !bindings.STUDY_GENERATION_OPENROUTER_MODEL ||
+      bindings.STUDY_GENERATION_OPENROUTER_MODEL !==
+        bindings.STUDY_GENERATION_OPENROUTER_MODEL.trim()
+    ) {
+      console.error("Study profile coverage provider configuration is unavailable");
       return null;
+    }
     const profile = makeStudyGenerationWorkflowComposition({
       CONTROL_PLANE: loadHyperdrive(bindings),
       STUDY_GENERATION_ENABLED: "true",
