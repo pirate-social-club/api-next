@@ -3,6 +3,7 @@ import { aggregateKaraokeSession, buildKaraokeScoringDiagnostics } from "@pirate
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository.ts";
 import { makeControlPlaneKaraokeRepository } from "./karaoke-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -20,6 +21,21 @@ const connectionForSchema = (raw: string, schema: string): string => {
 };
 
 const WORDS = ["Hello", "Pirate"] as const;
+
+const MARKER_WORDS = [
+  "[Verse",
+  "1]",
+  "Hello",
+  "pirate",
+  "light",
+  "[Chorus]",
+  "Sing",
+  "the",
+  "open",
+  "sea",
+] as const;
+const MARKER_RAW_LYRICS = "[Verse 1]\nHello pirate light\n[Chorus]\nSing the open sea\n";
+const MARKER_CATALOG_LINES = ["Hello pirate light", "Sing the open sea"] as const;
 
 async function seedKaraokeSong(admin: Client): Promise<void> {
   await admin.query(
@@ -91,6 +107,81 @@ async function seedKaraokeSong(admin: Client): Promise<void> {
          ) VALUES ('karaoke-community','karaoke-author','karaoke-post','karaoke-submission',1,
            $1,$2,1,$3)`,
       [ordinal, `karaoke-line-${ordinal}`, `${index + 2}`.repeat(64)],
+    );
+  }
+}
+
+async function seedKaraokeMarkerSong(admin: Client): Promise<void> {
+  await admin.query(
+    "UPDATE activity_registry SET status='active', current_policy_version_id='karaoke_qualification_v2@1' WHERE activity_key='karaoke'",
+  );
+  await admin.query(
+    `INSERT INTO media_publication_projections (
+       submission_id, community_id, actor_user_id, operation_id, post_id,
+       creation_revision, audio_revision, analysis_revision, decision_revision,
+       canonical_audio_sha256, title, audio_asset_ref, language_status,
+       primary_language_bcp47, lyrics_explicitness, alignment, data_registration,
+       locked_delivery, projected_at, author_persona_id, lyrics_status,
+       lyrics_revision, lyrics_text
+     ) VALUES ('kmark-submission','kmark-community','kmark-author','kmark-operation',
+       'kmark-post',1,1,1,1,$1,'Karaoke marker song','kmark-audio-ref','ready','en',
+       'not_explicit','ready','registered','not_required',clock_timestamp(),
+       'kmark-author-persona','ready',1,$2)`,
+    ["5".repeat(64), MARKER_RAW_LYRICS],
+  );
+  await admin.query(
+    `INSERT INTO media_alignment_projections (
+       submission_id, community_id, actor_user_id, operation_id, post_id,
+       audio_revision, analysis_revision, canonical_audio_sha256, alignment_revision,
+       status, current_artifact_ref, current_artifact_revision, author_persona_id,
+       lyrics_revision
+     ) VALUES ('kmark-submission','kmark-community','kmark-author','kmark-operation',
+       'kmark-post',1,1,$1,1,'ready','kmark-timed-lyrics',1,'kmark-author-persona',1)`,
+    ["5".repeat(64)],
+  );
+  const artifact = {
+    version: "media-timed-lyrics-artifact-v1",
+    mode: "word",
+    segments: MARKER_WORDS.map((text, index) => ({
+      text,
+      start_ms: index * 1000,
+      end_ms: index * 1000 + 500,
+    })),
+  };
+  await admin.query(
+    `INSERT INTO media_timed_lyrics_artifacts (
+       artifact_ref, community_id, actor_user_id, submission_id, operation_id,
+       post_id, audio_revision, analysis_revision, artifact_revision,
+       canonical_audio_sha256, artifact_sha256, artifact, author_persona_id,
+       lyrics_revision
+     ) VALUES ('kmark-timed-lyrics','kmark-community','kmark-author','kmark-submission',
+       'kmark-operation','kmark-post',1,1,1,$1,
+       encode(sha256(convert_to($2::jsonb::text,'UTF8')),'hex'),$2::jsonb,
+       'kmark-author-persona',1)`,
+    ["5".repeat(64), JSON.stringify(artifact)],
+  );
+  for (const [index, text] of MARKER_CATALOG_LINES.entries()) {
+    const ordinal = index + 1;
+    await admin.query(
+      `INSERT INTO localization_lyric_line_occurrences (
+           community_id, post_id, lyric_line_id
+         ) VALUES ('kmark-community','kmark-post',$1)`,
+      [`kmark-line-${ordinal}`],
+    );
+    await admin.query(
+      `INSERT INTO localization_lyric_line_versions (
+           community_id, post_id, lyric_line_id, line_version, canonical_text,
+           source_language, source_hash
+         ) VALUES ('kmark-community','kmark-post',$1,1,$2,'en',$3)`,
+      [`kmark-line-${ordinal}`, text, `${index + 6}`.repeat(64)],
+    );
+    await admin.query(
+      `INSERT INTO localization_lyrics_revision_lines (
+           community_id, actor_user_id, post_id, submission_id, lyrics_revision,
+           ordinal, lyric_line_id, line_version, source_hash
+         ) VALUES ('kmark-community','kmark-author','kmark-post','kmark-submission',1,
+           $1,$2,1,$3)`,
+      [ordinal, `kmark-line-${ordinal}`, `${index + 6}`.repeat(64)],
     );
   }
 }
@@ -409,6 +500,121 @@ suite("Karaoke persona boundary", () => {
         "karaoke-persona-bound",
         "karaoke-never-persona",
       ]);
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+  }, 60_000);
+
+  test("rebuilds readiness lines with timed section markers at session start", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const schema = `api_next_karaoke_marker_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const scoped = connectionForSchema(connectionString, schema);
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    try {
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("INSERT INTO users (user_id) VALUES ('kmark-account'), ('kmark-author')");
+        await admin.query(
+          `INSERT INTO communities (
+             community_id, display_name, status, created_by_user_id, created_at, updated_at
+           ) VALUES ('kmark-community','Karaoke marker community','active','kmark-author',
+             clock_timestamp(),clock_timestamp())`,
+        );
+        await admin.query(
+          `INSERT INTO community_memberships (
+             community_id, membership_id, user_id, status, joined_at, created_at, updated_at
+           ) VALUES ('kmark-community','kmark-membership','kmark-account','member',
+             clock_timestamp(),clock_timestamp(),clock_timestamp())`,
+        );
+        await admin.query(
+          `INSERT INTO personas (
+             persona_id, account_id, status, is_first_persona, created_at, retired_at
+           ) VALUES ('kmark-persona','kmark-account','active',false,clock_timestamp(),NULL),
+             ('kmark-author-persona','kmark-author','active',true,clock_timestamp(),NULL)`,
+        );
+        await admin.query(
+          `INSERT INTO persona_community_bindings (
+             persona_id, account_id, community_id, binding_source
+           ) VALUES ('kmark-persona','kmark-account','kmark-community','first_membership'),
+             ('kmark-author-persona','kmark-author','kmark-community','community_creation')`,
+        );
+        await admin.query(
+          `INSERT INTO posts (
+             community_id, post_id, author_user_id, author_persona_id, post_type,
+             status, visibility, title, created_at, updated_at
+           ) VALUES ('kmark-community','kmark-post','kmark-author','kmark-author-persona',
+             'song','published','public','Karaoke marker song',clock_timestamp(),
+             clock_timestamp())`,
+        );
+        await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='kmark-post'");
+        await admin.query(
+          `INSERT INTO media_post_submissions (
+             submission_id, community_id, actor_user_id, operation_id, idempotency_key,
+             request_hash, title, song_type, start_input, audio_reservation_id,
+             creation_revision, audio_revision, analysis_revision, current_analysis_revision,
+             current_immutable_ref, status, phase, post_id,
+             response_snapshot_bytes, response_snapshot_sha256,
+             author_persona_id, lyrics_revision, current_lyrics_revision
+           ) VALUES ('kmark-submission','kmark-community','kmark-author','kmark-operation',
+             'kmark-idempotency',$1,'Karaoke marker song','original','{}'::jsonb,
+             'kmark-reservation',1,1,1,1,'kmark-audio-ref','published',NULL,'kmark-post',
+             convert_to('snapshot','UTF8'),
+             encode(sha256(convert_to('snapshot','UTF8')),'hex'),
+             'kmark-author-persona',1,1)`,
+          ["4".repeat(64)],
+        );
+        await seedKaraokeMarkerSong(admin);
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+
+      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const readiness = await makeControlPlaneKaraokeReadinessStore(runtime).get({
+        communityId: "kmark-community",
+        postId: "kmark-post",
+      });
+      expect(readiness.state).toBe("ready");
+      if (readiness.state !== "ready") throw new Error("marker song readiness was not ready");
+      expect(readiness.karaoke_lines.map(({ text }) => text)).toEqual([...MARKER_CATALOG_LINES]);
+      expect(readiness.karaoke_lines.every(({ text }) => !/verse|chorus/iu.test(text))).toBe(true);
+
+      const repository = makeControlPlaneKaraokeRepository();
+      const authority = await Effect.runPromise(
+        Effect.scoped(
+          repository
+            .reserveSession({
+              accountId: "kmark-account",
+              artifactId: "kmark-artifact-id",
+              attemptId: "kmark-attempt-1",
+              clientContext: undefined,
+              communityId: "kmark-community",
+              createdAt: "2026-09-03T12:00:00.000Z",
+              expiresAt: "2026-09-03T12:30:00.000Z",
+              idempotencyKey: "kmark-key-1",
+              personaId: "kmark-persona",
+              postId: "kmark-post",
+              requestHash: "c".repeat(64),
+              sessionId: "kmark-session-1",
+              timezone: "UTC",
+            })
+            .pipe(Effect.provide(runtime)),
+        ),
+      );
+      expect(authority.karaokeRevisionId).toBe(readiness.karaoke_revision_id);
+      expect(authority.lines).toEqual(readiness.karaoke_lines);
+
+      const stored = await admin.query(
+        "SELECT line_snapshot, karaoke_revision_id FROM karaoke_sessions WHERE session_id=$1",
+        ["kmark-session-1"],
+      );
+      expect(stored.rows).toHaveLength(1);
+      expect(stored.rows[0].line_snapshot).toEqual(readiness.karaoke_lines);
+      expect(stored.rows[0].karaoke_revision_id).toBe(readiness.karaoke_revision_id);
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
