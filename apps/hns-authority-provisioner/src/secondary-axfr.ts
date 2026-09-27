@@ -33,6 +33,13 @@ type ApiMetadata = Readonly<{
   readonly metadata?: unknown;
 }>;
 
+// The secondary acknowledges NOTIFY before its signed transfer is visible.
+// Staging measured about one second between the primary serial advancing and
+// the secondary serving it. Keep the wait inside the 40-second reconciliation
+// budget while allowing a slow transfer to settle before retrying the job.
+const TRANSFER_POLL_ATTEMPTS = 21;
+const TRANSFER_POLL_INTERVAL_MS = 500;
+
 /**
  * Allows the readiness observer's signed AXFR only after the transferred
  * secondary proves the exact session challenge and expected authority shape.
@@ -42,7 +49,11 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
   config: PowerDnsSecondaryAxfrConfig,
   fetcher: PowerDnsFetch = fetch,
   wait: (milliseconds: number) => Promise<void> = (milliseconds) => Bun.sleep(milliseconds),
-): (input: { readonly root_label: string; readonly challenge_txt_value: string }) => Promise<void> {
+): (input: {
+  readonly root_label: string;
+  readonly challenge_txt_value: string;
+  readonly minimum_serial: number;
+}) => Promise<void> {
   const axfrKeyName = canonicalName(config.axfr_tsig_key_name);
   if (
     !validEndpoint(config.api_url) ||
@@ -73,7 +84,10 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
       });
       return { response, json: await readBoundedJson(response) };
     });
-  return async ({ root_label, challenge_txt_value }) => {
+  return async ({ root_label, challenge_txt_value, minimum_serial }) => {
+    if (!Number.isSafeInteger(minimum_serial) || minimum_serial <= 0) {
+      throw new Error("PowerDNS secondary minimum serial is invalid");
+    }
     const zoneName = canonicalName(root_label);
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
     const metadataPath = `${zonePath}/metadata/TSIG-ALLOW-AXFR`;
@@ -92,6 +106,10 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
       ) {
         throw new Error("PowerDNS secondary zone identity does not match");
       }
+      // An older signed zone can contain the same challenge. It is not the
+      // zone just reconciled on the primary, so wait for the transferred
+      // serial before accepting its AXFR permission or observing both views.
+      if (Number(zone.serial) < minimum_serial) return false;
       if (!Array.isArray(zone.rrsets)) return false;
       const rrsets = zone.rrsets as readonly Record<string, unknown>[];
       const records = (name: string, type: string): unknown[] | null => {
@@ -138,14 +156,14 @@ export function makePowerDnsSecondaryAxfrAuthorizer(
       );
     };
     let ready = false;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < TRANSFER_POLL_ATTEMPTS; attempt += 1) {
       const inspected = await request("GET", zonePath);
       if (inspected.response.status !== 404) {
         if (!inspected.response.ok) throw new Error("PowerDNS secondary zone inspection failed");
         ready = transferred(inspected.json);
       }
       if (ready) break;
-      if (attempt < 2) await wait(250);
+      if (attempt + 1 < TRANSFER_POLL_ATTEMPTS) await wait(TRANSFER_POLL_INTERVAL_MS);
     }
     if (!ready) throw new Error("PowerDNS secondary transfer is incomplete");
     const metadata = (value: unknown): readonly string[] => {

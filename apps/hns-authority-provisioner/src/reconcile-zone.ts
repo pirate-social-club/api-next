@@ -1,5 +1,6 @@
 import type { HnsRootDelegationDsV1 } from "@pirate/application/namespace-ownership";
 import {
+  makePowerDnsRootInspector,
   makePowerDnsRootReconciler,
   type PowerDnsFetch,
   type PowerDnsRootProvisionConfig,
@@ -43,7 +44,14 @@ export function makeFencedHnsRootZoneReconciler(
         });
       try {
         await makePowerDnsRootReconciler(primaryConfig, providerFetch)(input);
-        await makePowerDnsSecondaryAxfrAuthorizer(secondaryConfig, providerFetch)(input);
+        const primary = await makePowerDnsRootInspector(primaryConfig, providerFetch)(input);
+        await makePowerDnsSecondaryAxfrAuthorizer(
+          secondaryConfig,
+          providerFetch,
+        )({
+          ...input,
+          minimum_serial: primary.serial,
+        });
         mutationSignal.throwIfAborted();
       } finally {
         clearTimeout(timer);
