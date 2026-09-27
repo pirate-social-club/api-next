@@ -11,8 +11,9 @@ const custody = getAddress("0x544881290138fe0E66C1EC7D1A1f141395246f20");
 const drawingNumber = process.env.E2E_DRAWING_ID;
 if (drawingNumber !== "1" && drawingNumber !== "2" &&
     drawingNumber !== "3" && drawingNumber !== "4" &&
-    drawingNumber !== "5" && drawingNumber !== "6") {
-  throw new Error("drawing ID must be 1 through 6");
+    drawingNumber !== "5" && drawingNumber !== "6" &&
+    drawingNumber !== "7") {
+  throw new Error("drawing ID must be 1 through 7");
 }
 const expectedTickets = drawingNumber === "1" || drawingNumber === "5"
   ? "0" : process.env.E2E_EXPECTED_TICKETS;
