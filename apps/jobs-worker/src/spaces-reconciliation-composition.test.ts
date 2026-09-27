@@ -72,7 +72,7 @@ describe("Spaces reconciliation runtime composition", () => {
     ).toThrow();
   });
 
-  test("registers only the existing bounded finality job when enabled", () => {
+  test("composes bounded finality and root observation only when enabled", () => {
     const composition = makeSpacesReconciliationComposition(credentials, runtime, "staging");
     expect(composition).toBeDefined();
     expect(composition?.overdueThresholdSeconds).toBe(259_200);
@@ -85,5 +85,8 @@ describe("Spaces reconciliation runtime composition", () => {
     );
     expect(job.name).toBe("spaces-native.final-issuance");
     expect(job.requiresAdapterSafety).toBe(true);
+    expect(composition.rootObservation.targets).toBeDefined();
+    expect(composition.rootObservation.observer).toBeDefined();
+    expect(composition.rootObservation.saleNamespaces).toBeDefined();
   });
 });

@@ -1,8 +1,19 @@
-import type { SpacesFinalIssuanceVerifier, SpacesReconciliationStore } from "@pirate/application";
+import type {
+  SpacesFinalIssuanceVerifier,
+  SpacesReconciliationStore,
+  SpacesSaleNamespaceStore,
+} from "@pirate/application";
 import type { JobsWorkerConfigValue } from "@pirate/platform-cf/config";
 import type { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { makeSpacesFinalIssuanceVerifier } from "@pirate/platform-cf/spaces-final-issuance-verifier";
+import type { SpacesRootAuthorityObserver } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { makeControlPlaneSpacesReconciliationStore } from "@pirate/platform-cf/spaces-reconciliation-repository";
+import { makeSpacesRootAuthorityObserver } from "@pirate/platform-cf/spaces-root-authority-observer";
+import {
+  makeSpacesRootObservationTargets,
+  type SpacesRootObservationTargets,
+} from "@pirate/platform-cf/spaces-root-observation-targets";
+import { makeControlPlaneSpacesSaleNamespaceStore } from "@pirate/platform-cf/spaces-sale-namespace-repository";
 
 export type SpacesReconciliationBindings = Readonly<{
   SPACES_RECONCILIATION_ENABLED?: string;
@@ -16,6 +27,11 @@ export type SpacesReconciliationBindings = Readonly<{
 export type SpacesReconciliationComposition = Readonly<{
   store: SpacesReconciliationStore;
   verifier: SpacesFinalIssuanceVerifier;
+  rootObservation: Readonly<{
+    targets: SpacesRootObservationTargets;
+    observer: SpacesRootAuthorityObserver;
+    saleNamespaces: SpacesSaleNamespaceStore;
+  }>;
   overdueThresholdSeconds: number;
   measurementReference: string;
 }>;
@@ -51,6 +67,11 @@ export function makeSpacesReconciliationComposition(
   return {
     store: makeControlPlaneSpacesReconciliationStore(runtime),
     verifier: makeSpacesFinalIssuanceVerifier(credentials),
+    rootObservation: {
+      targets: makeSpacesRootObservationTargets(runtime),
+      observer: makeSpacesRootAuthorityObserver(credentials),
+      saleNamespaces: makeControlPlaneSpacesSaleNamespaceStore(runtime),
+    },
     overdueThresholdSeconds,
     measurementReference,
   };
