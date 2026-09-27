@@ -6,15 +6,19 @@ fixtures are retained here so the Worker verifier has immutable test inputs.
 
 `master.mp4` is 3.125 seconds (150,000 samples at 48 kHz), with a partial
 final video frame. Its SHA-256 is
-`4aab52a097d068f08af7bd1646f7575f20b0f18dbdf20ad7e07783d7f5d5146b`.
+`11bd132263930ba6c3c38706f3e55663656824a16613b2a0f025af452c470058`.
 Its selected-song stereo signed-16-bit PCM digest is
 `1598c2e0f50412cf9a5a304452dc5e2f3216c7fbadc8012d2245970e3d764a22`.
 
-`master-15s.mp4` is a 15-second excerpt beginning one second into its source
+`master-15s.mp4` is direct CloudConvert PCM output for a 15-second excerpt
+beginning one second into its source
 song (720,000 samples). Its SHA-256 is
-`e709fb0373177ef21c9195cd783771b7c89fb5808242b618a05210af7f5c1b8c`.
+`e8610deb4ae887cba50abd2bab6b125367b72fe7049064faa6cc0fba77650a3e`.
 Its selected-song PCM digest is
 `8a3e4979c05dfc88a1ffeb5a53dfa58c76a04a73d49934175209aeadb2d171fa`.
 
-These fixtures prove only the fixed synthetic recipe. They are not evidence
-that arbitrary provider output is trustworthy or that the staging seal works.
+The short MP4 was converted from the archived CloudConvert FLAC master with
+FFmpeg 6.1.1, copying H.264 and encoding PCM s16le at 48 kHz stereo. The
+15-second MP4 came directly from a bounded CloudConvert job using FFmpeg 6.1.4.
+They prove the fixed synthetic layout, not that arbitrary provider output is
+trustworthy or that the staging seal works.

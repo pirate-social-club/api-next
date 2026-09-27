@@ -5,7 +5,6 @@
     "@noble/curves",
     "@scure/base",
     "@selfxyz/core",
-    "@wasm-audio-decoders/flac",
     "@zkpassport/sdk",
     "cizgile",
     "effect",

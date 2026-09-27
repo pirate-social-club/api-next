@@ -32,19 +32,15 @@ describe("strict CloudConvert master structure", () => {
     const short = await fixture("master.mp4");
     const full = await fixture("master-15s.mp4");
     expect(await digest(short)).toBe(
-      "4aab52a097d068f08af7bd1646f7575f20b0f18dbdf20ad7e07783d7f5d5146b",
+      "11bd132263930ba6c3c38706f3e55663656824a16613b2a0f025af452c470058",
     );
     expect(await digest(full)).toBe(
-      "e709fb0373177ef21c9195cd783771b7c89fb5808242b618a05210af7f5c1b8c",
+      "e8610deb4ae887cba50abd2bab6b125367b72fe7049064faa6cc0fba77650a3e",
     );
-    expect(inspectCloudConvertMasterStructure(short, 150_000)).toMatchObject({
-      videoFrameCount: 94,
-      audioPacketCount: 33,
-    });
-    expect(inspectCloudConvertMasterStructure(full, 720_000)).toMatchObject({
-      videoFrameCount: 450,
-      audioPacketCount: 157,
-    });
+    const shortShape = inspectCloudConvertMasterStructure(short, 150_000);
+    expect([shortShape.videoFrameCount, shortShape.audioChunkCount]).toEqual([94, 33]);
+    const fullShape = inspectCloudConvertMasterStructure(full, 720_000);
+    expect([fullShape.videoFrameCount, fullShape.audioChunkCount]).toEqual([450, 450]);
   });
 
   test("rejects missing, overlong and invalid-size master bytes before parsing", async () => {
@@ -86,15 +82,15 @@ describe("strict CloudConvert master structure", () => {
   test("refuses substituted codecs, audio sample extents and video packet timing", async () => {
     const bytes = await fixture("master.mp4");
     const codec = bytes.slice();
-    codec.set(new TextEncoder().encode("mp4a"), boxTypeOffset(codec, "fLaC"));
+    codec.set(new TextEncoder().encode("mp4a"), boxTypeOffset(codec, "ipcm"));
     expect(() => inspectCloudConvertMasterStructure(codec, 150_000)).toThrow();
 
     const extent = bytes.slice();
-    const audioSizes = boxTypeOffset(extent, "stsz", 1);
-    const lastAudioSize = audioSizes + 12 + 32 * 4;
+    const audioOffsets = boxTypeOffset(extent, "stco", 1);
+    const firstAudioOffset = audioOffsets + 12;
     new DataView(extent.buffer).setUint32(
-      lastAudioSize,
-      new DataView(extent.buffer).getUint32(lastAudioSize) + 1,
+      firstAudioOffset,
+      new DataView(extent.buffer).getUint32(firstAudioOffset) + 1,
     );
     expect(() => inspectCloudConvertMasterStructure(extent, 150_000)).toThrow();
 
@@ -105,13 +101,13 @@ describe("strict CloudConvert master structure", () => {
     expect(() => inspectCloudConvertMasterStructure(timing, 150_000)).toThrow();
   });
 
-  test("rejects a malformed FLAC configuration before MP4Box's tolerant parser", async () => {
+  test("rejects a malformed PCM sample entry", async () => {
     const bytes = await fixture("master.mp4");
     const changed = bytes.slice();
-    const dfLa = boxTypeOffset(changed, "dfLa");
-    changed[dfLa + 8] = 0;
+    const pcmC = boxTypeOffset(changed, "pcmC");
+    changed[pcmC + 9] = 24;
     expect(() => inspectCloudConvertMasterStructure(changed, 150_000)).toThrow(
-      "invalid_flac_config",
+      "invalid_pcm_config",
     );
   });
 
