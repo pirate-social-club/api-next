@@ -62,23 +62,28 @@ const [head, drawingId, nextTicketId, reserved, state, ticketNft, nonce, pending
 ]);
 const drawing = state as { drawingTime?: unknown; prizePool?: unknown;
   globalTicketsBought?: unknown; jackpotLock?: unknown };
-if (drawingId !== BigInt(drawingNumber) || nextTicketId !== (winning ? 2n : 1n) || reserved !== prize ||
+// The ticket ID is global across drawings. A single purchased ticket in the
+// current drawing is the most recently minted one, even on a repeat run.
+if (drawingId !== BigInt(drawingNumber) || typeof nextTicketId !== "bigint" ||
+    nextTicketId < (winning ? 2n : 1n) || reserved !== prize ||
     typeof state !== "object" || !state || drawing.drawingTime !== BigInt(armed.drawingTimeUnix) ||
     drawing.prizePool !== prize || drawing.globalTicketsBought !== (winning ? 1n : 0n) ||
     drawing.jackpotLock !== false || typeof ticketNft !== "string" ||
     pending !== nonce) {
   throw new Error("drawing, purchased ticket or operator nonce precondition failed");
 }
+const winningTicketId = nextTicketId - 1n;
 const ticketOwner = winning
   ? await rpc.readContract({ address: getAddress(ticketNft),
-    abi: ticket.abi, functionName: "ownerOf", args: [1n] })
+    abi: ticket.abi, functionName: "ownerOf", args: [winningTicketId] })
   : null;
 if (winning && ticketOwner !== custody) throw new Error("purchased ticket is not in custody");
 const due = head.timestamp >= BigInt(armed.drawingTimeUnix);
 const plan = { action: execute ? "execute" : "dry-run", jackpot, drawingId: drawingNumber,
   drawingTimeUtc: new Date(Number(armed.drawingTimeUnix) * 1000).toISOString(),
   headTimeUtc: new Date(Number(head.timestamp) * 1000).toISOString(),
-  due, expectedTickets: winning ? 1 : 0, ticketId: winning ? "1" : null,
+  due, expectedTickets: winning ? 1 : 0,
+  ticketId: winning ? winningTicketId.toString() : null,
   ticketOwner, prizeAtomic: prize.toString(),
   operatorNonce: nonce };
 if (!execute) { console.log(JSON.stringify(plan)); process.exit(0); }
@@ -110,14 +115,15 @@ const [nextDrawing, after, tierIds, remaining] = await Promise.all([
   rpc.readContract({ address: jackpot, abi: artifact.abi, functionName: "currentDrawingId" }),
   rpc.readContract({ address: jackpot, abi: artifact.abi, functionName: "getDrawingState", args: [BigInt(drawingNumber)] }),
   winning
-    ? rpc.readContract({ address: jackpot, abi: artifact.abi, functionName: "getTicketTierIds", args: [[1n]] })
+    ? rpc.readContract({ address: jackpot, abi: artifact.abi,
+      functionName: "getTicketTierIds", args: [[winningTicketId]] })
     : Promise.resolve([]),
   rpc.readContract({ address: jackpot, abi: artifact.abi, functionName: "reservedPayout" }),
 ]);
 const settled = after as { jackpotLock?: unknown; winningTicket?: unknown };
 if (receipt.status !== "success" || nextDrawing !== BigInt(drawingNumber) + 1n ||
     typeof after !== "object" || !after || settled.jackpotLock !== true ||
-    settled.winningTicket !== (winning ? 1n : 0n) || !Array.isArray(tierIds) ||
+  settled.winningTicket !== (winning ? winningTicketId : 0n) || !Array.isArray(tierIds) ||
     tierIds.length !== (winning ? 1 : 0) || (winning && tierIds[0] !== 1n) ||
     remaining !== (winning ? prize : 0n)) {
   throw new Error("drawing settlement receipt or state readback failed");
