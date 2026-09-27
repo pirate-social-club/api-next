@@ -255,7 +255,9 @@ function commit(input: Parameters<HnsTxtAttachmentStore["commit"]>[0]) {
           values: [input.route_binding_id, input.community_id],
           readonly: false,
         });
-        if (community.rowCount !== 1) return { kind: "conflict" } as const;
+        if (community.rowCount !== 1) {
+          return yield* Effect.fail(invariantFailure("bind-community-route"));
+        }
         const committedResource = JSON.stringify({
           authority_version: "optional_route_v2",
           community_id: input.community_id,
