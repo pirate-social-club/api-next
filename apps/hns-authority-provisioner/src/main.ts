@@ -49,6 +49,44 @@ import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 export const HNS_ROOT_OBSERVATION_RETRY_DELAY_MS = 180_000;
 export const HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS = 15_000;
 
+const zoneMutationMessages = new Set([
+  "HNS mutation lease is required",
+  "HNS zone mutation no longer admitted",
+  "HNS mutation database connection lost",
+  "PowerDNS root provisioner configuration is invalid",
+  "PowerDNS request timed out",
+  "PowerDNS zone inspection failed",
+  "PowerDNS zone creation failed",
+  "PowerDNS zone creation race could not converge",
+  "PowerDNS zone creation race belongs to another reservation",
+  "PowerDNS zone reconciliation failed",
+  "PowerDNS AXFR authorization failed",
+  "PowerDNS DNSSEC rectification failed",
+  "PowerDNS secondary notification failed",
+  "PowerDNS retained zone inspection failed",
+  "PowerDNS DNSSEC key inspection failed",
+]);
+
+/** Keep operational cause codes while never logging provider bodies or challenge values. */
+export function hnsZoneMutationFailureDetails(error: unknown): Readonly<{
+  error_name: string;
+  reason: string;
+  sqlstate?: string;
+  system_code?: string;
+}> {
+  if (!(error instanceof Error)) return { error_name: "unknown", reason: "unclassified" };
+  const code = "code" in error ? error.code : undefined;
+  return {
+    error_name: error.name,
+    reason: zoneMutationMessages.has(error.message) ? error.message : "unclassified",
+    ...(typeof code === "string" && /^[0-9A-Z]{5}$/u.test(code)
+      ? { sqlstate: code }
+      : typeof code === "string" && /^E[A-Z_]+$/u.test(code)
+        ? { system_code: code }
+        : {}),
+  };
+}
+
 /**
  * Waits until the next persisted job due time, bounded by the recovery
  * sweep. An overdue job yields zero so the loop claims immediately; the
@@ -385,20 +423,32 @@ async function main(serve: boolean): Promise<void> {
     new URL(secondaryPowerDnsConfig.api_url).origin === new URL(powerDnsConfig.api_url).origin
   )
     throw new Error("HNS authority secondary PowerDNS endpoint must differ from the primary");
-  const ensureZone = (input: {
+  const ensureZone = async (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
     readonly current_records: readonly HnsRootResourceRecordV1[];
     readonly mutation_lease?: HnsZoneMutationLease;
-  }) =>
-    withHnsRootZoneMutation(connectionString, input, false, (signal) =>
-      makePowerDnsRootProvisioner(powerDnsConfig, (url, init) =>
-        fetch(url, {
-          ...init,
-          signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+  }) => {
+    try {
+      return await withHnsRootZoneMutation(connectionString, input, false, (signal) =>
+        makePowerDnsRootProvisioner(powerDnsConfig, (url, init) =>
+          fetch(url, {
+            ...init,
+            signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+          }),
+        )(input),
+      );
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "hns_root_zone_mutation_failed",
+          root_label: input.root_label,
+          ...hnsZoneMutationFailureDetails(error),
         }),
-      )(input),
-    );
+      );
+      throw error;
+    }
+  };
   const inspectZone = makePowerDnsRootInspector(powerDnsConfig);
   const reconcileZone = makeFencedHnsRootZoneReconciler(
     connectionString,
