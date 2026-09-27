@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { makeStudyProfileCoverageRunner } from "./study-profile-coverage.ts";
+import {
+  makeStudyProfileCoverageRunner,
+  studyProfileCoverageDue,
+} from "./study-profile-coverage.ts";
 
 const missing = {
   communityId: "community-test",
@@ -9,6 +12,14 @@ const missing = {
 };
 
 describe("committed spoken profile coverage", () => {
+  test("runs on the scheduled quarter-hour boundary, including a delayed tick", () => {
+    expect(studyProfileCoverageDue(Date.parse("2026-09-27T12:14:00Z"))).toBe(false);
+    expect(studyProfileCoverageDue(Date.parse("2026-09-27T12:15:00Z"))).toBe(true);
+    expect(studyProfileCoverageDue(Date.parse("2026-09-27T12:15:59Z"))).toBe(true);
+    expect(studyProfileCoverageDue(Date.parse("2026-09-27T12:16:00Z"))).toBe(false);
+    expect(studyProfileCoverageDue(Date.parse("2026-09-27T12:30:00Z"))).toBe(true);
+  });
+
   test("requests the existing producer and checks the accepted source", async () => {
     const requested: string[] = [];
     const run = makeStudyProfileCoverageRunner({

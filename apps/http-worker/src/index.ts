@@ -33,12 +33,12 @@ const productionApp = makeRetryingPromiseCache(createProductionHttpWorker);
  */
 const app = {
   async scheduled(
-    _event: ScheduledController,
+    event: ScheduledController,
     bindings: HttpWorkerBindings,
     _ctx: ExecutionContext,
   ) {
     const worker = await productionApp(bindings);
-    await worker.continuePublicationChecks();
+    await worker.continuePublicationChecks(event.scheduledTime);
   },
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {
     return httpRequestDiagnostics.run(bindings.CF_VERSION_METADATA?.id ?? null, async () => {

@@ -66,7 +66,6 @@
     "./study-openrouter-generation": "./src/study-openrouter-generation.ts",
     "./study-language-profile-repository": "./src/study-language-profile-repository.ts",
     "./study-profile-coverage-repository": "./src/study-profile-coverage-repository.ts",
-    "./study-spoken-v4-materialization": "./src/study-spoken-v4-materialization.ts",
     "./study-translation-repository": "./src/study-translation-repository.ts",
     "./study-generation-workflow-cloudflare": "./src/study-generation-workflow-cloudflare.ts",
     "./cloudflare-orchestration-primitives": "./src/cloudflare-orchestration-primitives.ts",
