@@ -172,3 +172,19 @@ Execution requires `--execute` and the identical time in
 `E2E_APPROVED_DRAWING_TIME_UNIX`. It waits for three confirmations and checks
 the fixed tier-1 payout before recording the drawing. A one-hour sample dry
 run estimated 216,771 gas; nothing was armed by that dry run.
+
+The 2026-09-27 offer was activated after drawing 1 had already been armed, so
+its leg starts at drawing 2. Drawing 1 cannot admit the owner's qualification.
+After its due time, `settle:megapot-controlled-win:drawing` with
+`E2E_DRAWING_ID=1` checks that it has no ticket, releases its reserved prize,
+and records the receipt. `arm:megapot-controlled-win:drawing-2` then checks
+that empty settlement and reuses the same 1 USDC already in the jackpot. It
+requires an exact owner-approved Unix time in both `E2E_DRAWING_TIME_UNIX`
+and `E2E_APPROVED_DRAWING_TIME_UNIX`. No second USDC seed or Boost transfer is
+needed. The owner approved drawing 2 for 2026-09-27 06:05 UTC. Once a single
+custody-owned ticket is bought, the settle command with `E2E_DRAWING_ID=2`
+refuses before the drawing time and then checks the tier-1 winning result.
+Each command is dry-run by default, and `--execute` sends one operator
+transaction with a 0.0001 ETH maximum fee. A fresh run needs a fresh schedule,
+funding, and exact approval; these one-use record paths prevent accidental
+replay of this run.

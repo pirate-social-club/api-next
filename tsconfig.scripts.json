@@ -12,6 +12,8 @@
     "infra/megapot/controlled-win-fixture/prepare-activation.ts",
     "infra/megapot/controlled-win-fixture/route-custody-float.ts",
     "infra/megapot/controlled-win-fixture/arm-drawing.ts",
+    "infra/megapot/controlled-win-fixture/arm-drawing-2.ts",
+    "infra/megapot/controlled-win-fixture/settle-drawing.ts",
     "scripts/hns-staging-gateway-fixture.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",
