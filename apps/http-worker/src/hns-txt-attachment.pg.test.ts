@@ -41,7 +41,7 @@ type Attachment = Readonly<{
   readonly route_href: string | null;
 }>;
 
-async function setup(connectionString: string) {
+async function setup(connectionString: string, evidenceTtlSeconds = 2_592_000) {
   const schema = `hns_txt_${randomUUID().replaceAll("-", "")}`;
   const admin = new Client({ connectionString });
   await admin.connect();
@@ -71,19 +71,36 @@ async function setup(connectionString: string) {
   };
   const chain: { status: "pending" | "verified" } = { status: "pending" };
   const transport = makeHnsOwnerServiceBindingTransport({
-    fetch: async (fetchInput, init) =>
-      handleRequest(
+    fetch: async (fetchInput, init) => {
+      const observer = attachmentObserverFixture(
+        chain.status,
+        () => {},
+        Math.floor(Date.now() / 1_000) + (evidenceTtlSeconds === 2_592_000 ? 0 : 600),
+      );
+      return handleRequest(
         new Request(String(fetchInput), init),
         {
           HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
           HNS_CHALLENGE_TTL_SECONDS: "3600",
-          HNS_EVIDENCE_TTL_SECONDS: "2592000",
+          HNS_EVIDENCE_TTL_SECONDS: String(evidenceTtlSeconds),
           HNS_PROVIDER_ENVIRONMENT: "staging",
           HNS_PROVIDER_CONFIGURATION_REFERENCE: configuration.reference,
           HNS_PROVIDER_CONFIGURATION_VERSION: configuration.version,
         },
-        { targetObserver: attachmentObserverFixture(chain.status) },
-      ),
+        {
+          targetObserver: {
+            ...observer,
+            configuration: {
+              ...observer.configuration,
+              lease_policy: {
+                ...observer.configuration.lease_policy,
+                evidence_lease_seconds: evidenceTtlSeconds,
+              },
+            },
+          },
+        },
+      );
+    },
   });
   const registry = await Effect.runPromise(
     makePlatformNamespaceOwnershipProviderRegistry({
@@ -158,7 +175,7 @@ async function setup(connectionString: string) {
 pgTest(
   "a TXT challenge seen on chain attaches the community at /c/<root>",
   async () => {
-    const fixture = await setup(url as string);
+    const fixture = await setup(url as string, 15);
     try {
       const community = await fixture.createCommunity();
       const started = await fixture.start(community, "harbor", "start");
@@ -220,6 +237,26 @@ pgTest(
          FROM hns_community_root_import_preparations`,
       );
       expect(held.rows).toEqual([{ held: false }]);
+
+      // Let the short, append-only evidence lease end naturally.
+      const evidence = await fixture.admin.query(
+        `SELECT evidence.expires_at FROM community_route_ownership_evidence AS evidence
+          JOIN community_canonical_route_bindings AS binding
+            ON binding.verified_evidence_ref=evidence.evidence_ref
+          WHERE binding.community_id=$1`,
+        [community],
+      );
+      const waitMs = new Date(evidence.rows[0].expires_at).getTime() - Date.now() + 250;
+      if (waitMs > 0) await Bun.sleep(waitMs);
+      const expiredRoute = await fixture.admin.query(
+        `SELECT community_id FROM effective_public_community_route_v2(NULL, clock_timestamp())
+          WHERE public_path_segment='harbor'`,
+      );
+      expect(expiredRoute.rows).toEqual([]);
+      const expiredCurrent = await fixture.call(`/communities/${community}/hns-txt-attachments`);
+      expect(expiredCurrent.body).toMatchObject({
+        attachment: { status: "expired", route_href: null },
+      });
     } finally {
       await fixture.cleanup();
     }

@@ -21,6 +21,7 @@ function state(overrides: Partial<HnsTxtAttachmentState> = {}): HnsTxtAttachment
     root_label: "harbor",
     intent_status: "verification_required",
     intent_expires_at: future,
+    evidence_expires_at: null,
     ownership: {
       namespace_session_id: "session-1",
       ceremony_intent_id: "ceremony-1",
@@ -32,6 +33,12 @@ function state(overrides: Partial<HnsTxtAttachmentState> = {}): HnsTxtAttachment
     route_href: null,
     ...overrides,
   };
+}
+
+function pendingOwnership(): NonNullable<HnsTxtAttachmentState["ownership"]> {
+  const ownership = state().ownership;
+  if (ownership === null) throw new Error("Expected pending ownership fixture");
+  return ownership;
 }
 
 const preparation: HnsCommunityRootImportPreparation = {
@@ -62,6 +69,7 @@ function memoryStore(initial: HnsTxtAttachmentState | null) {
         current = {
           ...current,
           intent_status: "committed",
+          evidence_expires_at: future,
           route_href: `/c/${current.root_label}`,
         };
         return { kind: "committed" } as const;
@@ -122,16 +130,28 @@ describe("hnsTxtAttachmentResponse", () => {
 
   test("an elapsed challenge is expired and hides its value", () => {
     const expired = hnsTxtAttachmentResponse(
-      state({ ownership: { ...state().ownership!, expires_at: past } }),
+      state({ ownership: { ...pendingOwnership(), expires_at: past } }),
       Date.now(),
     );
     expect(expired.status).toBe("expired");
     expect(expired.challenge).toBeNull();
   });
 
+  test("shows the earlier reservation deadline when the verifier challenge lasts longer", () => {
+    const reservation = new Date(Date.now() + 60_000).toISOString();
+    const result = hnsTxtAttachmentResponse(
+      state({
+        intent_expires_at: reservation,
+        ownership: { ...pendingOwnership(), expires_at: future },
+      }),
+      Date.now(),
+    );
+    expect(result).toMatchObject({ status: "awaiting_txt", expires_at: reservation });
+  });
+
   test("a committed attachment reports its public route", () => {
     const attached = hnsTxtAttachmentResponse(
-      state({ intent_status: "committed", route_href: "/c/harbor" }),
+      state({ intent_status: "committed", evidence_expires_at: future, route_href: "/c/harbor" }),
       Date.now(),
     );
     expect(attached).toMatchObject({
@@ -141,9 +161,17 @@ describe("hnsTxtAttachmentResponse", () => {
     });
   });
 
+  test("a committed attachment no longer claims a route after its evidence expires", () => {
+    const expired = hnsTxtAttachmentResponse(
+      state({ intent_status: "committed", evidence_expires_at: past, route_href: null }),
+      Date.now(),
+    );
+    expect(expired).toMatchObject({ status: "expired", expires_at: past, route_href: null });
+  });
+
   test("a rejected ownership check is reported as rejected", () => {
     const rejected = hnsTxtAttachmentResponse(
-      state({ intent_status: "failed", ownership: { ...state().ownership!, status: "failed" } }),
+      state({ intent_status: "failed", ownership: { ...pendingOwnership(), status: "failed" } }),
       Date.now(),
     );
     expect(rejected.status).toBe("rejected");

@@ -76,7 +76,7 @@
       ],
       "vars": {
         "HNS_OWNERSHIP_SOURCE": "hns_parent_chain_txt",
-        "HNS_CHALLENGE_TTL_SECONDS": "3600",
+        "HNS_CHALLENGE_TTL_SECONDS": "86400",
         "HNS_EVIDENCE_TTL_SECONDS": "2592000",
         "HNS_PROVIDER_ENVIRONMENT": "production",
         "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-production",

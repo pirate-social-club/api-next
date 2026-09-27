@@ -66,6 +66,8 @@ function decodeState(row: Row): HnsTxtAttachmentState | null {
   const rootLabel = text(row, "root_label");
   const intentStatus = text(row, "intent_status");
   const intentExpiresAt = instant(row.intent_expires_at);
+  const evidenceExpiresAt =
+    row.evidence_expires_at === null ? null : instant(row.evidence_expires_at);
   const routeHref = row.route_href === null ? null : text(row, "route_href");
   if (
     attachmentIntentId === null ||
@@ -73,7 +75,8 @@ function decodeState(row: Row): HnsTxtAttachmentState | null {
     intentStatus === null ||
     !intentStatuses.has(intentStatus) ||
     intentExpiresAt === null ||
-    (row.route_href !== null && routeHref === null)
+    (row.route_href !== null && routeHref === null) ||
+    (row.evidence_expires_at !== null && evidenceExpiresAt === null)
   ) {
     return null;
   }
@@ -110,6 +113,7 @@ function decodeState(row: Row): HnsTxtAttachmentState | null {
     root_label: rootLabel,
     intent_status: intentStatus as HnsTxtAttachmentState["intent_status"],
     intent_expires_at: intentExpiresAt,
+    evidence_expires_at: evidenceExpiresAt,
     ownership,
     route_href: routeHref,
   };
@@ -135,6 +139,7 @@ function load(input: Parameters<HnsTxtAttachmentStore["load"]>[0]) {
                     ownership.namespace_session_id, ownership.ceremony_intent_id,
                     ownership.expected_revision, ownership.status AS ownership_status,
                     ownership.upstream_session_ref, ownership.expires_at AS ownership_expires_at,
+                    evidence.expires_at AS evidence_expires_at,
                     CASE WHEN binding.route_lifecycle_status='active'
                                AND binding.ownership_status='verified'
                                AND evidence.expires_at>clock_timestamp()
@@ -178,6 +183,8 @@ function commit(input: Parameters<HnsTxtAttachmentStore["commit"]>[0]) {
         const locked = yield* transaction.execute<Row>({
           label: "hns.txt-attachment.commit.lock-intent",
           text: `SELECT intent.revision, intent.status, intent.root_label,
+                        intent.expires_at>clock_timestamp() AS intent_live,
+                        preparation.expires_at>clock_timestamp() AS preparation_live,
                         state.generation, result.evidence_ref,
                         evidence.expires_at>clock_timestamp() AS evidence_live
                    FROM community_route_attachment_intents AS intent
@@ -208,6 +215,8 @@ function commit(input: Parameters<HnsTxtAttachmentStore["commit"]>[0]) {
         const evidenceRef = text(row, "evidence_ref");
         if (
           row.status !== "commit_ready" ||
+          row.intent_live !== true ||
+          row.preparation_live !== true ||
           revision === null ||
           generation === null ||
           rootLabel === null ||

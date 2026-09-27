@@ -22,8 +22,8 @@ import { hnsOwnerChallengeValue } from "./hns-evidence.ts";
  *
  * Reorg policy: the verifier reads the tip view and requires at least one
  * confirmation. A committed route keeps a bounded evidence lease; the daily
- * read-only recheck of the same TXT value retires a route whose TXT has left
- * the chain, which bounds a reorged first observation to one recheck interval.
+ * read-only recheck of the same TXT value must retire a route whose TXT has
+ * left the chain before this is opened beyond the first canary.
  */
 
 const CanonicalIdentifier = GetCurrentHnsCommunityRootImportInput.fields.actor_id;
@@ -46,6 +46,7 @@ export type HnsTxtAttachmentState = Readonly<{
     | "failed"
     | "expired";
   readonly intent_expires_at: string;
+  readonly evidence_expires_at: string | null;
   readonly ownership: Readonly<{
     readonly namespace_session_id: string;
     readonly ceremony_intent_id: string;
@@ -82,8 +83,8 @@ export interface HnsTxtAttachmentStore {
   >;
   /**
    * Commits the verified attachment as the community's canonical route in one
-   * transaction, rechecking route authority, the unrouted community and the
-   * root's availability under the intent's lock.
+   * transaction, rechecking route authority, the live preparation window,
+   * the unrouted community and the root's availability under the intent's lock.
    */
   readonly commit: (input: {
     readonly actor_id: string;
@@ -126,13 +127,24 @@ export function hnsTxtAttachmentResponse(
   retryAfterSeconds: number | null = null,
 ): HnsTxtAttachmentV1 {
   const ownership = state.ownership;
-  const expiresAt = ownership?.expires_at ?? state.intent_expires_at;
+  const challengeExpiresAt =
+    ownership !== null && Date.parse(ownership.expires_at) < Date.parse(state.intent_expires_at)
+      ? ownership.expires_at
+      : state.intent_expires_at;
+  const expiresAt =
+    state.intent_status === "committed"
+      ? (state.evidence_expires_at ?? state.intent_expires_at)
+      : challengeExpiresAt;
   const lapsed =
     Date.parse(state.intent_expires_at) <= nowEpochMs ||
     (ownership !== null && ownership.status === "pending" && Date.parse(expiresAt) <= nowEpochMs);
   const status: HnsTxtAttachmentV1["status"] =
     state.intent_status === "committed"
-      ? "attached"
+      ? state.route_href !== null
+        ? "attached"
+        : state.evidence_expires_at !== null && Date.parse(state.evidence_expires_at) <= nowEpochMs
+          ? "expired"
+          : "rejected"
       : state.intent_status === "failed" || ownership?.status === "failed"
         ? "rejected"
         : state.intent_status === "expired" || ownership?.status === "expired" || lapsed
