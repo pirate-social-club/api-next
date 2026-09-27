@@ -439,6 +439,37 @@ export type HnsCommunityRootImportCurrentResponseV1 = Schema.Schema.Type<
   typeof HnsCommunityRootImportCurrentResponseV1
 >;
 
+/**
+ * TXT-only attachment: the owner publishes one TXT challenge at the bare root
+ * and the community is attached once the chain shows it. No Pirate DNS zone,
+ * delegation or gateway is involved; the route is served at `/c/<root>`.
+ */
+export const HnsTxtAttachmentV1 = Schema.Struct({
+  attachment_intent_id: OpaqueId,
+  root_label: RootLabel,
+  status: Schema.Literals(["awaiting_txt", "attached", "rejected", "expired"]),
+  challenge: Schema.NullOr(
+    Schema.Struct({
+      name: RootLabel,
+      value: Schema.NonEmptyString,
+    }),
+  ),
+  expires_at: Schema.String,
+  route_href: Schema.NullOr(Schema.String),
+  retry_after_seconds: Schema.NullOr(PositiveSafeInteger),
+});
+export type HnsTxtAttachmentV1 = Schema.Schema.Type<typeof HnsTxtAttachmentV1>;
+
+export const HnsTxtAttachmentCurrentResponseV1 = Schema.Struct({
+  community_id: OpaqueId,
+  attachment: Schema.NullOr(HnsTxtAttachmentV1),
+});
+export type HnsTxtAttachmentCurrentResponseV1 = Schema.Schema.Type<
+  typeof HnsTxtAttachmentCurrentResponseV1
+>;
+
+const HnsTxtAttachmentCheckRequestV1 = Schema.Struct({ idempotency_key: OpaqueId });
+
 const HnsCommunityRootImportActivationResponseV1 = Schema.Struct({
   community_id: OpaqueId,
   attachment_intent_id: OpaqueId,
@@ -604,5 +635,50 @@ export const ActivateHnsCommunityRootImport = endpoint({
   },
   response: HnsCommunityRootImportActivationResponseV1,
   successStatus: [200, 201],
+  errors: rootImportErrors,
+});
+
+export const StartHnsTxtAttachment = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/hns-txt-attachments",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ communityId: OpaqueId }),
+    exactRawPathParameters: ["communityId"],
+    body: HnsCommunityRootImportStartRequestV1,
+    bodyEncoding: "exact-json",
+    maxBodyBytes: 2_048,
+  },
+  response: HnsTxtAttachmentV1,
+  successStatus: [200, 202],
+  errors: [...rootImportErrors, RateLimited],
+});
+
+export const GetCurrentHnsTxtAttachment = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/hns-txt-attachments",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ communityId: OpaqueId }),
+    exactRawPathParameters: ["communityId"],
+  },
+  response: HnsTxtAttachmentCurrentResponseV1,
+  successStatus: 200,
+  errors: rootImportErrors,
+});
+
+export const CheckHnsTxtAttachment = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/hns-txt-attachments/:attachmentIntentId/check",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ communityId: OpaqueId, attachmentIntentId: OpaqueId }),
+    exactRawPathParameters: ["communityId", "attachmentIntentId"],
+    body: HnsTxtAttachmentCheckRequestV1,
+    bodyEncoding: "exact-json",
+    maxBodyBytes: 1_024,
+  },
+  response: HnsTxtAttachmentV1,
+  successStatus: [200, 202],
   errors: rootImportErrors,
 });

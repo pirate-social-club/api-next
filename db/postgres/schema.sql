@@ -14659,6 +14659,13 @@ CREATE FUNCTION hns_community_root_import_consumes_actor_budget_v1(input_session
       WHEN provision.state = 'completed'
         AND convert_from(provision.result_bytes, 'UTF8')::jsonb @> '{"zone_created":false}'::jsonb
       THEN FALSE
+      WHEN session.root_import_session_id IS NULL
+        AND preparation.created_at <= clock_timestamp() - interval '10 minutes'
+        AND NOT EXISTS (
+          SELECT 1 FROM community_route_attachment_namespace_sessions AS ownership
+           WHERE ownership.attachment_intent_id = preparation.attachment_intent_id
+        )
+      THEN FALSE
       WHEN hns_root_import_session_clock_passed_v1(preparation.root_import_session_id,
         COALESCE(session.expires_at, preparation.expires_at), clock_timestamp())
         AND NOT hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)
@@ -14700,12 +14707,16 @@ CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id t
     SELECT CASE
       WHEN session.status = 'activated' THEN FALSE
       WHEN teardown.state = 'completed' THEN FALSE
+      WHEN session.root_import_session_id IS NULL
+        AND attachment.status IN ('committed', 'failed', 'expired') THEN FALSE
       WHEN NOT hns_root_import_session_clock_passed_v1(preparation.root_import_session_id,
         COALESCE(session.expires_at, preparation.expires_at), clock_timestamp()) THEN TRUE
       WHEN job.provision_job_id IS NULL OR job.attempt_count = 0 THEN FALSE
       ELSE TRUE
     END
     FROM hns_community_root_import_preparations AS preparation
+    LEFT JOIN community_route_attachment_intents AS attachment
+      ON attachment.attachment_intent_id = preparation.attachment_intent_id
     LEFT JOIN hns_root_import_sessions AS session
       ON session.root_import_session_id = preparation.root_import_session_id
     LEFT JOIN hns_authority_provision_jobs AS job
