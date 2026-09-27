@@ -394,6 +394,10 @@ export function makePowerDnsRootProvisioner(
         headers: {
           accept: "application/json",
           "x-api-key": config.api_key,
+          // A prior aborted response can leave Bun's pooled tunnel socket stale.
+          // Each API exchange gets a fresh connection; ambiguous writes are
+          // still reconciled by the zone reservation before any retry.
+          connection: "close",
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
