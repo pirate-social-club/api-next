@@ -1,15 +1,13 @@
-import { createFile, type Sample } from "mp4box";
-
 /** This is a Worker-specific ceiling, not the broader U.6 storage ceiling. */
-export const MAX_CLOUDCONVERT_MASTER_BYTES = 24 * 1024 * 1024;
+export const MAX_SONG_VIDEO_MASTER_BYTES = 24 * 1024 * 1024;
 const SAMPLE_RATE = 48_000;
 const VIDEO_FRAME_SAMPLES = 1_600; // The admitted command normalizes to 30 fps.
 const MAX_VIDEO_FRAMES = 450;
 const MAX_CHUNKS = 1_000;
 
-export class CloudConvertMasterRejection extends Error {
+export class SongVideoMasterRejection extends Error {
   constructor(readonly reason: string) {
-    super(`CloudConvert master rejected: ${reason}`);
+    super(`Song video master rejected: ${reason}`);
   }
 }
 
@@ -21,7 +19,7 @@ type BoxRange = {
 };
 
 function reject(reason: string): never {
-  throw new CloudConvertMasterRejection(reason);
+  throw new SongVideoMasterRejection(reason);
 }
 
 function topLevelBoxes(bytes: Uint8Array): readonly BoxRange[] {
@@ -95,6 +93,8 @@ function sampleTimings(
   readonly handler: string;
   readonly count: number;
   readonly duration: number;
+  readonly trak: BoxRange;
+  readonly stbl: BoxRange;
 }[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return childBoxes(bytes, moov.dataStart, moov.end)
@@ -107,6 +107,14 @@ function sampleTimings(
         ...bytes.subarray(hdlr.dataStart + 8, hdlr.dataStart + 12),
       );
       if (handler !== "vide" && handler !== "soun") reject("unexpected_tracks");
+      const mdhd = findChild(bytes, mdia, "mdhd");
+      if (
+        mdhd.end - mdhd.dataStart < 20 ||
+        view.getUint32(mdhd.dataStart) !== 0 ||
+        view.getUint32(mdhd.dataStart + 12) !== SAMPLE_RATE ||
+        view.getUint32(mdhd.dataStart + 16) !== expectedSamples
+      )
+        reject("unexpected_track_shape");
       const minf = findChild(bytes, mdia, "minf");
       const stbl = findChild(bytes, minf, "stbl");
       validateSampleTableBounds(bytes, stbl, handler, expectedSamples);
@@ -120,6 +128,7 @@ function sampleTimings(
       }
       let count = 0;
       let duration = 0;
+      let videoIndex = 0;
       for (let index = 0; index < entries; index++) {
         const entryCount = view.getUint32(stts.dataStart + 8 + index * 8);
         const delta = view.getUint32(stts.dataStart + 12 + index * 8);
@@ -131,8 +140,24 @@ function sampleTimings(
           count > (handler === "soun" ? expectedSamples : MAX_VIDEO_FRAMES)
         )
           reject("invalid_stts");
+        if (
+          handler === "soun" &&
+          (entries !== 1 || entryCount !== expectedSamples || delta !== 1)
+        ) {
+          reject("invalid_stts");
+        }
+        if (handler === "vide") {
+          for (let frame = 0; frame < entryCount; frame++) {
+            const required =
+              videoIndex === Math.ceil(expectedSamples / VIDEO_FRAME_SAMPLES) - 1
+                ? expectedSamples - videoIndex * VIDEO_FRAME_SAMPLES
+                : VIDEO_FRAME_SAMPLES;
+            if (delta !== required) reject("video_frame_duration");
+            videoIndex++;
+          }
+        }
       }
-      return { handler, count, duration };
+      return { handler, count, duration, trak, stbl };
     });
 }
 
@@ -224,44 +249,150 @@ function validatePcmSpecificBox(bytes: Uint8Array, moov: BoxRange): void {
   if (found !== 1) reject("invalid_pcm_config");
 }
 
-function validateSamples(
-  samples: readonly Sample[],
+type TrackInfo = ReturnType<typeof sampleTimings>[number];
+
+function validateTrackShape(
+  bytes: Uint8Array,
+  track: TrackInfo,
+  movieTimescale: number,
   expectedSamples: number,
-  track: "video",
-  mdat: BoxRange,
-): readonly { readonly start: number; readonly end: number }[] {
-  const maximum = MAX_VIDEO_FRAMES;
-  if (samples.length === 0 || samples.length > maximum) reject(`${track}_sample_count`);
-  if (samples.length !== Math.ceil(expectedSamples / VIDEO_FRAME_SAMPLES)) {
-    reject("video_frame_count");
-  }
-  let cursor = 0;
-  const ranges = [];
-  for (const [index, sample] of samples.entries()) {
+): void {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const trackBoxes = childBoxes(bytes, track.trak.dataStart, track.trak.end);
+  if (trackBoxes.map((box) => box.type).join(",") !== "tkhd,edts,mdia")
+    reject("unexpected_track_shape");
+  const mdia = findChild(bytes, track.trak, "mdia");
+  if (
+    childBoxes(bytes, mdia.dataStart, mdia.end)
+      .map((box) => box.type)
+      .join(",") !== "mdhd,hdlr,minf"
+  )
+    reject("unexpected_track_shape");
+  const minf = findChild(bytes, mdia, "minf");
+  if (
+    childBoxes(bytes, minf.dataStart, minf.end)
+      .map((box) => box.type)
+      .join(",") !== `${track.handler === "vide" ? "vmhd" : "smhd"},dinf,stbl`
+  )
+    reject("unexpected_track_shape");
+  const edts = findChild(bytes, track.trak, "edts");
+  const elst = findChild(bytes, edts, "elst");
+  if (
+    elst.end - elst.dataStart !== 20 ||
+    view.getUint32(elst.dataStart) !== 0 ||
+    view.getUint32(elst.dataStart + 4) !== 1 ||
+    view.getUint32(elst.dataStart + 8) * SAMPLE_RATE !== expectedSamples * movieTimescale ||
+    view.getInt32(elst.dataStart + 12) !== 0 ||
+    view.getUint16(elst.dataStart + 16) !== 1 ||
+    view.getUint16(elst.dataStart + 18) !== 0
+  )
+    reject("unexpected_edit_list");
+  const stsd = findChild(bytes, track.stbl, "stsd");
+  if (
+    stsd.end - stsd.dataStart < 16 ||
+    view.getUint32(stsd.dataStart) !== 0 ||
+    view.getUint32(stsd.dataStart + 4) !== 1
+  )
+    reject("invalid_stsd");
+  const entries = childBoxes(bytes, stsd.dataStart + 8, stsd.end);
+  const entry = entries[0];
+  if (entries.length !== 1 || !entry || entry.type !== (track.handler === "vide" ? "avc1" : "ipcm"))
+    reject("unexpected_track_shape");
+  if (track.handler === "vide") {
     if (
-      sample.timescale !== SAMPLE_RATE ||
-      sample.dts !== cursor ||
-      sample.cts !== cursor ||
-      !Number.isSafeInteger(sample.duration) ||
-      sample.duration <= 0 ||
-      !Number.isSafeInteger(sample.offset) ||
-      !Number.isSafeInteger(sample.size) ||
-      sample.size <= 0 ||
-      sample.offset < mdat.dataStart ||
-      sample.offset + sample.size > mdat.end ||
-      sample.data?.byteLength !== sample.size
+      entry.end - entry.dataStart < 78 ||
+      view.getUint16(entry.dataStart + 24) < 1 ||
+      view.getUint16(entry.dataStart + 24) > 1_920 ||
+      view.getUint16(entry.dataStart + 26) < 1 ||
+      view.getUint16(entry.dataStart + 26) > 1_920
     )
-      reject(`${track}_sample_invalid`);
-    const required = index === samples.length - 1 ? expectedSamples - cursor : VIDEO_FRAME_SAMPLES;
-    if (sample.duration !== required) reject("video_frame_duration");
-    cursor += sample.duration;
-    ranges.push({ start: sample.offset, end: sample.offset + sample.size });
+      reject("unexpected_track_shape");
+    const codecBoxes = childBoxes(bytes, entry.dataStart + 78, entry.end);
+    const avcC = codecBoxes.filter((box) => box.type === "avcC");
+    if (avcC.length !== 1 || (avcC[0]?.end ?? 0) - (avcC[0]?.dataStart ?? 0) < 7)
+      reject("unexpected_track_shape");
   }
-  if (cursor !== expectedSamples) reject(`${track}_duration`);
-  return ranges;
 }
 
-export type CloudConvertMasterStructure = {
+function trackChunks(
+  bytes: Uint8Array,
+  track: TrackInfo,
+  mdat: BoxRange,
+  expectedSamples: number,
+): {
+  readonly ranges: readonly { readonly start: number; readonly end: number }[];
+  readonly chunks: readonly Uint8Array[];
+} {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const stsz = findChild(bytes, track.stbl, "stsz");
+  const stsc = findChild(bytes, track.stbl, "stsc");
+  const stco = findChild(bytes, track.stbl, "stco");
+  const sampleSize = view.getUint32(stsz.dataStart + 4);
+  const sampleCount = view.getUint32(stsz.dataStart + 8);
+  const chunkCount = view.getUint32(stco.dataStart + 4);
+  const entryCount = view.getUint32(stsc.dataStart + 4);
+  const expectedCount =
+    track.handler === "soun" ? expectedSamples : Math.ceil(expectedSamples / VIDEO_FRAME_SAMPLES);
+  if (
+    sampleCount !== expectedCount ||
+    track.count !== expectedCount ||
+    sampleSize !== (track.handler === "soun" ? 4 : 0) ||
+    chunkCount < 1 ||
+    chunkCount > MAX_CHUNKS ||
+    entryCount < 1 ||
+    entryCount > MAX_CHUNKS
+  )
+    reject("invalid_sample_table");
+  const entries: { readonly first: number; readonly perChunk: number }[] = [];
+  for (let index = 0; index < entryCount; index++) {
+    const start = stsc.dataStart + 8 + index * 12;
+    const first = view.getUint32(start);
+    const perChunk = view.getUint32(start + 4);
+    const description = view.getUint32(start + 8);
+    if (
+      (index === 0 && first !== 1) ||
+      first < 1 ||
+      first > chunkCount ||
+      (index > 0 && first <= (entries[index - 1]?.first ?? 0)) ||
+      perChunk < 1 ||
+      description !== 1
+    )
+      reject("invalid_sample_table");
+    entries.push({ first, perChunk });
+  }
+  const ranges: { start: number; end: number }[] = [];
+  const chunks: Uint8Array[] = [];
+  let used = 0;
+  let run = 0;
+  for (let index = 0; index < chunkCount; index++) {
+    if (run + 1 < entries.length && entries[run + 1]?.first === index + 1) run++;
+    const count = entries[run]?.perChunk ?? 0;
+    const start = view.getUint32(stco.dataStart + 8 + index * 4);
+    let length = 0;
+    if (track.handler === "soun") {
+      length = count * 4;
+      used += count;
+      if (used > sampleCount) reject("invalid_sample_table");
+    } else {
+      for (let sample = 0; sample < count; sample++) {
+        if (used >= sampleCount) reject("invalid_sample_table");
+        const size = view.getUint32(stsz.dataStart + 12 + used * 4);
+        if (size < 1 || size > MAX_SONG_VIDEO_MASTER_BYTES) reject("invalid_sample_table");
+        length += size;
+        used++;
+      }
+    }
+    const end = start + length;
+    if (start < mdat.dataStart || end > mdat.end || !Number.isSafeInteger(end))
+      reject("invalid_sample_extent");
+    ranges.push({ start, end });
+    if (track.handler === "soun") chunks.push(bytes.subarray(start, end));
+  }
+  if (used !== sampleCount) reject("invalid_sample_table");
+  return { ranges, chunks };
+}
+
+export type SongVideoMasterStructure = {
   readonly videoFrameCount: number;
   readonly audioChunkCount: number;
   readonly audioChunks: readonly Uint8Array[];
@@ -271,22 +402,28 @@ export type CloudConvertMasterStructure = {
  * Rejects any master outside the admitted PCM-in-MP4 recipe. Audio chunks are
  * returned in sample order; the caller hashes their bytes as soundtrack evidence.
  */
-export function inspectCloudConvertMasterStructure(
+export function inspectSongVideoMasterStructure(
   bytes: Uint8Array,
   expectedSamples: number,
-): CloudConvertMasterStructure {
+): SongVideoMasterStructure {
   if (
     !Number.isSafeInteger(expectedSamples) ||
     expectedSamples < 3 * SAMPLE_RATE ||
     expectedSamples > 15 * SAMPLE_RATE
   )
     reject("invalid_expected_duration");
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_CLOUDCONVERT_MASTER_BYTES) {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_SONG_VIDEO_MASTER_BYTES) {
     reject("master_size");
   }
   const boxes = topLevelBoxes(bytes);
   const moov = boxes[1];
   if (moov?.type !== "moov") reject("missing_moov");
+  if (
+    childBoxes(bytes, moov.dataStart, moov.end)
+      .map((box) => box.type)
+      .join(",") !== "mvhd,trak,trak,udta"
+  )
+    reject("unexpected_box_layout");
   validatePcmSpecificBox(bytes, moov);
   const timings = sampleTimings(bytes, moov, expectedSamples);
   if (
@@ -300,167 +437,22 @@ export function inspectCloudConvertMasterStructure(
   const mdat = boxes.at(-1);
   if (mdat?.type !== "mdat") reject("missing_mdat");
 
-  const file = createFile();
-  let parseError = false;
-  let ready = false;
-  const packets = new Map<number, Sample[]>();
-  file.onError = () => {
-    parseError = true;
-  };
-  file.onReady = (movie) => {
-    ready = true;
-    if (
-      movie.tracks.length !== 2 ||
-      movie.videoTracks.length !== 1 ||
-      movie.tracks.filter((track) => track.codec === "ipcm").length !== 1
-    ) {
-      return;
-    }
-    const video = movie.videoTracks[0];
-    if (!video) return;
-    packets.set(video.id, []);
-    file.setExtractionOptions(video.id, null, { nbSamples: 1 });
-    file.start();
-  };
-  file.onSamples = (id, _user, samples) => {
-    const existing = packets.get(id);
-    if (!existing) {
-      parseError = true;
-      return;
-    }
-    if (existing.length + samples.length > MAX_VIDEO_FRAMES) {
-      parseError = true;
-      return;
-    }
-    existing.push(...samples);
-  };
-  try {
-    const buffer = Object.assign(bytes.slice().buffer, { fileStart: 0 });
-    file.appendBuffer(buffer);
-    file.flush();
-  } catch {
-    reject("unparseable_master");
-  }
-  if (parseError || !ready) reject("unparseable_master");
-  const movie = file.getInfo();
-  if (
-    movie.isFragmented ||
-    movie.tracks.length !== 2 ||
-    movie.videoTracks.length !== 1 ||
-    movie.tracks.filter((track) => track.codec === "ipcm").length !== 1
-  )
-    reject("unexpected_tracks");
-  const video = movie.videoTracks[0];
-  const audio = movie.tracks.find((track) => track.codec === "ipcm");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const mvhd = findChild(bytes, moov, "mvhd");
+  if (mvhd.end - mvhd.dataStart < 20 || view.getUint32(mvhd.dataStart) !== 0)
+    reject("invalid_mvhd");
+  const movieTimescale = view.getUint32(mvhd.dataStart + 12);
+  if (movieTimescale === 0) reject("invalid_mvhd");
+  const video = timings.find((track) => track.handler === "vide");
+  const audio = timings.find((track) => track.handler === "soun");
   if (!video || !audio) reject("unexpected_tracks");
-  if (
-    !video.codec.startsWith("avc1.") ||
-    audio.codec !== "ipcm" ||
-    video.timescale !== SAMPLE_RATE ||
-    audio.timescale !== SAMPLE_RATE ||
-    video.duration !== expectedSamples ||
-    audio.duration !== expectedSamples ||
-    audio.nb_samples !== expectedSamples ||
-    !video.video ||
-    video.video.width < 1 ||
-    video.video.width > 1_920 ||
-    video.video.height < 1 ||
-    video.video.height > 1_920
-  )
-    reject("unexpected_track_shape");
-  for (const track of [video, audio]) {
-    const edits = track.edits;
-    if (
-      edits?.length !== 1 ||
-      edits[0]?.media_time !== 0 ||
-      edits[0].media_rate_integer !== 1 ||
-      edits[0].media_rate_fraction !== 0 ||
-      edits[0].segment_duration * SAMPLE_RATE !== expectedSamples * movie.timescale
-    )
-      reject("unexpected_edit_list");
-  }
-  const videoSamples = packets.get(video.id);
-  if (!videoSamples || videoSamples.length !== video.nb_samples) reject("missing_samples");
-  if (
-    !timings.some((timing) => timing.handler === "vide" && timing.count === videoSamples.length) ||
-    !timings.some((timing) => timing.handler === "soun" && timing.count === expectedSamples)
-  )
-    reject("sample_table_count");
-  type AudioTable = {
-    stco: { chunk_offsets: number[] };
-    stsc: {
-      first_chunk: number[];
-      samples_per_chunk: number[];
-      sample_description_index: number[];
-    };
-    stsz: { sample_size: number; sample_count: number };
-  };
-  const parsed = file as unknown as {
-    moov: { traks: { mdia: { hdlr: { handler: string }; minf: { stbl: AudioTable } } }[] };
-  };
-  const audioTable = parsed.moov.traks.find((trak) => trak.mdia.hdlr.handler === "soun")?.mdia.minf
-    .stbl;
-  if (
-    !audioTable ||
-    audioTable.stsz.sample_size !== 4 ||
-    audioTable.stsz.sample_count !== expectedSamples
-  )
-    reject("invalid_pcm_table");
-  const offsets = audioTable.stco.chunk_offsets;
-  const first = audioTable.stsc.first_chunk;
-  const perChunk = audioTable.stsc.samples_per_chunk;
-  const descriptions = audioTable.stsc.sample_description_index;
-  if (
-    offsets.length === 0 ||
-    offsets.length > MAX_CHUNKS ||
-    first.length === 0 ||
-    first.length > MAX_CHUNKS ||
-    first.length !== perChunk.length ||
-    first.length !== descriptions.length ||
-    first[0] !== 1
-  ) {
-    reject("invalid_pcm_chunks");
-  }
-  for (let index = 0; index < first.length; index++) {
-    const current = first[index] ?? 0;
-    if (
-      current < 1 ||
-      current > offsets.length ||
-      (index > 0 && current <= (first[index - 1] ?? 0)) ||
-      !Number.isSafeInteger(perChunk[index]) ||
-      (perChunk[index] ?? 0) < 1 ||
-      descriptions[index] !== 1
-    )
-      reject("invalid_pcm_chunks");
-  }
-  const audioChunks: Uint8Array[] = [];
-  const audioRanges: { start: number; end: number }[] = [];
-  let sampleCount = 0;
-  let entry = 0;
-  for (let index = 0; index < offsets.length; index++) {
-    while (entry + 1 < first.length && first[entry + 1] === index + 1) entry++;
-    const count = perChunk[entry] ?? Number.NaN;
-    const start = offsets[index] ?? Number.NaN;
-    if (
-      !Number.isSafeInteger(count) ||
-      count < 1 ||
-      !Number.isSafeInteger(start) ||
-      descriptions[entry] !== 1 ||
-      (entry + 1 < first.length && (first[entry + 1] ?? 0) <= index + 1)
-    )
-      reject("invalid_pcm_chunks");
-    const end = start + count * 4;
-    if (start < mdat.dataStart || end > mdat.end || end < start) reject("invalid_pcm_chunks");
-    sampleCount += count;
-    if (sampleCount > expectedSamples) reject("invalid_pcm_chunks");
-    audioChunks.push(bytes.subarray(start, end));
-    audioRanges.push({ start, end });
-  }
-  if (sampleCount !== expectedSamples) reject("invalid_pcm_chunks");
-  const ranges = [
-    ...validateSamples(videoSamples, expectedSamples, "video", mdat),
-    ...audioRanges,
-  ].sort((left, right) => left.start - right.start);
+  validateTrackShape(bytes, video, movieTimescale, expectedSamples);
+  validateTrackShape(bytes, audio, movieTimescale, expectedSamples);
+  const videoData = trackChunks(bytes, video, mdat, expectedSamples);
+  const audioData = trackChunks(bytes, audio, mdat, expectedSamples);
+  const ranges = [...videoData.ranges, ...audioData.ranges].sort(
+    (left, right) => left.start - right.start,
+  );
   let covered = mdat.dataStart;
   for (const range of ranges) {
     if (range.start !== covered) reject("mdat_sample_coverage");
@@ -468,8 +460,8 @@ export function inspectCloudConvertMasterStructure(
   }
   if (covered !== mdat.end) reject("mdat_sample_coverage");
   return {
-    videoFrameCount: videoSamples.length,
-    audioChunkCount: audioChunks.length,
-    audioChunks,
+    videoFrameCount: video.count,
+    audioChunkCount: audioData.chunks.length,
+    audioChunks: audioData.chunks,
   };
 }

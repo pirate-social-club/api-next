@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  CloudConvertMasterRejection,
-  inspectCloudConvertMasterStructure,
-  MAX_CLOUDCONVERT_MASTER_BYTES,
+  inspectSongVideoMasterStructure,
+  MAX_SONG_VIDEO_MASTER_BYTES,
+  SongVideoMasterRejection,
 } from "./master-structure.ts";
 
 const fixture = async (name: string) =>
@@ -27,7 +27,7 @@ function boxTypeOffset(bytes: Uint8Array, type: string, occurrence = 0): number 
   throw new Error(`missing fixture box ${type}`);
 }
 
-describe("strict CloudConvert master structure", () => {
+describe("strict Song video master structure", () => {
   test("pins the two synthetic master fixtures", async () => {
     const short = await fixture("master.mp4");
     const full = await fixture("master-15s.mp4");
@@ -37,30 +37,25 @@ describe("strict CloudConvert master structure", () => {
     expect(await digest(full)).toBe(
       "e8610deb4ae887cba50abd2bab6b125367b72fe7049064faa6cc0fba77650a3e",
     );
-    const shortShape = inspectCloudConvertMasterStructure(short, 150_000);
+    const shortShape = inspectSongVideoMasterStructure(short, 150_000);
     expect([shortShape.videoFrameCount, shortShape.audioChunkCount]).toEqual([94, 33]);
-    const fullShape = inspectCloudConvertMasterStructure(full, 720_000);
+    const fullShape = inspectSongVideoMasterStructure(full, 720_000);
     expect([fullShape.videoFrameCount, fullShape.audioChunkCount]).toEqual([450, 450]);
   });
 
   test("rejects missing, overlong and invalid-size master bytes before parsing", async () => {
     const bytes = await fixture("master.mp4");
-    expect(() => inspectCloudConvertMasterStructure(new Uint8Array(0), 150_000)).toThrow(
+    expect(() => inspectSongVideoMasterStructure(new Uint8Array(0), 150_000)).toThrow(
       "master_size",
     );
     expect(() =>
-      inspectCloudConvertMasterStructure(
-        new Uint8Array(MAX_CLOUDCONVERT_MASTER_BYTES + 1),
-        150_000,
-      ),
+      inspectSongVideoMasterStructure(new Uint8Array(MAX_SONG_VIDEO_MASTER_BYTES + 1), 150_000),
     ).toThrow("master_size");
     expect(() =>
-      inspectCloudConvertMasterStructure(bytes.subarray(0, bytes.length - 1), 150_000),
+      inspectSongVideoMasterStructure(bytes.subarray(0, bytes.length - 1), 150_000),
     ).toThrow("invalid_box_envelope");
-    expect(() => inspectCloudConvertMasterStructure(bytes, 150_001)).toThrow(
-      CloudConvertMasterRejection,
-    );
-    expect(() => inspectCloudConvertMasterStructure(bytes, 15 * 48_000 + 1)).toThrow(
+    expect(() => inspectSongVideoMasterStructure(bytes, 150_001)).toThrow(SongVideoMasterRejection);
+    expect(() => inspectSongVideoMasterStructure(bytes, 15 * 48_000 + 1)).toThrow(
       "invalid_expected_duration",
     );
   });
@@ -71,19 +66,23 @@ describe("strict CloudConvert master structure", () => {
     extra.set(bytes);
     new DataView(extra.buffer).setUint32(bytes.length, 8);
     extra.set(new TextEncoder().encode("junk"), bytes.length + 4);
-    expect(() => inspectCloudConvertMasterStructure(extra, 150_000)).toThrow(
-      "unexpected_box_layout",
-    );
+    expect(() => inspectSongVideoMasterStructure(extra, 150_000)).toThrow("unexpected_box_layout");
     const brand = bytes.slice();
     brand.set(new TextEncoder().encode("evil"), 8);
-    expect(() => inspectCloudConvertMasterStructure(brand, 150_000)).toThrow("invalid_ftyp");
+    expect(() => inspectSongVideoMasterStructure(brand, 150_000)).toThrow("invalid_ftyp");
+
+    const metadata = bytes.slice();
+    metadata.set(new TextEncoder().encode("junk"), boxTypeOffset(metadata, "udta"));
+    expect(() => inspectSongVideoMasterStructure(metadata, 150_000)).toThrow(
+      "unexpected_box_layout",
+    );
   });
 
   test("refuses substituted codecs, audio sample extents and video packet timing", async () => {
     const bytes = await fixture("master.mp4");
     const codec = bytes.slice();
     codec.set(new TextEncoder().encode("mp4a"), boxTypeOffset(codec, "ipcm"));
-    expect(() => inspectCloudConvertMasterStructure(codec, 150_000)).toThrow();
+    expect(() => inspectSongVideoMasterStructure(codec, 150_000)).toThrow();
 
     const extent = bytes.slice();
     const audioOffsets = boxTypeOffset(extent, "stco", 1);
@@ -92,13 +91,13 @@ describe("strict CloudConvert master structure", () => {
       firstAudioOffset,
       new DataView(extent.buffer).getUint32(firstAudioOffset) + 1,
     );
-    expect(() => inspectCloudConvertMasterStructure(extent, 150_000)).toThrow();
+    expect(() => inspectSongVideoMasterStructure(extent, 150_000)).toThrow();
 
     const timing = bytes.slice();
     const videoTimes = boxTypeOffset(timing, "stts");
     const lastFrameDuration = videoTimes + 24;
     new DataView(timing.buffer).setUint32(lastFrameDuration, 1_199);
-    expect(() => inspectCloudConvertMasterStructure(timing, 150_000)).toThrow();
+    expect(() => inspectSongVideoMasterStructure(timing, 150_000)).toThrow();
   });
 
   test("rejects a malformed PCM sample entry", async () => {
@@ -106,16 +105,23 @@ describe("strict CloudConvert master structure", () => {
     const changed = bytes.slice();
     const pcmC = boxTypeOffset(changed, "pcmC");
     changed[pcmC + 9] = 24;
-    expect(() => inspectCloudConvertMasterStructure(changed, 150_000)).toThrow(
-      "invalid_pcm_config",
+    expect(() => inspectSongVideoMasterStructure(changed, 150_000)).toThrow("invalid_pcm_config");
+  });
+
+  test("rejects a video entry without AVC decoder configuration", async () => {
+    const bytes = await fixture("master.mp4");
+    const changed = bytes.slice();
+    changed.set(new TextEncoder().encode("junk"), boxTypeOffset(changed, "avcC"));
+    expect(() => inspectSongVideoMasterStructure(changed, 150_000)).toThrow(
+      "unexpected_track_shape",
     );
   });
 
-  test("bounds declared sample counts before MP4Box allocates samples", async () => {
+  test("bounds declared sample counts before walking chunks", async () => {
     const bytes = await fixture("master.mp4");
     const changed = bytes.slice();
     const sizes = boxTypeOffset(changed, "stsz");
     new DataView(changed.buffer).setUint32(sizes + 12, 0xffff_ffff);
-    expect(() => inspectCloudConvertMasterStructure(changed, 150_000)).toThrow("invalid_stsz");
+    expect(() => inspectSongVideoMasterStructure(changed, 150_000)).toThrow("invalid_stsz");
   });
 });
