@@ -190,6 +190,48 @@ describe("handle sales HTTP handlers", () => {
     });
   });
 
+  test("refuses a Spaces offering while the Spaces runtime is unavailable", async () => {
+    const response = await workerWith(storeWith({})).request(
+      "/communities/community_123e4567-e89b-42d3-a456-426614174055/handle-offerings",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        body: JSON.stringify({
+          idempotency_key: "spaces-offering-disabled",
+          terms: {
+            sale_namespace_activation_id: "spaces-activation",
+            expected_sale_namespace_activation_generation: 1,
+            label_scope: {
+              kind: "label_rule_v2",
+              label_grammar_id: "spaces_subspace_label_v1",
+              reserved_labels_id: "reserved_labels_spaces_01",
+              expected_reserved_labels_revision: 1,
+              availability: {
+                kind: "length_band_v1",
+                min_label_length: 8,
+                max_label_length: 32,
+              },
+            },
+            allocation_kind: "first_come_v1",
+            fulfillment_kind: "spaces_native_v1",
+            qualification_policy_id: "qualification_policy_spaces_members_01",
+            expected_qualification_policy_revision: 1,
+            pricing_id: "platform_free_handles_v1",
+            expected_pricing_revision: 1,
+            issuance_driver_id: "spaces_native-local",
+            expected_issuance_driver_version: "1",
+            quote_ttl_seconds: 120,
+            reservation_ttl_seconds: 300,
+          },
+        }),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: { details: { reason: "service_unavailable" } },
+    });
+  });
+
   test("keeps a pending Spaces name private to its claimant", async () => {
     const claim = {
       claim_id: "claim-spaces-http",

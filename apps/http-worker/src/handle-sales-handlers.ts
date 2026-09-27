@@ -270,6 +270,14 @@ export function makeHandleSalesHandlers(
             readonly terms: Parameters<typeof sales.createOffering>[0]["terms"];
           }
         : never;
+      if (
+        body.terms.fulfillment_kind === "spaces_native_v1" &&
+        services.spacesSaleNamespaces === undefined
+      )
+        throw new RetryableHandleRequestRejected({
+          message: "Spaces offerings are not available",
+          details: { reason: "service_unavailable" },
+        });
       const result = await run(
         sales.createOffering({
           accountId: accountId(request.principal),
@@ -288,6 +296,14 @@ export function makeHandleSalesHandlers(
         readonly requested_status: "active" | "paused" | "retired";
         readonly terms: Parameters<typeof sales.reviseOffering>[0]["terms"];
       };
+      if (
+        body.terms.fulfillment_kind === "spaces_native_v1" &&
+        services.spacesSaleNamespaces === undefined
+      )
+        throw new RetryableHandleRequestRejected({
+          message: "Spaces offerings are not available",
+          details: { reason: "service_unavailable" },
+        });
       const result = await run(
         sales.reviseOffering({
           accountId: accountId(request.principal),

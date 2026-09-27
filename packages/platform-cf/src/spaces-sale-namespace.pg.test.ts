@@ -45,7 +45,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_SALE_NAMESPACE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-sale-namespace-suite-complete";
-const testCount = 15;
+const testCount = 18;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000a001";
@@ -112,6 +112,7 @@ const observation = (
   overrides: Partial<Parameters<SpacesSaleNamespaceStore["recordRootObservation"]>[0]> = {},
   root: Partial<{
     key: string;
+    outpoint: string;
     anchorCoversRootOutpoint: boolean;
     anchoredAt: string;
     publication: "verified" | "failed";
@@ -662,7 +663,7 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
           }),
         ),
       ).toBeNull();
-      // The HNS offering mutation refuses a Spaces activation before any write.
+      // HNS terms cannot be attached to a Spaces activation.
       const sales = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(connection),
       );
@@ -815,6 +816,170 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
         drift: { kind: "authority_lost", reason: "authority_unresolved" },
         suspended: { sale_namespace_activation_generation: 4, status: "suspended" },
       });
+    });
+    completed++;
+  });
+
+  test("keeps an active space ready after proof expiry but stops on same-key outpoint drift", async () => {
+    await withSchema(async (admin, connection) => {
+      await configureSpacesNetwork(admin);
+      await seedSpacesSeller(admin, { communityId, sellerId: seller });
+      await recordSpacesAuthorityEvidence(admin, {
+        reference: "namespace_authority_spaces_01",
+        generation: 1,
+        communityId,
+        controllingAccountId: seller,
+        freshForSeconds: 600,
+      });
+      await seedSpacesOperatorAssignment(admin, {
+        assignmentId: "spaces_operator_assignment_01",
+        generation: 1,
+        delegationAddress: delegation,
+      });
+      const store = spaces(connection);
+      await Effect.runPromise(store.recordRootObservation(observation()));
+      await Effect.runPromise(
+        store.recordOperatorCapabilityObservation(capability("spaces_operator_assignment_01", 1)),
+      );
+      await enableSpacesDriverForRoot(admin, { enablementId: "enable-charizard" });
+      const activation = await Effect.runPromise(store.createSaleNamespace(command()));
+      const afterProofExpiry = await admin.query(
+        `SELECT count(*)::int AS count
+           FROM effective_community_handle_sale_namespace_v1(
+             $1,
+             (SELECT fresh_until + interval '1 second'
+                FROM spaces_namespace_authority_evidence
+               WHERE namespace_authority_reference='namespace_authority_spaces_01'
+                 AND namespace_authority_generation=1)
+           )`,
+        [activation.activation.sale_namespace_activation_id],
+      );
+      expect(afterProofExpiry.rows[0]?.count).toBe(1);
+      const changed = await Effect.runPromise(
+        store.recordRootObservation(observation({}, { outpoint: `${"d".repeat(64)}:0` })),
+      );
+      expect(changed).toMatchObject({
+        drift: { kind: "outpoint_changed", observed_root_outpoint: `${"d".repeat(64)}:0` },
+        suspended: null,
+      });
+      expect(await effectiveCount(admin, activation.activation.sale_namespace_activation_id)).toBe(
+        0,
+      );
+      expect(
+        (
+          await Effect.runPromise(
+            store.getSaleNamespaceReadiness({
+              accountId: seller,
+              communityId,
+              activationId: activation.activation.sale_namespace_activation_id,
+            }),
+          )
+        )?.readiness,
+      ).toEqual({ kind: "not_ready_v1", reason: "owner_challenge_required" });
+    });
+    completed++;
+  });
+
+  test("rejects a new activation after its owner proof expires in both store and database", async () => {
+    await withSchema(async (admin, connection) => {
+      await configureSpacesNetwork(admin);
+      await seedSpacesSeller(admin, { communityId, sellerId: seller });
+      await recordSpacesAuthorityEvidence(admin, {
+        reference: "namespace_authority_spaces_01",
+        generation: 1,
+        communityId,
+        controllingAccountId: seller,
+        freshForSeconds: -1,
+      });
+      await seedSpacesOperatorAssignment(admin, {
+        assignmentId: "spaces_operator_assignment_01",
+        generation: 1,
+        delegationAddress: delegation,
+      });
+      const store = spaces(connection);
+      await Effect.runPromise(store.recordRootObservation(observation()));
+      await Effect.runPromise(
+        store.recordOperatorCapabilityObservation(capability("spaces_operator_assignment_01", 1)),
+      );
+      await enableSpacesDriverForRoot(admin, { enablementId: "enable-charizard" });
+      expect(await failureOf(store.createSaleNamespace(command()))).toEqual(
+        new SpacesSaleNamespaceNotReady({ reason: "owner_challenge_required" }),
+      );
+      await expect(
+        insertRow(admin, "community_handle_sale_namespace_activation_revisions", {
+          ...spacesActivationRow,
+          sale_namespace_activation_id: "expired-owner-command",
+          authority_grant_id: (
+            await admin.query(
+              "SELECT grant_id FROM community_handle_sales_authority_grants WHERE principal_account_id=$1",
+              [seller],
+            )
+          ).rows[0]?.grant_id,
+        }),
+      ).rejects.toThrow("fresh owner proof");
+    });
+    completed++;
+  });
+
+  test("creates and replays the free members-only Spaces offering through the product store", async () => {
+    await withSchema(async (admin, connection) => {
+      const activation = await createActive(admin, connection);
+      const sales = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const input = {
+        accountId: seller,
+        communityId,
+        idempotencyKey: "spaces-offering-create",
+        offeringId: "spaces-offering-create",
+        actionId: "spaces-offering-create",
+        terms: {
+          ...terms(activation.sale_namespace_activation_id),
+          label_scope: {
+            kind: "label_rule_v2" as const,
+            label_grammar_id: "spaces_subspace_label_v1" as const,
+            reserved_labels_id: "reserved_labels_spaces_01",
+            expected_reserved_labels_revision: 1,
+            availability: {
+              kind: "length_band_v1" as const,
+              min_label_length: 8,
+              max_label_length: 32,
+            },
+          },
+          fulfillment_kind: "spaces_native_v1" as const,
+          qualification_policy_id: "qualification_policy_spaces_members_01",
+          issuance_driver_id: "spaces_native-local",
+        },
+      };
+      const created = await Effect.runPromise(sales.createOffering(input));
+      expect(created.offering).toMatchObject({
+        family: "spaces",
+        fulfillment: { kind: "spaces_native_v1" },
+        qualification_policy: { kind: "curated_policy_v1" },
+        status: "active",
+      });
+      expect((await Effect.runPromise(sales.createOffering(input))).replayed).toBe(true);
+      const pause = {
+        ...input,
+        idempotencyKey: "spaces-offering-pause",
+        actionId: "spaces-offering-pause",
+        expectedOfferingHash: created.offering.offering_hash,
+        requestedStatus: "paused" as const,
+      };
+      const paused = await Effect.runPromise(sales.reviseOffering(pause));
+      expect(paused.offering).toMatchObject({
+        family: "spaces",
+        offering_revision: 2,
+        status: "paused",
+      });
+      expect((await Effect.runPromise(sales.reviseOffering(pause))).replayed).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM community_handle_offering_revisions",
+          )
+        ).rows[0]?.count,
+      ).toBe(2);
     });
     completed++;
   });

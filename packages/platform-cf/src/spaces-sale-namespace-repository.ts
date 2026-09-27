@@ -321,6 +321,28 @@ const requireReady = (
   input: Parameters<typeof readFacts>[1],
 ) =>
   Effect.gen(function* () {
+    const proof = yield* transaction.execute<Row>({
+      label: "spaces-sale-namespace.owner-command-proof.read",
+      text: `SELECT evidence.fresh_until > $3::timestamptz AS fresh
+               FROM spaces_namespace_authority_evidence AS evidence
+              WHERE evidence.namespace_authority_reference=$1
+                AND evidence.namespace_authority_generation=$2
+                AND evidence.network=$4
+                AND evidence.canonical_root=$5
+                AND evidence.community_id=$6`,
+      values: [
+        input.namespaceAuthorityReference,
+        input.namespaceAuthorityGeneration,
+        input.now,
+        input.network,
+        input.canonicalRoot,
+        input.communityId,
+      ],
+      readonly: false,
+    });
+    if (proof.rows[0]?.fresh !== true) {
+      return yield* new SpacesSaleNamespaceNotReady({ reason: "owner_challenge_required" });
+    }
     const { readiness } = yield* readFacts(transaction, input);
     if (readiness.kind === "not_ready_v1") {
       return yield* new SpacesSaleNamespaceNotReady({ reason: readiness.reason });
@@ -954,6 +976,7 @@ export function makeControlPlaneSpacesSaleNamespaceRepository() {
                 label: "spaces-sale-namespace.root-observation.activation.lock",
                 text: `SELECT revision.*,
                               evidence.root_key_hex AS evidence_root_key_hex,
+                              evidence.root_outpoint AS evidence_root_outpoint,
                               assignment.delegation_address AS assignment_delegation_address
                          FROM community_handle_sale_namespace_activation_current AS current_activation
                          JOIN community_handle_sale_namespace_activation_revisions AS revision
@@ -984,9 +1007,13 @@ export function makeControlPlaneSpacesSaleNamespaceRepository() {
               }
               const activation = yield* decoded(() => spacesActivationFromRow(activeRow));
               const evidenceKey = yield* decoded(() => text(activeRow, "evidence_root_key_hex"));
+              const evidenceOutpoint = yield* decoded(() =>
+                text(activeRow, "evidence_root_outpoint"),
+              );
               const assignedDelegation = activeRow.assignment_delegation_address;
               const drift: SpacesAuthorityDriftV1 = classifySpacesAuthorityObservationV1({
                 evidence_root_key: evidenceKey,
+                evidence_root_outpoint: evidenceOutpoint,
                 observation: {
                   observed_at_epoch_ms: observedMs,
                   root:

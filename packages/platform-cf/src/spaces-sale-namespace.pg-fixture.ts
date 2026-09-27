@@ -70,6 +70,8 @@ export async function recordSpacesAuthorityEvidence(
     network?: string;
     /** Seconds before now at which the root key was last observed to change. */
     keyChangedSecondsAgo?: number;
+    /** Shorten the command proof lifetime when testing ongoing readiness. */
+    freshForSeconds?: number;
   }>,
 ): Promise<void> {
   const keyChanged = input.keyChangedSecondsAgo ?? 3_600;
@@ -99,7 +101,7 @@ export async function recordSpacesAuthorityEvidence(
       at(-keyChanged + Math.max(1, Math.floor(keyChanged / 2))),
       at(-keyChanged + Math.max(1, Math.floor(keyChanged / 2))),
       at(-2),
-      at(86_400),
+      at(input.freshForSeconds ?? 86_400),
       createHash("sha256").update(`${input.reference}:${input.generation}`).digest("hex"),
     ],
   );

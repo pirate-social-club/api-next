@@ -24,7 +24,7 @@ export type SpacesSaleReadinessReasonV1 = (typeof SPACES_SALE_READINESS_REASONS_
 export type SpacesSaleReadinessFactsV1 = Readonly<{
   /** Current evidence for `(network, root)`: the live root resolves within its anchor freshness bound. */
   namespace_authority_current: boolean | null;
-  /** An owner-signed challenge under the current key, completed after the key last changed. */
+  /** The retained owner proof still matches the current root key and outpoint. */
   owner_challenge_current: boolean | null;
   /** An accepted anchor covers the live root outpoint. */
   anchor_covers_root_outpoint: boolean | null;
@@ -98,18 +98,20 @@ export type SpacesAuthorityDriftV1 =
   | Readonly<{ kind: "anchor_lag" }>
   | Readonly<{ kind: "indeterminate" }>
   | Readonly<{ kind: "key_changed"; observed_root_key: string }>
+  | Readonly<{ kind: "outpoint_changed"; observed_root_outpoint: string }>
   | Readonly<{ kind: "authority_lost"; reason: SpacesAuthorityLossReasonV1 }>;
 
 /**
- * Classifies one observation against the key the current evidence was
+ * Classifies one observation against the key and outpoint the current evidence was
  * established under. A missing or stale observation is indeterminate: it
  * fails closed but is never evidence of loss, so dependency degradation
- * cannot revoke. A changed key supersedes the evidence before any anchor,
+ * cannot revoke. A changed key or outpoint supersedes the evidence before any anchor,
  * delegation, or publication fact is judged against it. Ordinary anchor lag
  * with an unchanged key and delegation is retryable, never a loss.
  */
 export function classifySpacesAuthorityObservationV1(input: {
   evidence_root_key: string;
+  evidence_root_outpoint: string;
   observation: SpacesRootObservationV1 | null;
   now_epoch_ms: number;
   freshness: SpacesAuthorityFreshnessV1;
@@ -126,6 +128,9 @@ export function classifySpacesAuthorityObservationV1(input: {
   }
   if (observation.root.key !== input.evidence_root_key) {
     return { kind: "key_changed", observed_root_key: observation.root.key };
+  }
+  if (observation.root.outpoint !== input.evidence_root_outpoint) {
+    return { kind: "outpoint_changed", observed_root_outpoint: observation.root.outpoint };
   }
   if (now - observation.anchor.anchored_at_epoch_ms > freshness.anchor_max_age_ms) {
     return { kind: "authority_lost", reason: "anchor_stale" };
@@ -179,6 +184,7 @@ export function spacesAuthorityResponseV1(
     case "indeterminate":
       return response(true, true, false, false);
     case "key_changed":
+    case "outpoint_changed":
       return response(true, true, false, true);
     case "authority_lost":
       return response(true, true, true, false);

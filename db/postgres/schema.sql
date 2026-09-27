@@ -13510,6 +13510,27 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_spaces_activation_owner_proof_fresh_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.family = 'spaces' AND NEW.status IN ('pending', 'active')
+    AND NOT EXISTS (
+      SELECT 1 FROM spaces_namespace_authority_evidence AS evidence
+       WHERE evidence.namespace_authority_reference = NEW.spaces_namespace_authority_reference
+         AND evidence.namespace_authority_generation = NEW.spaces_namespace_authority_generation
+         AND evidence.network = NEW.spaces_network
+         AND evidence.canonical_root = NEW.canonical_root
+         AND evidence.community_id = NEW.community_id
+         AND evidence.controlling_account_id = NEW.actor_account_id
+         AND evidence.fresh_until > clock_timestamp()
+    ) THEN
+    RAISE EXCEPTION 'Spaces activation command requires a fresh owner proof';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_spaces_final_conflict_evidence_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19919,7 +19940,6 @@ CREATE FUNCTION spaces_sale_namespace_readiness_facts_v1(input_network text, inp
   SELECT
     COALESCE((
       SELECT evidence.community_id = input_community_id
-             AND evidence.fresh_until > database_now
              AND EXISTS (
                SELECT 1 FROM communities AS community
                 WHERE community.community_id = input_community_id
@@ -19936,7 +19956,8 @@ CREATE FUNCTION spaces_sale_namespace_readiness_facts_v1(input_network text, inp
       SELECT NOT EXISTS (
                SELECT 1 FROM observation
                 WHERE observation.root_state = 'resolved'
-                  AND observation.root_key_hex <> evidence.root_key_hex
+                  AND (observation.root_key_hex <> evidence.root_key_hex
+                    OR observation.root_outpoint <> evidence.root_outpoint)
              )
         FROM evidence
     ), FALSE),
@@ -40791,6 +40812,8 @@ CREATE TRIGGER song_streak_day_activities_change_guard BEFORE DELETE OR UPDATE O
 CREATE TRIGGER song_streak_days_append_only BEFORE DELETE OR UPDATE ON song_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
 
 CREATE TRIGGER song_streaks_change_guard BEFORE DELETE OR UPDATE ON song_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
+
+CREATE TRIGGER spaces_activation_owner_proof_fresh_guard BEFORE INSERT ON community_handle_sale_namespace_activation_revisions FOR EACH ROW EXECUTE FUNCTION guard_spaces_activation_owner_proof_fresh_v1();
 
 CREATE TRIGGER spaces_driver_root_enablement_change_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_issuance_driver_root_enablements FOR EACH ROW EXECUTE FUNCTION guard_spaces_issuance_driver_root_enablement_v1();
 
