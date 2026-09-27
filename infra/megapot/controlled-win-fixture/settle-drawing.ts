@@ -8,9 +8,11 @@ import { baseSepolia } from "viem/chains";
 const jackpot = getAddress("0xb9464401103143e916434A277064f5601f3D7708");
 const operator = getAddress("0x8fB9941a4782E4fc05467f9A3138c66C7F2aaCaF");
 const custody = getAddress("0x544881290138fe0E66C1EC7D1A1f141395246f20");
-const prize = 1_000_000n;
 const drawingNumber = process.env.E2E_DRAWING_ID;
-if (drawingNumber !== "1" && drawingNumber !== "2") throw new Error("drawing ID must be 1 or 2");
+if (drawingNumber !== "1" && drawingNumber !== "2" &&
+    drawingNumber !== "3" && drawingNumber !== "4") {
+  throw new Error("drawing ID must be 1, 2, 3 or 4");
+}
 const expectedTickets = drawingNumber === "1" ? "0" : process.env.E2E_EXPECTED_TICKETS;
 if (expectedTickets !== "0" && expectedTickets !== "1") {
   throw new Error("expected ticket count must be 0 or 1");
@@ -38,7 +40,10 @@ if (await rpc.getChainId() !== baseSepolia.id) throw new Error("wrong chain");
 const armed = JSON.parse(await readFile(armedRecordPath, "utf8")) as {
   hash: `0x${string}`; drawingId: string; prizeAtomic: string; drawingTimeUnix: string;
 };
-if (armed.drawingId !== drawingNumber || armed.prizeAtomic !== prize.toString() ||
+const prize = BigInt(armed.prizeAtomic);
+if (armed.drawingId !== drawingNumber ||
+    prize !== (drawingNumber === "3" ? 1n : 1_000_000n) ||
+    (prize === 1n && winning) ||
     (await rpc.getTransactionReceipt({ hash: armed.hash })).status !== "success") {
   throw new Error("drawing arm record is not confirmed");
 }
