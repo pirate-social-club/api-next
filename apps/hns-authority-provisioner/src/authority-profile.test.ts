@@ -56,6 +56,10 @@ describe("HNS authority runtime profile", () => {
       "ns1.pirate.",
       "ns2.pirate.",
     ]);
+    expect(profile("regtest", "regtest", ["ns1.pirate", "ns2.pirate"]).nameservers).toEqual([
+      "ns1.pirate.",
+      "ns2.pirate.",
+    ]);
     expect(() =>
       profile("staging", "main", ["ns1.staging-hns", "ns2.staging-hns"], {
         HNS_AUTHORITY_NS1_ADDRESS: "94.103.168.161",

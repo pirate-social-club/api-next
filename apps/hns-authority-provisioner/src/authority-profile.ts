@@ -50,7 +50,7 @@ export function parseHnsAuthorityRuntimeProfileV1(
     `${endpoints[1].authority_nameserver}.`,
   ];
   if (
-    !["production", "staging", "test"].includes(input.environment) ||
+    !["production", "staging", "regtest", "test"].includes(input.environment) ||
     !["main", "regtest"].includes(input.chain_network) ||
     !validHnsRootImportNameserversV1(nameservers) ||
     nameservers[0] >= nameservers[1] ||
