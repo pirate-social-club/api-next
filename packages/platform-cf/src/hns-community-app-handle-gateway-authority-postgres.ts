@@ -17,22 +17,30 @@ export type HnsCommunityAppHandleGatewayPostgresAuthorityV1 = Readonly<{
   ready: (signal?: AbortSignal) => Promise<boolean>;
 }>;
 
+export interface HnsCommunityAppHandleGatewayPostgresAuthorityOptionsV1
+  extends PostgresControlPlaneOptions {
+  readonly resolutionDeadlineMs?: number;
+}
+
 /**
  * The combined VPS process receives two narrow readers over the same
  * server-enforced read-only credential. Neither source exposes a write seam.
  */
 export function makePostgresHnsCommunityAppHandleGatewayAuthorityV1(
   connectionString: string,
-  options?: PostgresControlPlaneOptions,
+  options: HnsCommunityAppHandleGatewayPostgresAuthorityOptionsV1 = {},
 ): HnsCommunityAppHandleGatewayPostgresAuthorityV1 {
-  const runtime = makeReadOnlyPostgresControlPlaneLayer(connectionString, options);
+  const { resolutionDeadlineMs = 1_500, ...postgresOptions } = options;
+  const runtime = makeReadOnlyPostgresControlPlaneLayer(connectionString, postgresOptions);
   const communityAuthority = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
     makeControlPlaneHnsCommunityAppHostAuthoritySource(runtime, {
       authority_schema: "api_next",
     }),
+    resolutionDeadlineMs,
   );
   const handleAuthority = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
     makeControlPlaneHnsHandlePersonaHostAuthoritySource(runtime),
+    resolutionDeadlineMs,
   );
   return Object.freeze({
     community_authority_source: communityAuthority,
