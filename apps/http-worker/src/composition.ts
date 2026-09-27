@@ -104,6 +104,7 @@ import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/pla
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
 import { makeControlPlaneHnsRootHealthRenewalStatusStore } from "@pirate/platform-cf/hns-root-health-renewal-status";
 import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
+import { makeControlPlaneHnsTxtAttachmentStore } from "@pirate/platform-cf/hns-txt-attachment-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
   makeControlPlaneIdentityRegistrationStore,
@@ -248,7 +249,10 @@ import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-aut
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
-import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
+import {
+  makeHnsCommunityRootImportHandlers,
+  makeHnsTxtAttachmentHandlers,
+} from "./hns-community-root-import-handlers.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
 import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
@@ -1260,6 +1264,19 @@ export async function createProductionHttpWorker(
     hnsCommunityServices === undefined
       ? {}
       : makeHnsCommunityRootImportHandlers({ ...hnsCommunityServices, publicationQueue });
+  // TXT-only attachment shares the ownership start and completion services
+  // but never creates a root-import session, so it provisions nothing.
+  const hnsTxtAttachmentHandlers =
+    hnsCommunityServices === undefined || communityHnsBinding === undefined
+      ? {}
+      : makeHnsTxtAttachmentHandlers({
+          ownership: hnsCommunityServices.ownership,
+          completion: hnsCommunityServices.completion,
+          store: makeControlPlaneHnsTxtAttachmentStore(controlPlane, {
+            environment: config.API_NEXT_ENV,
+            provider_binding: communityHnsBinding,
+          }),
+        });
   const continuePublicationChecks = async () => {
     if (hnsCommunityServices === undefined) return;
     // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
@@ -1663,6 +1680,7 @@ export async function createProductionHttpWorker(
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
       ...hnsCommunityRootImportHandlers,
+      ...hnsTxtAttachmentHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,

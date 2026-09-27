@@ -220,6 +220,7 @@
     "0217_song_activity_recency_indexes.sql": "736e203778199ac05abe1fe126cf652373231121d74108048c7b3af0f98d95f4",
     "0218_song_stems.sql": "58c12c89e3b44174955c49dc73c625ced45d78ffd85590577164d2dac56cf6a7",
     "0219_hns_readiness_zone_mutation_admission.sql": "90a1bbf81be693f146d6f948a8fd5c3d77a161e281bbdc0579e01fdc974b6180",
-    "0220_study_spoken_rerecord_receipts.sql": "8f4dba1e9cd8205820bf6e8a6742296b35b53780adb29f9d2cf83826cf1dc540"
+    "0220_study_spoken_rerecord_receipts.sql": "8f4dba1e9cd8205820bf6e8a6742296b35b53780adb29f9d2cf83826cf1dc540",
+    "0221_hns_txt_only_attachment_holds.sql": "56fb3e8d91cafa34a0ff1135268383947584c37a242cd1b3560aa439736a83e3"
   }
 }

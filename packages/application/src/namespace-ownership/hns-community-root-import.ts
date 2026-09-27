@@ -394,7 +394,7 @@ export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
   readonly reason?: string;
 }> {}
 
-function ownershipFailure(error: unknown) {
+export function ownershipFailure(error: unknown) {
   if (error instanceof RouteAttachmentCompletionRejected) {
     // Budget exhaustion is not a configuration fault and is not retryable:
     // no further attempt can be reserved for this ownership session.
@@ -426,7 +426,7 @@ function ownershipFailure(error: unknown) {
  * original key so an existing reservation still replays; a renewed challenge
  * gets its own key and never replays the expired one.
  */
-function ownershipStartKey(preparation: HnsCommunityRootImportPreparation): string {
+export function ownershipStartKey(preparation: HnsCommunityRootImportPreparation): string {
   return preparation.ceremony_generation === 1
     ? preparation.start_request_sha256
     : `${preparation.start_request_sha256}:generation:${preparation.ceremony_generation}`;

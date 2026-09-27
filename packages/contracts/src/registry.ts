@@ -47,13 +47,16 @@ import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recover
 import {
   ActivateHnsCommunityRootImport,
   ActivateHnsRootImport,
+  CheckHnsTxtAttachment,
   GetCurrentHnsCommunityRootImport,
+  GetCurrentHnsTxtAttachment,
   GetHnsCommunityRootImport,
   GetHnsRootImport,
   PollHnsCommunityRootImport,
   PollHnsRootImport,
   StartHnsCommunityRootImport,
   StartHnsRootImport,
+  StartHnsTxtAttachment,
 } from "./hns-root-import.ts";
 import {
   CreateKaraokeAttempt,
@@ -168,6 +171,9 @@ export const registry = {
   GetCurrentHnsCommunityRootImport,
   PollHnsCommunityRootImport,
   ActivateHnsCommunityRootImport,
+  StartHnsTxtAttachment,
+  GetCurrentHnsTxtAttachment,
+  CheckHnsTxtAttachment,
   ...handleSalesSpacesRegistry,
   ListMyPersonas,
   ListMyPendingPersonaWallets,

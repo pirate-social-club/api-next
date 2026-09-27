@@ -51,6 +51,7 @@ export const freshSchemaPostgresTestSuites = [
   "apps/http-worker/src/hns-lifecycle-observation-scheduling.pg.test.ts",
   "apps/http-worker/src/hns-community-separated-clocks.pg.test.ts",
   "apps/http-worker/src/hns-community-mixed-version.pg.test.ts",
+  "apps/http-worker/src/hns-txt-attachment.pg.test.ts",
   "packages/platform-cf/src/hns-import-separated-clocks-migration.pg.test.ts",
   "apps/http-worker/src/public-community-threads-composition.pg.test.ts",
   "apps/http-worker/src/video-song-reference-required.pg.test.ts",

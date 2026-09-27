@@ -493,6 +493,7 @@ export {
 export * from "./hns-root-import-plan.ts";
 export * from "./hns-root-import-readiness.ts";
 export * from "./hns-teardown-retention.ts";
+export * from "./hns-txt-attachment.ts";
 export * from "./operator-control-promotion.ts";
 export * from "./operator-managed-root-registry.ts";
 export * from "./operator-managed-route.ts";
