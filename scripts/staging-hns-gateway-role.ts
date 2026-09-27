@@ -7,7 +7,12 @@ import { isHnsStagingRoleIdentifier } from "./staging-hns-post-migration-entry.t
 export const STAGING_HNS_GATEWAY_READ_TABLES = [
   "communities",
   "community_canonical_route_bindings",
+  "community_handle_sale_namespace_activation_current",
+  "community_handle_sale_namespace_activation_revisions",
+  "community_route_attachment_ceremony_attempts",
+  "community_route_attachment_intents",
   "community_route_ownership_evidence",
+  "handle_grants",
   "hns_authority_inventories",
   "hns_community_app_host_activation_current",
   "hns_community_app_host_activation_revisions",
@@ -15,9 +20,11 @@ export const STAGING_HNS_GATEWAY_READ_TABLES = [
   "hns_dns_zone_activation_revisions",
   "hns_dns_zone_health_observations",
   "operator_managed_route_activations",
+  "personas",
 ] as const;
 
 export const STAGING_HNS_GATEWAY_READ_FUNCTIONS = [
+  "current_hns_sale_namespace_dependency_v1(text,text,bigint,text,bigint,timestamptz)",
   "effective_active_route(text,timestamptz)",
   "effective_route_authority_v2(text,timestamptz)",
   "resolve_hns_community_app_host_authority_v1(text,timestamptz)",

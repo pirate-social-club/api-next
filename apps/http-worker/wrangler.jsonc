@@ -337,14 +337,14 @@
         "VERY_WEB_API_URL": "https://api.very.org/api/v1",
         "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
         "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
-        // Staging ownership is pinned to the staging owner verifier's regtest
-        // configuration; hns-txt-import-v1 needs the verifier to advertise it too.
+        // Staging ownership uses its own mainnet observer configuration and
+        // the verifier's read-only mainnet binding.
         "HNS_OWNERSHIP_ENABLED": "true",
-        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-regtest",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-mainnet-v1",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "HNS_OWNERSHIP_CAPABILITIES": "hns-txt-import-v1",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
-        "HNS_HANDLE_HOST_API_ENABLED": "false",
+        "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api-staging.pirate.sc",
         "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "https://piratesocialclub.cloudflareaccess.com",
         "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",

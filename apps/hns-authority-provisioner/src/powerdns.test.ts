@@ -38,6 +38,47 @@ describe("PowerDNS managed HNS root rrsets", () => {
     expect(rrsets[4]?.records[0]?.content).toBe('"pirate-verification=a\\"b\\\\c"');
   });
 
+  test("serves the configured staging authority names at the zone apex", () => {
+    const rrsets = buildManagedRootRrsets({
+      root_label: "newroot",
+      challenge_txt_value: "pirate-verification=staging",
+      gateway_ipv4: "192.0.2.10",
+      shared_tlsa_association: `3 1 1 ${"A".repeat(64)}`,
+      ttl_seconds: 300,
+      nameservers: ["ns1.staging-hns.", "ns2.staging-hns."],
+    });
+    expect(rrsets[0]?.records.map((record) => record.content)).toEqual([
+      "ns1.staging-hns.",
+      "ns2.staging-hns.",
+    ]);
+  });
+
+  test("serves in-bailiwick nameserver addresses from the signed zone", () => {
+    const rrsets = buildManagedRootRrsets({
+      root_label: "8s28",
+      challenge_txt_value: "pirate-verification=staging",
+      gateway_ipv4: "81.15.150.167",
+      shared_tlsa_association: `3 1 1 ${"A".repeat(64)}`,
+      ttl_seconds: 300,
+      nameservers: ["ns1.8s28.", "ns2.8s28."],
+      glue_records: [
+        { type: "GLUE4", ns: "ns1.8s28.", address: "81.15.150.167" },
+        { type: "GLUE4", ns: "ns2.8s28.", address: "94.103.168.209" },
+      ],
+    });
+    expect(
+      rrsets.slice(0, 3).map(({ name, type, records }) => ({
+        name,
+        type,
+        content: records.map((record) => record.content),
+      })),
+    ).toEqual([
+      { name: "8s28.", type: "NS", content: ["ns1.8s28.", "ns2.8s28."] },
+      { name: "ns1.8s28.", type: "A", content: ["81.15.150.167"] },
+      { name: "ns2.8s28.", type: "A", content: ["94.103.168.209"] },
+    ]);
+  });
+
   test("creates one signed primary, authorizes AXFR, rectifies, notifies, and returns DS", async () => {
     const calls: Array<{ readonly method: string; readonly url: string; readonly body: unknown }> =
       [];

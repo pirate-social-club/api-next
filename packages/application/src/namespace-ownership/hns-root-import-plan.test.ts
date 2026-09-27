@@ -89,6 +89,70 @@ describe("HNS root import publish plan", () => {
     expect(encoded.byteLength).toBeLessThanOrEqual(HNS_RESOURCE_MAX_WIRE_BYTES_V1);
   });
 
+  test("builds the complete resource for the selected staging nameservers", async () => {
+    const nameservers = ["ns1.staging-hns.", "ns2.staging-hns."] as const;
+    const plan = await buildHnsRootImportPublishPlanV1({
+      current_records: [{ type: "NS", ns: "ns1.pirate." }],
+      challenge_txt_value: "pirate-verification=staging-session",
+      ds_records: dsRecords,
+      nameservers,
+    });
+    expect(plan.removed_conflicts).toEqual([{ type: "NS", ns: "ns1.pirate." }]);
+    expect(plan.added_records.slice(0, 2)).toEqual(nameservers.map((ns) => ({ type: "NS", ns })));
+    expect(plan.replacement_records).not.toContainEqual({ type: "NS", ns: "ns1.pirate." });
+    expect(encodeHnsResourceV1(plan.replacement_records).byteLength).toBeLessThanOrEqual(
+      HNS_RESOURCE_MAX_WIRE_BYTES_V1,
+    );
+  });
+
+  test("replaces old NS and glue with in-bailiwick staging delegation in one Bob resource", async () => {
+    const current = [
+      { type: "NS", ns: "ns1.old." },
+      { type: "GLUE4", ns: "ns1.old.", address: "192.0.2.1" },
+      { type: "NS", ns: "ns2.old." },
+      { type: "GLUE4", ns: "ns2.old.", address: "192.0.2.2" },
+      { type: "TXT", txt: ["owner=preserve"] },
+    ] as const;
+    const glue = [
+      { type: "GLUE4", ns: "ns1.8s28.", address: "81.15.150.167" },
+      { type: "GLUE4", ns: "ns2.8s28.", address: "94.103.168.209" },
+    ] as const;
+    const plan = await buildHnsRootImportPublishPlanV1({
+      current_records: current,
+      challenge_txt_value: "pirate-verification=staging-8s28",
+      ds_records: dsRecords,
+      nameservers: ["ns1.8s28.", "ns2.8s28."],
+      glue_records: glue,
+    });
+    expect(plan.removed_conflicts).toEqual(current.slice(0, 4));
+    expect(plan.preserved_records).toEqual([current[4]]);
+    expect(plan.added_records.filter((record) => record.type === "GLUE4")).toEqual([...glue]);
+    expect(plan.replacement_records.filter((record) => record.type === "NS")).toEqual([
+      { type: "NS", ns: "ns1.8s28." },
+      { type: "NS", ns: "ns2.8s28." },
+    ]);
+    expect(encodeHnsResourceV1(plan.replacement_records).byteLength).toBeLessThanOrEqual(
+      HNS_RESOURCE_MAX_WIRE_BYTES_V1,
+    );
+  });
+
+  test("refuses duplicate or noncanonical configured nameservers", async () => {
+    for (const nameservers of [
+      ["ns1.staging-hns.", "ns1.staging-hns."],
+      ["NS1.staging-hns.", "ns2.staging-hns."],
+      ["ns1.staging-hns", "ns2.staging-hns."],
+    ] as const) {
+      await expect(
+        buildHnsRootImportPublishPlanV1({
+          current_records: [],
+          challenge_txt_value: "pirate-verification=staging-session",
+          ds_records: dsRecords,
+          nameservers,
+        }),
+      ).rejects.toThrow("invalid_nameservers");
+    }
+  });
+
   test("rejects a replacement whose real encoding exceeds the 512-byte consensus limit", async () => {
     await expect(
       buildHnsRootImportPublishPlanV1({

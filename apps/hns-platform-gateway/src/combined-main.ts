@@ -20,7 +20,9 @@ import {
   HNS_COMMUNITY_APP_GATEWAY_MANIFEST_MAX_BYTES,
   HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS,
   HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS,
+  HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS,
   HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA,
+  HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
   type HnsCommunityAppGatewayRuntimeConfigurationV1,
   loadHnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
@@ -29,7 +31,7 @@ import { startHnsCommunityAppHandleGatewayServer } from "./server.ts";
 
 declare const __PIRATE_API_NEXT_SOURCE_COMMIT__: string;
 
-type HnsCommunityAppHandleGatewayMode = "production" | "shadow";
+type HnsCommunityAppHandleGatewayMode = "production" | "shadow" | "staging-public-tls";
 
 export type HnsCommunityAppHandleGatewayArguments = Readonly<{
   mode: HnsCommunityAppHandleGatewayMode;
@@ -57,7 +59,9 @@ export function parseHnsCommunityAppHandleGatewayArguments(
   if (
     arguments_.length !== 4 ||
     arguments_[0] !== "--mode" ||
-    (arguments_[1] !== "production" && arguments_[1] !== "shadow") ||
+    (arguments_[1] !== "production" &&
+      arguments_[1] !== "shadow" &&
+      arguments_[1] !== "staging-public-tls") ||
     arguments_[2] !== "--manifest" ||
     arguments_[3] === undefined ||
     !isAbsolute(arguments_[3]) ||
@@ -140,13 +144,24 @@ export function assembleHnsCommunityAppHandleGatewayRuntime(input: {
   fetch_impl?: HnsCommunityAppHandleGatewayRuntimeFetch;
   authority_factory?: typeof makePostgresHnsCommunityAppHandleGatewayAuthorityV1;
 }) {
-  if (input.configuration.manifest.schema !== HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA) {
+  if (
+    input.configuration.manifest.schema !== HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA &&
+    input.configuration.manifest.schema !== HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA
+  ) {
     throw new Error("HNS community app-handle gateway configuration is incomplete or invalid");
   }
   const fetchImpl = input.fetch_impl ?? ((request, init) => fetch(request, init));
   const authority = (
     input.authority_factory ?? makePostgresHnsCommunityAppHandleGatewayAuthorityV1
-  )(input.configuration.authority_database_url);
+  )(
+    input.configuration.authority_database_url,
+    input.configuration.manifest.schema === HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA
+      ? {
+          resolutionDeadlineMs:
+            input.configuration.manifest.private_authority_deadline_milliseconds,
+        }
+      : undefined,
+  );
   const common = {
     gateway_deployment_reference: input.configuration.gateway_deployment_reference,
     solid_origin: input.configuration.manifest.solid_origin,
@@ -230,7 +245,9 @@ async function runHnsCommunityAppHandleGateway(arguments_: readonly string[]): P
   const listeners =
     argumentsValue.mode === "production"
       ? HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS
-      : HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS;
+      : argumentsValue.mode === "shadow"
+        ? HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS
+        : HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS;
   const server = await startHnsCommunityAppHandleGatewayServer({
     composition: runtime.composition,
     ...listeners,

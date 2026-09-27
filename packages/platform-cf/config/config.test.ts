@@ -416,10 +416,11 @@ describe("config system (000 §9)", () => {
     };
 
     expect(config.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
-    // Staging serves the community app API; the handle host API stays off.
+    // Staging serves both community and handle hosts through the protected origin.
     expect(config.env?.staging?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
+    expect(config.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
+    expect(config.env?.staging?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("true");
     for (const environment of [config, config.env?.staging]) {
-      expect(environment?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
       expect(environment?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
       expect(environment?.durable_objects?.bindings).toContainEqual({
         name: "HNS_COMMUNITY_APP_API_REPLAY",
@@ -555,7 +556,9 @@ describe("config system (000 §9)", () => {
     expect(config.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
     expect(config.vars?.HNS_OWNERSHIP_CAPABILITIES).toBeUndefined();
     expect(staging?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
-    expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe("hns-owner-staging-regtest");
+    expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe(
+      "hns-owner-staging-mainnet-v1",
+    );
     expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
     expect(staging?.vars?.HNS_OWNERSHIP_CAPABILITIES).toBe("hns-txt-import-v1");
     expect(production?.vars?.HNS_OWNERSHIP_CAPABILITIES).toBeUndefined();
