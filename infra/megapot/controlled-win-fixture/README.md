@@ -148,6 +148,22 @@ It then writes local HTTP and jobs config copies that change only
 2026-09-27 00:29 Tbilisi run correctly refused while custody still held zero
 ETH. The rewards-off Worker versions remain the rollback targets.
 
+`route:megapot-controlled-win:custody-float` is dry-run by default. With the
+owner's approval for exactly 0.007 Base Sepolia ETH, it checked that the
+isolated custody wallet was empty, the operator's next nonce was 2, the gas
+quote was below 0.00001 ETH, and at least 0.005 ETH would remain with the
+operator. Execution additionally required `--execute` and
+`E2E_APPROVED_CUSTODY_FLOAT_WEI=7000000000000000`. Transaction
+`0x53e06ab573f3da543fb6db26e9f662ad35e9b1a0915faf6919bd70c5553dfe65`
+sent the exact amount to custody in block 47357582. A public Base Sepolia
+node returned a successful receipt and the normal block hash. The configured
+RPC initially reported a zero block hash, so the public receipt is the
+canonical evidence. The isolated custody and gas wallets each held 0.007 ETH
+afterward; the operator retained about 0.00699 ETH. The activation preflight
+then passed and produced local HTTP and jobs config copies. Both Worker
+builds passed `wrangler versions upload --dry-run`; nothing was activated by
+those dry runs.
+
 `arm:megapot-controlled-win:drawing` accepts an explicit Unix drawing time.
 Its dry run verifies the funded prize, drawing ID 1, empty ticket inventory,
 no operator pending nonce, and a time 10 minutes to four hours ahead. It

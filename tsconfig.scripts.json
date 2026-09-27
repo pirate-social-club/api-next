@@ -10,6 +10,7 @@
     "infra/megapot/controlled-win-fixture/attest-isolated.ts",
     "infra/megapot/controlled-win-fixture/fund-prize.ts",
     "infra/megapot/controlled-win-fixture/prepare-activation.ts",
+    "infra/megapot/controlled-win-fixture/route-custody-float.ts",
     "infra/megapot/controlled-win-fixture/arm-drawing.ts",
     "scripts/hns-staging-gateway-fixture.ts",
     "scripts/hns-previous-verifier-bundle.ts",

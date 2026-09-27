@@ -62,6 +62,7 @@
     "attest:megapot-controlled-win:isolated": "bun infra/megapot/controlled-win-fixture/attest-isolated.ts",
     "fund:megapot-controlled-win:prize": "bun infra/megapot/controlled-win-fixture/fund-prize.ts",
     "prepare:megapot-controlled-win:activation": "bun infra/megapot/controlled-win-fixture/prepare-activation.ts",
+    "route:megapot-controlled-win:custody-float": "bun infra/megapot/controlled-win-fixture/route-custody-float.ts",
     "arm:megapot-controlled-win:drawing": "bun infra/megapot/controlled-win-fixture/arm-drawing.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",
