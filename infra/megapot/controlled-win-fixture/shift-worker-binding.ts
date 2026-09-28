@@ -106,6 +106,22 @@ async function state(which: Worker): Promise<State> {
 function fingerprint(bindings: Binding[]): string {
   return createHash("sha256").update(JSON.stringify([...bindings].sort((a, b) => a.name.localeCompare(b.name)))).digest("hex");
 }
+function sortedObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedObject);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => [key, sortedObject(item)]));
+  }
+  return value;
+}
+function settingsFingerprint(settings: Record<string, unknown>): string {
+  const relevant = { ...settings };
+  delete relevant.annotations;
+  if (Array.isArray(relevant.bindings)) {
+    relevant.bindings = [...relevant.bindings].sort((a: Binding, b: Binding) => a.name.localeCompare(b.name));
+  }
+  return createHash("sha256").update(JSON.stringify(sortedObject(relevant))).digest("hex");
+}
 function expectedTransition(phase: Phase) {
   if (phase === "disable") return { name: "MEGAPOT_REWARDS_ENABLED", before: "true", after: "false",
     attestation: oldAttestation };
@@ -153,6 +169,7 @@ if (phase === "enable") {
 }
 const changed = before.bindings.map((item) => item.name === transition.name
   ? { ...item, text: transition.after } : item);
+const expectedSettings = { ...before.settings, bindings: changed };
 const body = { settings: {
   bindings: before.bindings.map((item) => item.name === transition.name
     ? { name: item.name, type: "plain_text", text: transition.after }
@@ -163,6 +180,8 @@ const plan = { worker, phase, version: before.version, scriptEtag: before.etag,
   bindingCount: before.bindings.length, beforeHash: fingerprint(before.bindings),
   afterHash: fingerprint(changed), changedBinding: transition.name,
   beforeValue: transition.before, afterValue: transition.after,
+  beforeSettingsHash: settingsFingerprint(before.settings),
+  afterSettingsHash: settingsFingerprint(expectedSettings),
   patchHash: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
 if (!execute) {
   console.log(JSON.stringify({ action: "dry-run", ...plan }));
@@ -171,6 +190,7 @@ if (!execute) {
 const recordPath = `${recordRoot}/worker-${worker}-${phase}-${Date.now()}.json`;
 let modified = false;
 let result: Record<string, unknown> = { action: "execute", ...plan, startedAt: new Date().toISOString() };
+await writeFile(recordPath, `${JSON.stringify({ ...result, outcome: "prepared" }, null, 2)}\n`, { mode: 0o600 });
 try {
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerNames[worker]}/settings`,
@@ -188,7 +208,8 @@ try {
   }
   if (after.version !== after.latest || after.version === before.version ||
       after.etag !== before.etag || JSON.stringify(after.runtime) !== JSON.stringify(before.runtime) ||
-      fingerprint(after.bindings) !== fingerprint(changed)) {
+      fingerprint(after.bindings) !== fingerprint(changed) ||
+      settingsFingerprint(after.settings) !== settingsFingerprint(expectedSettings)) {
     throw new Error("Worker code, runtime or binding readback mismatch");
   }
   result = { ...result, outcome: "verified", newVersion: after.version, checkedAt: new Date().toISOString() };

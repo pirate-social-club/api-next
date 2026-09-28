@@ -72,8 +72,9 @@ unproven until this cutover and the owner activity run happen.
 rebuilding its script. It accepts `--worker http|jobs`, `--phase disable|select-r2|enable`,
 and the exact current `--expected-version` and `--expected-etag`. Its default
 mode reads both Workers and prints a one-binding dry run. `--execute` also
-requires a durable `E2E_GUARD_RECORD_DIR`; it uploads the inherited-binding
-settings change, confirms that only the chosen value changed and the script
+requires a durable `E2E_GUARD_RECORD_DIR`; it writes a prepared record before
+the PATCH, uploads the inherited-binding settings change, confirms that only
+the chosen value and annotation changed and the script
 etag stayed fixed, and restores the prior serving version if readback fails.
 Run each phase for both Workers in order, with an obligation readback after
 both are disabled and the database rotation between selection and activation.
