@@ -25,3 +25,38 @@ production VPC service ID, Worker binding and secret names, then run a
 production activation check through the Worker. Keep the staging reader and
 production verifier unchanged. The production host, VPC service, secret and
 Worker are release mutations and need the amended release approval.
+
+## Secondary readiness API forward
+
+The production provisioner needs a private view of the secondary PowerDNS API
+before it can admit a fresh imported root. The API binds only to
+`127.0.0.1:8081` on the existing secondary host. Install
+`pirate-hns-secondary-api-tunnel.service` on the existing primary and
+provisioner host. It forwards only `127.0.0.1:18081` there to secondary
+loopback port 8081. The unit uses systemd credentials for a dedicated SSH key
+and a pinned host key; its command line contains neither private key nor API
+key. It refuses a failed forward and restarts when the connection drops.
+
+Generate a dedicated tunnel key after approval. The secondary's authorized
+key must admit only the primary source address and forwarding to
+`127.0.0.1:8081`, with no shell, PTY or other forwarding. Pin the already
+trusted secondary host key in
+`/etc/pirate/hns-secondary-api-tunnel/known_hosts`; do not bootstrap trust
+from an unverified network scan. Keep the private key at the unit's protected
+`id_ed25519` path. Read back that ports 8081 and 18081 listen only on
+loopback before starting the new provisioner.
+
+The provisioner environment then needs the five
+`HNS_AUTHORITY_SECONDARY_*` settings: URL
+`http://127.0.0.1:18081`, API key from the protected operator secret, server
+ID `localhost`, expected master `94.103.168.161` and account
+`pirate-primary`. The source also requires mainnet tree interval 36, safe
+confirmations 12, maximum tip age 10800 seconds and maximum future tip
+3600 seconds, matching the staging-proven mainnet profile. Keep its current DNS,
+certificate and gateway settings until the coordinated gateway selector
+switch; then pin the matching new gateway reference in the same release.
+
+The previous provisioner bundle and environment, secondary DNS selector and
+container remain the rollback target. If the private API read or retained-zone
+comparison fails, restore those exact prior versions and verify the existing
+production root from both public authorities before proceeding.
