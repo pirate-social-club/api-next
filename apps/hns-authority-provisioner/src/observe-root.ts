@@ -9,6 +9,8 @@ import {
   type HnsChainAuthorityRecord,
   type HnsChainObservationResultV1,
   type HnsRootDelegationDsV1,
+  type HnsRootImportGlueRecordV1,
+  type HnsRootImportNameserversV1,
   type HnsRootImportPublishPlanV1,
   type HnsRootReadinessObservationRequestV1,
   type HnsRootResourceRecordV1,
@@ -49,6 +51,8 @@ export type HnsRootReadinessObservationPorts = Readonly<{
 export type HnsRootReadinessObservationConfig = Readonly<{
   readonly environment: string;
   readonly valid_for_seconds: number;
+  readonly nameservers?: HnsRootImportNameserversV1;
+  readonly glue_records?: readonly HnsRootImportGlueRecordV1[];
   readonly now?: () => number;
 }>;
 
@@ -227,6 +231,9 @@ function canonicalRecordMultiset(records: readonly HnsRootResourceRecordV1[]): s
 
 function chainAuthorityRecords(
   records: readonly HnsRootResourceRecordV1[],
+  expectedNameservers: HnsRootImportNameserversV1,
+  expectedGlue: readonly HnsRootImportGlueRecordV1[],
+  rootLabel: string,
 ): readonly HnsChainAuthorityRecord[] {
   const authority: HnsChainAuthorityRecord[] = [];
   for (const record of records) {
@@ -235,6 +242,15 @@ function chainAuthorityRecords(
         throw new HnsRootReadinessObservationError("authority_mismatch");
       }
       authority.push(["NS", record.ns.endsWith(".") ? record.ns.slice(0, -1) : record.ns]);
+    } else if (record.type === "GLUE4" || record.type === "GLUE6") {
+      if (typeof record.ns !== "string" || typeof record.address !== "string") {
+        throw new HnsRootReadinessObservationError("authority_mismatch");
+      }
+      authority.push([
+        record.type,
+        record.ns.endsWith(".") ? record.ns.slice(0, -1) : record.ns,
+        record.address,
+      ]);
     } else if (record.type === "DS") {
       if (
         !Number.isSafeInteger(record.keyTag) ||
@@ -256,7 +272,24 @@ function chainAuthorityRecords(
   const nameservers = authority
     .filter((record): record is readonly ["NS", string] => record[0] === "NS")
     .map((record) => record[1]);
-  if (canonicalJson(nameservers.sort()) !== canonicalJson(["ns1.pirate", "ns2.pirate"])) {
+  if (
+    canonicalJson(nameservers.sort()) !==
+    canonicalJson(expectedNameservers.map((name) => name.slice(0, -1)).sort())
+  ) {
+    throw new HnsRootReadinessObservationError("authority_mismatch");
+  }
+  const actualGlue = authority
+    .filter(
+      (record) =>
+        (record[0] === "GLUE4" || record[0] === "GLUE6") &&
+        expectedNameservers.some((name) => name.slice(0, -1) === record[1]),
+    )
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  const wantedGlue = expectedGlue
+    .filter((record) => record.ns.endsWith(`.${rootLabel}.`))
+    .map((record) => [record.type, record.ns.slice(0, -1), record.address] as const)
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  if (canonicalJson(actualGlue) !== canonicalJson(wantedGlue)) {
     throw new HnsRootReadinessObservationError("authority_mismatch");
   }
   return authority;
@@ -276,6 +309,7 @@ export type HnsAuthorityProvisionResultV1 = Readonly<{
 
 export function decodeHnsAuthorityProvisionResultV1(
   bytes: Uint8Array,
+  expectedNameservers: HnsRootImportNameserversV1 = HNS_AUTHORITY_NAMESERVERS,
 ): HnsAuthorityProvisionResultV1 {
   const value = decodeStrictHnsJsonBytes(bytes, 1_048_576);
   if (
@@ -298,7 +332,7 @@ export function decodeHnsAuthorityProvisionResultV1(
     value.version !== HNS_AUTHORITY_PROVISION_RESULT_VERSION ||
     !id(value.root_import_session_id) ||
     typeof value.root_label !== "string" ||
-    JSON.stringify(value.nameservers) !== JSON.stringify(HNS_AUTHORITY_NAMESERVERS) ||
+    JSON.stringify(value.nameservers) !== JSON.stringify(expectedNameservers) ||
     typeof value.zone_created !== "boolean" ||
     value.zone_dnssec !== true ||
     !Number.isSafeInteger(value.zone_serial) ||
@@ -361,7 +395,11 @@ export async function observeHnsRootReadinessV1(input: {
     throw new HnsRootReadinessObservationError("invalid_request");
   }
   const plan = decodePlan(input.publish_plan_bytes);
-  const provision = decodeHnsAuthorityProvisionResultV1(input.provision_result_bytes);
+  const expectedNameservers = input.config.nameservers ?? HNS_AUTHORITY_NAMESERVERS;
+  const provision = decodeHnsAuthorityProvisionResultV1(
+    input.provision_result_bytes,
+    expectedNameservers,
+  );
   if (
     provision.root_import_session_id !== input.request.root_import_session_id ||
     provision.root_label !== input.request.root_label
@@ -412,7 +450,12 @@ export async function observeHnsRootReadinessV1(input: {
   ) {
     throw new HnsRootReadinessObservationError("owner_update_pending");
   }
-  const authorityRecords = chainAuthorityRecords(chainRecords);
+  const authorityRecords = chainAuthorityRecords(
+    chainRecords,
+    expectedNameservers,
+    input.config.glue_records ?? [],
+    input.request.root_label,
+  );
   if (input.operation_kind === "observe_root_v1") {
     try {
       await input.ports.reconcile_zone({
@@ -457,8 +500,8 @@ export async function observeHnsRootReadinessV1(input: {
   }
   const [primaryView, secondaryView] = live.authority_views;
   if (
-    primaryView.authority_nameserver !== "ns1.pirate" ||
-    secondaryView.authority_nameserver !== "ns2.pirate" ||
+    primaryView.authority_nameserver !== expectedNameservers[0].slice(0, -1) ||
+    secondaryView.authority_nameserver !== expectedNameservers[1].slice(0, -1) ||
     primaryView.dnssec_validation !== "secure" ||
     secondaryView.dnssec_validation !== "secure" ||
     primaryView.challenge_present !== true ||
@@ -547,7 +590,7 @@ export async function observeHnsRootReadinessV1(input: {
     gateway_http_status: live.gateway.http_status,
     authority_views: [
       {
-        authority_nameserver: "ns1.pirate",
+        authority_nameserver: primaryView.authority_nameserver,
         authority_address_family: primaryView.authority_address_family,
         authority_address: primaryView.authority_address,
         dnssec_validation: primaryView.dnssec_validation,
@@ -558,7 +601,7 @@ export async function observeHnsRootReadinessV1(input: {
         observed_zone_sha256: primaryView.observed_zone_sha256,
       },
       {
-        authority_nameserver: "ns2.pirate",
+        authority_nameserver: secondaryView.authority_nameserver,
         authority_address_family: secondaryView.authority_address_family,
         authority_address: secondaryView.authority_address,
         dnssec_validation: secondaryView.dnssec_validation,

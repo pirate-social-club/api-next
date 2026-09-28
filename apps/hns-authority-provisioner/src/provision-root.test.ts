@@ -50,6 +50,7 @@ function observedCurrent(records: readonly unknown[]): Promise<HnsChainObservati
 describe("HNS authority root provision operation", () => {
   test("inspects before mutation and returns a complete preserved wallet plan", async () => {
     const order: string[] = [];
+    const nameservers = ["ns1.staging-hns.", "ns2.staging-hns."] as const;
     const managedZoneBytes = encoder.encode("managed-zone");
     const managedZoneSha256 = [
       ...new Uint8Array(await crypto.subtle.digest("SHA-256", managedZoneBytes)),
@@ -57,6 +58,7 @@ describe("HNS authority root provision operation", () => {
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
     const output = await provisionHnsAuthorityRootV1(request, {
+      nameservers,
       observe_current_resource: async () => {
         order.push("inspect");
         return observedCurrent([
@@ -92,10 +94,12 @@ describe("HNS authority root provision operation", () => {
       removed_conflicts: [{ type: "NS", ns: "old.example." }],
       acknowledgement_required: true,
     });
+    expect(plan.added_records.slice(0, 2)).toEqual(nameservers.map((ns) => ({ type: "NS", ns })));
     expect(output.publish_plan_sha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(output.current_snapshot_sha256).toBe(`${"1".repeat(64)}`);
     expect(JSON.parse(new TextDecoder().decode(output.result_bytes))).toMatchObject({
       root_label: "newroot",
+      nameservers,
       zone_created: true,
       zone_dnssec: true,
     });

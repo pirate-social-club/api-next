@@ -22,8 +22,8 @@ export class RewardClaimIntentDataInvalid extends Error {
 /**
  * Spec 015 §5.2a. Returns an open reward-claim intent for the account,
  * reusing one that is still usable (unexpired for at least five minutes and
- * with no terminal proof session) and otherwise issuing a new one valid for
- * an hour. The intent grants nothing by itself: the claim re-checks evidence.
+ * with no terminal or expired proof session) and otherwise issuing a new one
+ * valid for an hour. The intent grants nothing by itself: the claim re-checks evidence.
  */
 export const issueRewardClaimVerificationIntent = (
   accountId: string,
@@ -51,7 +51,8 @@ export const issueRewardClaimVerificationIntent = (
                       SELECT 1 FROM proof_sessions AS session
                        WHERE session.actor_id = intent.user_id
                          AND session.intent_id = intent.action_intent_id
-                         AND session.status <> 'pending'
+                         AND (session.status <> 'pending'
+                           OR session.expires_at <= clock_timestamp())
                     )
                   ORDER BY intent.created_at DESC, intent.action_intent_id DESC
                   LIMIT 1

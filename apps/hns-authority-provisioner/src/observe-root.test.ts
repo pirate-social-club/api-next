@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
+import type {
+  HnsChainObservationResultV1,
+  HnsRootResourceRecordV1,
+} from "@pirate/application/namespace-ownership";
 import {
   decodeHnsRootImportReadinessResultV1,
   HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
@@ -52,7 +55,10 @@ function observedCurrent(records: readonly unknown[]): HnsChainObservationResult
   };
 }
 
-async function fixture() {
+async function fixture(
+  nameservers: readonly [string, string] = ["ns1.pirate.", "ns2.pirate."],
+  glueRecords: readonly { type: "GLUE4"; ns: string; address: string }[] = [],
+) {
   const managedZoneBytes = encoder.encode(
     canonicalJson({ root_label: "newroot", serial: 7, managed: true }),
   );
@@ -82,6 +88,8 @@ async function fixture() {
       expires_at: "2099-01-01T00:00:00.000Z",
     },
     {
+      nameservers,
+      glue_records: glueRecords,
       observe_current_resource: async () => observedCurrent([{ type: "TXT", txt: ["preserved"] }]),
       ensure_zone: async () => zone,
     },
@@ -91,7 +99,7 @@ async function fixture() {
   };
   const observedZoneSha256 = await sha256(managedZoneBytes);
   const authorityView = (ordinal: 1 | 2) => ({
-    authority_nameserver: `ns${ordinal}.pirate`,
+    authority_nameserver: nameservers[ordinal === 1 ? 0 : 1].slice(0, -1),
     authority_address_family: "GLUE4" as const,
     authority_address: `192.0.2.${String(52 + ordinal)}`,
     dnssec_validation: "secure" as const,
@@ -131,8 +139,45 @@ async function fixture() {
 }
 
 describe("HNS root readiness observation", () => {
+  test("accepts an exact in-bailiwick NS, glue, DS and TXT authority", async () => {
+    const nameservers = ["ns1.newroot.", "ns2.newroot."] as const;
+    const glueRecords = [
+      { type: "GLUE4", ns: nameservers[0], address: "192.0.2.53" },
+      { type: "GLUE4", ns: nameservers[1], address: "192.0.2.54" },
+    ] as const;
+    const state = await fixture(nameservers, glueRecords);
+    const observed = await observeHnsRootReadinessV1({
+      observation_attempt: { job_id: "glue-job", executor_id: "executor", lease_fence: 1 },
+      operation_kind: "observe_root_v1",
+      request: state.request,
+      publish_plan_bytes: state.provision.publish_plan_bytes,
+      provision_result_bytes: state.provision.result_bytes,
+      ports: {
+        observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
+        reconcile_zone: async () => {},
+        inspect_zone: async () => ({ ...state.zone, created: false }),
+        observe_live: async () => state.live,
+      },
+      config: {
+        environment: "staging",
+        valid_for_seconds: 86_400,
+        nameservers,
+        glue_records: glueRecords,
+        now: () => now,
+      },
+    });
+    const decoded = await decodeHnsRootImportReadinessResultV1(observed.result_bytes);
+    expect(decoded.result.delegation_matches).toBe(true);
+    expect(
+      (state.plan.replacement_records as readonly HnsRootResourceRecordV1[]).filter(
+        (record) => record.type === "GLUE4",
+      ),
+    ).toEqual([...glueRecords]);
+  });
+
   test("retains exact chain, signed-zone, shared TLSA, and bounded inventory evidence", async () => {
-    const state = await fixture();
+    const nameservers = ["ns1.staging-hns.", "ns2.staging-hns."] as const;
+    const state = await fixture(nameservers);
     let reconciledZone = false;
     const observed = await observeHnsRootReadinessV1({
       observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
@@ -162,6 +207,7 @@ describe("HNS root readiness observation", () => {
       config: {
         environment: "test",
         valid_for_seconds: 86_400,
+        nameservers,
         now: () => Date.parse("2026-09-01T06:00:00.000Z"),
       },
     });
@@ -177,6 +223,7 @@ describe("HNS root readiness observation", () => {
       retained_zone_digest_matches: true,
       gateway_healthy: true,
       valid_until: "2026-09-02T06:00:00.000Z",
+      authority_views: nameservers.map((name) => ({ authority_nameserver: name.slice(0, -1) })),
     });
     expect(decoded.managed_zone_bytes).toEqual(state.zone.managed_zone_bytes);
     expect(decoded.authority_inventory.dns_write_capabilities).toEqual([

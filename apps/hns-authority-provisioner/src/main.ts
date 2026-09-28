@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-ownership";
 import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Client } from "pg";
+import { parseHnsAuthorityRuntimeProfileV1 } from "./authority-profile.ts";
 import { runHnsAuthorityProvisionExecutorOnce } from "./executor.ts";
 import { runHnsIncidentReportCommandV1 } from "./incident-command.ts";
 import { makeHnsLifecycleObservePort } from "./lifecycle-evidence.ts";
@@ -15,10 +16,7 @@ import {
   nextHnsLifecycleJobDueEpochMs,
 } from "./lifecycle-queue.ts";
 import { runHnsRootImportReadinessOnce } from "./lifecycle-readiness.ts";
-import {
-  type HnsRootReadinessAuthorityEndpointV1,
-  makeLiveHnsRootReadinessObserverV1,
-} from "./live-readiness.ts";
+import { makeLiveHnsRootReadinessObserverV1 } from "./live-readiness.ts";
 import { makePostgresHnsRootObservationQueue } from "./observation-queue.ts";
 import {
   makePowerDnsRootInspector,
@@ -50,6 +48,44 @@ import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 // unrelated provisioning or renewal.
 export const HNS_ROOT_OBSERVATION_RETRY_DELAY_MS = 180_000;
 export const HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS = 15_000;
+
+const zoneMutationMessages = new Set([
+  "HNS mutation lease is required",
+  "HNS zone mutation no longer admitted",
+  "HNS mutation database connection lost",
+  "PowerDNS root provisioner configuration is invalid",
+  "PowerDNS request timed out",
+  "PowerDNS zone inspection failed",
+  "PowerDNS zone creation failed",
+  "PowerDNS zone creation race could not converge",
+  "PowerDNS zone creation race belongs to another reservation",
+  "PowerDNS zone reconciliation failed",
+  "PowerDNS AXFR authorization failed",
+  "PowerDNS DNSSEC rectification failed",
+  "PowerDNS secondary notification failed",
+  "PowerDNS retained zone inspection failed",
+  "PowerDNS DNSSEC key inspection failed",
+]);
+
+/** Keep operational cause codes while never logging provider bodies or challenge values. */
+export function hnsZoneMutationFailureDetails(error: unknown): Readonly<{
+  error_name: string;
+  reason: string;
+  sqlstate?: string;
+  system_code?: string;
+}> {
+  if (!(error instanceof Error)) return { error_name: "unknown", reason: "unclassified" };
+  const code = "code" in error ? error.code : undefined;
+  return {
+    error_name: error.name,
+    reason: zoneMutationMessages.has(error.message) ? error.message : "unclassified",
+    ...(typeof code === "string" && /^[0-9A-Z]{5}$/u.test(code)
+      ? { sqlstate: code }
+      : typeof code === "string" && /^E[A-Z_]+$/u.test(code)
+        ? { system_code: code }
+        : {}),
+  };
+}
 
 /**
  * Waits until the next persisted job due time, bounded by the recovery
@@ -125,27 +161,6 @@ function readinessTimeoutMs(): number {
     throw new Error("HNS authority provisioner configuration is invalid");
   }
   return value;
-}
-
-function authorityEndpoint(ordinal: 1 | 2): HnsRootReadinessAuthorityEndpointV1 {
-  const authorityNameserver = required(`HNS_AUTHORITY_NS${ordinal}_NAME`);
-  const authorityAddress = required(`HNS_AUTHORITY_NS${ordinal}_ADDRESS`);
-  const family = isIP(authorityAddress);
-  if (family !== 4 && family !== 6) {
-    throw new Error("HNS authority provisioner configuration is invalid");
-  }
-  const localAddress = required(
-    family === 4 ? "HNS_AUTHORITY_DNS_LOCAL_IPV4" : "HNS_AUTHORITY_DNS_LOCAL_IPV6",
-  );
-  if (isIP(localAddress) !== family) {
-    throw new Error("HNS authority provisioner configuration is invalid");
-  }
-  return {
-    authority_nameserver: authorityNameserver,
-    authority_address_family: family === 4 ? "GLUE4" : "GLUE6",
-    authority_address: authorityAddress,
-    local_address: localAddress,
-  };
 }
 
 async function axfrSecret(): Promise<Uint8Array> {
@@ -248,6 +263,18 @@ async function main(serve: boolean): Promise<void> {
   const executorId = required("HNS_AUTHORITY_EXECUTOR_ID");
   const gatewayIpv4 = required("HNS_AUTHORITY_GATEWAY_IPV4");
   const sharedTlsa = tlsaAssociation();
+  const environment = required("HNS_AUTHORITY_ENVIRONMENT");
+  const chainNetwork = required("HNS_AUTHORITY_CHAIN_NETWORK");
+  const authorityProfile = parseHnsAuthorityRuntimeProfileV1({
+    environment,
+    chain_network: chainNetwork,
+    required,
+  });
+  const {
+    nameservers,
+    glue_records: glueRecords,
+    endpoints: authorityEndpoints,
+  } = authorityProfile;
   if (!boundedId(executorId) || isIP(gatewayIpv4) !== 4) {
     throw new Error("HNS authority provisioner configuration is invalid");
   }
@@ -341,7 +368,7 @@ async function main(serve: boolean): Promise<void> {
     {
       rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
       authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
-      chain_network: required("HNS_AUTHORITY_CHAIN_NETWORK"),
+      chain_network: chainNetwork,
       genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
       // Handshake mainnet commits the Urkel tree every 36 blocks and HSD
       // treats a commitment with more than 12 confirmations as safe.
@@ -357,6 +384,8 @@ async function main(serve: boolean): Promise<void> {
     fetch,
   );
   const powerDnsConfig: PowerDnsRootProvisionConfig = {
+    nameservers,
+    glue_records: glueRecords,
     api_url: required("HNS_AUTHORITY_PDNS_API_URL"),
     api_key: required("HNS_AUTHORITY_PDNS_API_KEY"),
     server_id: required("HNS_AUTHORITY_PDNS_SERVER_ID"),
@@ -394,20 +423,49 @@ async function main(serve: boolean): Promise<void> {
     new URL(secondaryPowerDnsConfig.api_url).origin === new URL(powerDnsConfig.api_url).origin
   )
     throw new Error("HNS authority secondary PowerDNS endpoint must differ from the primary");
-  const ensureZone = (input: {
+  const ensureZone = async (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
     readonly current_records: readonly HnsRootResourceRecordV1[];
     readonly mutation_lease?: HnsZoneMutationLease;
-  }) =>
-    withHnsRootZoneMutation(connectionString, input, false, (signal) =>
-      makePowerDnsRootProvisioner(powerDnsConfig, (url, init) =>
-        fetch(url, {
-          ...init,
-          signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+  }) => {
+    try {
+      return await withHnsRootZoneMutation(connectionString, input, false, (signal) =>
+        makePowerDnsRootProvisioner(powerDnsConfig, async (url, init) => {
+          const method = init?.method ?? "GET";
+          try {
+            return await fetch(url, {
+              ...init,
+              signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+            });
+          } catch (error) {
+            const code =
+              error !== null && typeof error === "object" && "code" in error
+                ? error.code
+                : undefined;
+            console.error(
+              JSON.stringify({
+                event: "hns_primary_powerdns_exchange_failed",
+                method,
+                database_signal_aborted: signal.aborted,
+                ...(typeof code === "string" && /^[0-9A-Z_]{5,32}$/u.test(code) ? { code } : {}),
+              }),
+            );
+            throw error;
+          }
+        })(input),
+      );
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "hns_root_zone_mutation_failed",
+          root_label: input.root_label,
+          ...hnsZoneMutationFailureDetails(error),
         }),
-      )(input),
-    );
+      );
+      throw error;
+    }
+  };
   const inspectZone = makePowerDnsRootInspector(powerDnsConfig);
   const reconcileZone = makeFencedHnsRootZoneReconciler(
     connectionString,
@@ -435,9 +493,9 @@ async function main(serve: boolean): Promise<void> {
     );
   };
   const observeLive = makeLiveHnsRootReadinessObserverV1({
-    chain_network: required("HNS_AUTHORITY_CHAIN_NETWORK"),
+    chain_network: chainNetwork,
     chain_genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
-    authorities: [authorityEndpoint(1), authorityEndpoint(2)],
+    authorities: authorityEndpoints,
     axfr_credential: {
       key_name: powerDnsConfig.axfr_tsig_key_name,
       algorithm: "hmac-sha256",
@@ -452,6 +510,8 @@ async function main(serve: boolean): Promise<void> {
     executor_id: executorId,
     queue,
     provision: {
+      nameservers,
+      glue_records: glueRecords,
       observe_current_resource: (rootLabel: string) => observeChain(rootLabel, "current"),
       ensure_zone: ensureZone,
     },
@@ -495,8 +555,10 @@ async function main(serve: boolean): Promise<void> {
           }),
       },
       config: {
-        environment: required("HNS_AUTHORITY_ENVIRONMENT"),
+        environment,
         valid_for_seconds: readinessValidForSeconds(),
+        nameservers,
+        glue_records: glueRecords,
       },
     },
   } as const;
@@ -533,8 +595,10 @@ async function main(serve: boolean): Promise<void> {
       observe_live: observeLive,
     },
     {
-      environment: required("HNS_AUTHORITY_ENVIRONMENT"),
+      environment,
       valid_for_seconds: readinessValidForSeconds(),
+      nameservers,
+      glue_records: glueRecords,
     },
     lifecyclePorts.finalize,
   );
