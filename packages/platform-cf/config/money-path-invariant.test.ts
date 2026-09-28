@@ -215,6 +215,16 @@ const MONEY_PATH_POSTURES = [
     evidenceLimitation:
       "The absence assertion covers checked-in declarations only and cannot prove that a remotely provisioned Worker secret is absent; Cloudflare secrets created outside the repository are invisible to it. The guard reference records that endpoint consumption requires MEGAPOT_REWARDS_ENABLED and that production enablement is rejected by the executable Megapot check; it does not validate the endpoint or its network, and the value is never asserted.",
   },
+  {
+    kind: "secret_rpc_url",
+    name: "PERSONA_WALLET_BASE_RPC_URL",
+    posture: "guarded_optional_secret_rpc",
+    productionDeclaration: "forbidden",
+    guard:
+      "parseSponsoredSendConfig rejects production sponsorship and only constructs the Wallet chain reader when all private sponsorship limits and this HTTPS RPC secret are configured",
+    evidenceLimitation:
+      "This checks the production declaration is absent, not the live Cloudflare secret inventory or the endpoint's actual chain. Staging chain reads separately verify eth_chainId before balance and receipt use.",
+  },
 ] as const satisfies readonly MoneyPathEntry[];
 
 type WranglerProductionBlock = Readonly<{

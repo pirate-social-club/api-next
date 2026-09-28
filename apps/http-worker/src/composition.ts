@@ -84,6 +84,7 @@ import {
   type HttpWorkerConfigValue,
   loadConfigFrom,
   parseRewardGasTopupConfig,
+  parseSponsoredSendConfig,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
@@ -227,6 +228,9 @@ import {
   type R2VideoMultipartControl,
 } from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
+import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
+import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-sponsored-send-service";
 import { Effect, Redacted, Schema } from "effect";
 import {
   makeTelegramServices,
@@ -300,6 +304,7 @@ import { makeTelegramHandlers } from "./telegram-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
 
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
@@ -432,6 +437,15 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_GAS_TOPUP_MAX_WEI?: string;
   readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
   readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_ENABLED?: string;
+  readonly PERSONA_WALLET_BASE_RPC_URL?: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
    * Song-backed video (Spec 013 §5A). Off unless exactly "true". Every new video
@@ -648,6 +662,16 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_GAS_TOPUP_MAX_WEI: bindings.MEGAPOT_GAS_TOPUP_MAX_WEI,
     MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
     MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
+    PRIVY_SPONSORED_SEND_ENABLED: bindings.PRIVY_SPONSORED_SEND_ENABLED,
+    PERSONA_WALLET_BASE_RPC_URL: bindings.PERSONA_WALLET_BASE_RPC_URL,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: bindings.PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI,
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI,
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI:
+      bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI,
   };
 }
 
@@ -662,6 +686,13 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
     // Malformed or partial gas top-up limits fail closed here; absent limits
     // leave top-ups disabled.
     parseRewardGasTopupConfig(config);
+    const sponsorship = parseSponsoredSendConfig(config);
+    if (sponsorship !== null) {
+      const rpcUrl = Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL);
+      if (!rpcUrl.startsWith("https://")) {
+        throw new Error("enabled Wallet sponsorship requires an HTTPS RPC binding");
+      }
+    }
     if (
       config.MEGAPOT_REWARDS_ENABLED &&
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
@@ -1546,6 +1577,26 @@ export async function createProductionHttpWorker(
   const platformPirateHandleHandlers = makePlatformPirateHandleHandlers(
     makeControlPlanePlatformPirateHandleStore(controlPlane),
   );
+  const sponsoredLimits = parseSponsoredSendConfig(config);
+  const walletSponsoredSendHandlers = makeWalletSponsoredSendHandlers(
+    sponsoredLimits === null
+      ? null
+      : makeWalletSponsoredSendService({
+          store: makeControlPlaneSponsoredSendStore(controlPlane, sponsoredLimits),
+          appId: config.PRIVY_APP_ID,
+          appSecret: Redacted.value(config.PRIVY_APP_SECRET),
+          chain: makeWalletSponsoredChain(
+            Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL),
+            84_532,
+          ),
+          eligibleAsset: {
+            chainId: 84_532,
+            tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+          },
+          requiredConfirmations: 3,
+          ids: () => crypto.randomUUID().replaceAll("-", ""),
+        }),
+  );
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? makeLazySongRewardOfferHandlers(async () => {
@@ -1756,6 +1807,7 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...mediaHandlers,
       ...videoAccessHandlers,
