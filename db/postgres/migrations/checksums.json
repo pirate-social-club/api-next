@@ -226,6 +226,6 @@
     "0223_hns_txt_attachment_runtime_window_grant.sql": "019770a3b0cd30529d3c49733b368a728d5acaf00f51e2c36f35d98874f4a1be",
     "0224_song_video_pcm_references.sql": "c57390e8a63618367605037976098116125536d7a23283277e1a9e8715f09b53",
     "0225_hns_import_runtime_function_grants.sql": "53ac22007721dbde05f6ce961f8386405ed6436081f3003fd34c1c362ba63882",
-    "0225_reward_sponsored_send_reservations.sql": "a698e586be3fb458653422c53d190fec7df37f7e46e9e16ff3b7f69d3fb86486"
+    "0225_reward_sponsored_send_reservations.sql": "2b8f5e021da82a1d174f8664d5835b0da6ca84bb85a61b5812a4e94e75ebfbc3"
   }
 }

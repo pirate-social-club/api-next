@@ -140,6 +140,8 @@
     "./reward-winner-send-chain": "./src/reward-winner-send-chain.ts",
     "./privy-sponsored-transaction": "./src/privy-sponsored-transaction.ts",
     "./reward-sponsored-send-request": "./src/reward-sponsored-send-request.ts",
+    "./reward-sponsored-send-repository": "./src/reward-sponsored-send-repository.ts",
+    "./reward-sponsored-send-service": "./src/reward-sponsored-send-service.ts",
     "./reward-winner-send-repository": "./src/reward-winner-send-repository.ts",
     "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",
     "./reward-funding-repository": "./src/reward-funding-repository.ts",

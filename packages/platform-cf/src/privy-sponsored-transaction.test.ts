@@ -129,6 +129,39 @@ describe("Privy sponsored request boundary", () => {
       status: "pending",
       transactionHash: null,
     });
+    // Privy's published list example omits reference_id from each item. The
+    // filtered endpoint itself still binds this sole item to the query.
+    const omittedReference: PrivySponsoredFetcher = async () =>
+      Response.json({
+        transactions: [
+          {
+            id: "privy_transaction_1",
+            wallet_id: input.walletId,
+            caip2: "eip155:84532",
+            status: "pending",
+            transaction_hash: null,
+          },
+        ],
+      });
+    expect((await findPrivySponsoredTransactionByReference(lookup, omittedReference))?.id).toBe(
+      "privy_transaction_1",
+    );
+    const wrongReference: PrivySponsoredFetcher = async () =>
+      Response.json({
+        transactions: [
+          {
+            id: "privy_transaction_1",
+            wallet_id: input.walletId,
+            caip2: "eip155:84532",
+            reference_id: "wrong_reference_12345678",
+            status: "pending",
+            transaction_hash: null,
+          },
+        ],
+      });
+    await expect(
+      findPrivySponsoredTransactionByReference(lookup, wrongReference),
+    ).rejects.toBeInstanceOf(PrivySponsoredOutcomeUnknown);
     const foreign: PrivySponsoredFetcher = async () =>
       Response.json({
         transactions: [

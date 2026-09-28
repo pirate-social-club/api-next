@@ -99,6 +99,60 @@ const RewardGasTopupConfigFields = {
   ),
 } as const;
 
+const SponsoredSendConfigFields = {
+  PRIVY_SPONSORED_SEND_ENABLED: Config.boolean("PRIVY_SPONSORED_SEND_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: Config.string(
+    "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT",
+  ).pipe(Config.withDefault("")),
+  PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: Config.string(
+    "PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT",
+  ).pipe(Config.withDefault("")),
+  PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: Config.string(
+    "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT",
+  ).pipe(Config.withDefault("")),
+} as const;
+
+export type SponsoredSendConfigValue = Readonly<{
+  perAccountUtcDay: number;
+  perWalletUtcDay: number;
+  platformUtcDay: number;
+}>;
+
+export function parseSponsoredSendConfig(input: {
+  readonly API_NEXT_ENV: AppEnvValue["API_NEXT_ENV"];
+  readonly PRIVY_SPONSORED_SEND_ENABLED: boolean;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: string;
+}): SponsoredSendConfigValue | null {
+  const values = [
+    input.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
+    input.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
+    input.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
+  ];
+  if (!input.PRIVY_SPONSORED_SEND_ENABLED && values.every((value) => value === "")) return null;
+  if (
+    !input.PRIVY_SPONSORED_SEND_ENABLED ||
+    input.API_NEXT_ENV === "production" ||
+    values.some((value) => !/^[1-9][0-9]{0,3}$/u.test(value))
+  ) {
+    throw new Error("invalid sponsored send configuration");
+  }
+  const [perAccountUtcDay, perWalletUtcDay, platformUtcDay] = values.map(Number);
+  if (
+    perAccountUtcDay === undefined ||
+    perWalletUtcDay === undefined ||
+    platformUtcDay === undefined ||
+    perWalletUtcDay > perAccountUtcDay ||
+    perAccountUtcDay > platformUtcDay
+  ) {
+    throw new Error("invalid sponsored send configuration");
+  }
+  return { perAccountUtcDay, perWalletUtcDay, platformUtcDay };
+}
+
 export type RewardGasTopupConfigValue = Readonly<{
   targetBalanceWei: bigint;
   maxTopupWei: bigint;
@@ -510,6 +564,7 @@ export const HttpWorkerConfig = Config.all({
   ...MegapotRewardConfigFields,
   MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
   ...RewardGasTopupConfigFields,
+  ...SponsoredSendConfigFields,
   HNS_ACTIVATION_CURRENT_VIEW: HnsActivationCurrentViewConfig,
 });
 
