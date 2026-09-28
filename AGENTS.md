@@ -98,6 +98,13 @@ nothing imports apps; domain uses only Schema/Data effect modules.
 
 ## Runtime
 
+Staging HTTP Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
+The tool checks the active staging HNS gateway against
+`scripts/hns-staging-gateway-pin.json` and the sibling Solid staging ingress
+candidate before mutation. It runs Solid's full read-only 8s28 serving gate
+afterward. Do not bypass this with a direct Wrangler staging HTTP deploy. A
+gateway rotation updates the pin and Solid deployment as one reviewed release.
+
 Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap), and
 `bun run check` fails if `effect` or any `@effect/*` package declares or
 resolves to another version. Upgrades are deliberate, reviewed bumps — never
