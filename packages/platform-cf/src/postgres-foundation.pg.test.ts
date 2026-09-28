@@ -1557,7 +1557,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_payout_effects",
         "reward_refund_effects",
         "reward_signer_nonces",
-        "reward_sponsored_sends",
         "reward_subject_consumptions",
         "reward_uniqueness_authorities",
         "reward_winner_send_attempts",
@@ -1642,6 +1641,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "users",
         "verification_completion_attempts",
         "verification_start_reservations",
+        "wallet_sponsored_sends",
         // POSTGRES_FOUNDATION_TABLE_CATALOG_END
       ]);
 
