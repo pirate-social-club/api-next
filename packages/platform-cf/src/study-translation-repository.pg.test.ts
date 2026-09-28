@@ -466,8 +466,8 @@ suite("Study translation generation", () => {
       await admin.query(
         `INSERT INTO account_streak_clocks (
            account_id, timezone, timezone_updated_at, next_change_allowed_at
-         ) VALUES ('study-account', 'UTC', clock_timestamp(),
-           clock_timestamp() + interval '7 days')`,
+         ) VALUES ('study-account', 'UTC', now(),
+           now() + interval '7 days')`,
       );
       const session = await Effect.runPromise(
         Effect.scoped(study.startSession(baseStart).pipe(Effect.provide(runtime))),
