@@ -15,12 +15,12 @@ AS $$
 $$;
 
 CREATE FUNCTION lock_hns_root_import_lifecycle_job_v1(
-  input_job_id text,
+  input_job_id bigint,
   input_session_id text,
   input_job_kind text,
   input_executor_id text,
   input_lease_fence bigint
-) RETURNS TABLE(lifecycle_job_id text, created_at timestamptz)
+) RETURNS TABLE(lifecycle_job_id bigint, created_at timestamptz)
 LANGUAGE sql SECURITY DEFINER
 AS $$
   SELECT job.lifecycle_job_id, job.created_at
@@ -36,7 +36,7 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION lock_hns_root_import_lifecycle_v1(text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION lock_hns_root_import_lifecycle_job_v1(text,text,text,text,bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION lock_hns_root_import_lifecycle_job_v1(bigint,text,text,text,bigint) FROM PUBLIC;
 DO $pin_hns_runtime_locks$
 BEGIN
   EXECUTE format(
@@ -44,7 +44,7 @@ BEGIN
     current_schema()
   );
   EXECUTE format(
-    'ALTER FUNCTION lock_hns_root_import_lifecycle_job_v1(text,text,text,text,bigint) SET search_path TO %I, pg_temp',
+    'ALTER FUNCTION lock_hns_root_import_lifecycle_job_v1(bigint,text,text,text,bigint) SET search_path TO %I, pg_temp',
     current_schema()
   );
 END;
@@ -83,7 +83,7 @@ BEGIN
       hns_root_import_sessions
     TO hns_root_import_executor_login_v1;
     GRANT EXECUTE ON FUNCTION lock_hns_root_import_lifecycle_v1(text) TO hns_root_import_executor_login_v1;
-    GRANT EXECUTE ON FUNCTION lock_hns_root_import_lifecycle_job_v1(text,text,text,text,bigint) TO hns_root_import_executor_login_v1;
+    GRANT EXECUTE ON FUNCTION lock_hns_root_import_lifecycle_job_v1(bigint,text,text,text,bigint) TO hns_root_import_executor_login_v1;
     GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(text,integer) TO hns_root_import_executor_login_v1;
     GRANT EXECUTE ON FUNCTION claim_hns_root_import_lifecycle_job_v1(text,integer) TO hns_root_import_executor_login_v1;
     GRANT EXECUTE ON FUNCTION commit_hns_root_import_lifecycle_decision_v1(text,bigint,text,text,text,text,text,jsonb,jsonb,bigint,bigint,bigint) TO hns_root_import_executor_login_v1;
