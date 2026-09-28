@@ -15834,6 +15834,74 @@ CREATE FUNCTION is_spaces_handle_recipient_live_v1(input_account_id text, input_
      )
 $$;
 
+CREATE FUNCTION lock_hns_root_import_lifecycle_job_v1(input_job_id bigint, input_session_id text, input_job_kind text, input_executor_id text, input_lease_fence bigint) RETURNS TABLE(lifecycle_job_id bigint, created_at timestamp with time zone)
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT job.lifecycle_job_id, job.created_at
+  FROM hns_root_import_lifecycle_jobs AS job
+  WHERE job.lifecycle_job_id = input_job_id
+    AND job.root_import_session_id = input_session_id
+    AND job.job_kind = input_job_kind
+    AND job.state = 'leased'
+    AND job.leased_by = input_executor_id
+    AND job.lease_fence = input_lease_fence
+    AND job.lease_expires_at > clock_timestamp()
+  FOR UPDATE
+$$;
+
+CREATE TABLE hns_root_import_lifecycle (
+    root_import_session_id text NOT NULL,
+    root_label text NOT NULL,
+    phase text NOT NULL,
+    revision bigint NOT NULL,
+    generation bigint NOT NULL,
+    plan_exposed_at timestamp with time zone,
+    publication_deadline_at timestamp with time zone,
+    first_current_observation_at timestamp with time zone,
+    finality_deadline_at timestamp with time zone,
+    readiness_observed_at timestamp with time zone,
+    pending_reason text,
+    next_check_at timestamp with time zone,
+    observation_count bigint DEFAULT 0 NOT NULL,
+    consecutive_operational_failures bigint DEFAULT 0 NOT NULL,
+    last_useful_error text,
+    last_useful_error_at timestamp with time zone,
+    terminal_decided_at timestamp with time zone,
+    policy_name text NOT NULL,
+    policy_digest text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    plan_encoded_resource_sha256 text,
+    last_observation_view text,
+    last_observation_resource_sha256 text,
+    last_observation_tip_height bigint,
+    last_observation_update_inclusion_height bigint,
+    last_observation_commitment_height bigint,
+    last_observation_at timestamp with time zone,
+    last_observation_recorded_at timestamp with time zone,
+    readiness_accepted_at timestamp with time zone,
+    synthetic boolean DEFAULT false NOT NULL,
+    CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
+    CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at, last_observation_recorded_at) = ANY (ARRAY[0, 5])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
+    CONSTRAINT hns_root_import_lifecycle_phase_check CHECK ((phase = ANY (ARRAY['preparing'::text, 'awaiting_publication'::text, 'checking_publication'::text, 'waiting_safe_commitment'::text, 'checking_authority'::text, 'ready'::text, 'activated'::text, 'recovery_required'::text, 'failed'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_phase_deadline_shape CHECK ((((phase = 'awaiting_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL) AND (first_current_observation_at IS NULL) AND (finality_deadline_at IS NULL)) OR ((phase = 'checking_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL)) OR ((phase = ANY (ARRAY['waiting_safe_commitment'::text, 'checking_authority'::text])) AND (first_current_observation_at IS NOT NULL) AND (finality_deadline_at IS NOT NULL)) OR ((phase = 'ready'::text) AND (readiness_observed_at IS NOT NULL)) OR ((phase = 'activated'::text) AND (readiness_observed_at IS NOT NULL)) OR (phase = ANY (ARRAY['preparing'::text, 'recovery_required'::text, 'failed'::text])))),
+    CONSTRAINT hns_root_import_lifecycle_plan_digest_shape CHECK (((plan_encoded_resource_sha256 IS NULL) OR (plan_encoded_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_lifecycle_revision_check CHECK ((revision > 0))
+);
+
+CREATE FUNCTION lock_hns_root_import_lifecycle_v1(input_session_id text) RETURNS SETOF hns_root_import_lifecycle
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT lifecycle.*
+  FROM hns_root_import_lifecycle AS lifecycle
+  WHERE lifecycle.root_import_session_id = input_session_id
+  FOR UPDATE
+$$;
+
 CREATE FUNCTION lock_hns_root_zone_mutation_v1(input_root_label text, input_challenge_txt_value text, input_teardown boolean, input_job_id text, input_executor_id text, input_lease_fence bigint) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -30998,48 +31066,6 @@ CREATE TABLE hns_root_import_activation_operations (
     CONSTRAINT hns_root_import_activation_operations_generation_check CHECK (((expected_session_revision >= 1) AND (expected_session_revision <= '9007199254740990'::bigint) AND (result_session_revision = (expected_session_revision + 1)))),
     CONSTRAINT hns_root_import_activation_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(actor_id, 256) AND ((creation_intent_id IS NULL) OR is_hns_host_persistence_identity(creation_intent_id, 256)) AND ((attachment_intent_id IS NULL) OR is_hns_host_persistence_identity(attachment_intent_id, 256)) AND is_hns_host_persistence_identity(idempotency_key, 256) AND (request_sha256 ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND is_handle_sales_identifier_v1(sale_namespace_activation_id, 128) AND (sale_namespace_activation_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT hns_root_import_activation_operations_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (attachment_intent_id IS NOT NULL))))
-);
-
-CREATE TABLE hns_root_import_lifecycle (
-    root_import_session_id text NOT NULL,
-    root_label text NOT NULL,
-    phase text NOT NULL,
-    revision bigint NOT NULL,
-    generation bigint NOT NULL,
-    plan_exposed_at timestamp with time zone,
-    publication_deadline_at timestamp with time zone,
-    first_current_observation_at timestamp with time zone,
-    finality_deadline_at timestamp with time zone,
-    readiness_observed_at timestamp with time zone,
-    pending_reason text,
-    next_check_at timestamp with time zone,
-    observation_count bigint DEFAULT 0 NOT NULL,
-    consecutive_operational_failures bigint DEFAULT 0 NOT NULL,
-    last_useful_error text,
-    last_useful_error_at timestamp with time zone,
-    terminal_decided_at timestamp with time zone,
-    policy_name text NOT NULL,
-    policy_digest text NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    plan_encoded_resource_sha256 text,
-    last_observation_view text,
-    last_observation_resource_sha256 text,
-    last_observation_tip_height bigint,
-    last_observation_update_inclusion_height bigint,
-    last_observation_commitment_height bigint,
-    last_observation_at timestamp with time zone,
-    last_observation_recorded_at timestamp with time zone,
-    readiness_accepted_at timestamp with time zone,
-    synthetic boolean DEFAULT false NOT NULL,
-    CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
-    CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
-    CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
-    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at, last_observation_recorded_at) = ANY (ARRAY[0, 5])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
-    CONSTRAINT hns_root_import_lifecycle_phase_check CHECK ((phase = ANY (ARRAY['preparing'::text, 'awaiting_publication'::text, 'checking_publication'::text, 'waiting_safe_commitment'::text, 'checking_authority'::text, 'ready'::text, 'activated'::text, 'recovery_required'::text, 'failed'::text]))),
-    CONSTRAINT hns_root_import_lifecycle_phase_deadline_shape CHECK ((((phase = 'awaiting_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL) AND (first_current_observation_at IS NULL) AND (finality_deadline_at IS NULL)) OR ((phase = 'checking_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL)) OR ((phase = ANY (ARRAY['waiting_safe_commitment'::text, 'checking_authority'::text])) AND (first_current_observation_at IS NOT NULL) AND (finality_deadline_at IS NOT NULL)) OR ((phase = 'ready'::text) AND (readiness_observed_at IS NOT NULL)) OR ((phase = 'activated'::text) AND (readiness_observed_at IS NOT NULL)) OR (phase = ANY (ARRAY['preparing'::text, 'recovery_required'::text, 'failed'::text])))),
-    CONSTRAINT hns_root_import_lifecycle_plan_digest_shape CHECK (((plan_encoded_resource_sha256 IS NULL) OR (plan_encoded_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT hns_root_import_lifecycle_revision_check CHECK ((revision > 0))
 );
 
 CREATE TABLE hns_root_import_lifecycle_history (
