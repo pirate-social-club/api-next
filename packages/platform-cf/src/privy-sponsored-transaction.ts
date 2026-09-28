@@ -280,8 +280,7 @@ export async function findPrivySponsoredTransactionByReference(
     candidate.wallet_id !== input.walletId ||
     !("caip2" in candidate) ||
     candidate.caip2 !== `eip155:${input.chainId}` ||
-    !("reference_id" in candidate) ||
-    candidate.reference_id !== input.referenceId ||
+    ("reference_id" in candidate && candidate.reference_id !== input.referenceId) ||
     !("id" in candidate) ||
     typeof candidate.id !== "string" ||
     candidate.id.length === 0 ||

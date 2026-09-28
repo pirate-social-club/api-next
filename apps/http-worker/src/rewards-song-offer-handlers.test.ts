@@ -18,6 +18,7 @@ import {
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
+import type { makeRewardSponsoredSendService } from "@pirate/platform-cf/reward-sponsored-send-service";
 import { Effect } from "effect";
 import {
   makeLazySongRewardOfferHandlers,
@@ -126,6 +127,7 @@ function fixture(
     production?: boolean;
     gasTopups?: RewardGasTopupRequester | null;
     winnerSends?: RewardWinnerSendService | null;
+    sponsoredSends?: ReturnType<typeof makeRewardSponsoredSendService> | null;
   } = {},
 ) {
   const ids = ["open-action", "open-offer", "leg-action", "pool-leg", "observe-action"];
@@ -326,6 +328,7 @@ function fixture(
     projections,
     gasTopups: options.gasTopups ?? null,
     winnerSends: options.winnerSends ?? null,
+    sponsoredSends: options.sponsoredSends ?? null,
     funding: {
       plan: () => Effect.succeed({ kind: "planned", intent: fundingIntent }),
       observe: ({ transactionHash }) =>
@@ -1096,6 +1099,46 @@ describe("song reward offer HTTP handlers", () => {
       }),
     });
     expect(await unavailable.json()).toMatchObject({ error: { code: "provider_unavailable" } });
+  });
+
+  test("recovers only the signed-in account's sponsored send by credit", async () => {
+    const accounts: string[] = [];
+    const fake = {
+      getForCredit: async ({ accountId, creditId }: { accountId: string; creditId: string }) => {
+        accounts.push(accountId);
+        if (creditId !== "credit_1") throw new Error("not found");
+        return {
+          record: {
+            sendId: "sponsored_1",
+            creditId,
+            status: "held",
+            chainId: 84_532,
+            senderAddress: address("a"),
+            recipientAddress: address("d"),
+            amountAtomic: 1_000_000n,
+            transactionHash: null,
+          },
+          authorization: null,
+        };
+      },
+    } as unknown as ReturnType<typeof makeRewardSponsoredSendService>;
+    const worker = fixture(intent, { sponsoredSends: fake });
+    const path = "/rewards/credits/credit_1/sponsored-send";
+    const unsigned = await worker.request(path);
+    expect(unsigned.status).toBe(401);
+    expect(accounts).toEqual([]);
+    const signed = await worker.request(path, {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(signed.status).toBe(200);
+    expect(signed.headers.get("cache-control")).toBe("no-store");
+    expect(await signed.json()).toMatchObject({
+      send_id: "sponsored_1",
+      credit_id: "credit_1",
+      status: "held",
+      authorization: null,
+    });
+    expect(accounts).toEqual(["account_1"]);
   });
 
   test("reports gas top-ups as unavailable when their limits are not configured", async () => {

@@ -25,7 +25,13 @@ CREATE TABLE reward_sponsored_sends (
   ),
   amount_atomic NUMERIC(78, 0) NOT NULL CHECK (amount_atomic > 0),
   reference_id TEXT NOT NULL UNIQUE CHECK (reference_id ~ '^[A-Za-z0-9_-]{16,64}$'),
-  idempotency_key TEXT NOT NULL CHECK (idempotency_key ~ '^[A-Za-z0-9_-]{16,64}$'),
+  idempotency_key TEXT NOT NULL CHECK (
+    btrim(idempotency_key) <> '' AND idempotency_key=btrim(idempotency_key)
+    AND octet_length(idempotency_key) <= 128
+  ),
+  provider_idempotency_key TEXT NOT NULL UNIQUE CHECK (
+    provider_idempotency_key ~ '^[A-Za-z0-9_-]{16,64}$'
+  ),
   request_expires_at TIMESTAMPTZ NOT NULL,
   status TEXT NOT NULL CHECK (status IN (
     'reserved', 'submitting', 'submitted', 'held', 'confirmed', 'reverted', 'abandoned'
@@ -166,12 +172,14 @@ BEGIN
     NEW.wallet_assignment_id, NEW.privy_wallet_id, NEW.chain_id,
     NEW.sender_address, NEW.token_address, NEW.recipient_address,
     NEW.amount_atomic, NEW.reference_id, NEW.idempotency_key,
+    NEW.provider_idempotency_key,
     NEW.request_expires_at, NEW.created_at
   ) IS DISTINCT FROM ROW(
     OLD.send_id, OLD.credit_id, OLD.account_id, OLD.persona_id,
     OLD.wallet_assignment_id, OLD.privy_wallet_id, OLD.chain_id,
     OLD.sender_address, OLD.token_address, OLD.recipient_address,
     OLD.amount_atomic, OLD.reference_id, OLD.idempotency_key,
+    OLD.provider_idempotency_key,
     OLD.request_expires_at, OLD.created_at
   ) THEN
     RAISE EXCEPTION 'a sponsored reward send request is immutable';
