@@ -89,6 +89,9 @@ suite("Postgres shared Wallet sponsored send", () => {
   });
 
   test("requires the caller's active assigned wallet, without a reward credit", async () => {
+    await expect(
+      Effect.runPromise(store.reserve(request("persona-1", { recipientAddress: otherSender }))),
+    ).rejects.toThrow("sponsored send ineligible");
     const first = request();
     const reserved = await Effect.runPromise(store.reserve(first));
     expect(reserved.personaId).toBe("persona-1");
