@@ -8,7 +8,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
-const jackpot = getAddress("0xb220c61ff7423379309FB32aBc6cB76c8ad6b869");
+const jackpot = getAddress("0xF856B59a9a9a5397aBa89c647742B2a69D03d3c8");
 const operator = getAddress("0x8fB9941a4782E4fc05467f9A3138c66C7F2aaCaF");
 const usdc = getAddress("0x036cbd53842c5426634e7929541eC2318f3dCF7e");
 const amount = 1_000_000n;

@@ -179,6 +179,12 @@ run on 2026-09-28 predicted `0xb220c61ff7423379309FB32aBc6cB76c8ad6b869`
 at operator nonce 34, with a 2,004,645 gas limit and maximum quoted cost of
 134,861,107,165,305 wei. The address and quote must be rechecked immediately
 before any execution because another operator transaction can change them.
+The sponsored-send test subsequently used operator nonce 34. A public
+Base Sepolia read on 2026-09-28 found latest and pending nonce 35, no code at
+the old predicted address, and 0.006967237137029198 ETH at the operator.
+The address predicted at nonce 35 is
+`0xF856B59a9a9a5397aBa89c647742B2a69D03d3c8`; the funding and rotation
+guards now pin it. This newer read is not a deployment dry run or approval.
 Execution additionally needs
 `--execute`, the exact predicted address in
 `E2E_APPROVED_DEPLOYMENT_ADDRESS`, and at least 0.0015 ETH in the operator
