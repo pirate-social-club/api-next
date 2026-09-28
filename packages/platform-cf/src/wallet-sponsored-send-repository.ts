@@ -274,6 +274,17 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
               row.sender_address === input.recipientAddress
             )
               return yield* Effect.fail(new SponsoredSendRefused("ineligible"));
+            const siblingRecipient = yield* transaction.execute<Row>({
+              label: "wallet-sponsored-send.sibling-recipient.read",
+              text: `SELECT 1 FROM persona_wallet_assignments wallet
+                WHERE wallet.account_id=$1 AND wallet.persona_id<>$2
+                  AND lower(wallet.address)=$3
+                LIMIT 1`,
+              values: [input.accountId, input.personaId, input.recipientAddress],
+              readonly: false,
+            });
+            if (siblingRecipient.rows.length > 0)
+              return yield* Effect.fail(new SponsoredSendRefused("ineligible"));
             const counts = yield* transaction.execute<Row>({
               label: "wallet-sponsored-send.quota.read",
               text: `SELECT count(*)::int AS platform_count,
