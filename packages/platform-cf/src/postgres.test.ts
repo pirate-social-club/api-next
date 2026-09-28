@@ -15,6 +15,7 @@ import {
   makeDirectPostgresControlPlaneLayer,
   makeHyperdriveControlPlaneLayer,
   makeReadOnlyPostgresControlPlaneLayer,
+  makeReadOnlyPostgresGatewayAuthorityLayer,
   type PostgresClientLike,
   type PostgresQueryConfig,
   type PostgresQueryResult,
@@ -354,6 +355,53 @@ describe("Postgres control-plane adapter", () => {
       outcomeCertainty: "not-started",
     });
     expect(client.queries.some(({ text }) => text.startsWith("DELETE"))).toBe(false);
+  });
+
+  test("direct gateway authority uses one read-only SELECT with startup search path", async () => {
+    const client = new FakePostgresClient();
+    let config: ClientConfig | undefined;
+    const layer = makeReadOnlyPostgresGatewayAuthorityLayer(
+      "postgresql://gateway.invalid/control?sslmode=verify-full",
+      {
+        clientFactory: (_url, received) => {
+          config = received;
+          return client;
+        },
+        logger: silentLogger,
+      },
+    );
+    const rows = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute(statement);
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+    expect(rows.rows).toEqual([{ id: "community_9" }]);
+    expect(config?.options).toBe(
+      `-c default_transaction_read_only=on -c search_path=${CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH}`,
+    );
+    expect(client.queries).toEqual([{ text: statement.text, values: statement.values }]);
+
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.execute({
+              label: "gateway.direct-forbidden-write",
+              text: "DELETE FROM communities",
+              values: [],
+              readonly: false,
+            });
+          }).pipe(Effect.provide(layer)),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "ControlPlaneStatementFailed",
+      outcomeCertainty: "not-started",
+    });
   });
 
   test("rolls back a failing standalone Hyperdrive statement", async () => {

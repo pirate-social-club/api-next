@@ -503,13 +503,20 @@ function makeClientConfig(
   connectionString: string,
   readOnly: boolean,
   options: PostgresControlPlaneOptions,
+  sessionSearchPath = false,
 ): ClientConfig {
   return {
     connectionString,
     connectionTimeoutMillis: options.connectTimeoutMs ?? CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     statement_timeout: options.statementTimeoutMs ?? CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
-    ...(readOnly ? { options: "-c default_transaction_read_only=on" } : {}),
+    ...(readOnly
+      ? {
+          options: sessionSearchPath
+            ? `-c default_transaction_read_only=on -c search_path=${CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH}`
+            : "-c default_transaction_read_only=on",
+        }
+      : {}),
   };
 }
 
@@ -518,6 +525,7 @@ function makeControlPlaneLayer(
   options: PostgresControlPlaneOptions = {},
   transactionSearchPath?: string,
   readOnly = false,
+  sessionSearchPath = false,
 ) {
   const clientFactory = options.clientFactory ?? defaultClientFactory;
   const logger = options.logger ?? DEFAULT_LOGGER;
@@ -534,7 +542,7 @@ function makeControlPlaneLayer(
               Promise.resolve(
                 clientFactory(
                   connectionString,
-                  makeClientConfig(connectionString, readOnly, options),
+                  makeClientConfig(connectionString, readOnly, options, sessionSearchPath),
                 ),
               ).then(
                 (client) =>
@@ -607,4 +615,14 @@ export function makeReadOnlyPostgresControlPlaneLayer(
     CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
     true,
   );
+}
+
+/** Direct gateway sockets retain their connection startup settings in the
+ * process pool. A server-enforced read-only role and session search path let
+ * each authority lookup use one SELECT instead of a per-request transaction. */
+export function makeReadOnlyPostgresGatewayAuthorityLayer(
+  connectionString: string,
+  options?: PostgresControlPlaneOptions,
+) {
+  return makeControlPlaneLayer(connectionString, options, undefined, true, true);
 }

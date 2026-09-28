@@ -5,7 +5,7 @@ import { makeGatewayPostgresPoolClientFactory } from "./hns-gateway-postgres-poo
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "./hns-host-persistence-repository.ts";
 import {
-  makeReadOnlyPostgresControlPlaneLayer,
+  makeReadOnlyPostgresGatewayAuthorityLayer,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
 
@@ -32,7 +32,7 @@ export function makePostgresHnsCommunityAppHandleGatewayAuthorityV1(
   options: HnsCommunityAppHandleGatewayPostgresAuthorityOptionsV1 = {},
 ): HnsCommunityAppHandleGatewayPostgresAuthorityV1 {
   const { resolutionDeadlineMs = 1_500, ...postgresOptions } = options;
-  const runtime = makeReadOnlyPostgresControlPlaneLayer(connectionString, {
+  const runtime = makeReadOnlyPostgresGatewayAuthorityLayer(connectionString, {
     ...postgresOptions,
     clientFactory: postgresOptions.clientFactory ?? makeGatewayPostgresPoolClientFactory(),
   });
