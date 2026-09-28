@@ -127,6 +127,7 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly vpc_services?: readonly { readonly binding: string; readonly service_id: string }[];
   readonly r2_buckets?: readonly { readonly binding: string; readonly bucket_name: string }[];
   readonly workflows?: readonly {
     binding: string;
@@ -687,6 +688,32 @@ describe("source-to-Wrangler binding contract", () => {
         { binding: "AVATAR_SEALED", bucket_name: "pirate-avatar-sealed-staging" },
       ]),
     );
+  });
+
+  test("staging activation reads mainnet through its private reader", () => {
+    const staging = declaredEnvironment(configs.http, "staging");
+    const production = declaredEnvironment(configs.http, "production");
+    expect(rawEnvironment(configs.http, "staging").vpc_services).toEqual([
+      {
+        binding: "HNS_AUTHORITY_HSD",
+        service_id: "01a0e6f3-20d8-7923-856e-cefb56e983cf",
+      },
+    ]);
+    expect(staging.vars).toMatchObject({
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "http://hns-staging-mainnet-reader.internal/",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH:
+        "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "10800",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "3600",
+    });
+    expect(staging.secrets).toContain("HNS_AUTHORITY_HSD_AUTHORIZATION");
+    expect(staging.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
+    expect(rawEnvironment(configs.http, "production").vpc_services).toBeUndefined();
+    expect(production.vars).not.toHaveProperty("HNS_ACTIVATION_CURRENT_VIEW_ENABLED");
   });
 
   test("keeps staging rewards disabled while Spaces stays enabled", () => {
