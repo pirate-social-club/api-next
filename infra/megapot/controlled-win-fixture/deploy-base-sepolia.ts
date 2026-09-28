@@ -18,8 +18,8 @@ const usdc = getAddress("0x036cbd53842c5426634e7929541ec2318f3dcf7e");
 const usdcCodeHash = "0xedc5281a85c0efecd49999a1ef668390c59b88702f2d4a07029d7f5d63059d6c";
 const operator = getAddress("0x8fB9941a4782E4fc05467f9A3138c66C7F2aaCaF");
 const ticketPriceAtomic = 10_000n;
-const maxGas = 2_000_000n;
-const maxDeploymentCostWei = 100_000_000_000_000n;
+const maxGas = 2_100_000n;
+const maxDeploymentCostWei = 300_000_000_000_000n;
 const minOperatorBalanceWei = 1_500_000_000_000_000n;
 const confirmations = 3;
 const recordRoot = process.env.E2E_GUARD_RECORD_DIR;
@@ -67,10 +67,7 @@ const [gasEstimate, fees, balance, block] = await Promise.all([
 const gasLimit = gasEstimate + gasEstimate / 4n;
 const maxFeePerGas = fees.maxFeePerGas;
 const maxPriorityFeePerGas = fees.maxPriorityFeePerGas;
-if (!maxFeePerGas || !maxPriorityFeePerGas || gasLimit > maxGas ||
-    gasLimit * maxFeePerGas > maxDeploymentCostWei) {
-  throw new Error("deployment fee exceeds fixed cap");
-}
+const maxCostWei = maxFeePerGas ? gasLimit * maxFeePerGas : null;
 const plan = {
   chainId: baseSepolia.id,
   operator,
@@ -84,13 +81,18 @@ const plan = {
   blockHash: block.hash,
   gasEstimate: gasEstimate.toString(),
   gasLimit: gasLimit.toString(),
-  maxFeePerGasWei: maxFeePerGas.toString(),
-  maxCostWei: (gasLimit * maxFeePerGas).toString(),
+  maxFeePerGasWei: maxFeePerGas?.toString() ?? null,
+  maxCostWei: maxCostWei?.toString() ?? null,
   hardCostCapWei: maxDeploymentCostWei.toString(),
+  gasWithinCap: maxPriorityFeePerGas !== undefined && gasLimit <= maxGas &&
+    maxCostWei !== null && maxCostWei <= maxDeploymentCostWei,
   operatorBalanceWei: balance.toString(),
   fundingReady: balance >= minOperatorBalanceWei,
 };
 console.log(JSON.stringify({ action: execute ? "execute" : "dry-run", ...plan }));
+if (!maxFeePerGas || !maxPriorityFeePerGas || !plan.gasWithinCap) {
+  throw new Error("deployment fee exceeds fixed cap");
+}
 if (!execute) process.exit(0);
 if (process.env.E2E_APPROVED_DEPLOYMENT_ADDRESS !== predictedAddress) {
   throw new Error("exact predicted address has not been approved");

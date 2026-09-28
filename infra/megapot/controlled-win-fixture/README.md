@@ -132,16 +132,21 @@ Very return, jobs settlement, wallet payout and onward send remain unproved.
 A local RPC proof is a compatibility check, not the final owner claim or
 wallet receipt.
 
-The live deployment script is dry-run by default. It checks the Base Sepolia
-chain, canonical test USDC bytecode, the isolated operator key and nonce, the
-predicted contract address, and the gas quote. It refuses an estimate over
-2,000,000 gas or a maximum fee over 0.0001 ETH. Execution additionally needs
+The repeatable fixture deployment script is dry-run by default. It checks the
+Base Sepolia chain, canonical test USDC bytecode, the isolated operator key and
+nonce, the predicted contract address, and the gas quote. It refuses a gas
+limit over 2,100,000 or a maximum fee over 0.0003 test ETH. A read-only dry
+run on 2026-09-28 predicted `0xb220c61ff7423379309FB32aBc6cB76c8ad6b869`
+at operator nonce 34, with a 2,004,645 gas limit and maximum quoted cost of
+134,861,107,165,305 wei. The address and quote must be rechecked immediately
+before any execution because another operator transaction can change them.
+Execution additionally needs
 `--execute`, the exact predicted address in
 `E2E_APPROVED_DEPLOYMENT_ADDRESS`, and at least 0.0015 ETH in the operator
-wallet. It waits for three confirmations and writes a public deployment record
-at `/tmp/megapot-e2e-config-20260926/deployment.json`; copy that record to
-the dated evidence package after execution. The operator key and RPC URL are
-injected from the staging Infisical service and operator paths, never printed.
+wallet. It waits for three confirmations and writes the public deployment
+record directly in `E2E_GUARD_RECORD_DIR`. The operator key comes from the
+staging Infisical operator path, and the HTTPS RPC URL is supplied separately;
+neither is printed.
 
 After deployment, `attest:megapot-controlled-win:isolated` checks the actual
 contract receipt, linked contract addresses, code hashes, isolated custody
