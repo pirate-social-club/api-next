@@ -27,8 +27,14 @@ describe("reward sponsored send request", () => {
     expect(prepared.body.params.transaction.to).toBe(reservation.tokenAddress);
     expect(prepared.body.params.transaction.value).toBe("0x0");
     expect(
-      decodeFunctionData({ abi: erc20Abi, data: prepared.body.params.transaction.data }),
-    ).toEqual({ functionName: "transfer", args: [reservation.recipientAddress, 1_000_000n] });
+      decodeFunctionData({
+        abi: erc20Abi,
+        data: prepared.body.params.transaction.data as `0x${string}`,
+      }),
+    ).toEqual({
+      functionName: "transfer",
+      args: [reservation.recipientAddress as `0x${string}`, 1_000_000n],
+    });
     expect(JSON.stringify(prepared.body)).not.toContain(reservation.senderAddress);
   });
 
