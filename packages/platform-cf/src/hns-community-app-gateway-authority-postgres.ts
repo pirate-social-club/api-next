@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { makeGatewayPostgresPoolClientFactory } from "./hns-gateway-postgres-pool.ts";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "./hns-host-persistence-repository.ts";
 import {
-  makeReadOnlyPostgresControlPlaneLayer,
+  makeReadOnlyPostgresGatewayAuthorityLayer,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
 
@@ -26,24 +26,42 @@ export interface HnsCommunityAppGatewayPostgresAuthorityOptionsV1
 export function makeCoalescingHnsGatewayAuthoritySourceV1(
   source: HnsForwarderGatewayAuthoritySourceV1,
   deadlineMs = 1_500,
+  now: () => number = Date.now,
 ): HnsForwarderGatewayAuthoritySourceV1 {
   // Each resolve borrows its own client from the bounded pool, so distinct
   // hosts can resolve concurrently. Same-host callers share only the live
-  // resolution; settled results are never cached, and no caller AbortSignal
-  // owns the shared operation.
+  // resolution. Only an unclaimed answer is remembered for three seconds;
+  // claimed answers and failures remain fresh. No caller AbortSignal owns the
+  // shared operation.
   const pending = new Map<string, Promise<HnsHostAuthorityStateV1 | null>>();
+  const unclaimedUntil = new Map<string, number>();
+  const negativeCacheMs = 3_000;
+  const negativeCacheLimit = 1_024;
   return Object.freeze({
     resolve: (normalizedHost) =>
       Effect.promise(() => {
         const existing = pending.get(normalizedHost);
         if (existing !== undefined) return existing;
+        const expiresAt = unclaimedUntil.get(normalizedHost);
+        if (expiresAt !== undefined) {
+          if (expiresAt > now()) return Promise.resolve(null);
+          unclaimedUntil.delete(normalizedHost);
+        }
         const promise = Effect.runPromise(source.resolve(normalizedHost), {
           signal: AbortSignal.timeout(deadlineMs),
         });
         pending.set(normalizedHost, promise);
         void promise.then(
-          () => {
+          (state) => {
             if (pending.get(normalizedHost) === promise) pending.delete(normalizedHost);
+            if (state === null) {
+              unclaimedUntil.delete(normalizedHost);
+              unclaimedUntil.set(normalizedHost, now() + negativeCacheMs);
+              if (unclaimedUntil.size > negativeCacheLimit) {
+                const oldest = unclaimedUntil.keys().next().value;
+                if (oldest !== undefined) unclaimedUntil.delete(oldest);
+              }
+            }
           },
           () => {
             if (pending.get(normalizedHost) === promise) pending.delete(normalizedHost);
@@ -64,7 +82,7 @@ export function makePostgresHnsCommunityAppGatewayAuthorityV1(
 ): HnsCommunityAppGatewayPostgresAuthorityV1 {
   const { resolutionDeadlineMs = 1_500, ...postgresOptions } = options;
   const source = makeControlPlaneHnsCommunityAppHostAuthoritySource(
-    makeReadOnlyPostgresControlPlaneLayer(connectionString, {
+    makeReadOnlyPostgresGatewayAuthorityLayer(connectionString, {
       ...postgresOptions,
       clientFactory: postgresOptions.clientFactory ?? makeGatewayPostgresPoolClientFactory(),
     }),

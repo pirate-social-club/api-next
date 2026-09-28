@@ -60,15 +60,16 @@ export function makeGatewayPooledPostgresClientFactory(
   };
 }
 
-/** One process-local pool per gateway authority. Idle sockets retire after 30s. */
+/** One process-local pool per gateway authority, bounded below the production
+ * database's 25-connection limit. Retain established sockets across idle gaps. */
 export function makeGatewayPostgresPoolClientFactory(): PostgresClientFactory {
   let poolPromise: Promise<GatewayPostgresPool> | undefined;
   return async (_connectionString, config) => {
     poolPromise ??= import("pg").then(({ Pool: PostgresPool }) => {
       const pool = new PostgresPool({
         ...config,
-        max: 2,
-        idleTimeoutMillis: 30_000,
+        max: 6,
+        idleTimeoutMillis: 0,
       });
       pool.on("error", () => {
         console.error("hns gateway authority idle connection failed");
