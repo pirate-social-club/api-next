@@ -3,6 +3,10 @@ import { createReadOnlyHsdRpcProxy } from "../staging-mainnet/read-only-hsd-rpc-
 
 const directory = process.env.CREDENTIALS_DIRECTORY;
 if (!directory) throw new Error("Production HNS reader credentials are unavailable");
+const portText = process.env.HNS_READER_LISTEN_PORT ?? "12039";
+if (!/^[1-9][0-9]{0,4}$/u.test(portText) || Number(portText) > 65535) {
+  throw new Error("Production HNS reader port is invalid");
+}
 
 const [clientKey, upstreamKey] = await Promise.all([
   readFile(`${directory}/production-hsd-client-key`, "utf8"),
@@ -12,4 +16,4 @@ const [clientKey, upstreamKey] = await Promise.all([
 createReadOnlyHsdRpcProxy({
   clientKey: clientKey.trim(),
   upstreamKey: upstreamKey.trim(),
-}).listen(12039, "127.0.0.1");
+}).listen(Number(portText), "127.0.0.1");

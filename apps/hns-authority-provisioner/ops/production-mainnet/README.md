@@ -11,6 +11,8 @@ Install the two source files together under
 `/opt/pirate-hns-production/mainnet-reader/`, preserving the
 `production-mainnet/` and `staging-mainnet/` relative directories. Load the
 upstream HSD API key from its existing host file through systemd credentials.
+The listener defaults to port 12039; the bounded port override exists for the
+isolated bootstrap test and is not set by the production unit.
 Generate a separate random client key for this service, keep it in the
 restricted host path named by the unit, and deliver only its Basic
 authorization value to the production Worker secret. Neither key belongs in
