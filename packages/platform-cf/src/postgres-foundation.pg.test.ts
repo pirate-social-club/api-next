@@ -1436,6 +1436,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_song_stems",
         "media_song_video_accepted_masters",
         "media_song_video_masters",
+        "media_song_video_pcm_references",
         "media_song_video_render_attempts",
         "media_song_video_render_plans",
         "media_submission_command_replays",
