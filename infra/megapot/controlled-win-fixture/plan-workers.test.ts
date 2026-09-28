@@ -39,6 +39,12 @@ test("isolated Worker plan has no shared database, storage, queue or workflow", 
     expect(http.services).toEqual([]);
     expect(jobs.workflows).toEqual([]);
     expect(http.vars.MEDIA_UPLOADS_ENABLED).toBe("false");
+    expect(http.vars.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+    expect(http.vars.HNS_EDGE_STATUS_ENABLED).toBe("false");
+    expect(Object.keys(http.vars).filter(name => name.startsWith("HNS_")).sort()).toEqual([
+      "HNS_COMMUNITY_APP_API_ENABLED", "HNS_EDGE_STATUS_ENABLED",
+      "HNS_HANDLE_HOST_API_ENABLED", "HNS_OWNERSHIP_ENABLED",
+    ]);
     expect(http.vars.SONG_PLAYBACK_R2_BUCKET).toBe("pirate-media-immutable-staging");
     expect(http.secrets.required.some((name: string) =>
       name.startsWith("HNS_") || name.startsWith("SPACES_") || name.startsWith("AVATAR_"))).toBe(false);

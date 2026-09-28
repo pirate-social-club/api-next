@@ -53,6 +53,11 @@ function isolateBucket(binding: Entry): Entry {
   };
 }
 
+/** Disabled HNS features must not inherit shared staging's secret-bound settings. */
+function withoutSharedHnsSettings(vars: Entry): Entry {
+  return Object.fromEntries(Object.entries(vars).filter(([name]) => !name.startsWith("HNS_")));
+}
+
 async function stagingConfig(kind: "http" | "jobs"): Promise<Entry> {
   const app = kind === "http" ? "http-worker" : "jobs-worker";
   const path = resolve(root, `apps/${app}/wrangler.jsonc`);
@@ -101,7 +106,7 @@ function isolateHttp(config: Entry, hyperdriveId: string, attestationId: string)
       ],
     },
     vars: {
-      ...vars,
+      ...withoutSharedHnsSettings(vars),
       API_NEXT_ENV: "staging",
       PIRATE_API_PUBLIC_ORIGIN: apiOrigin,
       CORS_ORIGIN: webOrigin,
@@ -111,6 +116,7 @@ function isolateHttp(config: Entry, hyperdriveId: string, attestationId: string)
       HNS_OWNERSHIP_ENABLED: "false",
       HNS_COMMUNITY_APP_API_ENABLED: "false",
       HNS_HANDLE_HOST_API_ENABLED: "false",
+      HNS_EDGE_STATUS_ENABLED: "false",
       SPACES_RUNTIME_ENABLED: "false",
       SPACES_TAPROOT_RECIPIENT_ENABLED: "false",
       TELEGRAM_ENABLED: "false",
@@ -166,7 +172,7 @@ function isolateJobs(config: Entry, hyperdriveId: string, attestationId: string)
       ],
     },
     vars: {
-      ...vars,
+      ...withoutSharedHnsSettings(vars),
       API_NEXT_ENV: "staging",
       TELEGRAM_PUBLIC_ORIGIN: webOrigin,
       TELEGRAM_WEBHOOK_ORIGIN: apiOrigin,
