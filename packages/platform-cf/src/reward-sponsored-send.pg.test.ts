@@ -129,7 +129,7 @@ suite("Postgres sponsored reward send reservation", () => {
            'active','assignment-1',now(),now(),now())`,
         [sender],
       );
-      for (let number = 1; number <= 6; number++) await seedCredit(number);
+      for (let number = 1; number <= 7; number++) await seedCredit(number);
     } finally {
       await admin.query("SET session_replication_role = origin");
     }
@@ -418,5 +418,55 @@ suite("Postgres sponsored reward send reservation", () => {
       }),
     ).rejects.toThrow("sponsored send conflict");
     expect(calls).toBe(1);
+  });
+
+  test("a crash after submission starts can still reconcile a canonical receipt", async () => {
+    const store = makeControlPlaneSponsoredSendStore(makeDirectPostgresControlPlaneLayer(scoped), {
+      perAccountUtcDay: 20,
+      perWalletUtcDay: 20,
+      platformUtcDay: 20,
+    });
+    const service = makeRewardSponsoredSendService({
+      store,
+      appId: "app_test_1234",
+      appSecret: "test_secret_1234",
+      requiredConfirmations: 3,
+      ids: () => crypto.randomUUID().replaceAll("-", ""),
+      findByReference: async (query) => ({
+        id: "provider-transaction-7",
+        walletId: query.walletId,
+        referenceId: query.referenceId,
+        caip2: `eip155:${query.chainId}`,
+        status: "confirmed",
+        transactionHash: hash("77"),
+      }),
+      chain: {
+        readReceipt: async () => ({
+          canonical: true,
+          status: "success",
+          transactionHash: hash("77"),
+          blockNumber: 70n,
+          blockHash: hash("78"),
+          transfers: [
+            { tokenAddress: token, from: sender, to: recipient, amountAtomic: 1_000_000n },
+          ],
+        }),
+        readHead: async () => 72n,
+        readFinalizedHead: async () => 72n,
+      },
+    });
+    const reserved = await service.reserve({
+      accountId: "winner",
+      creditId: "sponsored-credit-7",
+      recipientAddress: recipient,
+      amountAtomic: 1_000_000n,
+      idempotencyKey: "crash_test_key_7",
+    });
+    await Effect.runPromise(
+      store.markSubmitting({ accountId: "winner", sendId: reserved.record.sendId }),
+    );
+    const settled = await service.get({ accountId: "winner", sendId: reserved.record.sendId });
+    expect(settled.record.status).toBe("confirmed");
+    expect(settled.record.transactionHash).toBe(hash("77"));
   });
 });

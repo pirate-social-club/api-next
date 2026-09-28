@@ -157,6 +157,14 @@ export function makeRewardSponsoredSendService(
     const transactionHash = provider.transactionHash.toLowerCase();
     if (!/^0x[0-9a-f]{64}$/u.test(transactionHash)) return record;
     try {
+      // A crash can leave the committed pre-submit state behind after Privy
+      // accepted the request. Move it to the existing held state before
+      // attaching provider evidence; submitting deliberately has none.
+      if (record.status === "submitting") {
+        await Effect.runPromise(
+          input.store.markHeld({ accountId: record.accountId, sendId: record.sendId }),
+        );
+      }
       await Effect.runPromise(
         input.store.attachObservation({
           accountId: record.accountId,
