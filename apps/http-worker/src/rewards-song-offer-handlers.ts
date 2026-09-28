@@ -28,12 +28,6 @@ import {
   ProviderUnavailable,
   RetryableConflict,
 } from "@pirate/contracts";
-import { SponsoredSendRefused } from "@pirate/platform-cf/reward-sponsored-send-repository";
-import {
-  type makeRewardSponsoredSendService,
-  SponsoredSendUnavailable,
-  type SponsoredSendView,
-} from "@pirate/platform-cf/reward-sponsored-send-service";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
@@ -53,7 +47,6 @@ export type SongRewardOfferHandlerServices = Readonly<{
   gasTopups?: RewardGasTopupRequester | null;
   /** Null when the chain client cannot serve winner sends. */
   winnerSends?: RewardWinnerSendService | null;
-  sponsoredSends?: ReturnType<typeof makeRewardSponsoredSendService> | null;
   requiredConfirmations: number;
   externalFallbackPolicy: Readonly<{
     referralAllocationVersion: string;
@@ -84,10 +77,6 @@ export type SongRewardOfferHandlers = Readonly<{
   AttachRewardWinnerSendTransaction: EndpointHandler;
   CancelRewardWinnerSend: EndpointHandler;
   GetRewardWinnerSend: EndpointHandler;
-  CreateRewardSponsoredSend: EndpointHandler;
-  SubmitRewardSponsoredSend: EndpointHandler;
-  GetRewardSponsoredSend: EndpointHandler;
-  GetRewardSponsoredSendForCredit: EndpointHandler;
 }>;
 
 const rewardUnavailable = (): never => {
@@ -124,10 +113,6 @@ export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandler
     AttachRewardWinnerSendTransaction: rewardUnavailable,
     CancelRewardWinnerSend: rewardUnavailable,
     GetRewardWinnerSend: rewardUnavailable,
-    CreateRewardSponsoredSend: rewardUnavailable,
-    SubmitRewardSponsoredSend: rewardUnavailable,
-    GetRewardSponsoredSend: rewardUnavailable,
-    GetRewardSponsoredSendForCredit: rewardUnavailable,
   };
 }
 
@@ -185,10 +170,6 @@ export function makeLazySongRewardOfferHandlers(
     AttachRewardWinnerSendTransaction: handler("AttachRewardWinnerSendTransaction"),
     CancelRewardWinnerSend: handler("CancelRewardWinnerSend"),
     GetRewardWinnerSend: handler("GetRewardWinnerSend"),
-    CreateRewardSponsoredSend: handler("CreateRewardSponsoredSend"),
-    SubmitRewardSponsoredSend: handler("SubmitRewardSponsoredSend"),
-    GetRewardSponsoredSend: handler("GetRewardSponsoredSend"),
-    GetRewardSponsoredSendForCredit: handler("GetRewardSponsoredSendForCredit"),
   };
 }
 
@@ -518,38 +499,6 @@ const winnerSend = (value: RewardWinnerSendRecord) => {
   };
 };
 
-const sponsoredSend = (view: SponsoredSendView) => ({
-  object: "reward_sponsored_send" as const,
-  send_id: view.record.sendId,
-  credit_id: view.record.creditId,
-  status: view.record.status,
-  chain_id: view.record.chainId,
-  sender_address: view.record.senderAddress,
-  recipient_address: view.record.recipientAddress,
-  amount_atomic: view.record.amountAtomic.toString(),
-  transaction_hash: view.record.transactionHash,
-  authorization:
-    view.authorization === null
-      ? null
-      : {
-          wallet_id: view.authorization.walletId,
-          payload_base64: view.authorization.payloadBase64,
-        },
-});
-
-function sponsoredFailure(error: unknown): Error {
-  if (error instanceof SponsoredSendRefused) {
-    if (error.reason === "not-found") return new NotFound({ message: "Send unavailable" });
-    if (error.reason === "limit") return new Conflict({ message: "Sponsorship limit reached" });
-    if (error.reason === "ineligible") return new BadRequest({ message: "Send unavailable" });
-    return new Conflict({ message: "Send cannot be repeated" });
-  }
-  if (error instanceof SponsoredSendUnavailable) {
-    return new ProviderUnavailable({ message: "Sponsored sends are unavailable" });
-  }
-  return new ProviderUnavailable({ message: "Sponsored send outcome is pending" });
-}
-
 /** The account is the signed-in user, never a request field. */
 function sessionUser(principal: Principal | null): string {
   if (principal === null || principal.kind !== "user") {
@@ -573,15 +522,6 @@ export function makeSongRewardOfferHandlers(
       throw new ProviderUnavailable({ message: "Winner sends are unavailable" });
     }
     return winnerSends;
-  };
-  const requireSponsoredSends = (): NonNullable<
-    SongRewardOfferHandlerServices["sponsoredSends"]
-  > => {
-    const sponsoredSends = services.sponsoredSends ?? null;
-    if (sponsoredSends === null) {
-      throw new ProviderUnavailable({ message: "Sponsored sends are unavailable" });
-    }
-    return sponsoredSends;
   };
   const run = <A, E>(effect: Effect.Effect<A, E, Clock | IdGen>) =>
     Effect.runPromise(
@@ -1022,64 +962,6 @@ export function makeSongRewardOfferHandlers(
         winnerSends.get({ accountId, sendId: path.sendId }).pipe(Effect.mapError(wireFailure)),
       );
       return winnerSend(record);
-    },
-    CreateRewardSponsoredSend: async (request) => {
-      const accountId = sessionUser(request.principal);
-      const path = request.params as { readonly creditId: string };
-      const body = request.body as {
-        readonly recipient: string;
-        readonly amount_atomic: string;
-        readonly idempotency_key: string;
-      };
-      try {
-        return sponsoredSend(
-          await requireSponsoredSends().reserve({
-            accountId,
-            creditId: path.creditId,
-            recipientAddress: body.recipient,
-            amountAtomic: BigInt(body.amount_atomic),
-            idempotencyKey: body.idempotency_key,
-          }),
-        );
-      } catch (error) {
-        throw sponsoredFailure(error);
-      }
-    },
-    SubmitRewardSponsoredSend: async (request) => {
-      const accountId = sessionUser(request.principal);
-      const path = request.params as { readonly sendId: string };
-      const body = request.body as { readonly authorization_signature: string };
-      try {
-        return sponsoredSend(
-          await requireSponsoredSends().submit({
-            accountId,
-            sendId: path.sendId,
-            signature: body.authorization_signature,
-          }),
-        );
-      } catch (error) {
-        throw sponsoredFailure(error);
-      }
-    },
-    GetRewardSponsoredSend: async (request) => {
-      const accountId = sessionUser(request.principal);
-      const path = request.params as { readonly sendId: string };
-      try {
-        return sponsoredSend(await requireSponsoredSends().get({ accountId, sendId: path.sendId }));
-      } catch (error) {
-        throw sponsoredFailure(error);
-      }
-    },
-    GetRewardSponsoredSendForCredit: async (request) => {
-      const accountId = sessionUser(request.principal);
-      const path = request.params as { readonly creditId: string };
-      try {
-        return sponsoredSend(
-          await requireSponsoredSends().getForCredit({ accountId, creditId: path.creditId }),
-        );
-      } catch (error) {
-        throw sponsoredFailure(error);
-      }
     },
     GetRewardGasTopup: async (request) => {
       const principal = request.principal;

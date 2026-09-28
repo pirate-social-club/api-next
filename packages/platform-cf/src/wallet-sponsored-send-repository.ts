@@ -19,7 +19,6 @@ export type SponsoredSendStatus =
 
 export type SponsoredSendRecord = Readonly<{
   sendId: string;
-  creditId: string;
   accountId: string;
   personaId: string;
   walletAssignmentId: string;
@@ -29,7 +28,7 @@ export type SponsoredSendRecord = Readonly<{
   tokenAddress: string;
   recipientAddress: string;
   amountAtomic: bigint;
-  paidAtomic: bigint;
+  gasBudgetWei: bigint;
   referenceId: string;
   idempotencyKey: string;
   providerIdempotencyKey: string;
@@ -46,6 +45,10 @@ export type SponsoredSendCountLimits = Readonly<{
   perAccountUtcDay: number;
   perWalletUtcDay: number;
   platformUtcDay: number;
+  gasBudgetPerSendWei: bigint;
+  accountDailyGasBudgetWei: bigint;
+  walletDailyGasBudgetWei: bigint;
+  platformDailyGasBudgetWei: bigint;
 }>;
 
 export class SponsoredSendRefused extends Error {
@@ -55,9 +58,7 @@ export class SponsoredSendRefused extends Error {
   }
 }
 
-const SELECT = `SELECT send.*, credit.paid_atomic::text AS paid_atomic
-  FROM reward_sponsored_sends send
-  JOIN reward_ledger_credits credit ON credit.credit_id=send.credit_id`;
+const SELECT = `SELECT send.* FROM wallet_sponsored_sends send`;
 
 function requiredText(row: Row, field: string): string {
   const value = row[field];
@@ -92,7 +93,6 @@ function parseRecord(row: Row): SponsoredSendRecord {
   if (!Number.isFinite(expiresAtMs)) throw new Error("invalid request expiry");
   return {
     sendId: requiredText(row, "send_id"),
-    creditId: requiredText(row, "credit_id"),
     accountId: requiredText(row, "account_id"),
     personaId: requiredText(row, "persona_id"),
     walletAssignmentId: requiredText(row, "wallet_assignment_id"),
@@ -102,7 +102,7 @@ function parseRecord(row: Row): SponsoredSendRecord {
     tokenAddress: requiredText(row, "token_address"),
     recipientAddress: requiredText(row, "recipient_address"),
     amountAtomic: BigInt(requiredText(row, "amount_atomic")),
-    paidAtomic: BigInt(requiredText(row, "paid_atomic")),
+    gasBudgetWei: BigInt(requiredText(row, "gas_budget_wei")),
     referenceId: requiredText(row, "reference_id"),
     idempotencyKey: requiredText(row, "idempotency_key"),
     providerIdempotencyKey: requiredText(row, "provider_idempotency_key"),
@@ -119,7 +119,7 @@ function parseRecord(row: Row): SponsoredSendRecord {
 function readIn(executor: Executor, accountId: string, sendId: string) {
   return Effect.gen(function* () {
     const result = yield* executor.execute<Row>({
-      label: "reward-sponsored-send.read",
+      label: "wallet-sponsored-send.read",
       text: `${SELECT} WHERE send.account_id=$1 AND send.send_id=$2`,
       values: [accountId, sendId],
       readonly: true,
@@ -130,13 +130,14 @@ function readIn(executor: Executor, accountId: string, sendId: string) {
   });
 }
 
-function findByCreditIn(executor: Executor, accountId: string, creditId: string) {
+function findByPersonaIn(executor: Executor, accountId: string, personaId: string) {
   return Effect.gen(function* () {
     const result = yield* executor.execute<Row>({
-      label: "reward-sponsored-send.credit.read",
-      text: `${SELECT} WHERE send.account_id=$1 AND send.credit_id=$2
-        ORDER BY (send.status <> 'abandoned') DESC, send.created_at DESC LIMIT 1`,
-      values: [accountId, creditId],
+      label: "wallet-sponsored-send.persona.read",
+      text: `${SELECT} WHERE send.account_id=$1 AND send.persona_id=$2
+        ORDER BY (send.status IN ('reserved','submitting','submitted','held')) DESC,
+          send.created_at DESC LIMIT 1`,
+      values: [accountId, personaId],
       readonly: true,
     });
     return result.rows.length === 0 ? null : parseRecord(result.rows[0] as Row);
@@ -146,8 +147,8 @@ function findByCreditIn(executor: Executor, accountId: string, creditId: string)
 /** A single global lock keeps account, wallet and platform reservations serializable. */
 function lockBudgetIn(transaction: ControlPlaneTransaction) {
   return transaction.execute({
-    label: "reward-sponsored-send.budget.lock",
-    text: "SELECT pg_advisory_xact_lock(hashtextextended('reward-sponsored-send-budget',0))",
+    label: "wallet-sponsored-send.budget.lock",
+    text: "SELECT pg_advisory_xact_lock(hashtextextended('wallet-sponsored-send-budget',0))",
     values: [],
     readonly: false,
   });
@@ -161,7 +162,11 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
   if (
     !positiveLimit(limits.perAccountUtcDay) ||
     !positiveLimit(limits.perWalletUtcDay) ||
-    !positiveLimit(limits.platformUtcDay)
+    !positiveLimit(limits.platformUtcDay) ||
+    limits.gasBudgetPerSendWei <= 0n ||
+    limits.accountDailyGasBudgetWei < limits.gasBudgetPerSendWei ||
+    limits.walletDailyGasBudgetWei < limits.gasBudgetPerSendWei ||
+    limits.platformDailyGasBudgetWei < limits.gasBudgetPerSendWei
   )
     throw new Error("sponsorship count limits must be positive");
 
@@ -171,14 +176,16 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
         const db = yield* ControlPlaneDb;
         return yield* readIn(db, input.accountId, input.sendId);
       }),
-    findByCredit: (input: { accountId: string; creditId: string }) =>
+    findByPersona: (input: { accountId: string; personaId: string }) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* findByCreditIn(db, input.accountId, input.creditId);
+        return yield* findByPersonaIn(db, input.accountId, input.personaId);
       }),
     reserve: (input: {
       accountId: string;
-      creditId: string;
+      personaId: string;
+      chainId: 8453 | 84532;
+      tokenAddress: string;
       recipientAddress: string;
       amountAtomic: bigint;
       idempotencyKey: string;
@@ -192,7 +199,7 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
           Effect.gen(function* () {
             yield* lockBudgetIn(transaction);
             const replay = yield* transaction.execute<Row>({
-              label: "reward-sponsored-send.idempotency.read",
+              label: "wallet-sponsored-send.idempotency.read",
               text: `${SELECT} WHERE send.account_id=$1 AND send.idempotency_key=$2`,
               values: [input.accountId, input.idempotencyKey],
               readonly: false,
@@ -200,7 +207,9 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
             if (replay.rows.length > 0) {
               const existing = parseRecord(replay.rows[0] as Row);
               if (
-                existing.creditId !== input.creditId ||
+                existing.personaId !== input.personaId ||
+                existing.chainId !== input.chainId ||
+                existing.tokenAddress !== input.tokenAddress ||
                 existing.recipientAddress !== input.recipientAddress ||
                 existing.amountAtomic !== input.amountAtomic
               )
@@ -211,17 +220,26 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
             // forever. The database guard permits this transition only after
             // the signed request has expired.
             yield* transaction.execute({
-              label: "reward-sponsored-send.expired-reservation.abandon",
-              text: `UPDATE reward_sponsored_sends
+              label: "wallet-sponsored-send.expired-reservation.abandon",
+              text: `UPDATE wallet_sponsored_sends
                 SET status='abandoned', updated_at=clock_timestamp()
-                WHERE account_id=$1 AND credit_id=$2 AND status='reserved'
+                WHERE account_id=$1 AND persona_id=$2 AND chain_id=$3 AND status='reserved'
                   AND request_expires_at < clock_timestamp()`,
-              values: [input.accountId, input.creditId],
+              values: [input.accountId, input.personaId, input.chainId],
               readonly: false,
             });
-            const previous = yield* findByCreditIn(transaction, input.accountId, input.creditId);
-            if (previous !== null && previous.status !== "abandoned") {
+            const open = yield* transaction.execute<Row>({
+              label: "wallet-sponsored-send.open.read",
+              text: `${SELECT} WHERE send.account_id=$1 AND send.persona_id=$2
+                AND send.chain_id=$3 AND send.status IN ('reserved','submitting','submitted','held')
+                ORDER BY send.created_at DESC LIMIT 1`,
+              values: [input.accountId, input.personaId, input.chainId],
+              readonly: false,
+            });
+            if (open.rows.length > 0) {
+              const previous = parseRecord(open.rows[0] as Row);
               if (
+                previous.tokenAddress !== input.tokenAddress ||
                 previous.recipientAddress !== input.recipientAddress ||
                 previous.amountAtomic !== input.amountAtomic
               )
@@ -229,60 +247,44 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
               return previous;
             }
             const context = yield* transaction.execute<Row>({
-              label: "reward-sponsored-send.context.read",
-              text: `SELECT credit.credit_id, credit.account_id, credit.payout_persona_id AS persona_id,
-                  credit.chain_id, credit.token_address, credit.paid_atomic::text AS paid_atomic,
-                  credit.source_kind, credit.state,
-                  claim.status AS claim_status,
-                  payout.wallet_assignment_id, payout.destination_address AS sender_address,
-                  wallet.privy_wallet_id, wallet.status AS wallet_status,
-                  evidence.effect_id AS payout_evidence_id,
-                  payout_effect.effect_id AS confirmed_payout_effect_id
-                FROM reward_ledger_credits credit
-                LEFT JOIN megapot_participant_claims claim
-                  ON claim.credit_id=credit.credit_id AND claim.status='accepted'
-                LEFT JOIN reward_payout_effects payout
-                  ON payout.credit_id=credit.credit_id AND payout.account_id=credit.account_id
-                LEFT JOIN reward_chain_effects payout_effect
-                  ON payout_effect.effect_id=payout.payout_effect_id AND payout_effect.state='confirmed'
-                LEFT JOIN reward_erc20_transfer_receipt_evidence evidence
-                  ON evidence.effect_id=payout.payout_effect_id
-                 AND evidence.transfer_purpose='reward_payout'
-                 AND evidence.recipient_address=payout.destination_address
-                LEFT JOIN persona_wallet_assignments wallet
-                  ON wallet.assignment_id=payout.wallet_assignment_id
-                WHERE credit.credit_id=$1 AND credit.account_id=$2`,
-              values: [input.creditId, input.accountId],
+              label: "wallet-sponsored-send.context.read",
+              text: `SELECT wallet.assignment_id AS wallet_assignment_id,
+                  wallet.privy_wallet_id, wallet.address AS sender_address,
+                  wallet.status AS wallet_status, persona.status AS persona_status
+                FROM persona_wallet_assignments wallet
+                JOIN personas persona ON persona.persona_id=wallet.persona_id
+                  AND persona.account_id=wallet.account_id
+                WHERE wallet.persona_id=$1 AND wallet.account_id=$2
+                  AND wallet.chain_account_kind='evm'`,
+              values: [input.personaId, input.accountId],
               readonly: false,
             });
             if (context.rows.length === 0)
               return yield* Effect.fail(new SponsoredSendRefused("not-found"));
-            if (context.rows.length !== 1) throw new Error("duplicate payout context");
+            if (context.rows.length !== 1) throw new Error("duplicate persona wallet context");
             const row = context.rows[0] as Row;
-            const chainId = Number(row.chain_id);
             if (
-              row.source_kind !== "megapot_allocation" ||
-              row.state !== "sent" ||
-              row.claim_status !== "accepted" ||
               row.wallet_assignment_id === null ||
               row.privy_wallet_id === null ||
               row.wallet_status !== "active" ||
+              row.persona_status !== "active" ||
               row.sender_address === null ||
-              row.payout_evidence_id === null ||
-              row.confirmed_payout_effect_id === null ||
-              (chainId !== 8453 && chainId !== 84532) ||
               input.amountAtomic <= 0n ||
-              input.amountAtomic > BigInt(String(row.paid_atomic)) ||
-              row.token_address === input.recipientAddress ||
+              input.tokenAddress === input.recipientAddress ||
               row.sender_address === input.recipientAddress
             )
               return yield* Effect.fail(new SponsoredSendRefused("ineligible"));
             const counts = yield* transaction.execute<Row>({
-              label: "reward-sponsored-send.quota.read",
+              label: "wallet-sponsored-send.quota.read",
               text: `SELECT count(*)::int AS platform_count,
                 count(*) FILTER (WHERE account_id=$1)::int AS account_count,
-                count(*) FILTER (WHERE wallet_assignment_id=$2)::int AS wallet_count
-                FROM reward_sponsored_sends
+                count(*) FILTER (WHERE wallet_assignment_id=$2)::int AS wallet_count,
+                COALESCE(sum(gas_budget_wei),0)::text AS platform_gas_wei,
+                COALESCE(sum(gas_budget_wei) FILTER (WHERE account_id=$1),0)::text
+                  AS account_gas_wei,
+                COALESCE(sum(gas_budget_wei) FILTER (WHERE wallet_assignment_id=$2),0)::text
+                  AS wallet_gas_wei
+                FROM wallet_sponsored_sends
                 WHERE created_at >= date_trunc('day', clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
                   AND status <> 'abandoned'`,
               values: [input.accountId, row.wallet_assignment_id],
@@ -293,30 +295,36 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
               usage === undefined ||
               Number(usage.platform_count) >= limits.platformUtcDay ||
               Number(usage.account_count) >= limits.perAccountUtcDay ||
-              Number(usage.wallet_count) >= limits.perWalletUtcDay
+              Number(usage.wallet_count) >= limits.perWalletUtcDay ||
+              BigInt(String(usage.platform_gas_wei)) + limits.gasBudgetPerSendWei >
+                limits.platformDailyGasBudgetWei ||
+              BigInt(String(usage.account_gas_wei)) + limits.gasBudgetPerSendWei >
+                limits.accountDailyGasBudgetWei ||
+              BigInt(String(usage.wallet_gas_wei)) + limits.gasBudgetPerSendWei >
+                limits.walletDailyGasBudgetWei
             )
               return yield* Effect.fail(new SponsoredSendRefused("limit"));
             yield* transaction.execute({
-              label: "reward-sponsored-send.reserve",
-              text: `INSERT INTO reward_sponsored_sends (
-                send_id, credit_id, account_id, persona_id, wallet_assignment_id,
+              label: "wallet-sponsored-send.reserve",
+              text: `INSERT INTO wallet_sponsored_sends (
+                send_id, account_id, persona_id, wallet_assignment_id,
                 privy_wallet_id, chain_id, sender_address, token_address,
-                recipient_address, amount_atomic, reference_id, idempotency_key,
+                recipient_address, amount_atomic, gas_budget_wei, reference_id, idempotency_key,
                 provider_idempotency_key, request_expires_at, status
               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                 clock_timestamp()+INTERVAL '4 minutes','reserved')`,
               values: [
                 input.sendId,
-                input.creditId,
                 input.accountId,
-                row.persona_id,
+                input.personaId,
                 row.wallet_assignment_id,
                 row.privy_wallet_id,
-                chainId,
+                input.chainId,
                 row.sender_address,
-                row.token_address,
+                input.tokenAddress,
                 input.recipientAddress,
                 input.amountAtomic.toString(),
+                limits.gasBudgetPerSendWei.toString(),
                 input.referenceId,
                 input.idempotencyKey,
                 input.providerIdempotencyKey,
@@ -333,8 +341,8 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
-          label: "reward-sponsored-send.submitting",
-          text: `UPDATE reward_sponsored_sends SET status='submitting', updated_at=clock_timestamp()
+          label: "wallet-sponsored-send.submitting",
+          text: `UPDATE wallet_sponsored_sends SET status='submitting', updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status='reserved'
               AND request_expires_at > clock_timestamp()
             RETURNING send_id`,
@@ -353,8 +361,8 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "reward-sponsored-send.submitted",
-          text: `UPDATE reward_sponsored_sends
+          label: "wallet-sponsored-send.submitted",
+          text: `UPDATE wallet_sponsored_sends
             SET status='submitted', provider_transaction_id=$3,
                 user_operation_hash=$4, transaction_hash=$5, updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status='submitting'`,
@@ -373,8 +381,8 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         yield* db.execute({
-          label: "reward-sponsored-send.held",
-          text: `UPDATE reward_sponsored_sends SET status='held', updated_at=clock_timestamp()
+          label: "wallet-sponsored-send.held",
+          text: `UPDATE wallet_sponsored_sends SET status='held', updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status IN ('submitting','submitted')`,
           values: [input.accountId, input.sendId],
           readonly: false,
@@ -389,8 +397,8 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "reward-sponsored-send.observation.attach",
-          text: `UPDATE reward_sponsored_sends
+          label: "wallet-sponsored-send.observation.attach",
+          text: `UPDATE wallet_sponsored_sends
             SET provider_transaction_id=$3, transaction_hash=COALESCE($4,transaction_hash),
                 updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status IN ('submitting','submitted','held')
@@ -417,8 +425,8 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "reward-sponsored-send.final",
-          text: `UPDATE reward_sponsored_sends
+          label: "wallet-sponsored-send.final",
+          text: `UPDATE wallet_sponsored_sends
             SET status=$3, transaction_hash=$4, block_number=$5,
                 block_hash=$6, updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status IN ('submitted','held')
@@ -439,8 +447,8 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "reward-sponsored-send.abandon-unsigned",
-          text: `UPDATE reward_sponsored_sends SET status='abandoned', updated_at=clock_timestamp()
+          label: "wallet-sponsored-send.abandon-unsigned",
+          text: `UPDATE wallet_sponsored_sends SET status='abandoned', updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status='reserved'
               AND request_expires_at < clock_timestamp()`,
           values: [input.accountId, input.sendId],
@@ -460,8 +468,8 @@ export function makeControlPlaneSponsoredSendStore(
     Effect.provide(layer)(effect);
   return {
     get: (input: Parameters<typeof repository.get>[0]) => provide(repository.get(input)),
-    findByCredit: (input: Parameters<typeof repository.findByCredit>[0]) =>
-      provide(repository.findByCredit(input)),
+    findByPersona: (input: Parameters<typeof repository.findByPersona>[0]) =>
+      provide(repository.findByPersona(input)),
     reserve: (input: Parameters<typeof repository.reserve>[0]) =>
       provide(repository.reserve(input)),
     markSubmitting: (input: Parameters<typeof repository.markSubmitting>[0]) =>

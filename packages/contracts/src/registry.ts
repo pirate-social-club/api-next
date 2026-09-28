@@ -96,7 +96,6 @@ import {
   AttachRewardWinnerSendTransaction,
   CancelRewardWinnerSend,
   ClaimRewardCredit,
-  CreateRewardSponsoredSend,
   CreateRewardWinnerSend,
   GetAssetBonusFunding,
   GetMegapotPoolFunding,
@@ -104,8 +103,6 @@ import {
   GetRewardCreditWinnerSend,
   GetRewardGasTopup,
   GetRewardQualificationPolicies,
-  GetRewardSponsoredSend,
-  GetRewardSponsoredSendForCredit,
   GetRewardWinnerSend,
   GetSongMegapotPool,
   IssueRewardClaimVerificationIntent,
@@ -116,7 +113,6 @@ import {
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
   RequestRewardGasTopup,
-  SubmitRewardSponsoredSend,
 } from "./rewards-song-offers.ts";
 import { GetTrendingSongs, ListPersonaSongs } from "./song-library.ts";
 import {
@@ -145,6 +141,12 @@ import {
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
+import {
+  CreateWalletSponsoredSend,
+  GetWalletSponsoredSend,
+  GetWalletSponsoredSendForPersona,
+  SubmitWalletSponsoredSend,
+} from "./wallet-sponsored-send.ts";
 
 export const registry = {
   ReserveAvatarUpload,
@@ -248,14 +250,14 @@ export const registry = {
   RequestRewardGasTopup,
   GetRewardGasTopup,
   CreateRewardWinnerSend,
-  CreateRewardSponsoredSend,
   GetRewardCreditWinnerSend,
   AttachRewardWinnerSendTransaction,
   CancelRewardWinnerSend,
   GetRewardWinnerSend,
-  GetRewardSponsoredSend,
-  GetRewardSponsoredSendForCredit,
-  SubmitRewardSponsoredSend,
+  CreateWalletSponsoredSend,
+  GetWalletSponsoredSend,
+  GetWalletSponsoredSendForPersona,
+  SubmitWalletSponsoredSend,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,

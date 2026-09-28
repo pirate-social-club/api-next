@@ -12,8 +12,8 @@ import {
   type makeControlPlaneSponsoredSendStore,
   type SponsoredSendRecord,
   SponsoredSendRefused,
-} from "./reward-sponsored-send-repository.ts";
-import { prepareRewardSponsoredSendRequest } from "./reward-sponsored-send-request.ts";
+} from "./wallet-sponsored-send-repository.ts";
+import { prepareWalletSponsoredSendRequest } from "./wallet-sponsored-send-request.ts";
 
 type Store = ReturnType<typeof makeControlPlaneSponsoredSendStore>;
 
@@ -32,6 +32,7 @@ export type SponsoredSendReceipt = Readonly<{
 }>;
 
 export type SponsoredSendChain = Readonly<{
+  readTokenBalance: (tokenAddress: string, walletAddress: string) => Promise<bigint>;
   readReceipt: (transactionHash: string) => Promise<SponsoredSendReceipt | null>;
   readFinalizedHead: () => Promise<bigint>;
   readHead: () => Promise<bigint>;
@@ -63,13 +64,14 @@ function exactTransfer(record: SponsoredSendRecord, receipt: SponsoredSendReceip
   return matches.length === 1;
 }
 
-export function makeRewardSponsoredSendService(
+export function makeWalletSponsoredSendService(
   input: Readonly<{
     store: Store;
     appId: string;
     appSecret: string;
     chain: SponsoredSendChain;
     requiredConfirmations: number;
+    eligibleAsset: Readonly<{ chainId: 8453 | 84532; tokenAddress: string }>;
     ids: () => string;
     now?: () => number;
     submit?: (
@@ -95,7 +97,7 @@ export function makeRewardSponsoredSendService(
 
   function authorization(record: SponsoredSendRecord): SponsoredSendView["authorization"] {
     if (record.status !== "reserved" || record.expiresAtMs <= now()) return null;
-    const prepared = prepareRewardSponsoredSendRequest(
+    const prepared = prepareWalletSponsoredSendRequest(
       {
         walletId: record.walletId,
         chainId: record.chainId,
@@ -103,7 +105,6 @@ export function makeRewardSponsoredSendService(
         tokenAddress: record.tokenAddress,
         recipientAddress: record.recipientAddress,
         amountAtomic: record.amountAtomic,
-        paidAtomic: record.paidAtomic,
         referenceId: record.referenceId,
         idempotencyKey: record.providerIdempotencyKey,
         expiresAtMs: record.expiresAtMs,
@@ -231,7 +232,8 @@ export function makeRewardSponsoredSendService(
   return {
     reserve: async (request: {
       accountId: string;
-      creditId: string;
+      personaId: string;
+      chainId: 8453 | 84532;
       recipientAddress: string;
       amountAtomic: bigint;
       idempotencyKey: string;
@@ -242,9 +244,13 @@ export function makeRewardSponsoredSendService(
       } catch {
         throw new SponsoredSendRefused("ineligible");
       }
+      if (request.chainId !== input.eligibleAsset.chainId) {
+        throw new SponsoredSendRefused("ineligible");
+      }
       const record = await Effect.runPromise(
         input.store.reserve({
           ...request,
+          tokenAddress: input.eligibleAsset.tokenAddress.toLowerCase(),
           recipientAddress,
           sendId: `sponsored_${input.ids()}`,
           referenceId: `sponsor_${input.ids()}`,
@@ -259,11 +265,11 @@ export function makeRewardSponsoredSendService(
       const observed = await observe(record);
       return { record: observed, authorization: authorization(observed) };
     },
-    getForCredit: async (request: {
+    getForPersona: async (request: {
       accountId: string;
-      creditId: string;
+      personaId: string;
     }): Promise<SponsoredSendView> => {
-      const record = await Effect.runPromise(input.store.findByCredit(request));
+      const record = await Effect.runPromise(input.store.findByPersona(request));
       if (record === null) throw new SponsoredSendRefused("not-found");
       const observed = await observe(record);
       return { record: observed, authorization: authorization(observed) };
@@ -285,7 +291,14 @@ export function makeRewardSponsoredSendService(
       ) {
         throw new SponsoredSendRefused("ineligible");
       }
-      const prepared = prepareRewardSponsoredSendRequest(
+      let balance: bigint;
+      try {
+        balance = await input.chain.readTokenBalance(record.tokenAddress, record.senderAddress);
+      } catch {
+        throw new SponsoredSendUnavailable();
+      }
+      if (balance < record.amountAtomic) throw new SponsoredSendRefused("ineligible");
+      const prepared = prepareWalletSponsoredSendRequest(
         {
           walletId: record.walletId,
           chainId: record.chainId,
@@ -293,7 +306,6 @@ export function makeRewardSponsoredSendService(
           tokenAddress: record.tokenAddress,
           recipientAddress: record.recipientAddress,
           amountAtomic: record.amountAtomic,
-          paidAtomic: record.paidAtomic,
           referenceId: record.referenceId,
           idempotencyKey: record.providerIdempotencyKey,
           expiresAtMs: record.expiresAtMs,

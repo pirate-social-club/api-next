@@ -376,7 +376,6 @@ TRUNCATE TABLE
   "reward_payout_effects",
   "reward_refund_effects",
   "reward_signer_nonces",
-  "reward_sponsored_sends",
   "reward_subject_consumptions",
   "reward_uniqueness_authorities",
   "reward_winner_send_attempts",
@@ -460,7 +459,8 @@ TRUNCATE TABLE
   "used_action_grants",
   "users",
   "verification_completion_attempts",
-  "verification_start_reservations"
+  "verification_start_reservations",
+  "wallet_sponsored_sends"
 RESTART IDENTITY CASCADE;
 
 SET LOCAL session_replication_role = replica;
