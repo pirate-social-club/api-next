@@ -958,16 +958,9 @@ export const SongVideoIntervalPreflightV1 = Schema.Union([
       ]),
     ),
   }),
-  /** The canonical duration has not been measured yet for this revision. */
+  /** Video source preparation is pending: timing or the admitted PCM reference. */
   Schema.Struct({
     state: Schema.Literal("measuring"),
-    song_post_id: SongAuthorString,
-    audio_revision: PositiveRevision,
-    retry_after_ms: PositiveSafeInteger,
-  }),
-  /** Timing is ready, but the immutable PCM reference is not yet admitted. */
-  Schema.Struct({
-    state: Schema.Literal("preparing"),
     song_post_id: SongAuthorString,
     audio_revision: PositiveRevision,
     retry_after_ms: PositiveSafeInteger,

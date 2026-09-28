@@ -145,7 +145,7 @@ describe("song-video interval preflight", () => {
     );
     const input = { communityId: "community_video", actor, body: { song_post_id: "post_song" } };
     expect(await preflightSongVideoInterval(input, services)).toEqual({
-      state: "preparing",
+      state: "measuring",
       song_post_id: "post_song",
       audio_revision: 3,
       retry_after_ms: 1_500,

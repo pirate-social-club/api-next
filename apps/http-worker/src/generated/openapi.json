@@ -77770,50 +77770,6 @@
                         "state": {
                           "type": "string",
                           "enum": [
-                            "preparing"
-                          ]
-                        },
-                        "song_post_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "audio_revision": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 9007199254740991
-                            }
-                          ]
-                        },
-                        "retry_after_ms": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 9007199254740991
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "state",
-                        "song_post_id",
-                        "audio_revision",
-                        "retry_after_ms"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "state": {
-                          "type": "string",
-                          "enum": [
                             "unavailable"
                           ]
                         },

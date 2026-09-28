@@ -280,7 +280,7 @@ export async function preflightSongVideoInterval(
     (await services.pcmReference.getReady(song, timing.durationSamples)) === null
   ) {
     return {
-      state: "preparing",
+      state: "measuring",
       song_post_id: song.songPostId,
       audio_revision: song.audioRevision,
       retry_after_ms: services.measuringRetryAfterMs ?? DEFAULT_MEASURING_RETRY_AFTER_MS,

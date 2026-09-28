@@ -58,6 +58,11 @@ the current audio revision. The composer song picker offers only ready songs;
 the song page's make-video entry observes the same state. Reservation checks
 the reference again because a picker result can go stale. An unready or
 changed reference is refused before recording, never after an upload.
+The existing interval preflight `measuring` state also covers a pending PCM
+reference, so this change adds no response variant; clients should describe
+that state neutrally as video preparation rather than only duration
+measurement. The public `video_ready` boolean is advisory, not an authority
+token.
 
 The order is: implement the contract, WAV excerpt recipe, reservation and
 entry-point gates without enabling them against an unbackfilled catalog;
