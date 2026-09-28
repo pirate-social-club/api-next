@@ -248,6 +248,12 @@
           "service": "pirate-hns-owner-verifier-staging"
         }
       ],
+      "vpc_services": [
+        {
+          "binding": "HNS_AUTHORITY_HSD",
+          "service_id": "01a0e6f3-20d8-7923-856e-cefb56e983cf"
+        }
+      ],
       "workflows": [
         {
           "binding": "STUDY_GENERATION_WORKFLOW",
@@ -304,8 +310,8 @@
         "STUDY_PROFILE_COVERAGE_ENABLED": "true",
         "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
-        // Preserve the rewards activation already serving on staging.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // Keep rewards off outside an approved staging run.
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
@@ -345,6 +351,14 @@
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-mainnet-v1",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "HNS_OWNERSHIP_CAPABILITIES": "hns-txt-import-v1",
+        "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "true",
+        "HNS_AUTHORITY_HSD_RPC_URL": "http://hns-staging-mainnet-reader.internal/",
+        "HNS_AUTHORITY_CHAIN_NETWORK": "main",
+        "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+        "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS": "36",
+        "HNS_AUTHORITY_SAFE_CONFIRMATIONS": "12",
+        "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS": "10800",
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS": "3600",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
         "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api-staging.pirate.sc",
@@ -397,6 +411,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
