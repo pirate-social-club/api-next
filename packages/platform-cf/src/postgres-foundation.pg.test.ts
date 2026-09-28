@@ -1641,6 +1641,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "users",
         "verification_completion_attempts",
         "verification_start_reservations",
+        "wallet_sponsored_sends",
         // POSTGRES_FOUNDATION_TABLE_CATALOG_END
       ]);
 
