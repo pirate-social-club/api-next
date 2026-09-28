@@ -108,7 +108,7 @@ export function makeSpacesFinalIssuanceVerifier(
           });
           const response = await fetchImpl(VERIFY_URL, {
             method: "POST",
-            redirect: "error",
+            redirect: "manual",
             headers: {
               "content-type": "application/json",
               "CF-Access-Client-Id": credentials.accessClientId,
@@ -129,7 +129,7 @@ export function makeSpacesFinalIssuanceVerifier(
             await response.body?.cancel();
             const observed = await fetchImpl(OBSERVE_URL, {
               method: "POST",
-              redirect: "error",
+              redirect: "manual",
               headers: {
                 "content-type": "application/json",
                 "CF-Access-Client-Id": credentials.accessClientId,
