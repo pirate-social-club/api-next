@@ -1,6 +1,7 @@
 import type { HnsForwarderGatewayAuthoritySourceV1 } from "@pirate/application/hns-host-serving";
 import { Effect } from "effect";
 import { makeSerializedCoalescingHnsGatewayAuthoritySourceV1 } from "./hns-community-app-gateway-authority-postgres.ts";
+import { makeGatewayPostgresPoolClientFactory } from "./hns-gateway-postgres-pool.ts";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "./hns-host-persistence-repository.ts";
 import {
@@ -31,7 +32,10 @@ export function makePostgresHnsCommunityAppHandleGatewayAuthorityV1(
   options: HnsCommunityAppHandleGatewayPostgresAuthorityOptionsV1 = {},
 ): HnsCommunityAppHandleGatewayPostgresAuthorityV1 {
   const { resolutionDeadlineMs = 1_500, ...postgresOptions } = options;
-  const runtime = makeReadOnlyPostgresControlPlaneLayer(connectionString, postgresOptions);
+  const runtime = makeReadOnlyPostgresControlPlaneLayer(connectionString, {
+    ...postgresOptions,
+    clientFactory: postgresOptions.clientFactory ?? makeGatewayPostgresPoolClientFactory(),
+  });
   const communityAuthority = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
     makeControlPlaneHnsCommunityAppHostAuthoritySource(runtime, {
       authority_schema: "api_next",
