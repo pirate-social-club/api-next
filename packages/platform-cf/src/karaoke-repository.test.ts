@@ -106,29 +106,33 @@ const authorityRow = (timezone: string): Readonly<Record<string, unknown>> => ({
 });
 
 describe("Karaoke session timezone authority", () => {
-  test("rejects a requested timezone that conflicts with the pinned account clock", async () => {
+  test("reserves a session on the pinned clock when the device timezone differs", async () => {
     const statements: Array<Readonly<{ label: string; values: readonly unknown[] }>> = [];
     const repository = makeControlPlaneKaraokeRepository();
-    const failure = await Effect.runPromise(
-      Effect.flip(
-        repository.reserveSession({ ...input, timezone: "UTC" }).pipe(
-          Effect.provide(
-            fakeLayer((label) => {
-              if (label === "karaoke.session.clock") {
-                return { rows: [{ timezone: "Asia/Tbilisi" }], rowCount: 1 };
-              }
-              return sourceResponse(label);
-            }, statements),
-          ),
+    const authority = await Effect.runPromise(
+      repository.reserveSession({ ...input, timezone: "Asia/Tbilisi" }).pipe(
+        Effect.provide(
+          fakeLayer((label) => {
+            if (label === "karaoke.session.clock") {
+              return { rows: [{ timezone: "UTC" }], rowCount: 1 };
+            }
+            if (label === "karaoke.session.insert" || label === "karaoke.recording.reserve") {
+              return { rows: [], rowCount: 1 };
+            }
+            if (label === "karaoke.session.inserted") {
+              return { rows: [authorityRow("UTC")], rowCount: 1 };
+            }
+            return sourceResponse(label);
+          }, statements),
         ),
       ),
     );
 
-    expect(failure).toMatchObject({
-      _tag: "KaraokeCommandRejected",
-      reason: "invalid-input",
-    });
-    expect(statements.map(({ label }) => label)).not.toContain("karaoke.session.insert");
+    expect(authority.timezone).toBe("UTC");
+    expect(statements.find(({ label }) => label === "karaoke.session.insert")?.values[12]).toBe(
+      "UTC",
+    );
+    expect(statements.map(({ label }) => label)).not.toContain("karaoke.session.clock-pin");
   });
 
   test("pins UTC when the account has no clock and the request omits a timezone", async () => {
@@ -184,5 +188,21 @@ describe("Karaoke session timezone authority", () => {
 
     expect(authority.timezone).toBe("America/New_York");
     expect(statements.map(({ label }) => label)).not.toContain("karaoke.session.clock");
+
+    const changedRequest = await Effect.runPromise(
+      Effect.flip(
+        repository.reserveSession({ ...input, timezone: "UTC", requestHash: "d".repeat(64) }).pipe(
+          Effect.provide(
+            fakeLayer((label) => {
+              if (label === "karaoke.session.replay") {
+                return { rows: [authorityRow("America/New_York")], rowCount: 1 };
+              }
+              return sourceResponse(label);
+            }, statements),
+          ),
+        ),
+      ),
+    );
+    expect(changedRequest).toMatchObject({ reason: "idempotency-conflict" });
   });
 });

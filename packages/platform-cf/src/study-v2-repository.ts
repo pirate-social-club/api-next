@@ -558,9 +558,6 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (clock.rows.length > 1) return yield* Effect.fail(failed("invalid-row"));
             const pinnedTimezone =
               clock.rows.length === 0 ? null : text(clock.rows[0] as Row, "timezone");
-            if (pinnedTimezone !== null && input.timezone !== pinnedTimezone) {
-              return yield* rejected("invalid-input");
-            }
             const timezone = pinnedTimezone ?? input.timezone;
             if (pinnedTimezone === null) {
               yield* transaction.execute({

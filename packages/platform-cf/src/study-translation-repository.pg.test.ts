@@ -414,7 +414,7 @@ suite("Study translation generation", () => {
         postId: "study-post",
         requestHash: "5".repeat(64),
         sessionId: "study-session-translation",
-        timezone: "UTC",
+        timezone: "Asia/Tbilisi",
       };
       const start = (input: Parameters<typeof study.startSession>[0]) =>
         Effect.runPromise(Effect.scoped(study.startSession(input).pipe(Effect.provide(runtime))));
@@ -463,9 +463,16 @@ suite("Study translation generation", () => {
           sessionId: "study-session-wrong-community-persona",
         }),
       ).rejects.toMatchObject({ reason: "not-found" });
+      await admin.query(
+        `INSERT INTO account_streak_clocks (
+           account_id, timezone, timezone_updated_at, next_change_allowed_at
+         ) VALUES ('study-account', 'UTC', clock_timestamp(),
+           clock_timestamp() + interval '7 days')`,
+      );
       const session = await Effect.runPromise(
         Effect.scoped(study.startSession(baseStart).pipe(Effect.provide(runtime))),
       );
+      expect(session.timezone).toBe("UTC");
       expect(await start(baseStart)).toEqual(session);
       await admin.query(
         `UPDATE community_memberships SET status='left'
@@ -500,27 +507,16 @@ suite("Study translation generation", () => {
           )
         ).rows,
       ).toEqual([{ timezone: "UTC" }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT timezone FROM study_sessions_v2 WHERE session_id='study-session-translation'`,
+          )
+        ).rows,
+      ).toEqual([{ timezone: "UTC" }]);
       await expect(
-        Effect.runPromise(
-          Effect.scoped(
-            study
-              .startSession({
-                accountId: "study-account",
-                communityId: "study-community",
-                createdAt: "2026-08-29T12:02:01.000Z",
-                targetLanguage: "es",
-                idempotencyKey: "study-session-timezone-conflict",
-                learnerBand: "B1",
-                personaId: "study-persona",
-                postId: "study-post",
-                requestHash: "4".repeat(64),
-                sessionId: "study-session-timezone-conflict",
-                timezone: "Asia/Tbilisi",
-              })
-              .pipe(Effect.provide(runtime)),
-          ),
-        ),
-      ).rejects.toMatchObject({ reason: "invalid-input" });
+        start({ ...baseStart, timezone: "UTC", requestHash: "4".repeat(64) }),
+      ).rejects.toMatchObject({ reason: "idempotency-conflict" });
       expect(session.items).toHaveLength(4);
       for (const item of session.items) {
         expect(item.exercise_type).toBe("translation_choice");
