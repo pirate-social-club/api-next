@@ -118,11 +118,11 @@ await db.connect();
 try {
   await db.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
   await db.query("SET LOCAL search_path TO api_next,public");
-  const sponsoredMigration = await db.query(
-    "SELECT 1 FROM schema_migrations WHERE version='0225_reward_sponsored_send_reservations.sql'",
+  const sponsoredMigrations = await db.query(
+    "SELECT version FROM schema_migrations WHERE version IN ('0225_reward_sponsored_send_reservations.sql','0226_wallet_sponsored_send_scope.sql')",
   );
-  if (sponsoredMigration.rowCount !== 1) {
-    throw new Error("isolated sponsored-send migration is not applied");
+  if (sponsoredMigrations.rowCount !== 2) {
+    throw new Error("isolated wallet-sponsored-send migrations are not applied");
   }
   const authority = await db.query<{ attestation_id: string; jackpot_address: string }>(
     "SELECT attestation_id,jackpot_address FROM megapot_deployment_attestations WHERE environment='staging' AND status='active' FOR UPDATE",
@@ -149,7 +149,7 @@ try {
       WHERE status NOT IN ('confirmed','cancelled')
     UNION ALL SELECT 'open_topups',count(*)::text FROM reward_gas_topups
       WHERE status NOT IN ('confirmed','released')
-    UNION ALL SELECT 'open_sponsored_sends',count(*)::text FROM reward_sponsored_sends
+    UNION ALL SELECT 'open_sponsored_sends',count(*)::text FROM wallet_sponsored_sends
       WHERE status NOT IN ('confirmed','abandoned')
   `);
   if (obligations.rows.some((row) => row.count !== "0")) {
