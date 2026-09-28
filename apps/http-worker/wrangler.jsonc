@@ -513,6 +513,12 @@
           "service": "pirate-hns-owner-verifier-production"
         }
       ],
+      "vpc_services": [
+        {
+          "binding": "HNS_AUTHORITY_HSD",
+          "service_id": "01a0e9d2-8fdd-7fe0-81ed-00fd6a3195ca"
+        }
+      ],
       "workflows": [
         {
           "binding": "STUDY_GENERATION_WORKFLOW",
@@ -580,6 +586,14 @@
         "HNS_OWNERSHIP_ENABLED": "true",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-production",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "true",
+        "HNS_AUTHORITY_HSD_RPC_URL": "http://hns-production-mainnet-reader.internal/",
+        "HNS_AUTHORITY_CHAIN_NETWORK": "main",
+        "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+        "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS": "36",
+        "HNS_AUTHORITY_SAFE_CONFIRMATIONS": "12",
+        "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS": "10800",
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS": "3600",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
         "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api.pirate.sc",
@@ -612,6 +626,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "HNS_EDGE_ALERT_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
