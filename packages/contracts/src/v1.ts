@@ -958,7 +958,7 @@ export const SongVideoIntervalPreflightV1 = Schema.Union([
       ]),
     ),
   }),
-  /** The canonical duration has not been measured yet for this revision. */
+  /** Video source preparation is pending: timing or the admitted PCM reference. */
   Schema.Struct({
     state: Schema.Literal("measuring"),
     song_post_id: SongAuthorString,

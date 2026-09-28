@@ -35,6 +35,7 @@ import {
   type SongOwnerVideoPolicy,
   type SongVideoIntervalServices,
   type SongVideoIntervalStore,
+  type SongVideoPcmReferenceStore,
 } from "./song-interval.ts";
 
 const SECOND = SONG_VIDEO_SAMPLE_RATE_HZ;
@@ -107,13 +108,52 @@ function contentStoreFor(access: Access = "readable", songCommunity = "community
 const intervalServices = (
   store: SongVideoIntervalStore,
   access: Access = "readable",
+  pcmReference?: SongVideoPcmReferenceStore,
 ): SongVideoIntervalServices => ({
   store,
   contentStore: contentStoreFor(access).contentStore,
   measuringRetryAfterMs: 1_500,
+  ...(pcmReference === undefined ? {} : { pcmReference }),
+});
+
+const pcmReference = (ready: () => boolean): SongVideoPcmReferenceStore => ({
+  getReady: async (target, durationSamples) =>
+    ready()
+      ? {
+          songPostId: target.songPostId,
+          audioRevision: target.audioRevision,
+          canonicalAudioSha256: target.canonicalAudioSha256,
+          durationSamples,
+          objectKey: "song-video-pcm/song-r3.pcm",
+          objectVersion: "version-r3",
+          objectEtag: "etag-r3",
+          pcmSha256: "c".repeat(64),
+          byteLength: durationSamples * 4,
+          decoderRecipe: "pinned-ffmpeg-6.1.1",
+        }
+      : null,
 });
 
 describe("song-video interval preflight", () => {
+  test("keeps a measured song out of video until its exact PCM reference is ready", async () => {
+    const { store } = songStore();
+    let ready = false;
+    const services = intervalServices(
+      store,
+      "readable",
+      pcmReference(() => ready),
+    );
+    const input = { communityId: "community_video", actor, body: { song_post_id: "post_song" } };
+    expect(await preflightSongVideoInterval(input, services)).toEqual({
+      state: "measuring",
+      song_post_id: "post_song",
+      audio_revision: 3,
+      retry_after_ms: 1_500,
+    });
+    ready = true;
+    expect((await preflightSongVideoInterval(input, services)).state).toBe("ready");
+  });
+
   test("answers with the canonical song's own revision and probed duration", async () => {
     const { store } = songStore();
     const result = await preflightSongVideoInterval(
@@ -500,6 +540,33 @@ function videoServices(input: {
 }
 
 describe("song-reference reservation through the request path", () => {
+  test("rechecks PCM readiness after preflight and creates no upload when it disappeared", async () => {
+    const created: Parameters<VideoPublicationStore["createReservation"]>[0][] = [];
+    const { store } = songStore();
+    let ready = true;
+    const services = intervalServices(
+      store,
+      "readable",
+      pcmReference(() => ready),
+    );
+    expect(
+      (
+        await preflightSongVideoInterval(
+          { communityId: "community_video", actor, body: { song_post_id: "post_song" } },
+          services,
+        )
+      ).state,
+    ).toBe("ready");
+    ready = false;
+    await expect(
+      reserveVideoUpload(
+        { communityId: "community_video", actor, body: songBody },
+        videoServices({ songInterval: services, created }),
+      ),
+    ).rejects.toMatchObject({ details: { reason_code: "pcm_reference_pending" } });
+    expect(created).toHaveLength(0);
+  });
+
   test("stays an unavailable capability wherever song-backed video is not composed", async () => {
     const error = await reserveVideoUpload(
       { communityId: "community_video", actor, body: songBody },

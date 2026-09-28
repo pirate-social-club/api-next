@@ -8,6 +8,7 @@ import {
   type SongOwnerPolicyStoreFailure,
   type SongOwnerPolicyStoreService,
 } from "@pirate/application";
+import type { SongVideoPcmReferenceStore } from "@pirate/application/video/song-interval";
 import { Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -93,6 +94,7 @@ const publicFromRow = (row: Row): PublicSongOwnerPolicy => ({
   policy_revision: integer(row, "policy_revision"),
   derivative_video: derivativeVideo(row),
   can_post_with_song: boolean(row, "can_post_with_song"),
+  video_ready: true,
 });
 
 const mapUpdateFailure = (error: SongOwnerPolicyStoreFailure | ControlPlaneError) => {
@@ -126,8 +128,10 @@ const MANAGEMENT_SELECT = `
      AND active_owned_persona($3, $4)`;
 
 const PUBLIC_SELECT = `
-  SELECT head.community_id, head.post_id,
+  SELECT head.community_id, head.post_id, head.audio_revision,
          revision.policy_revision, revision.derivative_video,
+         timing.canonical_audio_sha256 AS timing_audio_sha256,
+         timing.duration_samples AS timing_duration_samples,
          CASE
            WHEN $3::text IS NULL OR $4::text IS NULL THEN false
            WHEN NOT active_owned_persona($3::text, $4::text) THEN false
@@ -151,6 +155,17 @@ const PUBLIC_SELECT = `
      AND post.post_type = 'song'
      AND post.status = 'published'
      AND post.visibility = 'public'
+    LEFT JOIN media_publication_projections AS publication
+      ON publication.community_id = head.community_id
+     AND publication.post_id = head.post_id
+     AND publication.media_kind = 'song'
+     AND publication.audio_revision = head.audio_revision
+     AND publication.visibility = 'public'
+    LEFT JOIN media_song_canonical_timings AS timing
+      ON timing.song_post_id = head.post_id
+     AND timing.audio_revision = head.audio_revision
+     AND timing.canonical_audio_sha256 = publication.canonical_audio_sha256
+     AND timing.state = 'ready'
    WHERE head.community_id = $1
      AND head.post_id = $2`;
 
@@ -178,7 +193,9 @@ export interface SongOwnerPolicyRepository {
   >;
 }
 
-export const makeControlPlaneSongOwnerPolicyRepository = (): SongOwnerPolicyRepository => ({
+export const makeControlPlaneSongOwnerPolicyRepository = (
+  pcmReference?: SongVideoPcmReferenceStore,
+): SongOwnerPolicyRepository => ({
   getManagement: (input) =>
     Effect.gen(function* () {
       const db = yield* ControlPlaneDb;
@@ -263,18 +280,42 @@ export const makeControlPlaneSongOwnerPolicyRepository = (): SongOwnerPolicyRepo
         readonly: true,
       });
       if (result.rows.length !== 1) return yield* notFound("get-public");
+      const row = result.rows[0] as Row;
+      let publicPolicy: PublicSongOwnerPolicy;
       try {
-        return publicFromRow(result.rows[0] as Row);
+        publicPolicy = publicFromRow(row);
       } catch {
         return yield* invalidRow("get-public");
       }
+      if (pcmReference === undefined) return publicPolicy;
+      if (row.timing_duration_samples === null || row.timing_duration_samples === undefined) {
+        return { ...publicPolicy, video_ready: false };
+      }
+      let song: Parameters<SongVideoPcmReferenceStore["getReady"]>[0];
+      let durationSamples: number;
+      try {
+        song = {
+          songPostId: publicPolicy.post_id,
+          audioRevision: integer(row, "audio_revision"),
+          canonicalAudioSha256: text(row, "timing_audio_sha256"),
+        };
+        durationSamples = integer(row, "timing_duration_samples");
+      } catch {
+        return yield* invalidRow("get-public");
+      }
+      const reference = yield* Effect.tryPromise({
+        try: () => pcmReference.getReady(song, durationSamples),
+        catch: () => invalidRow("get-public"),
+      });
+      return { ...publicPolicy, video_ready: reference !== null };
     }),
 });
 
 export const makeControlPlaneSongOwnerPolicyStore = (
   database: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  pcmReference?: SongVideoPcmReferenceStore,
 ): SongOwnerPolicyStoreService => {
-  const repository = makeControlPlaneSongOwnerPolicyRepository();
+  const repository = makeControlPlaneSongOwnerPolicyRepository(pcmReference);
   return {
     getManagement: (input) => Effect.provide(database)(repository.getManagement(input)),
     update: (input) => Effect.provide(database)(repository.update(input)),

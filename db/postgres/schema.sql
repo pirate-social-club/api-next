@@ -10282,6 +10282,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_song_video_pcm_reference() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'an admitted song-video PCM reference is immutable';
+END;
+$$;
+
 CREATE FUNCTION guard_media_submission_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -32114,6 +32122,37 @@ CREATE TABLE media_song_video_masters (
     CONSTRAINT song_video_master_within_ceiling CHECK ((master_byte_length <= master_ceiling_bytes))
 );
 
+CREATE TABLE media_song_video_pcm_references (
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    duration_samples bigint NOT NULL,
+    pcm_object_key text NOT NULL,
+    pcm_object_version text NOT NULL,
+    pcm_object_etag text NOT NULL,
+    pcm_sha256 text NOT NULL,
+    pcm_byte_length bigint NOT NULL,
+    decoder_recipe text NOT NULL,
+    sample_rate_hz integer DEFAULT 48000 NOT NULL,
+    channels integer DEFAULT 2 NOT NULL,
+    sample_format text DEFAULT 's16le'::text NOT NULL,
+    admitted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_pcm_references_admitted_at_check CHECK (isfinite(admitted_at)),
+    CONSTRAINT media_song_video_pcm_references_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT media_song_video_pcm_references_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_pcm_references_channels_check CHECK ((channels = 2)),
+    CONSTRAINT media_song_video_pcm_references_check CHECK ((pcm_byte_length = (duration_samples * 4))),
+    CONSTRAINT media_song_video_pcm_references_decoder_recipe_check CHECK ((btrim(decoder_recipe) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_references_duration_samples_check CHECK (((duration_samples > 0) AND (duration_samples <= '9007199254740991'::bigint))),
+    CONSTRAINT media_song_video_pcm_references_pcm_object_etag_check CHECK ((btrim(pcm_object_etag) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_references_pcm_object_key_check CHECK (((pcm_object_key ~~ 'song-video-pcm/%'::text) AND (btrim(pcm_object_key) = pcm_object_key))),
+    CONSTRAINT media_song_video_pcm_references_pcm_object_version_check CHECK ((btrim(pcm_object_version) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_references_pcm_sha256_check CHECK ((pcm_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_pcm_references_sample_format_check CHECK ((sample_format = 's16le'::text)),
+    CONSTRAINT media_song_video_pcm_references_sample_rate_hz_check CHECK ((sample_rate_hz = 48000)),
+    CONSTRAINT media_song_video_pcm_references_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text))
+);
+
 CREATE TABLE media_song_video_render_attempts (
     attempt_id text NOT NULL,
     plan_id text NOT NULL,
@@ -37938,6 +37977,12 @@ ALTER TABLE ONLY media_song_video_masters
 ALTER TABLE ONLY media_song_video_masters
     ADD CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id);
 
+ALTER TABLE ONLY media_song_video_pcm_references
+    ADD CONSTRAINT media_song_video_pcm_referenc_pcm_object_key_pcm_object_ver_key UNIQUE (pcm_object_key, pcm_object_version);
+
+ALTER TABLE ONLY media_song_video_pcm_references
+    ADD CONSTRAINT media_song_video_pcm_references_pkey PRIMARY KEY (song_post_id, audio_revision);
+
 ALTER TABLE ONLY media_song_video_render_attempts
     ADD CONSTRAINT media_song_video_render_attem_attempt_id_plan_id_generation_key UNIQUE (attempt_id, plan_id, generation);
 
@@ -40442,6 +40487,8 @@ CREATE TRIGGER media_song_stem_insert_guard BEFORE INSERT ON media_song_stems FO
 CREATE TRIGGER media_song_stems_append_only BEFORE DELETE OR UPDATE ON media_song_stems FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update_rating_v2();
+
+CREATE TRIGGER media_song_video_pcm_reference_guard BEFORE DELETE OR UPDATE ON media_song_video_pcm_references FOR EACH ROW EXECUTE FUNCTION guard_media_song_video_pcm_reference();
 
 CREATE TRIGGER media_song_video_render_attempt_execution_guard BEFORE UPDATE ON media_song_video_render_attempts FOR EACH ROW EXECUTE FUNCTION guard_song_video_render_attempt_execution();
 
@@ -43445,6 +43492,9 @@ ALTER TABLE ONLY song_streaks
 
 ALTER TABLE ONLY song_streaks
     ADD CONSTRAINT song_streaks_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY media_song_video_pcm_references
+    ADD CONSTRAINT song_video_pcm_reference_timing_fk FOREIGN KEY (song_post_id, audio_revision, canonical_audio_sha256, duration_samples) REFERENCES media_song_canonical_timings(song_post_id, audio_revision, canonical_audio_sha256, duration_samples) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_video_reservation_song_plans
     ADD CONSTRAINT song_video_reservation_plan_reservation_fk FOREIGN KEY (reservation_id, reservation_community_id, reservation_intent) REFERENCES media_upload_reservations(reservation_id, community_id, video_intent) ON DELETE RESTRICT;
