@@ -45,6 +45,27 @@ After the short empty drawing settles, its prize can arm the next drawing.
 The current isolated contract at `0xb9464401103143e916434A277064f5601f3D7708`
 does not have this action; this source is not deployed.
 
+The r2 cutover uses separate guards. `fund-repeatable-prize.ts` transfers
+exactly 1 test USDC from the isolated operator to the new fixture after
+checking its deployment receipt, empty balance, idle operator nonce, fee cap,
+and exact owner-approved address and amount. It records the transfer receipt
+in `E2E_GUARD_RECORD_DIR`. `rotate-fixture-attestation.ts` then checks the new
+contract and ticket NFT code against the deployment record, the copied
+database's current r1 attestation, no unpaid credits, no open offers, legs,
+tickets, effects, refunds, sends or top-ups, and zero tickets in the old
+fixture's current drawing. It retires r1 and attests r2 only in the isolated
+database. Both scripts are dry runs unless `--execute` is supplied.
+
+Before that database rotation, turn rewards off on both isolated Workers and
+read both flags back. The database transaction cannot itself stop a Worker
+from creating a new obligation. Recheck obligations after the flags are off,
+then rotate and deploy both Workers with the r2 attestation ID and otherwise
+matching bindings. Read back both versions and the active database row before
+turning rewards on. The old fixture has a zero-ticket, one-atomic placeholder
+drawing due on 2026-10-04; it is not a participant obligation. Settle and
+record it after it becomes due. A live r2 drawing and paid credit remain
+unproven until this cutover and the owner activity run happen.
+
 `reschedule-empty-drawing.ts` is a dry run by default. It requires the new
 fixture address and deployed code hash, the drawing ID, a proposed Unix
 deadline, the isolated operator key and HTTPS Base Sepolia RPC, and a durable
