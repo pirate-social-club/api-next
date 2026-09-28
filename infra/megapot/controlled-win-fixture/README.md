@@ -83,6 +83,14 @@ phase also checks that both Workers and the isolated database name r2. The
 first execute against Cloudflare's settings endpoint is still untested and
 requires exact approval. If it creates an undeployed latest version and a
 rollback is needed, review that uploaded version before a later settings edit.
+After the Wallet sponsorship test, isolated HTTP serves dark version
+`d2e8c655` with 118 bindings, while the newer uploaded version `e46d8e69`
+has nine additional sponsorship bindings. Their script etags and runtime
+match. The guard verifies that these are the only latest-version differences
+and explicitly inherits every retained binding from the serving version ID.
+It refuses if code, runtime, a common binding, or an unrecognized latest-only
+binding differs. Read-only disable dry runs passed for both HTTP and jobs on
+2026-09-29. The PATCH execute path remains untested.
 
 `reschedule-empty-drawing.ts` is a dry run by default. It requires the new
 fixture address and deployed code hash, the drawing ID, a proposed Unix

@@ -13,6 +13,17 @@ const workerNames = {
   http: "pirate-http-worker-megapot-e2e-staging",
   jobs: "pirate-jobs-worker-megapot-e2e-staging",
 } as const;
+const permittedLatestOnlyBindings = new Set([
+  "PERSONA_WALLET_BASE_RPC_URL",
+  "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT",
+  "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI",
+  "PRIVY_SPONSORED_SEND_ENABLED",
+  "PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI",
+  "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT",
+  "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI",
+  "PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT",
+  "PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI",
+]);
 type Worker = keyof typeof workerNames;
 type Phase = "disable" | "select-r2" | "enable";
 type Binding = { name: string; type: string; text?: string; [key: string]: unknown };
@@ -92,11 +103,28 @@ async function state(which: Worker): Promise<State> {
   const version = command<{ resources?: { script?: { etag?: string }; bindings?: Binding[] }; runtime?: unknown }>(
     "versions", "view", serving, "--name", name, "--json",
   );
+  const newest = latest === serving ? version : command<typeof version>(
+    "versions", "view", latest, "--name", name, "--json",
+  );
   const current = await settings(name);
-  const bindings = current.bindings as Binding[] | undefined;
-  if (!Array.isArray(bindings) || bindings.length !== version.resources?.bindings?.length ||
-      !/^[0-9a-f]{64}$/u.test(version.resources.script?.etag ?? "")) {
+  const bindings = version.resources?.bindings;
+  const newestBindings = newest.resources?.bindings;
+  if (!Array.isArray(bindings) || !Array.isArray(newestBindings) ||
+      !Array.isArray(current.bindings) ||
+      !/^[0-9a-f]{64}$/u.test(version.resources?.script?.etag ?? "") ||
+      newest.resources?.script?.etag !== version.resources?.script?.etag ||
+      JSON.stringify(newest.runtime) !== JSON.stringify(version.runtime) ||
+      fingerprint(current.bindings as Binding[]) !== fingerprint(newestBindings)) {
     throw new Error(`${which} version/settings mismatch`);
+  }
+  if (latest !== serving) {
+    const servingByName = new Map(bindings.map((item) => [item.name, item]));
+    const newestByName = new Map(newestBindings.map((item) => [item.name, item]));
+    if (bindings.some((item) => JSON.stringify(item) !== JSON.stringify(newestByName.get(item.name))) ||
+        newestBindings.some((item) => !servingByName.has(item.name) &&
+          !permittedLatestOnlyBindings.has(item.name))) {
+      throw new Error(`${which} latest version differs beyond isolated sponsorship bindings`);
+    }
   }
   const names = bindings.map((item) => item.name);
   if (new Set(names).size !== names.length) throw new Error(`${which} duplicate binding name`);
@@ -150,8 +178,9 @@ async function requireR2Database(): Promise<void> {
 
 const before = await state(worker);
 const other = await state(worker === "http" ? "jobs" : "http");
-if (before.version !== expectedVersion || before.latest !== before.version || before.etag !== expectedEtag ||
-    other.latest !== other.version) throw new Error("serving version or source changed");
+if (before.version !== expectedVersion || before.etag !== expectedEtag) {
+  throw new Error("serving version or source changed");
+}
 const transition = expectedTransition(phase);
 if (bindingValue(before, transition.name) !== transition.before ||
     ("attestation" in transition && bindingValue(before, "MEGAPOT_ATTESTATION_ID") !== transition.attestation) ||
@@ -173,7 +202,7 @@ const expectedSettings = { ...before.settings, bindings: changed };
 const body = { settings: {
   bindings: before.bindings.map((item) => item.name === transition.name
     ? { name: item.name, type: "plain_text", text: transition.after }
-    : { name: item.name, type: "inherit" }),
+    : { name: item.name, type: "inherit", version_id: before.version }),
   annotations: { "workers/message": `Isolated Megapot r2 ${phase}` },
 } };
 const plan = { worker, phase, version: before.version, scriptEtag: before.etag,
