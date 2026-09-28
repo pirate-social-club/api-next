@@ -23,30 +23,23 @@ export interface HnsCommunityAppGatewayPostgresAuthorityOptionsV1
   readonly resolutionDeadlineMs?: number;
 }
 
-export function makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
+export function makeCoalescingHnsGatewayAuthoritySourceV1(
   source: HnsForwarderGatewayAuthoritySourceV1,
   deadlineMs = 1_500,
 ): HnsForwarderGatewayAuthoritySourceV1 {
-  // Every resolve owns a scoped Postgres layer. Run one scope at a time so a
-  // sibling request cannot release a client still in use by another scope.
-  // Same-host callers share only the live resolution; settled results are
-  // never cached, and no caller AbortSignal owns the shared operation.
-  let queue = Promise.resolve();
+  // Each resolve borrows its own client from the bounded pool, so distinct
+  // hosts can resolve concurrently. Same-host callers share only the live
+  // resolution; settled results are never cached, and no caller AbortSignal
+  // owns the shared operation.
   const pending = new Map<string, Promise<HnsHostAuthorityStateV1 | null>>();
   return Object.freeze({
     resolve: (normalizedHost) =>
       Effect.promise(() => {
         const existing = pending.get(normalizedHost);
         if (existing !== undefined) return existing;
-        const execute = () =>
-          Effect.runPromise(source.resolve(normalizedHost), {
-            signal: AbortSignal.timeout(deadlineMs),
-          });
-        const promise = queue.then(execute, execute);
-        queue = promise.then(
-          () => undefined,
-          () => undefined,
-        );
+        const promise = Effect.runPromise(source.resolve(normalizedHost), {
+          signal: AbortSignal.timeout(deadlineMs),
+        });
         pending.set(normalizedHost, promise);
         void promise.then(
           () => {
@@ -77,10 +70,7 @@ export function makePostgresHnsCommunityAppGatewayAuthorityV1(
     }),
     { authority_schema: "api_next" },
   );
-  const authoritySource = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
-    source,
-    resolutionDeadlineMs,
-  );
+  const authoritySource = makeCoalescingHnsGatewayAuthoritySourceV1(source, resolutionDeadlineMs);
   return Object.freeze({
     authority_source: authoritySource,
     ready: async (signal) => {
