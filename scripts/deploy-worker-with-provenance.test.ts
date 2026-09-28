@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 
 import {
   type CommandRunner,
@@ -191,5 +192,69 @@ describe("Worker deployment provenance", () => {
       `git:${sourceSha}`,
     ]);
     expect(diagnostics).toEqual(["deployed\n"]);
+  });
+
+  test("gates staging HTTP on the gateway and checks HNS serving after deploy", async () => {
+    const manifest = JSON.stringify({
+      schema: "pirate-hns-community-app-handle-gateway-staging-public-v1",
+      mode: "staging-public-tls",
+      solid_origin: "https://hns-community-ingress-staging.pirate.sc",
+      solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"a".repeat(64)}`,
+    });
+    const pin = {
+      schema: "pirate-hns-staging-gateway-deploy-pin-v1",
+      gateway_reference: `hns-community-app-handle-gateway-sha256:${createHash("sha256").update(manifest).digest("hex")}`,
+      solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"a".repeat(64)}`,
+    };
+    const httpInput = { ...input, configPath: "apps/http-worker/wrangler.jsonc" };
+    const before = JSON.stringify([{ id: "version-1", annotations: {} }]);
+    const after = JSON.stringify([
+      { id: "version-1", annotations: {} },
+      { id: "version-2", annotations: { "workers/message": `git:${sourceSha}` } },
+    ]);
+    const { runner, commands } = queueRunner([
+      { exitCode: 0, stdout: sourceSha },
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 0, stdout: httpInput.configPath },
+      { exitCode: 0, stdout: manifest },
+      { exitCode: 0, stdout: "preflight passed" },
+      { exitCode: 0, stdout: before },
+      { exitCode: 0, stdout: "deployed" },
+      { exitCode: 0, stdout: after },
+      { exitCode: 0, stdout: "serving passed" },
+    ]);
+    await expect(
+      deployWorkerWithProvenance(
+        "/repo",
+        httpInput,
+        runner,
+        () => undefined,
+        async () => pin,
+      ),
+    ).resolves.toMatchObject({ worker_version_id: "version-2" });
+    expect(commands[5]?.[0]).toBe("timeout");
+    expect(commands[6]).toEqual(["node", "scripts/hns-staging-gateway-preflight.mjs"]);
+    expect(commands[10]).toEqual(["bun", "run", "check:staging:hns-route"]);
+
+    const refused = queueRunner([
+      { exitCode: 0, stdout: sourceSha },
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 0, stdout: httpInput.configPath },
+      { exitCode: 0, stdout: manifest },
+    ]);
+    await expect(
+      deployWorkerWithProvenance(
+        "/repo",
+        httpInput,
+        refused.runner,
+        () => undefined,
+        async () => ({ ...pin, gateway_reference: "old" }),
+      ),
+    ).rejects.toThrow("differs from the reviewed deploy pin");
+    expect(refused.commands.some((command) => command.includes("deploy"))).toBe(false);
   });
 });
