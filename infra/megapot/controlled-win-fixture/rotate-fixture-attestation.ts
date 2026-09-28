@@ -15,6 +15,7 @@ const expectedCustody = getAddress("0x544881290138fe0E66C1EC7D1A1f141395246f20")
 const expectedJackpot = getAddress("0xb220c61ff7423379309FB32aBc6cB76c8ad6b869");
 const expectedUsdc = getAddress("0x036cbd53842c5426634e7929541ec2318f3dcf7e");
 const expectedUsdcCodeHash = "0xedc5281a85c0efecd49999a1ef668390c59b88702f2d4a07029d7f5d63059d6c";
+const zeroHash = `0x${"0".repeat(64)}`;
 const artifactBytes = await readFile(resolve(import.meta.dir,
   "out/ControlledMegapot.sol/ControlledMegapot.json"));
 const artifact = JSON.parse(artifactBytes.toString("utf8")) as { abi: Abi };
@@ -73,6 +74,11 @@ if (receipt.status !== "success" || !receipt.contractAddress ||
 if (anchorNumber < BigInt(deployment.receiptBlockNumber)) {
   throw new Error("deployment lacks three confirmations");
 }
+const receiptBlock = await rpc.getBlock({ blockNumber: receipt.blockNumber });
+if (!receipt.blockHash || receipt.blockHash === zeroHash ||
+    receiptBlock.hash !== receipt.blockHash) {
+  throw new Error("deployment receipt has no canonical block hash");
+}
 const [jackpotCode, nftCode, usdcCode, linkedNft, linkedUsdc, linkedOperator, price, anchor] =
   await Promise.all([
     rpc.getCode({ address: jackpot }),
@@ -91,7 +97,7 @@ if (!jackpotCode || !nftCode || !usdcCode ||
     typeof linkedNft !== "string" || getAddress(linkedNft) !== ticketNft ||
     typeof linkedUsdc !== "string" || getAddress(linkedUsdc) !== expectedUsdc ||
     typeof linkedOperator !== "string" || getAddress(linkedOperator) !== expectedOperator ||
-    price !== 10_000n || !anchor.hash) {
+    price !== 10_000n || !anchor.hash || anchor.hash === zeroHash) {
   throw new Error("deployed contract does not match fixture authority");
 }
 const oldDrawingId = await rpc.readContract({
@@ -112,6 +118,12 @@ await db.connect();
 try {
   await db.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
   await db.query("SET LOCAL search_path TO api_next,public");
+  const sponsoredMigration = await db.query(
+    "SELECT 1 FROM schema_migrations WHERE version='0225_reward_sponsored_send_reservations.sql'",
+  );
+  if (sponsoredMigration.rowCount !== 1) {
+    throw new Error("isolated sponsored-send migration is not applied");
+  }
   const authority = await db.query<{ attestation_id: string; jackpot_address: string }>(
     "SELECT attestation_id,jackpot_address FROM megapot_deployment_attestations WHERE environment='staging' AND status='active' FOR UPDATE",
   );
@@ -137,6 +149,8 @@ try {
       WHERE status NOT IN ('confirmed','cancelled')
     UNION ALL SELECT 'open_topups',count(*)::text FROM reward_gas_topups
       WHERE status NOT IN ('confirmed','released')
+    UNION ALL SELECT 'open_sponsored_sends',count(*)::text FROM reward_sponsored_sends
+      WHERE status NOT IN ('confirmed','abandoned')
   `);
   if (obligations.rows.some((row) => row.count !== "0")) {
     throw new Error(`copied branch has obligations: ${JSON.stringify(obligations.rows)}`);

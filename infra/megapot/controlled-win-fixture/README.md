@@ -52,8 +52,10 @@ and exact owner-approved address and amount. It records the transfer receipt
 in `E2E_GUARD_RECORD_DIR`. `rotate-fixture-attestation.ts` then checks the new
 contract and ticket NFT code against the deployment record, the copied
 database's current r1 attestation, no unpaid credits, no open offers, legs,
-tickets, effects, refunds, sends or top-ups, and zero tickets in the old
-fixture's current drawing. It retires r1 and attests r2 only in the isolated
+tickets, effects, refunds, direct or sponsored sends, or top-ups, and zero
+tickets in the old fixture's current drawing. It requires sponsored-send
+migration 0225 and a canonical nonzero deployment block hash before rotation.
+It retires r1 and attests r2 only in the isolated
 database. Both scripts are dry runs unless `--execute` is supplied.
 
 Before that database rotation, turn rewards off on both isolated Workers and
