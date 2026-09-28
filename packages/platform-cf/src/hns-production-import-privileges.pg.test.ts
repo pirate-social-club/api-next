@@ -51,11 +51,15 @@ suite("production HNS import runtime privileges", () => {
       ]);
 
       await admin.query(`SET LOCAL ROLE ${executorRole}`);
-      expect((await admin.query("SELECT * FROM lock_hns_root_import_lifecycle_v1('missing')")).rows).toEqual(
-        [],
-      );
       expect(
-        (await admin.query("SELECT * FROM lock_hns_root_import_lifecycle_job_v1(1,'missing','observe_current','executor',1)")).rows,
+        (await admin.query("SELECT * FROM lock_hns_root_import_lifecycle_v1('missing')")).rows,
+      ).toEqual([]);
+      expect(
+        (
+          await admin.query(
+            "SELECT * FROM lock_hns_root_import_lifecycle_job_v1(1,'missing','observe_current','executor',1)",
+          )
+        ).rows,
       ).toEqual([]);
       await admin.query("SAVEPOINT direct_update");
       await expect(
