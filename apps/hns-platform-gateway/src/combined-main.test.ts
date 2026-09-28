@@ -121,6 +121,37 @@ function request(host: string) {
 }
 
 describe("combined community app and handle gateway executable", () => {
+  test("uses the manifest authority deadline in production and staging", () => {
+    const observed: Array<number | undefined> = [];
+    const authorityFactory = (
+      _databaseUrl: string,
+      options?: { readonly resolutionDeadlineMs?: number },
+    ) => {
+      observed.push(options?.resolutionDeadlineMs);
+      return {
+        community_authority_source: { resolve: () => Effect.succeed(null) },
+        handle_authority_source: { resolve: () => Effect.succeed(null) },
+        ready: async () => true,
+      };
+    };
+    const base = configuration();
+    assembleHnsCommunityAppHandleGatewayRuntime({
+      configuration: base,
+      authority_factory: authorityFactory,
+    });
+    assembleHnsCommunityAppHandleGatewayRuntime({
+      configuration: {
+        ...base,
+        manifest: {
+          ...base.manifest,
+          schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
+        },
+      } as HnsCommunityAppGatewayRuntimeConfigurationV1,
+      authority_factory: authorityFactory,
+    });
+    expect(observed).toEqual([4_000, 4_000]);
+  });
+
   test("accepts production, shadow and staging public with an absolute manifest", () => {
     expect(
       parseHnsCommunityAppHandleGatewayArguments([

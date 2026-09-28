@@ -147,13 +147,9 @@ export function assembleHnsCommunityAppGatewayRuntime(input: {
   const fetchImpl = input.fetch_impl ?? ((request, init) => fetch(request, init));
   const authority = (input.authority_factory ?? makePostgresHnsCommunityAppGatewayAuthorityV1)(
     input.configuration.authority_database_url,
-    "mode" in input.configuration.manifest &&
-      input.configuration.manifest.mode === "staging-private-tls"
-      ? {
-          resolutionDeadlineMs:
-            input.configuration.manifest.private_authority_deadline_milliseconds,
-        }
-      : undefined,
+    {
+      resolutionDeadlineMs: input.configuration.manifest.private_authority_deadline_milliseconds,
+    },
   );
   const composition = makeHnsCommunityAppGatewayComposition(true, {
     profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
