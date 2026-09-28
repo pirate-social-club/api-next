@@ -316,11 +316,8 @@ export async function runHnsRootImportLifecycleJobOnce(
     // Lock and validate the job before accepting evidence. A finalize-only
     // fence is too late: the state and successor jobs would already exist.
     const owned = await client.query(
-      `SELECT lifecycle_job_id FROM hns_root_import_lifecycle_jobs
-        WHERE lifecycle_job_id=$1 AND root_import_session_id=$2
-          AND job_kind=$3 AND state='leased' AND leased_by=$4
-          AND lease_fence=$5 AND lease_expires_at > clock_timestamp()
-        FOR UPDATE`,
+      `SELECT lifecycle_job_id
+         FROM lock_hns_root_import_lifecycle_job_v1($1,$2,$3,$4,$5)`,
       [job.lifecycle_job_id, job.root_import_session_id, job.job_kind, executorId, job.lease_fence],
     );
     if (owned.rows.length !== 1) {
@@ -332,9 +329,7 @@ export async function runHnsRootImportLifecycleJobOnce(
               pending_reason, next_check_at, observation_count,
               consecutive_operational_failures, last_useful_error, last_useful_error_at,
               terminal_decided_at
-         FROM hns_root_import_lifecycle
-        WHERE root_import_session_id=$1
-          FOR UPDATE`,
+         FROM lock_hns_root_import_lifecycle_v1($1)`,
       [job.root_import_session_id],
     );
     const row = loaded.rows[0];
