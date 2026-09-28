@@ -37,11 +37,13 @@ describe("song owner derivative-video policy contracts", () => {
       policy_revision: management.policy_revision,
       derivative_video: management.derivative_video,
       can_post_with_song: false,
+      video_ready: true,
     } as const;
     expect(strictDecode(PublicSongOwnerPolicyV1)(publicPolicy)).toMatchObject({
       object: "song_owner_policy",
       derivative_video: "owner_only",
       can_post_with_song: false,
+      video_ready: true,
     });
     expect(() => strictDecode(PublicSongOwnerPolicyV1)(management)).toThrow();
   });

@@ -965,6 +965,13 @@ export const SongVideoIntervalPreflightV1 = Schema.Union([
     audio_revision: PositiveRevision,
     retry_after_ms: PositiveSafeInteger,
   }),
+  /** Timing is ready, but the immutable PCM reference is not yet admitted. */
+  Schema.Struct({
+    state: Schema.Literal("preparing"),
+    song_post_id: SongAuthorString,
+    audio_revision: PositiveRevision,
+    retry_after_ms: PositiveSafeInteger,
+  }),
   /** Measurement failed; this revision cannot back a video until remeasured. */
   Schema.Struct({
     state: Schema.Literal("unavailable"),

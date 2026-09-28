@@ -193,6 +193,7 @@ import { makeControlPlaneSongLibraryStore } from "@pirate/platform-cf/song-libra
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSongVideoPcmReferenceStore } from "@pirate/platform-cf/song-video-pcm-reference-repository";
 import { makeControlPlaneSpacesSaleNamespaceStore } from "@pirate/platform-cf/spaces-sale-namespace-repository";
 import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
 import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
@@ -438,6 +439,8 @@ export interface HttpWorkerBindings
    * submissions and posts that already exist keep working.
    */
   readonly VIDEO_SONG_REFERENCE_ENABLED?: string;
+  /** Off until the staging PCM catalog is backfilled and its objects verify. */
+  readonly VIDEO_PCM_REFERENCE_GATE_ENABLED?: string;
   readonly AVATAR_AUTHORING_ENABLED?: string;
   readonly AVATAR_INGRESS?: AvatarBindings["ingress"];
   readonly AVATAR_SEALED?: AvatarBindings["sealed"];
@@ -972,6 +975,14 @@ export async function createProductionHttpWorker(
         ? {
             songInterval: {
               store: makeControlPlaneSongVideoIntervalStore(controlPlane),
+              ...(bindings.VIDEO_PCM_REFERENCE_GATE_ENABLED === "true"
+                ? {
+                    pcmReference: makeControlPlaneSongVideoPcmReferenceStore(
+                      controlPlane,
+                      immutableOriginals,
+                    ),
+                  }
+                : {}),
               // The post read as the viewer: the same access rule as the post
               // endpoint and video playback.
               contentStore: makeControlPlaneContentStore(controlPlane),
@@ -990,8 +1001,23 @@ export async function createProductionHttpWorker(
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
+  if (
+    bindings.VIDEO_PCM_REFERENCE_GATE_ENABLED === "true" &&
+    bindings.MEDIA_IMMUTABLE_ORIGINALS === undefined
+  ) {
+    throw new Error("HTTP worker PCM reference gate requires the immutable media bucket");
+  }
   const songOwnerVideoPolicyHandlers = makeSongOwnerVideoPolicyHandlers({
-    store: makeControlPlaneSongOwnerPolicyStore(controlPlane),
+    store: makeControlPlaneSongOwnerPolicyStore(
+      controlPlane,
+      bindings.VIDEO_PCM_REFERENCE_GATE_ENABLED === "true" &&
+        bindings.MEDIA_IMMUTABLE_ORIGINALS !== undefined
+        ? makeControlPlaneSongVideoPcmReferenceStore(
+            controlPlane,
+            bindings.MEDIA_IMMUTABLE_ORIGINALS,
+          )
+        : undefined,
+    ),
   });
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.

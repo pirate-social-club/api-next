@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.98.0",
+  "sourceBranch": "feat/video-cloudconvert-render-integration",
+  "sourceBase": "c6ef2fd3",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "The public song owner-policy answer includes video_ready for the current audio revision. Song-video interval preflight can report preparing when its immutable PCM reference is not ready. Reservations recheck readiness before granting upload authority. The feature remains disabled by default in every environment.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.98.0.tgz",
+    "sha256": "a08d0ad95716be44533b929a287b08ab85b2c17795f6889fb7af42bff234ba12"
+  },
+  "validation": {
+    "status": "Local checks passed; hosted checks pending",
+    "passed": ["bun run check", "Focused contract, application, repository and client tests", "PostgreSQL 17 PCM-reference suite", "Community schema compatibility test in isolation"],
+    "remaining": ["Hosted checks", "Separate Solid song-picker and song-page readiness integration"],
+    "fullUnitSuiteNote": "The 5,061-test local run had one five-second timeout in the unrelated community schema compatibility case; that case passed in isolation. Hosted checks remain authoritative for the aggregate run.",
+    "operationalBoundary": "No registry publication, deployment, or live database or R2 mutation has occurred."
+  }
+}
