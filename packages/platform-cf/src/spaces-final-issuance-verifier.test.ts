@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { SpacesVerificationTargetV1 } from "@pirate/application";
 import { Effect } from "effect";
 import { makeSpacesFinalIssuanceVerifier } from "./spaces-final-issuance-verifier.ts";
@@ -157,5 +157,37 @@ describe("Spaces final issuance verifier adapter", () => {
     expect(Effect.runPromise(verifier.verify({ ...target, network: "regtest" }))).rejects.toThrow(
       "Spaces final verification unavailable",
     );
+  });
+
+  test("classifies an Access refusal without logging the name, script or credentials", async () => {
+    const warnings: unknown[][] = [];
+    const logger = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    try {
+      const verifier = makeSpacesFinalIssuanceVerifier(
+        credentials,
+        async () => new Response("private upstream body", { status: 403 }),
+      );
+      expect(Effect.runPromise(verifier.verify(target))).rejects.toThrow(
+        "Spaces final verification unavailable",
+      );
+    } finally {
+      logger.mockRestore();
+    }
+    expect(warnings).toEqual([
+      ["spaces.final_issuance.verifier_retry", { phase: "verify_response", status: 403 }],
+    ]);
+    const text = JSON.stringify(warnings);
+    for (const forbidden of [
+      target.handle_label,
+      target.script_pubkey_hex,
+      credentials.accessClientId,
+      credentials.accessClientSecret,
+      credentials.bearerToken,
+      "private upstream body",
+    ]) {
+      expect(text).not.toContain(forbidden);
+    }
   });
 });
