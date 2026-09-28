@@ -139,6 +139,7 @@
     "./reward-projection-repository": "./src/reward-projection-repository.ts",
     "./reward-winner-send-chain": "./src/reward-winner-send-chain.ts",
     "./privy-sponsored-transaction": "./src/privy-sponsored-transaction.ts",
+    "./reward-sponsored-send-request": "./src/reward-sponsored-send-request.ts",
     "./reward-winner-send-repository": "./src/reward-winner-send-repository.ts",
     "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",
     "./reward-funding-repository": "./src/reward-funding-repository.ts",
