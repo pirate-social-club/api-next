@@ -118,7 +118,7 @@ function closeServer(server: Server): Promise<void> {
 }
 
 describe("community gateway executable assembly", () => {
-  test("uses the manifest authority deadline only for the isolated private staging gateway", () => {
+  test("uses the manifest authority deadline in staging and production", () => {
     const observed: Array<number | undefined> = [];
     const authorityFactory = (
       _databaseUrl: string,
@@ -145,7 +145,7 @@ describe("community gateway executable assembly", () => {
       configuration: base,
       authority_factory: authorityFactory,
     });
-    expect(observed).toEqual([4_000, undefined]);
+    expect(observed).toEqual([4_000, 4_000]);
   });
 
   test("accepts only the exact mode and absolute manifest arguments", () => {
