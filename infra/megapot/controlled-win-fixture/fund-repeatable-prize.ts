@@ -1,7 +1,10 @@
 /** Put exactly one test USDC into the new isolated fixture jackpot. */
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { createPublicClient, createWalletClient, getAddress, http, parseAbi, parseEventLogs } from "viem";
+import {
+  createPublicClient, createWalletClient, getAddress, http, keccak256, parseAbi,
+  parseEventLogs,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
@@ -32,15 +35,19 @@ if (account.address !== operator) throw new Error("operator key mismatch");
 const deployment = JSON.parse(await readFile(
   `${recordRoot}/deployment-${jackpot.toLowerCase()}.json`, "utf8")) as {
     predictedAddress: string; transactionHash: `0x${string}`;
+    jackpotCodeHash: string; usdcCodeHash: string;
   };
 if (getAddress(deployment.predictedAddress) !== jackpot) {
   throw new Error("deployment record does not match approved jackpot");
 }
 const rpc = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
 if (await rpc.getChainId() !== baseSepolia.id) throw new Error("wrong chain");
-const [deploymentReceipt, operatorBalance, jackpotBalance, latest, pending, fees, ethBalance] =
+const [deploymentReceipt, jackpotCode, usdcCode, operatorBalance, jackpotBalance,
+  latest, pending, fees, ethBalance] =
   await Promise.all([
     rpc.getTransactionReceipt({ hash: deployment.transactionHash }),
+    rpc.getCode({ address: jackpot }),
+    rpc.getCode({ address: usdc }),
     rpc.readContract({ address: usdc, abi, functionName: "balanceOf", args: [operator] }),
     rpc.readContract({ address: usdc, abi, functionName: "balanceOf", args: [jackpot] }),
     rpc.getTransactionCount({ address: operator, blockTag: "latest" }),
@@ -49,6 +56,8 @@ const [deploymentReceipt, operatorBalance, jackpotBalance, latest, pending, fees
   ]);
 if (deploymentReceipt.status !== "success" ||
     getAddress(deploymentReceipt.contractAddress ?? "0x0000000000000000000000000000000000000000") !== jackpot ||
+    !jackpotCode || keccak256(jackpotCode) !== deployment.jackpotCodeHash ||
+    !usdcCode || keccak256(usdcCode) !== deployment.usdcCodeHash ||
     operatorBalance < amount || jackpotBalance !== 0n || pending !== latest) {
   throw new Error("fixture funding preconditions failed");
 }
