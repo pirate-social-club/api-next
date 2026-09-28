@@ -1,5 +1,5 @@
 {
   "schema": "pirate-hns-staging-gateway-deploy-pin-v1",
-  "gateway_reference": "hns-community-app-handle-gateway-sha256:e99ba45345ffc8a095282a78dfcec8174062268cb653599b183356b94a1e08b0",
+  "gateway_reference": "hns-community-app-handle-gateway-sha256:bedea3ad617926058fd21f831cead20a6ebb5c1136281502f5b670bbf62bd162",
   "solid_ingress_composition_reference": "solid-hns-ingress-sha256:b5780160035b457a14f6fa95c056aa138472d60d64d871935a8788dcd56e0cbc"
 }
