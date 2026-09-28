@@ -376,6 +376,7 @@ TRUNCATE TABLE
   "reward_payout_effects",
   "reward_refund_effects",
   "reward_signer_nonces",
+  "reward_sponsored_sends",
   "reward_subject_consumptions",
   "reward_uniqueness_authorities",
   "reward_winner_send_attempts",

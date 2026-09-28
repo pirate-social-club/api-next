@@ -12734,6 +12734,31 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_send_mode() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM 1 FROM reward_ledger_credits WHERE credit_id = NEW.credit_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'a reward send requires an existing credit';
+  END IF;
+  IF TG_TABLE_NAME = 'reward_winner_sends' THEN
+    IF EXISTS (
+      SELECT 1 FROM reward_sponsored_sends WHERE credit_id = NEW.credit_id
+        AND status <> 'abandoned'
+    ) THEN
+      RAISE EXCEPTION 'a credit with a sponsored send cannot start a direct send';
+    END IF;
+  ELSIF EXISTS (
+    SELECT 1 FROM reward_winner_sends WHERE credit_id = NEW.credit_id
+      AND status <> 'cancelled'
+  ) THEN
+    RAISE EXCEPTION 'a credit with a direct send cannot start a sponsored send';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_signer_nonce() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12748,6 +12773,104 @@ BEGIN
     OR NEW.observed_at < OLD.observed_at OR NEW.updated_at <= OLD.updated_at
   ) THEN
     RAISE EXCEPTION 'invalid reward signer nonce fence update';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_sponsored_send() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'a sponsored reward send is never deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'reserved' OR NEW.provider_transaction_id IS NOT NULL
+       OR NEW.user_operation_hash IS NOT NULL OR NEW.transaction_hash IS NOT NULL THEN
+      RAISE EXCEPTION 'a sponsored reward send begins without provider evidence';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1
+        FROM reward_ledger_credits credit
+        JOIN megapot_participant_claims claim
+          ON claim.credit_id = credit.credit_id AND claim.status = 'accepted'
+        JOIN reward_payout_effects payout
+          ON payout.credit_id = credit.credit_id AND payout.account_id = credit.account_id
+        JOIN reward_chain_effects payout_effect
+          ON payout_effect.effect_id = payout.payout_effect_id
+         AND payout_effect.state = 'confirmed'
+        JOIN reward_erc20_transfer_receipt_evidence evidence
+          ON evidence.effect_id = payout.payout_effect_id
+         AND evidence.transfer_purpose = 'reward_payout'
+         AND evidence.recipient_address = payout.destination_address
+        JOIN persona_wallet_assignments wallet
+          ON wallet.assignment_id = payout.wallet_assignment_id
+       WHERE credit.credit_id = NEW.credit_id
+         AND credit.account_id = NEW.account_id
+         AND credit.payout_persona_id = NEW.persona_id
+         AND credit.source_kind = 'megapot_allocation'
+         AND credit.state = 'sent'
+         AND credit.chain_id = NEW.chain_id
+         AND credit.token_address = NEW.token_address
+         AND credit.paid_atomic >= NEW.amount_atomic
+         AND payout.payout_persona_id = NEW.persona_id
+         AND payout.destination_address = NEW.sender_address
+         AND payout.wallet_assignment_id = NEW.wallet_assignment_id
+         AND wallet.account_id = NEW.account_id
+         AND wallet.persona_id = NEW.persona_id
+         AND wallet.privy_wallet_id = NEW.privy_wallet_id
+         AND wallet.address = NEW.sender_address
+    ) THEN
+      RAISE EXCEPTION 'a sponsored send requires the claimed and paid credit wallet';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(
+    NEW.send_id, NEW.credit_id, NEW.account_id, NEW.persona_id,
+    NEW.wallet_assignment_id, NEW.privy_wallet_id, NEW.chain_id,
+    NEW.sender_address, NEW.token_address, NEW.recipient_address,
+    NEW.amount_atomic, NEW.reference_id, NEW.idempotency_key,
+    NEW.request_expires_at, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.send_id, OLD.credit_id, OLD.account_id, OLD.persona_id,
+    OLD.wallet_assignment_id, OLD.privy_wallet_id, OLD.chain_id,
+    OLD.sender_address, OLD.token_address, OLD.recipient_address,
+    OLD.amount_atomic, OLD.reference_id, OLD.idempotency_key,
+    OLD.request_expires_at, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'a sponsored reward send request is immutable';
+  END IF;
+  IF OLD.status IN ('confirmed', 'reverted', 'abandoned') THEN
+    RAISE EXCEPTION 'a sponsored reward send is terminal';
+  END IF;
+  IF NEW.status <> OLD.status THEN
+    IF NOT (
+      (OLD.status = 'reserved' AND NEW.status IN ('submitting', 'abandoned')) OR
+      (OLD.status = 'submitting' AND NEW.status IN ('submitted', 'held')) OR
+      (OLD.status = 'submitted' AND NEW.status IN ('held', 'confirmed', 'reverted')) OR
+      (OLD.status = 'held' AND NEW.status IN ('confirmed', 'reverted'))
+    ) THEN
+      RAISE EXCEPTION 'invalid sponsored reward send transition';
+    END IF;
+  END IF;
+  IF NEW.status = 'abandoned' AND clock_timestamp() < OLD.request_expires_at THEN
+    RAISE EXCEPTION 'an unsubmitted sponsored send can be abandoned only after expiry';
+  END IF;
+  IF NEW.provider_transaction_id IS DISTINCT FROM OLD.provider_transaction_id
+     AND OLD.provider_transaction_id IS NOT NULL THEN
+    RAISE EXCEPTION 'a sponsored send provider transaction ID is immutable';
+  END IF;
+  IF NEW.user_operation_hash IS DISTINCT FROM OLD.user_operation_hash
+     AND OLD.user_operation_hash IS NOT NULL THEN
+    RAISE EXCEPTION 'a sponsored send user operation hash is immutable';
+  END IF;
+  IF NEW.transaction_hash IS DISTINCT FROM OLD.transaction_hash
+     AND OLD.transaction_hash IS NOT NULL THEN
+    RAISE EXCEPTION 'a sponsored send transaction hash is immutable';
+  END IF;
+  IF NEW.status IN ('confirmed', 'reverted') AND NEW.transaction_hash IS NULL THEN
+    RAISE EXCEPTION 'a final sponsored send requires a transaction hash';
   END IF;
   RETURN NEW;
 END
@@ -34632,6 +34755,50 @@ CREATE TABLE reward_signer_nonces (
     CONSTRAINT reward_signer_nonces_signer_address_check CHECK ((signer_address ~ '^0x[0-9a-f]{40}$'::text))
 );
 
+CREATE TABLE reward_sponsored_sends (
+    send_id text NOT NULL,
+    credit_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    wallet_assignment_id text NOT NULL,
+    privy_wallet_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    sender_address text NOT NULL,
+    token_address text NOT NULL,
+    recipient_address text NOT NULL,
+    amount_atomic numeric(78,0) NOT NULL,
+    reference_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_expires_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    provider_transaction_id text,
+    user_operation_hash text,
+    transaction_hash text,
+    block_number bigint,
+    block_hash text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_sponsored_send_addresses CHECK (((sender_address <> token_address) AND (recipient_address <> sender_address) AND (recipient_address <> token_address))),
+    CONSTRAINT reward_sponsored_send_provider_shape CHECK ((((status = ANY (ARRAY['reserved'::text, 'submitting'::text, 'abandoned'::text])) AND (provider_transaction_id IS NULL) AND (user_operation_hash IS NULL) AND (transaction_hash IS NULL)) OR ((status = 'submitted'::text) AND ((provider_transaction_id IS NOT NULL) OR (user_operation_hash IS NOT NULL) OR (transaction_hash IS NOT NULL))) OR (status = ANY (ARRAY['held'::text, 'confirmed'::text, 'reverted'::text])))),
+    CONSTRAINT reward_sponsored_send_receipt_shape CHECK ((((status = ANY (ARRAY['confirmed'::text, 'reverted'::text])) AND (transaction_hash IS NOT NULL) AND (block_number IS NOT NULL) AND (block_hash IS NOT NULL)) OR ((status <> ALL (ARRAY['confirmed'::text, 'reverted'::text])) AND (block_number IS NULL) AND (block_hash IS NULL)))),
+    CONSTRAINT reward_sponsored_send_time_order CHECK (((updated_at >= created_at) AND (request_expires_at > created_at) AND (request_expires_at <= (created_at + '00:05:00'::interval)))),
+    CONSTRAINT reward_sponsored_sends_amount_atomic_check CHECK ((amount_atomic > (0)::numeric)),
+    CONSTRAINT reward_sponsored_sends_block_hash_check CHECK (((block_hash IS NULL) OR ((block_hash ~ '^0x[0-9a-f]{64}$'::text) AND (block_hash <> ('0x'::text || repeat('0'::text, 64)))))),
+    CONSTRAINT reward_sponsored_sends_block_number_check CHECK (((block_number IS NULL) OR (block_number >= 0))),
+    CONSTRAINT reward_sponsored_sends_chain_id_check CHECK ((chain_id = ANY (ARRAY[(8453)::bigint, (84532)::bigint]))),
+    CONSTRAINT reward_sponsored_sends_idempotency_key_check CHECK ((idempotency_key ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
+    CONSTRAINT reward_sponsored_sends_privy_wallet_id_check CHECK (((btrim(privy_wallet_id) <> ''::text) AND (privy_wallet_id = btrim(privy_wallet_id)) AND (octet_length(privy_wallet_id) <= 256))),
+    CONSTRAINT reward_sponsored_sends_provider_transaction_id_check CHECK (((provider_transaction_id IS NULL) OR ((btrim(provider_transaction_id) <> ''::text) AND (octet_length(provider_transaction_id) <= 256)))),
+    CONSTRAINT reward_sponsored_sends_recipient_address_check CHECK (((recipient_address ~ '^0x[0-9a-f]{40}$'::text) AND (recipient_address <> '0x0000000000000000000000000000000000000000'::text))),
+    CONSTRAINT reward_sponsored_sends_reference_id_check CHECK ((reference_id ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
+    CONSTRAINT reward_sponsored_sends_send_id_check CHECK (((btrim(send_id) <> ''::text) AND (send_id = btrim(send_id)) AND (octet_length(send_id) <= 128))),
+    CONSTRAINT reward_sponsored_sends_sender_address_check CHECK ((sender_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_sponsored_sends_status_check CHECK ((status = ANY (ARRAY['reserved'::text, 'submitting'::text, 'submitted'::text, 'held'::text, 'confirmed'::text, 'reverted'::text, 'abandoned'::text]))),
+    CONSTRAINT reward_sponsored_sends_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_sponsored_sends_transaction_hash_check CHECK (((transaction_hash IS NULL) OR (transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT reward_sponsored_sends_user_operation_hash_check CHECK (((user_operation_hash IS NULL) OR (user_operation_hash ~ '^0x[0-9a-f]{64}$'::text)))
+);
+
 CREATE TABLE reward_subject_consumptions (
     reward_subject_consumption_id text NOT NULL,
     campaign_id text NOT NULL,
@@ -38708,6 +38875,15 @@ ALTER TABLE ONLY reward_refund_effects
 ALTER TABLE ONLY reward_signer_nonces
     ADD CONSTRAINT reward_signer_nonces_pkey PRIMARY KEY (chain_id, signer_address);
 
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_account_id_idempotency_key_key UNIQUE (account_id, idempotency_key);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_pkey PRIMARY KEY (send_id);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_reference_id_key UNIQUE (reference_id);
+
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_campaign_subject_unique UNIQUE (campaign_id, subject_key_id);
 
@@ -39625,6 +39801,14 @@ CREATE UNIQUE INDEX reward_gas_topup_wallet_active_uidx ON reward_gas_topup_wall
 CREATE INDEX reward_gas_topup_work_idx ON reward_gas_topups USING btree (created_at, topup_id) WHERE (status = ANY (ARRAY['requested'::text, 'broadcast'::text]));
 
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
+
+CREATE INDEX reward_sponsored_sends_account_day_idx ON reward_sponsored_sends USING btree (account_id, created_at);
+
+CREATE UNIQUE INDEX reward_sponsored_sends_credit_live_uidx ON reward_sponsored_sends USING btree (credit_id) WHERE (status <> 'abandoned'::text);
+
+CREATE INDEX reward_sponsored_sends_day_idx ON reward_sponsored_sends USING btree (created_at);
+
+CREATE INDEX reward_sponsored_sends_wallet_day_idx ON reward_sponsored_sends USING btree (wallet_assignment_id, created_at);
 
 CREATE INDEX reward_winner_send_transactions_attempt_idx ON reward_winner_send_transactions USING btree (send_id, attempt, created_at);
 
@@ -40826,6 +41010,10 @@ CREATE TRIGGER reward_refund_effects_change_guard BEFORE INSERT OR DELETE OR UPD
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
 
+CREATE TRIGGER reward_sponsored_send_mode_guard BEFORE INSERT ON reward_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_send_mode();
+
+CREATE TRIGGER reward_sponsored_sends_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_sponsored_send();
+
 CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER reward_subject_consumptions_validate BEFORE INSERT ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_reward_subject_consumption();
@@ -40835,6 +41023,8 @@ CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE
 CREATE TRIGGER reward_winner_send_attempts_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_winner_send_attempts_guard BEFORE INSERT ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send_attempt();
+
+CREATE TRIGGER reward_winner_send_mode_guard BEFORE INSERT ON reward_winner_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_send_mode();
 
 CREATE TRIGGER reward_winner_send_outcomes_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_outcomes FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
@@ -43338,6 +43528,18 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_refund_effects
     ADD CONSTRAINT reward_refund_effects_solvency_observation_fk FOREIGN KEY (solvency_observation_id) REFERENCES custody_solvency_observations(observation_id);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_credit_id_fkey FOREIGN KEY (credit_id) REFERENCES reward_ledger_credits(credit_id);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
 
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_binding_fk FOREIGN KEY (binding_event_id, subject_key_id, binding_epoch, user_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id, binding_epoch, user_id);
