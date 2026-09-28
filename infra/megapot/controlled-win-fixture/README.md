@@ -68,6 +68,21 @@ drawing due on 2026-10-04; it is not a participant obligation. Settle and
 record it after it becomes due. A live r2 drawing and paid credit remain
 unproven until this cutover and the owner activity run happen.
 
+`shift-worker-binding.ts` prepares each isolated Worker binding change without
+rebuilding its script. It accepts `--worker http|jobs`, `--phase disable|select-r2|enable`,
+and the exact current `--expected-version` and `--expected-etag`. Its default
+mode reads both Workers and prints a one-binding dry run. `--execute` also
+requires a durable `E2E_GUARD_RECORD_DIR`; it uploads the inherited-binding
+settings change, confirms that only the chosen value changed and the script
+etag stayed fixed, and restores the prior serving version if readback fails.
+Run each phase for both Workers in order, with an obligation readback after
+both are disabled and the database rotation between selection and activation.
+The `select-r2` phase refuses while either Worker has rewards on. The `enable`
+phase also checks that both Workers and the isolated database name r2. The
+first execute against Cloudflare's settings endpoint is still untested and
+requires exact approval. If it creates an undeployed latest version and a
+rollback is needed, review that uploaded version before a later settings edit.
+
 `reschedule-empty-drawing.ts` is a dry run by default. It requires the new
 fixture address and deployed code hash, the drawing ID, a proposed Unix
 deadline, the isolated operator key and HTTPS Base Sepolia RPC, and a durable
