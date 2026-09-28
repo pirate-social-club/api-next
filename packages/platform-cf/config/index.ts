@@ -100,6 +100,9 @@ const RewardGasTopupConfigFields = {
 } as const;
 
 const SponsoredSendConfigFields = {
+  PERSONA_WALLET_BASE_RPC_URL: secret("PERSONA_WALLET_BASE_RPC_URL").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
   PRIVY_SPONSORED_SEND_ENABLED: Config.boolean("PRIVY_SPONSORED_SEND_ENABLED").pipe(
     Config.withDefault(false),
   ),
@@ -112,12 +115,28 @@ const SponsoredSendConfigFields = {
   PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: Config.string(
     "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT",
   ).pipe(Config.withDefault("")),
+  PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: Config.string("PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI").pipe(
+    Config.withDefault(""),
+  ),
+  PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: Config.string(
+    "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI",
+  ).pipe(Config.withDefault("")),
+  PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: Config.string(
+    "PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI",
+  ).pipe(Config.withDefault("")),
+  PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: Config.string(
+    "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI",
+  ).pipe(Config.withDefault("")),
 } as const;
 
 export type SponsoredSendConfigValue = Readonly<{
   perAccountUtcDay: number;
   perWalletUtcDay: number;
   platformUtcDay: number;
+  gasBudgetPerSendWei: bigint;
+  accountDailyGasBudgetWei: bigint;
+  walletDailyGasBudgetWei: bigint;
+  platformDailyGasBudgetWei: bigint;
 }>;
 
 export function parseSponsoredSendConfig(input: {
@@ -126,31 +145,56 @@ export function parseSponsoredSendConfig(input: {
   readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: string;
   readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: string;
   readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: string;
+  readonly PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: string;
 }): SponsoredSendConfigValue | null {
   const values = [
     input.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
     input.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
     input.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
+    input.PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI,
+    input.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI,
+    input.PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI,
+    input.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI,
   ];
   if (!input.PRIVY_SPONSORED_SEND_ENABLED && values.every((value) => value === "")) return null;
   if (
     !input.PRIVY_SPONSORED_SEND_ENABLED ||
     input.API_NEXT_ENV === "production" ||
-    values.some((value) => !/^[1-9][0-9]{0,3}$/u.test(value))
+    values.slice(0, 3).some((value) => !/^[1-9][0-9]{0,3}$/u.test(value)) ||
+    values.slice(3).some((value) => !WEI_SETTING.test(value))
   ) {
     throw new Error("invalid sponsored send configuration");
   }
-  const [perAccountUtcDay, perWalletUtcDay, platformUtcDay] = values.map(Number);
+  const [perAccountUtcDay, perWalletUtcDay, platformUtcDay] = values.slice(0, 3).map(Number);
+  const [gasBudget, accountGas, walletGas, platformGas] = values.slice(3);
   if (
     perAccountUtcDay === undefined ||
     perWalletUtcDay === undefined ||
     platformUtcDay === undefined ||
+    gasBudget === undefined ||
+    accountGas === undefined ||
+    walletGas === undefined ||
+    platformGas === undefined ||
     perWalletUtcDay > perAccountUtcDay ||
-    perAccountUtcDay > platformUtcDay
+    perAccountUtcDay > platformUtcDay ||
+    BigInt(gasBudget) > BigInt(walletGas) ||
+    BigInt(walletGas) > BigInt(accountGas) ||
+    BigInt(accountGas) > BigInt(platformGas)
   ) {
     throw new Error("invalid sponsored send configuration");
   }
-  return { perAccountUtcDay, perWalletUtcDay, platformUtcDay };
+  return {
+    perAccountUtcDay,
+    perWalletUtcDay,
+    platformUtcDay,
+    gasBudgetPerSendWei: BigInt(gasBudget),
+    accountDailyGasBudgetWei: BigInt(accountGas),
+    walletDailyGasBudgetWei: BigInt(walletGas),
+    platformDailyGasBudgetWei: BigInt(platformGas),
+  };
 }
 
 export type RewardGasTopupConfigValue = Readonly<{

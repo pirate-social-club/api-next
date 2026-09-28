@@ -168340,1063 +168340,6 @@
         ]
       }
     },
-    "/rewards/credits/{creditId}/sponsored-send": {
-      "post": {
-        "operationId": "post_rewardsCreditsCreditIdSponsoredSend",
-        "parameters": [
-          {
-            "name": "creditId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "allOf": [
-                {
-                  "minLength": 1
-                },
-                {
-                  "maxLength": 128
-                }
-              ]
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "recipient": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "pattern": "^0x[0-9a-fA-F]{40}$"
-                      }
-                    ]
-                  },
-                  "amount_atomic": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "pattern": "^[1-9][0-9]*$"
-                      }
-                    ]
-                  },
-                  "idempotency_key": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "minLength": 1
-                      },
-                      {
-                        "maxLength": 128
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "recipient",
-                  "amount_atomic",
-                  "idempotency_key"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "object": {
-                      "type": "string",
-                      "enum": [
-                        "reward_sponsored_send"
-                      ]
-                    },
-                    "send_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        },
-                        {
-                          "maxLength": 128
-                        }
-                      ]
-                    },
-                    "credit_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        },
-                        {
-                          "maxLength": 128
-                        }
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "reserved",
-                        "submitting",
-                        "submitted",
-                        "held",
-                        "confirmed",
-                        "reverted",
-                        "abandoned"
-                      ]
-                    },
-                    "chain_id": {
-                      "type": "integer",
-                      "allOf": [
-                        {
-                          "minimum": 1,
-                          "maximum": 9007199254740991
-                        }
-                      ]
-                    },
-                    "sender_address": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "pattern": "^0x[0-9a-f]{40}$"
-                        }
-                      ]
-                    },
-                    "recipient_address": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "pattern": "^0x[0-9a-f]{40}$"
-                        }
-                      ]
-                    },
-                    "amount_atomic": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "pattern": "^[1-9][0-9]*$"
-                        }
-                      ]
-                    },
-                    "transaction_hash": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "pattern": "^0x[0-9a-f]{64}$"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "authorization": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "wallet_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                },
-                                {
-                                  "maxLength": 256
-                                }
-                              ]
-                            },
-                            "payload_base64": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "wallet_id",
-                            "payload_base64"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "object",
-                    "send_id",
-                    "credit_id",
-                    "status",
-                    "chain_id",
-                    "sender_address",
-                    "recipient_address",
-                    "amount_atomic",
-                    "transaction_hash",
-                    "authorization"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "bad_request"
-            ]
-          },
-          "401": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "auth_error"
-            ]
-          },
-          "404": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "not_found"
-            ]
-          },
-          "409": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "conflict",
-              "conflict"
-            ]
-          },
-          "500": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "internal_error"
-            ]
-          },
-          "502": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "provider_unavailable"
-            ]
-          }
-        },
-        "x-auth": {
-          "policy": {
-            "kind": "user"
-          }
-        },
-        "x-errors": [
-          "AuthError",
-          "BadRequest",
-          "Conflict",
-          "RetryableConflict",
-          "NotFound",
-          "InternalError",
-          "ProviderUnavailable"
-        ]
-      },
-      "get": {
-        "operationId": "get_rewardsCreditsCreditIdSponsoredSend",
-        "parameters": [
-          {
-            "name": "creditId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "allOf": [
-                {
-                  "minLength": 1
-                },
-                {
-                  "maxLength": 128
-                }
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "object": {
-                      "type": "string",
-                      "enum": [
-                        "reward_sponsored_send"
-                      ]
-                    },
-                    "send_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        },
-                        {
-                          "maxLength": 128
-                        }
-                      ]
-                    },
-                    "credit_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        },
-                        {
-                          "maxLength": 128
-                        }
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "reserved",
-                        "submitting",
-                        "submitted",
-                        "held",
-                        "confirmed",
-                        "reverted",
-                        "abandoned"
-                      ]
-                    },
-                    "chain_id": {
-                      "type": "integer",
-                      "allOf": [
-                        {
-                          "minimum": 1,
-                          "maximum": 9007199254740991
-                        }
-                      ]
-                    },
-                    "sender_address": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "pattern": "^0x[0-9a-f]{40}$"
-                        }
-                      ]
-                    },
-                    "recipient_address": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "pattern": "^0x[0-9a-f]{40}$"
-                        }
-                      ]
-                    },
-                    "amount_atomic": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "pattern": "^[1-9][0-9]*$"
-                        }
-                      ]
-                    },
-                    "transaction_hash": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "pattern": "^0x[0-9a-f]{64}$"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "authorization": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "wallet_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                },
-                                {
-                                  "maxLength": 256
-                                }
-                              ]
-                            },
-                            "payload_base64": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "wallet_id",
-                            "payload_base64"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "object",
-                    "send_id",
-                    "credit_id",
-                    "status",
-                    "chain_id",
-                    "sender_address",
-                    "recipient_address",
-                    "amount_atomic",
-                    "transaction_hash",
-                    "authorization"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "bad_request"
-            ]
-          },
-          "401": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "auth_error"
-            ]
-          },
-          "404": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "not_found"
-            ]
-          },
-          "409": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "conflict",
-              "conflict"
-            ]
-          },
-          "500": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "internal_error"
-            ]
-          },
-          "502": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "provider_unavailable"
-            ]
-          }
-        },
-        "x-auth": {
-          "policy": {
-            "kind": "user"
-          }
-        },
-        "x-errors": [
-          "AuthError",
-          "BadRequest",
-          "Conflict",
-          "RetryableConflict",
-          "NotFound",
-          "InternalError",
-          "ProviderUnavailable"
-        ]
-      }
-    },
     "/rewards/winner-sends/{sendId}/transactions": {
       "post": {
         "operationId": "post_rewardsWinnerSendsSendIdTransactions",
@@ -170954,12 +169897,12 @@
         ]
       }
     },
-    "/rewards/sponsored-sends/{sendId}": {
-      "get": {
-        "operationId": "get_rewardsSponsoredSendsSendId",
+    "/wallet/personas/{personaId}/sponsored-send": {
+      "post": {
+        "operationId": "post_walletPersonasPersonaIdSponsoredSend",
         "parameters": [
           {
-            "name": "sendId",
+            "name": "personaId",
             "in": "path",
             "required": true,
             "schema": {
@@ -170975,6 +169918,59 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "chain_id": {
+                    "type": "number",
+                    "enum": [
+                      8453,
+                      84532
+                    ]
+                  },
+                  "recipient": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "pattern": "^0x[0-9a-fA-F]{40}$"
+                      }
+                    ]
+                  },
+                  "amount_atomic": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "pattern": "^[1-9][0-9]*$"
+                      }
+                    ]
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "chain_id",
+                  "recipient",
+                  "amount_atomic",
+                  "idempotency_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success",
@@ -170986,7 +169982,7 @@
                     "object": {
                       "type": "string",
                       "enum": [
-                        "reward_sponsored_send"
+                        "wallet_sponsored_send"
                       ]
                     },
                     "send_id": {
@@ -171000,7 +169996,7 @@
                         }
                       ]
                     },
-                    "credit_id": {
+                    "persona_id": {
                       "type": "string",
                       "allOf": [
                         {
@@ -171024,11 +170020,17 @@
                       ]
                     },
                     "chain_id": {
-                      "type": "integer",
+                      "type": "number",
+                      "enum": [
+                        8453,
+                        84532
+                      ]
+                    },
+                    "token_address": {
+                      "type": "string",
                       "allOf": [
                         {
-                          "minimum": 1,
-                          "maximum": 9007199254740991
+                          "pattern": "^0x[0-9a-f]{40}$"
                         }
                       ]
                     },
@@ -171111,9 +170113,522 @@
                   "required": [
                     "object",
                     "send_id",
-                    "credit_id",
+                    "persona_id",
                     "status",
                     "chain_id",
+                    "token_address",
+                    "sender_address",
+                    "recipient_address",
+                    "amount_atomic",
+                    "transaction_hash",
+                    "authorization"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "RetryableConflict",
+          "NotFound",
+          "InternalError",
+          "ProviderUnavailable"
+        ]
+      },
+      "get": {
+        "operationId": "get_walletPersonasPersonaIdSponsoredSend",
+        "parameters": [
+          {
+            "name": "personaId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "wallet_sponsored_send"
+                      ]
+                    },
+                    "send_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "persona_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "reserved",
+                        "submitting",
+                        "submitted",
+                        "held",
+                        "confirmed",
+                        "reverted",
+                        "abandoned"
+                      ]
+                    },
+                    "chain_id": {
+                      "type": "number",
+                      "enum": [
+                        8453,
+                        84532
+                      ]
+                    },
+                    "token_address": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^0x[0-9a-f]{40}$"
+                        }
+                      ]
+                    },
+                    "sender_address": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^0x[0-9a-f]{40}$"
+                        }
+                      ]
+                    },
+                    "recipient_address": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^0x[0-9a-f]{40}$"
+                        }
+                      ]
+                    },
+                    "amount_atomic": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^[1-9][0-9]*$"
+                        }
+                      ]
+                    },
+                    "transaction_hash": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^0x[0-9a-f]{64}$"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "authorization": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "wallet_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 256
+                                }
+                              ]
+                            },
+                            "payload_base64": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "wallet_id",
+                            "payload_base64"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "send_id",
+                    "persona_id",
+                    "status",
+                    "chain_id",
+                    "token_address",
                     "sender_address",
                     "recipient_address",
                     "amount_atomic",
@@ -171461,9 +170976,9 @@
         ]
       }
     },
-    "/rewards/sponsored-sends/{sendId}/submit": {
-      "post": {
-        "operationId": "post_rewardsSponsoredSendsSendIdSubmit",
+    "/wallet/sponsored-sends/{sendId}": {
+      "get": {
+        "operationId": "get_walletSponsoredSendsSendId",
         "parameters": [
           {
             "name": "sendId",
@@ -171482,33 +170997,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "authorization_signature": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "pattern": "^[A-Za-z0-9+/]+={0,2}$"
-                      },
-                      {
-                        "maxLength": 4096
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "authorization_signature"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Success",
@@ -171520,7 +171008,7 @@
                     "object": {
                       "type": "string",
                       "enum": [
-                        "reward_sponsored_send"
+                        "wallet_sponsored_send"
                       ]
                     },
                     "send_id": {
@@ -171534,7 +171022,7 @@
                         }
                       ]
                     },
-                    "credit_id": {
+                    "persona_id": {
                       "type": "string",
                       "allOf": [
                         {
@@ -171558,11 +171046,17 @@
                       ]
                     },
                     "chain_id": {
-                      "type": "integer",
+                      "type": "number",
+                      "enum": [
+                        8453,
+                        84532
+                      ]
+                    },
+                    "token_address": {
+                      "type": "string",
                       "allOf": [
                         {
-                          "minimum": 1,
-                          "maximum": 9007199254740991
+                          "pattern": "^0x[0-9a-f]{40}$"
                         }
                       ]
                     },
@@ -171645,9 +171139,551 @@
                   "required": [
                     "object",
                     "send_id",
-                    "credit_id",
+                    "persona_id",
                     "status",
                     "chain_id",
+                    "token_address",
+                    "sender_address",
+                    "recipient_address",
+                    "amount_atomic",
+                    "transaction_hash",
+                    "authorization"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "RetryableConflict",
+          "NotFound",
+          "InternalError",
+          "ProviderUnavailable"
+        ]
+      }
+    },
+    "/wallet/sponsored-sends/{sendId}/submit": {
+      "post": {
+        "operationId": "post_walletSponsoredSendsSendIdSubmit",
+        "parameters": [
+          {
+            "name": "sendId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "authorization_signature": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+                      },
+                      {
+                        "maxLength": 4096
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "authorization_signature"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "wallet_sponsored_send"
+                      ]
+                    },
+                    "send_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "persona_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "reserved",
+                        "submitting",
+                        "submitted",
+                        "held",
+                        "confirmed",
+                        "reverted",
+                        "abandoned"
+                      ]
+                    },
+                    "chain_id": {
+                      "type": "number",
+                      "enum": [
+                        8453,
+                        84532
+                      ]
+                    },
+                    "token_address": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^0x[0-9a-f]{40}$"
+                        }
+                      ]
+                    },
+                    "sender_address": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^0x[0-9a-f]{40}$"
+                        }
+                      ]
+                    },
+                    "recipient_address": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^0x[0-9a-f]{40}$"
+                        }
+                      ]
+                    },
+                    "amount_atomic": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^[1-9][0-9]*$"
+                        }
+                      ]
+                    },
+                    "transaction_hash": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^0x[0-9a-f]{64}$"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "authorization": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "wallet_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 256
+                                }
+                              ]
+                            },
+                            "payload_base64": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "wallet_id",
+                            "payload_base64"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "send_id",
+                    "persona_id",
+                    "status",
+                    "chain_id",
+                    "token_address",
                     "sender_address",
                     "recipient_address",
                     "amount_atomic",
