@@ -242,8 +242,8 @@
         "SPACES_RECONCILIATION_ENABLED": "true",
         "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",
         "SPACES_RECONCILIATION_MEASUREMENT_REFERENCE": "bitcoin-mainnet-150-block-windows-2026-09-26",
-        // Preserve the rewards activation already serving on staging.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // Keep rewards off outside an approved staging run.
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
