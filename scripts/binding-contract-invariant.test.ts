@@ -712,8 +712,25 @@ describe("source-to-Wrangler binding contract", () => {
     });
     expect(staging.secrets).toContain("HNS_AUTHORITY_HSD_AUTHORIZATION");
     expect(staging.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
-    expect(rawEnvironment(configs.http, "production").vpc_services).toBeUndefined();
-    expect(production.vars).not.toHaveProperty("HNS_ACTIVATION_CURRENT_VIEW_ENABLED");
+    expect(rawEnvironment(configs.http, "production").vpc_services).toEqual([
+      {
+        binding: "HNS_AUTHORITY_HSD",
+        service_id: "01a0e9d2-8fdd-7fe0-81ed-00fd6a3195ca",
+      },
+    ]);
+    expect(production.vars).toMatchObject({
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "http://hns-production-mainnet-reader.internal/",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH:
+        "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "10800",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "3600",
+    });
+    expect(production.secrets).toContain("HNS_AUTHORITY_HSD_AUTHORIZATION");
+    expect(production.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
   });
 
   test("keeps staging rewards disabled while Spaces stays enabled", () => {
