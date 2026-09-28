@@ -36,6 +36,26 @@ local mock token, buys and settles one ticket, checks the event shapes and
 custody payout, refuses a second ticket and claim, and refuses an unfunded
 draw.
 
+The repeatable-cycle candidate adds `rescheduleEmptyDrawing`. Only the
+registered operator may bring an armed drawing forward, and only while it has
+zero tickets. The new deadline must remain more than two minutes in the
+future. The prize and its reservation do not change. A ticketed drawing keeps
+its original deadline. The event records both times and the drawing ID.
+After the short empty drawing settles, its prize can arm the next drawing.
+The current isolated contract at `0xb9464401103143e916434A277064f5601f3D7708`
+does not have this action; this source is not deployed.
+
+`reschedule-empty-drawing.ts` is a dry run by default. It requires the new
+fixture address and deployed code hash, the drawing ID, a proposed Unix
+deadline, the isolated operator key and HTTPS Base Sepolia RPC, and a durable
+`E2E_GUARD_RECORD_DIR`. It checks zero tickets, the operator, current drawing,
+the reserved prize, an idle nonce, a deadline 5 to 60 minutes ahead, and an
+operator fee ceiling of 0.0001 test ETH. `--execute` additionally requires
+`E2E_APPROVED_DRAWING_TIME_UNIX` to match exactly. It records the confirmed
+transaction and event in the durable guard directory. The deployment script
+now predicts the new contract address from the operator's current idle nonce
+and writes its record there too. Neither script has executed for this revision.
+
 The RPC proof uses a local Anvil process on port 18545. Start it in a separate
 terminal from this directory, then run the proof from the api-next repository
 root:

@@ -113,6 +113,7 @@ contract ControlledMegapot {
         uint256 winningsAmount
     );
     event ReferralFeeCollected(address indexed referrer, uint256 amount);
+    event EmptyDrawingRescheduled(uint256 indexed drawingId, uint256 oldTime, uint256 newTime);
 
     error NotOperator();
     error NotTicketOwner();
@@ -149,6 +150,21 @@ contract ControlledMegapot {
         payouts[currentDrawingId][1] = payoutAtomic;
         reservedPayout += payoutAtomic;
         armed = true;
+    }
+
+    /// @notice Bring a long placeholder forward so a fresh test cycle can run.
+    /// @dev A purchased ticket fixes the drawing time; it cannot be shortened.
+    function rescheduleEmptyDrawing(uint256 drawingTime) external {
+        if (msg.sender != operator) revert NotOperator();
+        DrawingState storage state = drawings[currentDrawingId];
+        require(
+            armed && state.globalTicketsBought == 0 &&
+            drawingTime > block.timestamp + 120 && drawingTime < state.drawingTime,
+            "invalid empty drawing reschedule"
+        );
+        uint256 oldTime = state.drawingTime;
+        state.drawingTime = drawingTime;
+        emit EmptyDrawingRescheduled(currentDrawingId, oldTime, drawingTime);
     }
 
     function allowTicketPurchases() external view returns (bool) {

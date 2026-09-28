@@ -136,6 +136,52 @@ contract ControlledMegapotTest {
         require(!accepted, "unfunded draw accepted");
     }
 
+    function testEmptyPlaceholderCanMoveForwardButTicketedDrawingCannot() public {
+        uint256 oldTime = jackpot.getDrawingState(1).drawingTime;
+        vm.prank(CUSTODY);
+        (bool notOperator,) = address(jackpot).call(abi.encodeCall(
+            ControlledMegapot.rescheduleEmptyDrawing, (block.timestamp + 600)
+        ));
+        require(!notOperator, "non-operator rescheduled draw");
+        (bool tooSoon,) = address(jackpot).call(abi.encodeCall(
+            ControlledMegapot.rescheduleEmptyDrawing, (block.timestamp + 120)
+        ));
+        require(!tooSoon, "unsafe deadline accepted");
+        uint256 earlyTime = block.timestamp + 600;
+        jackpot.rescheduleEmptyDrawing(earlyTime);
+        require(jackpot.getDrawingState(1).drawingTime == earlyTime, "deadline not moved");
+        require(jackpot.reservedPayout() == PRIZE, "prize reservation changed");
+        (bool later,) = address(jackpot).call(abi.encodeCall(
+            ControlledMegapot.rescheduleEmptyDrawing, (oldTime)
+        ));
+        require(!later, "deadline extended");
+        _buy();
+        (bool afterTicket,) = address(jackpot).call(abi.encodeCall(
+            ControlledMegapot.rescheduleEmptyDrawing, (block.timestamp + 300)
+        ));
+        require(!afterTicket, "ticketed deadline changed");
+        vm.warp(earlyTime + 1);
+        jackpot.settleDrawing();
+        require(jackpot.currentDrawingId() == 2, "short cycle did not settle");
+        require(jackpot.getDrawingState(1).winningTicket == 1, "short cycle did not win");
+    }
+
+    function testEmptyPlaceholderReleasesPrizeForNextShortCycle() public {
+        uint256 shortTime = block.timestamp + 600;
+        vm.recordLogs();
+        jackpot.rescheduleEmptyDrawing(shortTime);
+        require(_hasTopic(vm.getRecordedLogs(), address(jackpot), keccak256(
+            "EmptyDrawingRescheduled(uint256,uint256,uint256)"
+        )), "reschedule evidence absent");
+        vm.warp(shortTime + 1);
+        jackpot.settleDrawing();
+        require(jackpot.currentDrawingId() == 2, "empty drawing did not advance");
+        require(jackpot.reservedPayout() == 0, "empty prize still reserved");
+        jackpot.armDrawing(shortTime + 600, PRIZE);
+        require(jackpot.allowTicketPurchases(), "next drawing not open");
+        require(jackpot.reservedPayout() == PRIZE, "next prize not reserved");
+    }
+
     function testFixedSupplyAndOutstandingPayoutReservation() public {
         require(token.totalSupply() == 2 * PRIZE + PRICE, "supply changed");
         uint256 ticketId = _buy();

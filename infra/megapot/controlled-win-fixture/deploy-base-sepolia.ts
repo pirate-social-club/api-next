@@ -1,7 +1,7 @@
 /** Guarded Base Sepolia fixture deployment. Dry-run unless --execute is set. */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import {
   createPublicClient,
   createWalletClient,
@@ -22,7 +22,10 @@ const maxGas = 2_000_000n;
 const maxDeploymentCostWei = 100_000_000_000_000n;
 const minOperatorBalanceWei = 1_500_000_000_000_000n;
 const confirmations = 3;
-const recordPath = "/tmp/megapot-e2e-config-20260926/deployment.json";
+const recordRoot = process.env.E2E_GUARD_RECORD_DIR;
+if (!recordRoot || !isAbsolute(recordRoot) || recordRoot.startsWith("/tmp/")) {
+  throw new Error("E2E_GUARD_RECORD_DIR must be a durable absolute path");
+}
 
 if (Bun.argv.slice(2).some((arg) => arg !== "--execute")) throw new Error("unknown option");
 const execute = Bun.argv.includes("--execute");
@@ -37,12 +40,16 @@ const client = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) 
 if (await client.getChainId() !== baseSepolia.id) throw new Error("wrong chain");
 const tokenCode = await client.getCode({ address: usdc });
 if (!tokenCode || keccak256(tokenCode) !== usdcCodeHash) throw new Error("USDC code hash drifted");
-const nonce = await client.getTransactionCount({ address: operator, blockTag: "pending" });
-if (nonce !== 0) throw new Error("isolated operator nonce is no longer zero");
-const predictedAddress = getContractAddress({ from: operator, nonce: 0n });
+const [nonce, pending] = await Promise.all([
+  client.getTransactionCount({ address: operator, blockTag: "latest" }),
+  client.getTransactionCount({ address: operator, blockTag: "pending" }),
+]);
+if (pending !== nonce) throw new Error("operator has a pending transaction");
+const predictedAddress = getContractAddress({ from: operator, nonce: BigInt(nonce) });
 if (await client.getCode({ address: predictedAddress }) !== undefined) {
   throw new Error("predicted fixture address is already occupied");
 }
+const recordPath = `${recordRoot}/deployment-${predictedAddress.toLowerCase()}.json`;
 const artifactBytes = await readFile(resolve(import.meta.dir,
   "out/ControlledMegapot.sol/ControlledMegapot.json"));
 const artifact = JSON.parse(artifactBytes.toString("utf8")) as {
@@ -68,6 +75,7 @@ const plan = {
   chainId: baseSepolia.id,
   operator,
   predictedAddress,
+  operatorNonce: nonce,
   artifactSha256: createHash("sha256").update(artifactBytes).digest("hex"),
   usdc,
   usdcCodeHash,
@@ -119,7 +127,6 @@ if (typeof ticketNft !== "string") throw new Error("ticket NFT address missing")
 const nftAddress = getAddress(ticketNft);
 const nftCode = await client.getCode({ address: nftAddress });
 if (!nftCode) throw new Error("ticket NFT bytecode missing");
-await mkdir(dirname(recordPath), { recursive: true, mode: 0o700 });
 await writeFile(recordPath, `${JSON.stringify({
   ...plan,
   transactionHash: hash,
