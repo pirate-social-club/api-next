@@ -1,5 +1,10 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  HNS_STAGING_MANIFEST_COMMAND,
+  readHnsStagingGatewayPin,
+  verifyHnsStagingGatewayManifest,
+} from "./hns-staging-gateway-preflight.ts";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -223,8 +228,27 @@ export async function deployWorkerWithProvenance(
   input: WorkerDeploymentInput,
   runner: CommandRunner = runCommand,
   writeDiagnostic: (text: string) => void = (text) => process.stderr.write(text),
+  readStagingGatewayPin: (root: string) => Promise<unknown> = readHnsStagingGatewayPin,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
+  const guardedHnsStagingHttp =
+    configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
+  const solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
+  if (guardedHnsStagingHttp) {
+    const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
+    if (manifestRead.exitCode !== 0)
+      throw new Error("staging HNS gateway read failed before HTTP deploy");
+    verifyHnsStagingGatewayManifest(
+      manifestRead.stdout,
+      await readStagingGatewayPin(repositoryRoot),
+    );
+    const solidCheck = await runner(
+      ["node", "scripts/hns-staging-gateway-preflight.mjs"],
+      solidRoot,
+    );
+    if (solidCheck.exitCode !== 0)
+      throw new Error("staging Solid ingress preflight failed before HTTP deploy");
+  }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
   const before = parseWorkerVersions(
@@ -255,6 +279,15 @@ export async function deployWorkerWithProvenance(
     await requiredOutput(runner, listCommand, repositoryRoot, "post-deploy version listing"),
   );
   const version = findDeployedVersion(before, after, message);
+  if (guardedHnsStagingHttp) {
+    const serving = await runner(["bun", "run", "check:staging:hns-route"], solidRoot);
+    if (serving.exitCode !== 0) {
+      throw new Error(
+        `staging HNS serving check failed after HTTP deploy (exit ${serving.exitCode})`,
+      );
+    }
+    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
+  }
   return {
     schema_version: 1,
     source_sha: sourceSha,
