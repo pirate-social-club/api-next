@@ -224,6 +224,7 @@
     "0221_hns_txt_only_attachment_holds.sql": "56fb3e8d91cafa34a0ff1135268383947584c37a242cd1b3560aa439736a83e3",
     "0222_spaces_authority_lifetime.sql": "c97d8c4a11959fde710c807ca67f8a8403ecfca4078b3c6f6ab79913d98c0230",
     "0223_hns_txt_attachment_runtime_window_grant.sql": "019770a3b0cd30529d3c49733b368a728d5acaf00f51e2c36f35d98874f4a1be",
-    "0224_song_video_pcm_references.sql": "c57390e8a63618367605037976098116125536d7a23283277e1a9e8715f09b53"
+    "0224_song_video_pcm_references.sql": "c57390e8a63618367605037976098116125536d7a23283277e1a9e8715f09b53",
+    "0225_hns_import_runtime_function_grants.sql": "f9bbfbe4c15522f73221add914e1bf22788f899a8075df4cc1a391be559c68e5"
   }
 }
