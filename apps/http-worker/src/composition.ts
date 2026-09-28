@@ -84,6 +84,7 @@ import {
   type HttpWorkerConfigValue,
   loadConfigFrom,
   parseRewardGasTopupConfig,
+  parseSponsoredSendConfig,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
@@ -176,6 +177,8 @@ import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
+import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/reward-sponsored-send-repository";
+import { makeRewardSponsoredSendService } from "@pirate/platform-cf/reward-sponsored-send-service";
 import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
 import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
@@ -432,6 +435,10 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_GAS_TOPUP_MAX_WEI?: string;
   readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
   readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_ENABLED?: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
    * Song-backed video (Spec 013 §5A). Off unless exactly "true". Every new video
@@ -648,6 +655,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_GAS_TOPUP_MAX_WEI: bindings.MEGAPOT_GAS_TOPUP_MAX_WEI,
     MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
     MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
+    PRIVY_SPONSORED_SEND_ENABLED: bindings.PRIVY_SPONSORED_SEND_ENABLED,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
   };
 }
 
@@ -662,6 +673,7 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
     // Malformed or partial gas top-up limits fail closed here; absent limits
     // leave top-ups disabled.
     parseRewardGasTopupConfig(config);
+    parseSponsoredSendConfig(config);
     if (
       config.MEGAPOT_REWARDS_ENABLED &&
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
@@ -1596,6 +1608,28 @@ export async function createProductionHttpWorker(
                   ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
                 })
               : null;
+          const sponsoredLimits = parseSponsoredSendConfig(config);
+          const sponsoredChain = makeRewardWinnerSendChain(rpc);
+          const sponsoredSends =
+            sponsoredLimits === null || candidate.chainId !== REWARD_WINNER_SEND_CHAIN_ID
+              ? null
+              : makeRewardSponsoredSendService({
+                  store: makeControlPlaneSponsoredSendStore(controlPlane, sponsoredLimits),
+                  appId: config.PRIVY_APP_ID,
+                  appSecret: Redacted.value(config.PRIVY_APP_SECRET),
+                  chain: {
+                    readReceipt: async (transactionHash) => {
+                      const receipt = await Effect.runPromise(
+                        sponsoredChain.readReceipt(transactionHash),
+                      );
+                      return receipt === null || !receipt.canonical ? null : receipt;
+                    },
+                    readHead: () => Effect.runPromise(sponsoredChain.readHead()),
+                    readFinalizedHead: () => Effect.runPromise(sponsoredChain.readFinalizedHead()),
+                  },
+                  requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+                  ids: () => crypto.randomUUID().replaceAll("-", ""),
+                });
           return makeSongRewardOfferHandlers({
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
@@ -1611,6 +1645,7 @@ export async function createProductionHttpWorker(
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
             gasTopups,
             winnerSends,
+            sponsoredSends,
             funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
             requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
             externalFallbackPolicy: null,

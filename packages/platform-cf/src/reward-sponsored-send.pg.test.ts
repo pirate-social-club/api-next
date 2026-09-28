@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneSponsoredSendStore } from "./reward-sponsored-send-repository.ts";
+import { makeRewardSponsoredSendService } from "./reward-sponsored-send-service.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString) {
@@ -77,9 +81,10 @@ suite("Postgres sponsored reward send reservation", () => {
       `INSERT INTO reward_sponsored_sends (
          send_id, credit_id, account_id, persona_id, wallet_assignment_id,
          privy_wallet_id, chain_id, sender_address, token_address, recipient_address,
-         amount_atomic, reference_id, idempotency_key, request_expires_at, status
+         amount_atomic, reference_id, idempotency_key, provider_idempotency_key,
+         request_expires_at, status
        ) VALUES ($1,$2,'winner','persona-1','assignment-1','wallet_12345678',84532,
-         $3,$4,$5,1000000,$6,$7,clock_timestamp() + interval '2 minutes','reserved')`,
+         $3,$4,$5,1000000,$6,$7,$8,clock_timestamp() + interval '2 minutes','reserved')`,
       [
         id,
         `sponsored-credit-${credit}`,
@@ -88,6 +93,7 @@ suite("Postgres sponsored reward send reservation", () => {
         recipient,
         `reference_${id}`,
         `idempotency_${id}`,
+        `provider_${id}`,
       ],
     );
   }
@@ -123,7 +129,7 @@ suite("Postgres sponsored reward send reservation", () => {
            'active','assignment-1',now(),now(),now())`,
         [sender],
       );
-      for (let number = 1; number <= 3; number++) await seedCredit(number);
+      for (let number = 1; number <= 6; number++) await seedCredit(number);
     } finally {
       await admin.query("SET session_replication_role = origin");
     }
@@ -143,10 +149,12 @@ suite("Postgres sponsored reward send reservation", () => {
         `INSERT INTO reward_sponsored_sends (
          send_id, credit_id, account_id, persona_id, wallet_assignment_id,
          privy_wallet_id, chain_id, sender_address, token_address, recipient_address,
-         amount_atomic, reference_id, idempotency_key, request_expires_at, status
+         amount_atomic, reference_id, idempotency_key, provider_idempotency_key,
+         request_expires_at, status
        ) VALUES ('wrong-wallet','sponsored-credit-1','winner','persona-1','assignment-1',
          'wallet_wrong',84532,$1,$2,$3,1000001,'reference_wrong_wallet',
-         'idempotency_wrong_wallet',clock_timestamp() + interval '2 minutes','reserved')`,
+         'idempotency_wrong_wallet','provider_wrong_wallet',
+         clock_timestamp() + interval '2 minutes','reserved')`,
         [sender, token, recipient],
       ),
     ).rejects.toThrow("claimed and paid credit wallet");
@@ -207,5 +215,208 @@ suite("Postgres sponsored reward send reservation", () => {
       await admin.query("ROLLBACK").catch(() => undefined);
       throw error;
     }
+  });
+
+  test("the runtime reserves the paid wallet before submission and cannot submit twice", async () => {
+    const store = makeControlPlaneSponsoredSendStore(makeDirectPostgresControlPlaneLayer(scoped), {
+      perAccountUtcDay: 20,
+      perWalletUtcDay: 20,
+      platformUtcDay: 20,
+    });
+    const request = {
+      accountId: "winner",
+      creditId: "sponsored-credit-4",
+      recipientAddress: recipient,
+      amountAtomic: 1_000_000n,
+      idempotencyKey: "runtime_idempotency_4",
+      providerIdempotencyKey: "runtime_provider_key_4",
+      sendId: "runtime-send-4",
+      referenceId: "runtime_reference_4",
+    };
+    const record = await Effect.runPromise(store.reserve(request));
+    expect(record.walletId).toBe("wallet_12345678");
+    expect(record.senderAddress).toBe(sender);
+    expect(record.status).toBe("reserved");
+    expect((await Effect.runPromise(store.reserve(request))).sendId).toBe(record.sendId);
+    expect(
+      await Effect.runPromise(store.get({ accountId: "other", sendId: record.sendId })),
+    ).toBeNull();
+    await Effect.runPromise(store.markSubmitting({ accountId: "winner", sendId: record.sendId }));
+    await expect(
+      Effect.runPromise(store.markSubmitting({ accountId: "winner", sendId: record.sendId })),
+    ).rejects.toThrow("sponsored send conflict");
+    const pending = await Effect.runPromise(
+      store.findByCredit({
+        accountId: "winner",
+        creditId: request.creditId,
+      }),
+    );
+    expect(pending?.status).toBe("submitting");
+    await expect(
+      Effect.runPromise(
+        store.abandonUnsigned({
+          accountId: "winner",
+          sendId: record.sendId,
+        }),
+      ),
+    ).rejects.toThrow("sponsored send conflict");
+    await Effect.runPromise(store.markHeld({ accountId: "winner", sendId: record.sendId }));
+    await Effect.runPromise(
+      store.attachObservation({
+        accountId: "winner",
+        sendId: record.sendId,
+        providerTransactionId: "provider-transaction-4",
+        transactionHash: hash("44"),
+      }),
+    );
+    await Effect.runPromise(
+      store.recordFinal({
+        accountId: "winner",
+        sendId: record.sendId,
+        outcome: "confirmed",
+        transactionHash: hash("44"),
+        blockNumber: 44n,
+        blockHash: hash("55"),
+      }),
+    );
+    expect(
+      (await Effect.runPromise(store.get({ accountId: "winner", sendId: record.sendId })))?.status,
+    ).toBe("confirmed");
+    await expect(
+      Effect.runPromise(
+        store.reserve({
+          ...request,
+          idempotencyKey: "runtime_idempotency_different",
+          referenceId: "runtime_ref_different",
+          providerIdempotencyKey: "runtime_provider_different",
+          sendId: "runtime-send-duplicate",
+          recipientAddress: address("d2"),
+        }),
+      ),
+    ).rejects.toThrow("sponsored send conflict");
+  });
+
+  test("one exact signed request submits once and reconciles only its linked Transfer", async () => {
+    const store = makeControlPlaneSponsoredSendStore(makeDirectPostgresControlPlaneLayer(scoped), {
+      perAccountUtcDay: 20,
+      perWalletUtcDay: 20,
+      platformUtcDay: 20,
+    });
+    let calls = 0;
+    const service = makeRewardSponsoredSendService({
+      store,
+      appId: "app_test_1234",
+      appSecret: "test_secret_1234",
+      requiredConfirmations: 3,
+      ids: () => crypto.randomUUID().replaceAll("-", ""),
+      submit: async () => {
+        calls++;
+        return {
+          transactionId: "provider-transaction-5",
+          transactionHash: null,
+          userOperationHash: hash("aa"),
+        };
+      },
+      findByReference: async (query) => ({
+        id: "provider-transaction-5",
+        walletId: query.walletId,
+        referenceId: query.referenceId,
+        caip2: `eip155:${query.chainId}`,
+        status: "confirmed",
+        transactionHash: hash("55"),
+      }),
+      chain: {
+        readReceipt: async () => ({
+          canonical: true,
+          status: "success",
+          transactionHash: hash("55"),
+          blockNumber: 50n,
+          blockHash: hash("66"),
+          transfers: [
+            { tokenAddress: token, from: sender, to: recipient, amountAtomic: 1_000_000n },
+          ],
+        }),
+        readHead: async () => 52n,
+        readFinalizedHead: async () => 52n,
+      },
+    });
+    const request = {
+      accountId: "winner",
+      creditId: "sponsored-credit-5",
+      recipientAddress: recipient,
+      amountAtomic: 1_000_000n,
+      idempotencyKey: "live_test_key_5",
+    };
+    const prepared = await service.reserve(request);
+    expect(prepared.authorization?.walletId).toBe("wallet_12345678");
+    expect(prepared.authorization?.payloadBase64.length).toBeGreaterThan(100);
+    const settled = await service.submit({
+      accountId: "winner",
+      sendId: prepared.record.sendId,
+      signature: "c2lnbmF0dXJl",
+    });
+    expect(settled.record.status).toBe("confirmed");
+    expect(calls).toBe(1);
+    await expect(
+      service.submit({
+        accountId: "winner",
+        sendId: prepared.record.sendId,
+        signature: "c2lnbmF0dXJl",
+      }),
+    ).rejects.toThrow("sponsored send conflict");
+    expect(calls).toBe(1);
+    expect((await service.reserve(request)).record.sendId).toBe(prepared.record.sendId);
+  });
+
+  test("a lost provider response holds the winning even when reference lookup is empty", async () => {
+    const store = makeControlPlaneSponsoredSendStore(makeDirectPostgresControlPlaneLayer(scoped), {
+      perAccountUtcDay: 20,
+      perWalletUtcDay: 20,
+      platformUtcDay: 20,
+    });
+    let calls = 0;
+    const service = makeRewardSponsoredSendService({
+      store,
+      appId: "app_test_1234",
+      appSecret: "test_secret_1234",
+      requiredConfirmations: 3,
+      ids: () => crypto.randomUUID().replaceAll("-", ""),
+      submit: async () => {
+        calls++;
+        throw new Error("response lost");
+      },
+      findByReference: async () => null,
+      chain: {
+        readReceipt: async () => null,
+        readHead: async () => 0n,
+        readFinalizedHead: async () => 0n,
+      },
+    });
+    const request = {
+      accountId: "winner",
+      creditId: "sponsored-credit-6",
+      recipientAddress: recipient,
+      amountAtomic: 1_000_000n,
+      idempotencyKey: "lost_test_key_6",
+    };
+    const prepared = await service.reserve(request);
+    await expect(
+      service.submit({
+        accountId: "winner",
+        sendId: prepared.record.sendId,
+        signature: "c2lnbmF0dXJl",
+      }),
+    ).rejects.toThrow("outcome unknown");
+    expect(
+      (await service.get({ accountId: "winner", sendId: prepared.record.sendId })).record.status,
+    ).toBe("held");
+    await expect(
+      service.submit({
+        accountId: "winner",
+        sendId: prepared.record.sendId,
+        signature: "c2lnbmF0dXJl",
+      }),
+    ).rejects.toThrow("sponsored send conflict");
+    expect(calls).toBe(1);
   });
 });

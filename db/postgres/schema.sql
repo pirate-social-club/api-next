@@ -12831,12 +12831,14 @@ BEGIN
     NEW.wallet_assignment_id, NEW.privy_wallet_id, NEW.chain_id,
     NEW.sender_address, NEW.token_address, NEW.recipient_address,
     NEW.amount_atomic, NEW.reference_id, NEW.idempotency_key,
+    NEW.provider_idempotency_key,
     NEW.request_expires_at, NEW.created_at
   ) IS DISTINCT FROM ROW(
     OLD.send_id, OLD.credit_id, OLD.account_id, OLD.persona_id,
     OLD.wallet_assignment_id, OLD.privy_wallet_id, OLD.chain_id,
     OLD.sender_address, OLD.token_address, OLD.recipient_address,
     OLD.amount_atomic, OLD.reference_id, OLD.idempotency_key,
+    OLD.provider_idempotency_key,
     OLD.request_expires_at, OLD.created_at
   ) THEN
     RAISE EXCEPTION 'a sponsored reward send request is immutable';
@@ -34769,6 +34771,7 @@ CREATE TABLE reward_sponsored_sends (
     amount_atomic numeric(78,0) NOT NULL,
     reference_id text NOT NULL,
     idempotency_key text NOT NULL,
+    provider_idempotency_key text NOT NULL,
     request_expires_at timestamp with time zone NOT NULL,
     status text NOT NULL,
     provider_transaction_id text,
@@ -34786,8 +34789,9 @@ CREATE TABLE reward_sponsored_sends (
     CONSTRAINT reward_sponsored_sends_block_hash_check CHECK (((block_hash IS NULL) OR ((block_hash ~ '^0x[0-9a-f]{64}$'::text) AND (block_hash <> ('0x'::text || repeat('0'::text, 64)))))),
     CONSTRAINT reward_sponsored_sends_block_number_check CHECK (((block_number IS NULL) OR (block_number >= 0))),
     CONSTRAINT reward_sponsored_sends_chain_id_check CHECK ((chain_id = ANY (ARRAY[(8453)::bigint, (84532)::bigint]))),
-    CONSTRAINT reward_sponsored_sends_idempotency_key_check CHECK ((idempotency_key ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
+    CONSTRAINT reward_sponsored_sends_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
     CONSTRAINT reward_sponsored_sends_privy_wallet_id_check CHECK (((btrim(privy_wallet_id) <> ''::text) AND (privy_wallet_id = btrim(privy_wallet_id)) AND (octet_length(privy_wallet_id) <= 256))),
+    CONSTRAINT reward_sponsored_sends_provider_idempotency_key_check CHECK ((provider_idempotency_key ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
     CONSTRAINT reward_sponsored_sends_provider_transaction_id_check CHECK (((provider_transaction_id IS NULL) OR ((btrim(provider_transaction_id) <> ''::text) AND (octet_length(provider_transaction_id) <= 256)))),
     CONSTRAINT reward_sponsored_sends_recipient_address_check CHECK (((recipient_address ~ '^0x[0-9a-f]{40}$'::text) AND (recipient_address <> '0x0000000000000000000000000000000000000000'::text))),
     CONSTRAINT reward_sponsored_sends_reference_id_check CHECK ((reference_id ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
@@ -38880,6 +38884,9 @@ ALTER TABLE ONLY reward_sponsored_sends
 
 ALTER TABLE ONLY reward_sponsored_sends
     ADD CONSTRAINT reward_sponsored_sends_pkey PRIMARY KEY (send_id);
+
+ALTER TABLE ONLY reward_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_provider_idempotency_key_key UNIQUE (provider_idempotency_key);
 
 ALTER TABLE ONLY reward_sponsored_sends
     ADD CONSTRAINT reward_sponsored_sends_reference_id_key UNIQUE (reference_id);
